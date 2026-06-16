@@ -1,0 +1,92 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Build
+frontend/dist/
+backend/dist/
+
+# Cache
+.arts/
+.claude/
+.cache/
+
+# Test files
+test_*.py
+test_*.json
+check_*.py
+
+# Temporary
+*.tmp
+*.temp
+*.log
+
+# Data files
+*.xlsx
+*.xls
+*.csv
+!backend/data/*.csv
+
+# Skills packages
+*.zip
+cultural_relics_expert_package/
+cultural_relics_expert_skill/
+
+# Documentation
+MESSAGE_TO_TRAE.md
+FIX_TASK_CHAT_BUGS.md
+SKILLS_TEST_FIX.md
+TEST_REPORT_*.md
+CULTURAL_RELICS_EXPERT_GUIDE.md
