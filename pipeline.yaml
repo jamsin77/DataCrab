@@ -1,0 +1,74 @@
+pipeline:
+  name: rd-paradigm-default
+  description: "RD Paradigm 3.0 default pipeline"
+  context: CONTEXT.md
+  defaults:
+    prd: "docs/PRD.md"
+    features: "docs/features.md"
+    nfr: "docs/nfr.md"
+    constraints: "docs/constraints.md"
+    arch_doc: "docs/architecture.md"
+    task_split: "docs/task-split.md"
+    pipeline_state: ".pipeline/state.json"
+  stages:
+    - name: requirements-analysis
+      mode: direct
+      skill: harness-start
+      entry_gate:
+      exit_gate: gates/requirements-exit.yaml
+      review_gate:
+        reviewer: product-owner
+        description: "Approve PRD completeness and accuracy"
+      params:
+        min_context_terms: 3
+
+    - name: arch-roundtable
+      mode: team
+      skill: arch-roundtable
+      team: teams/arch-roundtable.yaml
+      entry_gate: gates/architecture-entry.yaml
+      exit_gate: gates/architecture-exit.yaml
+      review_gate:
+        reviewer: architect
+        description: "Rule on divergence list + review architecture outputs"
+      params:
+        discussion_rounds: 3
+        question_mode: probe
+
+    - name: task-decomposition
+      mode: team
+      skill: task-decomposition
+      exit_gate: gates/task-decomposition-exit.yaml
+      review_gate:
+        reviewer: architect
+        description: "Confirm slice granularity, dependencies, HITL/AFK labels"
+
+    - name: tdd-cycle
+      mode: team
+      skill: tdd-cycle
+      team: teams/tdd-team.yaml
+      entry_gate: gates/development-entry.yaml
+      exit_gate: gates/development-exit.yaml
+      review_gate:
+        reviewer: developer
+        description: "Review self-check report + test report + open issues"
+      params:
+        max_rejections: 3
+
+    - name: integration-verify
+      mode: team
+      skill: integration-verify
+      entry_gate: gates/integration-entry.yaml
+      exit_gate: gates/integration-exit.yaml
+      review_gate:
+        reviewer: verifier
+        description: "Confirm 4-layer verification results"
+
+    - name: release-pack
+      mode: team
+      skill: release-pack
+      entry_gate: gates/release-entry.yaml
+      exit_gate: gates/release-exit.yaml
+      review_gate:
+        reviewer: verifier
+        description: "Approve release"

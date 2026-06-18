@@ -1,0 +1,16 @@
+binding: post-edit
+rules_files:
+  - rules/doc-structure.yaml
+  - rules/language-style.yaml
+  - rules/content-elements.yaml
+  - rules/naming-convention.yaml
+  - rules/code-format.yaml
+  - rules/code-practice.yaml
+  - rules/security-design.yaml
+  - rules/security-design-extended.yaml
+  - rules/security-redline.yaml
+  - rules/api-authorization.yaml
+  - rules/container-security.yaml
+  - rules/license-copyright.yaml
+  - rules/contributing-compliance.yaml
+  - rules/code-review.yaml

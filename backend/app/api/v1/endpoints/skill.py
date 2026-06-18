@@ -1,6 +1,7 @@
 """技能管理API端点 - 遵循 Agent Skills 开放标准"""
 
 import io
+import math
 import shutil
 import tempfile
 import zipfile
@@ -16,6 +17,7 @@ from loguru import logger
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.skill import Skill
+from app.models.operator import Operator
 from app.models.user import User
 from app.schemas.skill import (
     SkillCreate,
@@ -32,6 +34,7 @@ from app.schemas.skill import (
     SkillScriptUpdate,
     SkillScriptInfo,
     SkillModifyRequest,
+    SkillDebugChatRequest,
     SkillParamDef,
 )
 from app.services.skill_parser import (
@@ -50,6 +53,16 @@ from app.api.deps import get_current_user
 router = APIRouter()
 
 
+def _sanitize_nans(obj):
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_nans(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nans(v) for v in obj]
+    return obj
+
+
 def _get_skill_storage() -> Path:
     path = Path(settings.SKILL_STORAGE_PATH)
     path.mkdir(parents=True, exist_ok=True)
@@ -58,6 +71,66 @@ def _get_skill_storage() -> Path:
 
 def _get_skill_folder(skill_id: UUID) -> Path:
     return _get_skill_storage() / str(skill_id)
+
+
+async def _sync_scripts_to_operators(
+    skill: Skill,
+    folder: Path,
+    db: AsyncSession,
+    current_user: User,
+):
+    from app.services.operator_parser import parse_python_script, extract_script_name
+
+    scripts_dir = folder / "scripts"
+    if not scripts_dir.is_dir():
+        return
+
+    for script_file in sorted(scripts_dir.glob("*.py")):
+        script_content = script_file.read_text(encoding="utf-8")
+        if not script_content.strip():
+            continue
+
+        try:
+            parsed = parse_python_script(script_content)
+        except Exception:
+            continue
+
+        func_name = parsed.get("function_name")
+        if not func_name:
+            continue
+
+        script_name = extract_script_name(script_file.name)
+        operator_name = f"{skill.name}-{script_name}"
+
+        existing = await db.execute(
+            select(Operator).where(Operator.name == operator_name)
+        )
+        existing_op = existing.scalar_one_or_none()
+
+        op_data = dict(
+            display_name=f"{skill.display_name or skill.name} - {func_name}",
+            description=parsed.get("description") or skill.description or "",
+            category=skill.category or "skill",
+            inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
+            outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
+            parameters=parsed.get("parameters", []),
+            execution_config={"type": "python_script", "source": "skill", "skill_id": str(skill.id)},
+            script_content=script_content,
+            script_filename=script_file.name,
+            function_name=func_name,
+            tags=(skill.tags or []) + ["from_skill"],
+            visibility=skill.visibility or "public",
+            author=current_user.id,
+        )
+
+        if existing_op:
+            for k, v in op_data.items():
+                setattr(existing_op, k, v)
+        else:
+            operator = Operator(name=operator_name, **op_data)
+            db.add(operator)
+
+    await db.flush()
 
 
 def _get_skill_relative_path(folder: Path) -> str:
@@ -203,8 +276,17 @@ async def delete_skill(
     if folder.exists():
         shutil.rmtree(folder)
 
+    skill_name = skill.name
+    prefix = f"{skill_name}-"
+    ops = await db.execute(select(Operator).where(Operator.name.startswith(prefix)))
+    for op in ops.scalars().all():
+        cfg = op.execution_config or {}
+        if cfg.get("source") == "skill" and cfg.get("skill_id") == str(skill_id):
+            await db.delete(op)
+
     await db.delete(skill)
     await db.flush()
+    logger.info(f"技能已删除: {skill_name} ({skill_id})，关联算子已清理")
 
 
 @router.post("/upload", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -259,6 +341,7 @@ async def upload_skill(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
+        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill 包已上传: {name} ({skill.id})")
         return _build_detail(skill)
     except HTTPException:
@@ -397,6 +480,7 @@ async def update_skill_script(
     folder = _get_skill_folder(skill_id)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_script(folder, script_name, request.content)
+    await _sync_scripts_to_operators(skill, folder, db, current_user)
     return {"name": script_name, "ok": True}
 
 
@@ -455,6 +539,63 @@ async def run_skill(
     await db.flush()
 
     return SkillRunResponse(**exec_result)
+
+
+@router.post("/{skill_id}/run-stream")
+async def run_skill_stream(
+    skill_id: UUID,
+    request: SkillRunRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _get_skill_folder(skill_id)
+
+    ds_name = None
+    if request.datasource_id:
+        from app.models.datasource import DataSource as DSModel
+        ds_result = await db.execute(select(DSModel).where(DSModel.id == UUID(request.datasource_id)))
+        ds_obj = ds_result.scalar_one_or_none()
+        if ds_obj:
+            ds_name = ds_obj.name
+
+    import asyncio
+    import json as json_mod
+
+    async def generate():
+        try:
+            yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
+
+            exec_result = run_skill_script(
+                skill_path=folder,
+                script_name=request.script_name,
+                parameters=request.parameters,
+                input_data=request.input_data,
+                datasource_id=request.datasource_id,
+                datasource_name=ds_name,
+                table_name=request.table_name,
+            )
+
+            skill.usage_count = (skill.usage_count or 0) + 1
+            await db.flush()
+
+            yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"流式执行技能失败: {e}")
+            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.get("/{skill_id}/params", response_model=list[SkillParamDef])
@@ -573,18 +714,30 @@ async def run_skill_nl(
         parsed = {"parameters": {}}
 
     parameters = parsed.get("parameters", {})
+    for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
+        parameters.pop(key, None)
+
     inferred_table = parsed.get("table_name") or request.table_name
     datasource_id = request.datasource_id
+    ds_name = None
+
+    if datasource_id:
+        from app.models.datasource import DataSource as DSModel
+        ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(datasource_id)))
+        ds_obj = ds_obj_result.scalar_one_or_none()
+        if ds_obj:
+            ds_name = ds_obj.name
 
     if not datasource_id and parsed.get("datasource_name"):
         from sqlalchemy import select as sa_select
-        from app.models.datasource import Datasource
+        from app.models.datasource import DataSource
         ds_result = await db.execute(
-            sa_select(Datasource).where(Datasource.name == parsed["datasource_name"])
+            sa_select(DataSource).where(DataSource.name == parsed["datasource_name"])
         )
         ds = ds_result.scalar_one_or_none()
         if ds:
             datasource_id = str(ds.id)
+            ds_name = ds.name
 
     exec_result = run_skill_script(
         skill_path=folder,
@@ -592,6 +745,7 @@ async def run_skill_nl(
         parameters=parameters,
         input_data=None,
         datasource_id=datasource_id,
+        datasource_name=ds_name,
         table_name=inferred_table,
     )
 
@@ -599,6 +753,262 @@ async def run_skill_nl(
     await db.flush()
 
     return SkillRunResponse(**exec_result)
+
+
+@router.post("/{skill_id}/run-nl-stream")
+async def run_skill_nl_stream(
+    skill_id: UUID,
+    request: SkillRunNLRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _get_skill_folder(skill_id)
+
+    skill_md = read_skill_md(folder) or ""
+    script_content = read_skill_script(folder, request.script_name)
+    if script_content is None:
+        raise HTTPException(status_code=400, detail=f"脚本 {request.script_name} 不存在")
+
+    from app.services.llm import llm_manager
+    await llm_manager.initialize()
+
+    import asyncio
+    import json as json_mod
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个技能参数解析器。根据技能的 SKILL.md 描述、脚本代码和用户的自然语言调用指令，"
+                "推断出执行该技能所需的参数。\n"
+                "只输出一个 JSON 对象，包含推断出的 parameters 字段，不要输出任何解释。\n"
+                "如果用户提到了数据源或表名，也一并输出 datasource_name 和 table_name 字段。\n"
+                "输出格式示例：\n"
+                '{"parameters": {"column": "年代", "limit": 100}, "table_name": "文物数据"}'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"技能名称：{skill.display_name or skill.name}\n"
+                f"技能描述：{skill.description or ''}\n\n"
+                f"SKILL.md 内容：\n{skill_md[:2000]}\n\n"
+                f"脚本代码（{request.script_name}）：\n{script_content[:3000]}\n\n"
+                f"用户的自然语言调用指令：{request.query}\n\n"
+                f"请推断执行参数，只输出 JSON。"
+            ),
+        },
+    ]
+
+    async def generate():
+        full_content = ""
+        try:
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2):
+                event = {"type": chunk["type"], "content": chunk["content"]}
+                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if chunk["type"] == "content":
+                    full_content += chunk["content"]
+
+            nl_result = full_content.strip()
+            if nl_result.startswith("```"):
+                lines = nl_result.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                nl_result = "\n".join(lines).strip()
+
+            try:
+                parsed = json_mod.loads(nl_result)
+            except json_mod.JSONDecodeError:
+                logger.warning(f"LLM 返回非 JSON: {nl_result}")
+                parsed = {"parameters": {}}
+
+            parameters = parsed.get("parameters", {})
+            for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
+                parameters.pop(key, None)
+
+            inferred_table = parsed.get("table_name") or request.table_name
+            datasource_id = request.datasource_id
+            ds_name = None
+
+            if datasource_id:
+                from app.models.datasource import DataSource as DSModel
+                ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(datasource_id)))
+                ds_obj = ds_obj_result.scalar_one_or_none()
+                if ds_obj:
+                    ds_name = ds_obj.name
+
+            if not datasource_id and parsed.get("datasource_name"):
+                from sqlalchemy import select as sa_select
+                from app.models.datasource import DataSource
+                ds_result = await db.execute(
+                    sa_select(DataSource).where(DataSource.name == parsed["datasource_name"])
+                )
+                ds = ds_result.scalar_one_or_none()
+                if ds:
+                    datasource_id = str(ds.id)
+                    ds_name = ds.name
+
+            yield f"data: {json_mod.dumps({'type': 'inferred_params', 'parameters': parameters, 'table_name': inferred_table}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'executing', 'message': '参数推断完成，正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
+
+            exec_result = run_skill_script(
+                skill_path=folder,
+                script_name=request.script_name,
+                parameters=parameters,
+                input_data=None,
+                datasource_id=datasource_id,
+                datasource_name=ds_name,
+                table_name=inferred_table,
+            )
+
+            skill.usage_count = (skill.usage_count or 0) + 1
+            await db.flush()
+
+            yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"流式NL执行技能失败: {e}")
+            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/{skill_id}/debug-chat")
+async def debug_skill_chat(
+    skill_id: UUID,
+    request: SkillDebugChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result_row = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result_row.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _get_skill_folder(skill_id)
+
+    skill_md = read_skill_md(folder) or ""
+    script_content = read_skill_script(folder, request.script_name) or ""
+
+    from app.services.llm import llm_manager
+    await llm_manager.initialize()
+
+    import asyncio
+    import json as json_mod
+
+    ds_name = None
+    if request.datasource_id:
+        from app.models.datasource import DataSource as DSModel
+        ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(request.datasource_id)))
+        ds_obj = ds_obj_result.scalar_one_or_none()
+        if ds_obj:
+            ds_name = ds_obj.name
+
+    system_prompt = (
+        "你是 DataCrab 平台的技能调试助手。你正在帮助用户调试和优化一个技能（Skill）。\n\n"
+        "## 你的能力\n"
+        "1. **执行技能**：当用户想要运行技能时，输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 来触发执行\n"
+        "2. **修改脚本**：当用户想要修改技能脚本时，输出 JSON `{\"action\": \"modify_script\", \"script_name\": \"main.py\", \"content\": \"...完整脚本内容...\"}` 来更新脚本\n"
+        "3. **分析问题**：分析执行结果中的错误，给出建议\n"
+        "4. **解释代码**：解释技能脚本的功能和逻辑\n\n"
+        "## 当前技能信息\n"
+        f"- 技能名称：{skill.display_name or skill.name}\n"
+        f"- 技能描述：{skill.description or '无'}\n"
+        f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
+        f"- 表名：{request.table_name or '未选择'}\n\n"
+        f"## SKILL.md\n```\n{skill_md[:2000]}\n```\n\n"
+        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:4000]}\n```\n\n"
+        "## 重要规则\n"
+        "- 当用户说\"运行\"、\"执行\"、\"试试\"、\"调试\"等时，输出 run action\n"
+        "- run action 的 parameters 会传给技能脚本，对于 argparse 脚本只需传业务参数（如 datasource、tables），不需要传 datasource_id\n"
+        "- 当用户要求修改代码时，输出 modify_script action，提供完整的脚本内容\n"
+        "- 执行结果会在下一轮对话中提供，你不需要自己模拟结果\n"
+        "- 先用自然语言回复用户，然后在最后单独一行输出 action JSON\n"
+        "- 如果只是回答问题或分析，不需要输出任何 action\n"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in request.history[-20:]:
+        messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+    messages.append({"role": "user", "content": request.message})
+
+    async def generate():
+        full_content = ""
+        try:
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+                event = {"type": chunk["type"], "content": chunk["content"]}
+                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if chunk["type"] == "content":
+                    full_content += chunk["content"]
+
+            action = None
+            lines = full_content.strip().split("\n")
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("{") and '"action"' in stripped:
+                    try:
+                        action = json_mod.loads(stripped)
+                    except json_mod.JSONDecodeError:
+                        pass
+                    break
+
+            if action and action.get("action") == "run":
+                parameters = action.get("parameters", {})
+                for key in ["datasource_id", "datasource_name", "table_name", "table_names", "table"]:
+                    parameters.pop(key, None)
+
+                yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
+
+                exec_result = run_skill_script(
+                    skill_path=folder,
+                    script_name=request.script_name,
+                    parameters=parameters,
+                    input_data=None,
+                    datasource_id=request.datasource_id,
+                    datasource_name=ds_name,
+                    table_name=request.table_name,
+                )
+
+                exec_result = _sanitize_nans(exec_result)
+                yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+
+                skill.usage_count = (skill.usage_count or 0) + 1
+                await db.flush()
+
+            elif action and action.get("action") == "modify_script":
+                script_name = action.get("script_name", request.script_name)
+                new_content = action.get("content", "")
+                if new_content:
+                    write_skill_script(folder, script_name, new_content)
+                    await _sync_scripts_to_operators(skill, folder, db, current_user)
+                    yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
+
+            yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"调试对话失败: {e}")
+            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -646,8 +1056,82 @@ async def generate_skill_endpoint(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
+    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"Skill Creator 已生成技能: {name} ({skill.id})")
     return _build_detail(skill)
+
+
+@router.post("/generate-stream")
+async def generate_skill_stream_endpoint(
+    request: SkillGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Skill Creator 流式生成：SSE 实时推送生成过程"""
+    from fastapi.responses import StreamingResponse
+    from app.services.skill_creator import generate_skill_stream, create_skill_on_disk
+    import json
+
+    async def event_stream():
+        parsed_data = None
+        async for event in generate_skill_stream(request.prompt):
+            if event["type"] == "done":
+                parsed_data = event["data"]
+                yield f"data: {json.dumps({'type': 'done', 'message': '解析完成，正在创建技能...'}, ensure_ascii=False)}\n\n"
+                break
+            elif event["type"] == "error":
+                yield f"data: {json.dumps({'type': 'error', 'message': event['message']}, ensure_ascii=False)}\n\n"
+                return
+            else:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        if not parsed_data:
+            yield f"data: {json.dumps({'type': 'error', 'message': '生成失败'}, ensure_ascii=False)}\n\n"
+            return
+
+        skill_md = parsed_data.get("skill_md", "")
+        scripts = parsed_data.get("scripts", {})
+        front_matter = parsed_data.get("front_matter", {})
+
+        if not skill_md:
+            yield f"data: {json.dumps({'type': 'error', 'message': '未生成有效的 SKILL.md'}, ensure_ascii=False)}\n\n"
+            return
+
+        skill_id = uuid4()
+        folder = _get_skill_folder(skill_id)
+
+        try:
+            create_skill_on_disk(folder, skill_md, scripts)
+        except Exception as e:
+            if folder.exists():
+                shutil.rmtree(folder)
+            yield f"data: {json.dumps({'type': 'error', 'message': f'文件夹创建失败: {e}'}, ensure_ascii=False)}\n\n"
+            return
+
+        name = front_matter.get("name", "generated-skill")
+        skill = Skill(
+            id=skill_id,
+            name=name,
+            display_name=front_matter.get("name", name),
+            description=front_matter.get("description", ""),
+            skill_path=str(folder),
+            tags=front_matter.get("tags", ["ai_generated"]),
+            category=front_matter.get("category", "ai_generated"),
+            visibility="private",
+            author=current_user.id,
+        )
+        db.add(skill)
+        await db.flush()
+        await db.refresh(skill)
+        await _sync_scripts_to_operators(skill, folder, db, current_user)
+        logger.info(f"Skill Creator 流式生成技能: {name} ({skill.id})")
+
+        from app.schemas.skill import SkillDetailResponse
+        detail = _build_detail(skill)
+        resp_data = SkillDetailResponse.model_validate(detail).model_dump(mode="json")
+        yield f"data: {json.dumps({'type': 'created', 'skill': resp_data}, ensure_ascii=False, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/{skill_id}/clone", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -866,58 +1350,55 @@ def _extract_argparse_params(script_content: str, tree) -> list[SkillParamDef]:
     add_arg_pattern = re.compile(r'add_argument\(["\'](.+?)["\']')
 
     for node in _ast.walk(tree):
-        if not isinstance(node, _ast.FunctionDef):
+        if not isinstance(node, _ast.Call):
             continue
-        for stmt in _ast.walk(node):
-            if not isinstance(stmt, _ast.Call):
-                continue
-            if not isinstance(stmt.func, _ast.Attribute):
-                continue
-            if stmt.func.attr != "add_argument":
-                continue
-            if not stmt.args:
-                continue
-            arg_name = ""
-            if isinstance(stmt.args[0], _ast.Constant):
-                arg_name = stmt.args[0].value
-            if not arg_name or not arg_name.startswith("--"):
-                continue
+        if not isinstance(node.func, _ast.Attribute):
+            continue
+        if node.func.attr != "add_argument":
+            continue
+        if not node.args:
+            continue
+        arg_name = ""
+        if isinstance(node.args[0], _ast.Constant):
+            arg_name = node.args[0].value
+        if not arg_name or not arg_name.startswith("--"):
+            continue
 
-            clean_name = arg_name.lstrip("-").replace("-", "_")
-            kw_dict = {}
-            for kw in stmt.keywords:
-                if isinstance(kw.arg, str) and isinstance(kw.value, _ast.Constant):
-                    kw_dict[kw.arg] = kw.value.value
-                elif isinstance(kw.arg, str) and isinstance(kw.value, _ast.Name):
-                    kw_dict[kw.arg] = kw.value.id
+        clean_name = arg_name.lstrip("-").replace("-", "_")
+        kw_dict = {}
+        for kw in node.keywords:
+            if isinstance(kw.arg, str) and isinstance(kw.value, _ast.Constant):
+                kw_dict[kw.arg] = kw.value.value
+            elif isinstance(kw.arg, str) and isinstance(kw.value, _ast.Name):
+                kw_dict[kw.arg] = kw.value.id
 
-            is_list = kw_dict.get("nargs") in ("+", "*")
-            is_datasource = "datasource" in clean_name and "id" not in clean_name
-            is_table = "table" in clean_name and "id" not in clean_name
+        is_list = kw_dict.get("nargs") in ("+", "*")
+        is_datasource = "datasource" in clean_name and "id" not in clean_name
+        is_table = "table" in clean_name and "id" not in clean_name
 
-            ptype = "str"
-            if kw_dict.get("type") == "int" or kw_dict.get("type") == int:
-                ptype = "int"
-            elif kw_dict.get("type") == "float" or kw_dict.get("type") == float:
-                ptype = "float"
-            elif is_list:
-                ptype = "list"
+        ptype = "str"
+        if kw_dict.get("type") == "int" or kw_dict.get("type") == int:
+            ptype = "int"
+        elif kw_dict.get("type") == "float" or kw_dict.get("type") == float:
+            ptype = "float"
+        elif is_list:
+            ptype = "list"
 
-            help_text = kw_dict.get("help", "")
-            if isinstance(help_text, str):
-                help_text = help_text.strip()
+        help_text = kw_dict.get("help", "")
+        if isinstance(help_text, str):
+            help_text = help_text.strip()
 
-            params.append(SkillParamDef(
-                name=clean_name,
-                display_name=help_text or clean_name,
-                type=ptype,
-                required=kw_dict.get("required", False) is True,
-                default=kw_dict.get("default"),
-                description=help_text,
-                is_datasource=is_datasource,
-                is_table=is_table,
-                is_list=is_list,
-            ))
+        params.append(SkillParamDef(
+            name=clean_name,
+            display_name=help_text or clean_name,
+            type=ptype,
+            required=kw_dict.get("required", False) is True,
+            default=kw_dict.get("default"),
+            description=help_text,
+            is_datasource=is_datasource,
+            is_table=is_table,
+            is_list=is_list,
+        ))
     return params
 
 

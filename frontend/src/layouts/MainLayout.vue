@@ -38,8 +38,8 @@
           <el-icon><MagicStick /></el-icon>
           <template #title>技能</template>
         </el-menu-item>
-        <el-menu-item index="/code">
-          <el-icon><Cpu /></el-icon>
+        <el-menu-item index="/pipeline">
+          <el-icon><Share /></el-icon>
           <template #title>流程</template>
         </el-menu-item>
         <el-menu-item index="/schedule">
@@ -111,10 +111,15 @@ const pageTitle = computed(() => {
     '/datasource': '数据源管理',
     '/skill': '技能',
     '/operator': '算子管理',
-    '/code': '流程管理',
+    '/pipeline': '流程管理',
     '/schedule': '调度管理',
     '/filelink': '文件链接',
     '/config': '系统配置',
+  }
+  if (route.path === '/config') {
+    const tab = route.query.tab as string
+    if (tab === 'model') return '系统配置 - 模型设置'
+    if (tab === 'agent') return '系统配置 - 智能体设置'
   }
   return titles[route.path] || 'DataCrab'
 })

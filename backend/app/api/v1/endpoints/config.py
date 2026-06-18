@@ -35,6 +35,11 @@ class LLMConfigResponse(BaseModel):
     is_configured: bool
 
 
+class AgentConfigRequest(BaseModel):
+    """Agent配置请求"""
+    content: str
+
+
 class ConfigUpdateResult(BaseModel):
     """配置更新结果"""
     success: bool
@@ -237,6 +242,40 @@ async def test_llm_connection(
             "success": False,
             "message": f"连接失败: {str(e)}",
         }
+
+
+@router.get("/agent/personal-md")
+async def get_personal_md():
+    """获取personal.md内容"""
+    try:
+        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "personal.md")
+        if not os.path.exists(md_path):
+            return {"content": "", "exists": False}
+        with open(md_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content, "exists": True}
+    except Exception as e:
+        logger.error(f"读取personal.md失败: {e}")
+        raise HTTPException(status_code=500, detail=f"读取personal.md失败: {str(e)}")
+
+
+@router.post("/agent/personal-md", response_model=ConfigUpdateResult)
+async def update_personal_md(
+    req: AgentConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """更新personal.md内容"""
+    try:
+        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "personal.md")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(req.content)
+        from app.services.agent_config import agent_config
+        agent_config._load_from_md()
+        logger.info(f"personal.md已更新 by user {current_user.username}")
+        return ConfigUpdateResult(success=True, message="智能体配置已保存")
+    except Exception as e:
+        logger.error(f"更新personal.md失败: {e}")
+        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
 
 
 @router.get("/models/list")

@@ -1,0 +1,184 @@
+# 代码格式规范 Gate 规则
+# 来源: openJiuwen-JavaScript-coding-style-guide.md 代码格式 (2.1-2.11)
+
+rules:
+  - id: format-no-tabs
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "JS-coding-style#2.1"
+    message: "禁止使用 Tab 字符缩进,须使用 2 个空格"
+    pattern: "\\t"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-line-width-limit
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.2"
+    message: "行宽不超过 120 个字符"
+    pattern: "^.{121,}"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-braces-required
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "JS-coding-style#2.4"
+    message: "条件语句和循环语句必须使用大括号包裹, 即使只有一条语句"
+    pattern: "(?:if|while)\\s*\\(.*\\)\\s*(?:return|throw|break|continue|console)\\b"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-no-single-line-if
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "JS-coding-style#2.5"
+    message: "条件语句和循环语句不允许写在同一行"
+    pattern: "(?:if|while|for)\\s*\\([^)]*\\)\\s*\\{[^}{}\\n]*\\}\\s*else\\s*\\{[^}{}\\n]*\\}"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-no-multi-var-decl
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "JS-coding-style#2.8"
+    message: "多个变量定义不允许写在一行 (禁止 let a=1, b=2)"
+    pattern: "\\b(?:let|const|var)\\s+\\w+\\s*=\\s*[^,]+,\\s*\\w+\\s*="
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-semicolon-required
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "JS-coding-style#2.10"
+    message: "表达式语句须以分号结尾 (Prettier/ESLint 更准确)"
+    pattern: "(?!)\\b"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: format-prefer-single-quote
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.11"
+    message: "优先使用单引号包裹字符串 (模板字符串除外)"
+    pattern: "(?:^|[^\\\\])\"[^'{]*\""
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+      - "**/package.json"
+
+  # 2.3 大括号使用约定 — Partial (AST better)
+  - id: format-brace-style
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.3"
+    message: "大括号左括号前不换行, 括号后换行 (部分自动化: AST检测更准确)"
+    pattern: "(?:\\)\\s*\\n\\s*\\{|\\}\\s*\\n\\s*else)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  # 2.6 switch case 缩进 — 不可 regex 精确检测
+  - id: format-switch-case-indent
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.6"
+    message: "switch 语句的 case 和 default 须缩进一层 (不可全自动: 需AST)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  # 2.7 运算符放行末 — 不可 regex 精确检测
+  - id: format-operator-at-line-end
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.7"
+    message: "表达式换行时运算符放行末 (不可全自动: 需AST)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  # 2.9 空格规则 — editorconfig 更佳
+  - id: format-spacing-rules
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "JS-coding-style#2.9"
+    message: "空格应突出关键字和重要信息 (editorconfig/lint更佳, 含11条细则)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"

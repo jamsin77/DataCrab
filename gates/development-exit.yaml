@@ -1,0 +1,23 @@
+# Development Exit Gate
+# Validates TDD cycle outputs
+
+rules:
+  - id: all-tasks-committed
+    type: regex-check
+    blocking: true
+    message: "All tasks must have committed code with task ID in commit message"
+    file: "{task_split}"
+    pattern: "T-\\d+"
+
+  - id: tests-pass
+    type: exec
+    blocking: true
+    message: "All tests must pass"
+    command: "cd {project_root} && npx vitest run --reporter=verbose 2>&1 | grep -q 'Tests.*passed'"
+
+  - id: no-todo-comments
+    type: regex-check
+    blocking: false
+    message: "Implementation should not contain TODO/FIXME placeholders"
+    file: "{arch_doc}"
+    pattern: "(?!TODO|FIXME)"

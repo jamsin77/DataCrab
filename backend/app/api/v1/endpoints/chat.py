@@ -36,6 +36,7 @@ from app.services.nl_service import NLService
 from app.services.skill_library import skill_library
 from app.services.connectors import get_connector
 from app.services.agent import agent_service, AgentContext
+from app.services.agent_config import agent_config
 
 router = APIRouter()
 
@@ -50,6 +51,12 @@ try:
         ASSISTANT_PERSONA = _f.read().strip()
 except FileNotFoundError:
         ASSISTANT_PERSONA = ""
+
+
+@router.get("/agent/config")
+async def get_agent_config():
+    """获取Agent配置信息"""
+    return agent_config.to_dict()
 
 
 def _build_system_prompt(datasource_context: str) -> str:

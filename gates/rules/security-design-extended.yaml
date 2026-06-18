@@ -1,0 +1,491 @@
+# 安全设计规范 扩展 Gate 规则
+# 来源: openJiuwen-security-design-guide.md (补充已有 security-design.yaml 未覆盖的规则)
+
+rules:
+  # === 身份认证 & 鉴权 ===
+
+  - id: sec-api-must-have-auth
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#1-1"
+    message: "所有能对系统进行管理的接口应具备接入认证机制并缺省启用 (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-auth-must-verify-session
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "安全设计规范#1-2"
+    message: "每个需授权的请求必须核实会话标识是否合法 (禁止跳过认证直接操作)"
+    pattern: "(?: unauthorized|Unauthenticated|401).*(?:return|next|continue)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-no-client-side-auth
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "安全设计规范#1-3"
+    message: "认证处理必须在服务端进行,禁止仅客户端认证"
+    pattern: "(?:isAuthenticated|checkAuth|verifyToken)\\s*(?::\\s*=>|\\{)\\s*(?:true|1)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-close-unnecessary-ports
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#1-4"
+    message: "只保留运维必需的对外通信连接, 关闭不需要的端口 (运维级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  # === 安全传输 ===
+
+  - id: sec-sensitive-data-must-encrypt-transit
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#2-1"
+    message: "敏感数据跨网络传输必须使用安全协议或加密"
+    pattern: "(?:password|secret|token|creditCard|ssn)\\s*[:=]\\s*['\"]https?://"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  # === 加密算法 & 密钥管理 ===
+
+  - id: sec-use-standard-crypto
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#3-1"
+    message: "禁止使用私有/非标准密码算法,应使用标准库 (crypto, openssl)"
+    pattern: "(?:customCipher|myEncrypt|customHash|proprietaryCrypto)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-no-weak-hash-algo
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "安全设计规范#3-2"
+    message: "禁止使用不安全的哈希/加密算法 (DES/3DES/RC4/RC2/MD2/MD4/Blowfish)"
+    pattern: "\\b(?:createCipher|createCipheriv|createDecipher|createDecipheriv)\\s*\\(\\s*['\"](?:des|rc4|rc2|blowfish|aes-128-ecb)['\"]"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-use-crypto-random
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#3-4/#3-5"
+    message: "密码学用途的随机数必须使用密码学安全随机数 (crypto.randomBytes), 禁止使用 Math.random()"
+    pattern: "Math\\.random\\(\\)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+      - "**/node_modules/**"
+
+  - id: sec-sign-then-encrypt
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#3-6"
+    message: "同时需要加密和签名时应先签名后加密 (不可自动化: 需语义理解)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-support-key-rotation
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#3-7"
+    message: "功能设计中应支持工作密钥更新方法 (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-key-file-permission
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#3-8"
+    message: "密钥文件保存时须限定权限 (如 600/400) (文件系统级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-zeroize-memory-key
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#3-9"
+    message: "内存中的密钥释放前应清零 (运行时级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  # === 敏感数据保护 ===
+
+  - id: sec-no-plaintext-password-storage
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "安全设计规范#4-1/#4-2"
+    message: "口令等认证凭据禁止明文存储,必须使用不可逆算法 (PBKDF2/bcrypt)"
+    pattern: "(?:password|passwd|secret)\\s*(?:Storage|Store|save|persist)\\s*(?::|=>|\\{)\\s*(?!.*(?:hash|encrypt|bcrypt|pbkdf2|scrypt))"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  # 4-3 与 2-1 同 (敏感数据加密传输)
+  - id: sec-sensitive-data-encrypt-at-rest
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#4-3"
+    message: "敏感数据加密传输要求同 #2-1"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-sensitive-file-permission
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#4-4"
+    message: "敏感数据文件权限设置应只允许属主或必要用户访问 (文件系统级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-no-sensitive-in-logs
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "安全设计规范#4-5"
+    message: "日志/调试/错误信息中应过滤认证凭据等敏感数据"
+    pattern: "console\\.(?:log|debug|info|warn|error)\\s*\\(.*(?:password|secret|token|apiKey|privateKey)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  # === 系统管理安全 ===
+
+  - id: sec-password-anti-brute-force
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#5-1"
+    message: "应实现口令防暴力破解机制 (锁定账号/IP/登录延迟/验证码) (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-password-not-plaintext-display
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#5-2"
+    message: "图形界面缺省不明文显示用户键入的口令 (UI级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.tsx"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-password-no-copy-out
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#5-3"
+    message: "口令输入框不能支持口令拷出 (UI级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-default-least-privilege
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#5-5"
+    message: "新建账号默认不授予任何权限或仅最小权限 (只读), 禁止默认授予admin/root权限"
+    pattern: "(?:role|permission|grant|privilege)\\s*[:=]\\s*['\"](?:admin|root|superuser|super)['\"]"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+      - "**/*.yaml"
+      - "**/*.json"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+      - "**/package.json"
+      - "**/package-lock.json"
+
+  # === 隐私保护 ===
+
+  - id: sec-consent-before-data-collection
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "安全设计规范#6-1"
+    message: "收集或使用个人数据前应明确提示用户并获得同意 (部分自动化)"
+    pattern: "(?:collect|gather|harvest)\\s*(?:personalData|userData|pii)\\s*(?::|=>|\\{)\\s*(?!.*(?:consent|agree|prompt))"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-personal-data-security-protection
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "安全设计规范#6-2"
+    message: "采集/处理/存储个人数据应根据安全风险提供保护机制 (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-privacy-feature-documentation
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#6-3"
+    message: "应在说明文档中对涉及用户隐私的功能进行描述 (文档级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: sec-personal-data-anonymization
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#6-4"
+    message: "应支持在呈现界面上进行过滤或匿名化或假名化 (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  - id: sec-no-precise-location-logging
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#6-5"
+    message: "禁止日志中记录用户精确位置信息 (经纬度/GPS)"
+    pattern: "console\\.(?:log|debug|info)\\s*\\(.*(?:latitude|longitude|gps|geolocation|coords)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-personal-data-minimization
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "安全设计规范#6-6"
+    message: "日志中记录个人信息应遵循最小化原则, 避免打印完整个人数据"
+    pattern: "console\\.(?:log|debug|info)\\s*\\(.*(?:email|phone|idCard|passport|ssn|creditCard)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/*Test.java"
+
+  - id: sec-data-subject-rights
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#6-7"
+    message: "涉及个人数据处理的场景应提供机制确保数据主体可查询/更新/删除其数据 (架构级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.java"
+    excludes: []
+
+  # === 安全资料 ===
+
+  - id: sec-api-must-be-documented
+    type: section-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#7-1"
+    message: "新增跨网络通信的公开接口必须在详细设计文档中说明"
+    file: "{architecture}"
+    pattern: "##.*(?:接口|API|Interface)"
+    match_mode: present
+    includes:
+      - "docs/architecture.md"
+    excludes: []
+
+  - id: sec-port-must-be-documented
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "安全设计规范#7-2"
+    message: "通信端口需要在详细设计文档中说明 (文档级: 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "docs/architecture.md"
+    excludes: []

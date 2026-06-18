@@ -1,0 +1,405 @@
+# 文档结构规范 Gate 规则
+# 来源: openJiuwen-style-guide-document-structure.md
+
+rules:
+  # === 标题规则 ===
+
+  - id: doc-title-must-have-keyword
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#标题-1"
+    message: "标题应概括反映章节中心内容,避免使用'概述''简介'等不带核心关键词的标题"
+    pattern: "^#{1,3}\\s+(?:概述|简介|Overview|Introduction)\\s*$"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-consistent-style
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-2"
+    message: "相同级别、相同类型的标题结构保持一致 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-abbreviation-no-full-form
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-3"
+    message: "标题中缩略语不必给出全称, 首次出现时在正文给出全称"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-no-special-chars
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#标题-4"
+    message: "标题中不能出现特殊字符 (+, -, *, ?, |, ^, ~, \", ', \\, /)"
+    pattern: "^#{1,3}\\s+.*[+*?|^~]"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-no-heading-punctuation
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#标题-5"
+    message: "标题结尾不允许使用句号、问号、冒号等标点符号"
+    pattern: "^#{1,4}\\s+.*[。？！：]$"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-no-subscript
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-6"
+    message: "标题中不能带上下标 (Markdown中少见, 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-parenthesis-for-supplement
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-7"
+    message: "标题补充说明文字统一使用圆括号标识, 多维度用中文逗号分隔"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-length-limit
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-8"
+    message: "中文标题长度不超过15个汉字, 英文不超过25个字符"
+    pattern: "^#{1,3}\\s+.{25,}"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-noun-phrase
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-9"
+    message: "概念/描述/功能介绍类标题采用名词或名词性词组 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-title-verb-object
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题-10"
+    message: "任务类标题建议采用动宾结构 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  # === 标题样式 ===
+
+  - id: doc-no-h4
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题样式-1"
+    message: "同一页面内标题层级最大为三级，不允许出现四级标题"
+    pattern: "^####"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-heading-order
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#标题样式-2"
+    message: "标题级别必须遵守一级 > 二级 > 三级的顺序, 不能跳级"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-heading-no-mix-levels
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#标题样式-3"
+    message: "不能混用标题级别 (如一级标题下不能直接使用三级标题, 需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  # === 段落 ===
+
+  - id: doc-paragraph-one-topic
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-1"
+    message: "一个段落只能有一个主题句或中心句, 置于段首 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-clear-logic
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-2"
+    message: "段落之间要有清晰的逻辑结构 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-no-exclamation
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#段落-3"
+    message: "段落句子使用陈述、肯定或祈使语气, 避免感叹语气"
+    pattern: "[^#！].*[！]{2,}"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-length-limit
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-4"
+    message: "一个段落长度≤7行, 最佳≤4行 (建议)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-prefer-tables-figures
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-5"
+    message: "字不如表、表不如图, 推荐文字+图+表结合 (建议)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-no-3-text-only-blocks
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-6"
+    message: "不出现连续3个以上的纯文字段落 (建议)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-paragraph-no-bold-body
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#段落-7"
+    message: "段落内容使用正文样式,不要加粗 (建议)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  # === 句子 ===
+
+  - id: doc-sentence-one-topic
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#句子-1"
+    message: "每个句子只有一个主题 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-sentence-no-double-negative
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#句子-2"
+    message: "使用直接陈述,避免双重否定和反问句"
+    pattern: "(?:不是不|不能不|不会不|并非不|没有不|不得不|不能没有)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-sentence-no-noun-chain
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#句子-3"
+    message: "避免'名词+名词+名词'修饰方式 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-sentence-clear-subject
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#句子-4"
+    message: "句子的主语应该明确, 同一句内避免主语变化 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-sentence-simple-structure
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#句子-5"
+    message: "使用主谓/主谓宾结构简单句, 复合句改为列表或拆分 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-sentence-no-long-run-on
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "文档结构规范#句子-6"
+    message: "避免长连句, 同一句中逗号数不能超过5个"
+    pattern: "[^\\n]*[，,][^\\n]*[，,][^\\n]*[，,][^\\n]*[，,][^\\n]*[，,][^\\n]*[，,]"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  # === 目录 ===
+
+  - id: doc-catalog-toc-maintained
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "文档结构规范#目录-1"
+    message: "手册级目录: 新增/修改/删除页面时需同步更新目录 (需人工确认)"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-page-toc-auto
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "文档结构规范#目录-2"
+    message: "页面内目录由页面内标题自动生成"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  # === 文件夹及文件命名 ===
+
+  - id: doc-folder-lowercase-english
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: full-only
+    source: "文档结构规范#文件夹-1"
+    message: "文件夹名使用主题英文名称, 全小写"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []
+
+  - id: doc-md-file-naming
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: full-only
+    source: "文档结构规范#文件夹-2"
+    message: "Markdown文件名由字母/数字/中划线组成, .md后缀, 语义化, 不超过4个单词"
+    pattern: "(?!)"
+    match_mode: absent
+    includes:
+      - "**/*.md"
+    excludes: []

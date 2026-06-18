@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, code, schedule, filelink, config
+from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline
 
 api_router = APIRouter()
 
@@ -25,7 +25,7 @@ api_router.include_router(skill.router, prefix="/skills", tags=["技能"])
 api_router.include_router(operator.router, prefix="/operators", tags=["算子"])
 
 # 流程路由
-api_router.include_router(code.router, prefix="/codes", tags=["流程"])
+api_router.include_router(pipeline.router, prefix="/pipelines", tags=["流程"])
 
 # 调度路由
 api_router.include_router(schedule.router, prefix="/schedules", tags=["调度"])

@@ -1,0 +1,89 @@
+# 贡献合规规范 Gate 规则
+# 来源: openJiuwen CONTRIBUTING_zh.md + 开源合规类问题管理.md
+
+rules:
+  - id: contrib-no-sensitive-in-commit
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "CONTRIBUTING#版权规范"
+    message: "提交代码不得包含硬编码的敏感凭据 (密码/密钥/token)"
+    pattern: "(?:password|passwd|secret|private_key|api_key|apiKey|secretKey|accessToken)\\s*[:=]\\s*['\"][^'\"]{8,}['\"]"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+      - "**/*.yaml"
+      - "**/*.json"
+      - "**/*.env"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/package.json"
+      - "**/package-lock.json"
+
+  - id: contrib-no-ip-address
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "content-elements#IP及MAC地址"
+    message: "代码中不应包含公网IP地址, 示例应使用私网IP (10.x/172.16-31.x/192.168.x)"
+    pattern: "(?:^|[^\\d.])(?:(?:2[0-5][0-5]|[1]?[0-9][0-9]?)\\.){3}(?:2[0-5][0-5]|[1]?[0-9][0-9]?)(?![\\d.])"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.yaml"
+      - "**/*.md"
+    excludes:
+      - "**/*.test.*"
+      - "**/*.d.ts"
+      - "**/package-lock.json"
+
+  - id: contrib-ts-strict-mode
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: full-only
+    source: "CONTRIBUTING#代码风格"
+    message: "TypeScript 项目必须启用 strict 模式"
+    file: "tsconfig.json"
+    pattern: "\"strict\"\\s*:\\s*true"
+    match_mode: present
+    includes:
+      - "tsconfig.json"
+    excludes: []
+
+  - id: contrib-no-any-type
+    type: regex-check
+    blocking: false
+    severity: warning
+    scope: incremental
+    source: "CONTRIBUTING#代码风格"
+    message: "代码中应避免使用 any 类型, 使用具体类型替代"
+    pattern: ":\\s*any(?:\\[|\\||>|\\s|;|,|\\))"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+
+  - id: contrib-no-todo-without-issue
+    type: regex-check
+    blocking: false
+    severity: hint
+    scope: incremental
+    source: "CONTRIBUTING#代码风格"
+    message: "TODO 注释应关联 Issue 编号 (TODO(#NNN) 而非裸 TODO)"
+    pattern: "TODO\\s*:(?!.*#\\d+)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"

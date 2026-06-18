@@ -1,0 +1,24 @@
+# Architecture Roundtable Entry Gate
+# Validates input artifacts before arch-roundtable starts
+
+rules:
+  - id: prd-exists
+    type: regex-check
+    blocking: true
+    message: "PRD must exist and contain User Stories section"
+    file: "{prd}"
+    pattern: "## User Stories"
+
+  - id: features-exists
+    type: regex-check
+    blocking: true
+    message: "features.md must exist and contain acceptance_criteria"
+    file: "{features}"
+    pattern: "acceptance_criteria"
+
+  - id: nfr-exists
+    type: regex-check
+    blocking: true
+    message: "nfr.md must exist and contain quantifiable metrics"
+    file: "{nfr}"
+    pattern: "\\d+\\s*(ms|s|MB|GB|%|req/s|RPS|QPS)"

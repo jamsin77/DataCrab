@@ -196,6 +196,15 @@ class CSVConnector(BaseConnector):
         df = pd.read_csv(file_path)
         return {"row_count": len(df), "column_count": len(df.columns)}
 
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        file_path = self.config.get("file_path", "")
+        try:
+            df_new = pd.DataFrame(records)
+            df_new.to_csv(file_path, index=False)
+            return {"success": True, "rows_written": len(df_new)}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     async def close(self) -> None:
         pass
 
@@ -243,6 +252,31 @@ class ExcelConnector(BaseConnector):
         except Exception:
             df = pd.read_excel(file_path, sheet_name=0)
         return {"row_count": len(df), "column_count": len(df.columns)}
+
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        file_path = self.config.get("file_path", "")
+        sheet_name = table if table else self.config.get("sheet_name", 0)
+        try:
+            import os
+            if not os.path.exists(file_path):
+                return {"success": False, "message": f"文件不存在: {file_path}"}
+            df_new = pd.DataFrame(records)
+            xl = pd.ExcelFile(file_path)
+            sheets_data = {}
+            target_sheet = sheet_name
+            if isinstance(target_sheet, int) or target_sheet not in xl.sheet_names:
+                target_sheet = xl.sheet_names[target_sheet if isinstance(target_sheet, int) else 0]
+            for s in xl.sheet_names:
+                if s == target_sheet:
+                    sheets_data[s] = df_new
+                else:
+                    sheets_data[s] = pd.read_excel(xl, sheet_name=s)
+            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+                for s, df in sheets_data.items():
+                    df.to_excel(writer, sheet_name=s, index=False)
+            return {"success": True, "rows_written": len(df_new)}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
     async def close(self) -> None:
         pass
@@ -524,6 +558,124 @@ class HadoopHDFSConnector(BaseConnector):
             self._client = None
 
 
+class ChromaConnector(BaseConnector):
+    """ChromaDB 向量库连接器"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self._client = None
+        self._persist_dir = config.get("persist_directory", "d:/chroma-data")
+
+    def _get_client(self):
+        if self._client is None:
+            import chromadb
+            self._client = chromadb.PersistentClient(path=self._persist_dir)
+        return self._client
+
+    async def connect(self) -> bool:
+        try:
+            client = self._get_client()
+            client.heartbeat()
+            return True
+        except Exception as e:
+            logger.error(f"ChromaDB连接失败: {e}")
+            return False
+
+    async def test_connection(self) -> bool:
+        try:
+            client = self._get_client()
+            client.heartbeat()
+            return True
+        except Exception as e:
+            logger.error(f"ChromaDB测试连接失败: {e}")
+            return False
+
+    async def get_schema(self) -> List[Dict[str, Any]]:
+        client = self._get_client()
+        collections = client.list_collections()
+        return [
+            {"table_name": c.name, "table_type": "chroma_collection", "id": str(c.id), "count": c.count()}
+            for c in collections
+        ]
+
+    async def get_table_data(
+        self, table: str, page: int = 1, page_size: int = 20,
+        filters: Optional[Dict] = None, sort: Optional[Dict] = None,
+    ) -> pd.DataFrame:
+        client = self._get_client()
+        collection = client.get_collection(table)
+        offset = (page - 1) * page_size
+        result = collection.get(
+            include=["documents", "metadatas"],
+            limit=page_size,
+            offset=offset,
+        )
+        rows = []
+        for i in range(len(result["ids"])):
+            row: Dict[str, Any] = {"id": result["ids"][i]}
+            if result.get("documents") and i < len(result["documents"]) and result["documents"][i] is not None:
+                row["document"] = result["documents"][i]
+            if result.get("metadatas") and i < len(result["metadatas"]) and result["metadatas"][i] is not None:
+                for k, v in result["metadatas"][i].items():
+                    row[f"meta_{k}"] = v if not isinstance(v, (list, dict)) else str(v)
+            rows.append(row)
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        client = self._get_client()
+        p = params or {}
+        collection_name = p.get("collection")
+        if not collection_name:
+            return pd.DataFrame()
+        collection = client.get_collection(collection_name)
+        query_texts = p.get("query_texts")
+        query_embeddings = p.get("query_embeddings")
+        n_results = p.get("n_results", 10)
+        if query_texts:
+            results = collection.query(query_texts=[query_texts] if isinstance(query_texts, str) else query_texts, n_results=n_results, include=["documents", "metadatas", "distances"])
+        elif query_embeddings:
+            results = collection.query(query_embeddings=[query_embeddings] if not isinstance(query_embeddings[0], list) else query_embeddings, n_results=n_results, include=["documents", "metadatas", "distances"])
+        else:
+            return pd.DataFrame()
+        rows = []
+        for i in range(len(results["ids"][0])):
+            row = {"id": results["ids"][0][i]}
+            if results.get("documents") and results["documents"][0][i] is not None:
+                row["document"] = results["documents"][0][i]
+            if results.get("metadatas") and results["metadatas"][0][i] is not None:
+                for k, v in results["metadatas"][0][i].items():
+                    row[f"meta_{k}"] = v
+            if results.get("distances") and results["distances"][0][i] is not None:
+                row["distance"] = results["distances"][0][i]
+            rows.append(row)
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    async def get_table_stats(self, table: str) -> Dict[str, Any]:
+        client = self._get_client()
+        try:
+            collection = client.get_collection(table)
+            return {"row_count": collection.count(), "name": collection.name}
+        except Exception:
+            return {"row_count": 0}
+
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        client = self._get_client()
+        collection = client.get_or_create_collection(table)
+        ids = [r.get("id", str(i)) for i, r in enumerate(records)]
+        documents = [r.get("document", r.get("text", "")) for r in records]
+        metadatas = [r.get("metadata", r.get("metadatas", {})) for r in records]
+        embeddings = [r.get("embedding") for r in records]
+        has_embeddings = any(e is not None for e in embeddings)
+        kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
+        if has_embeddings:
+            kwargs["embeddings"] = [e for e in embeddings]
+        collection.upsert(**kwargs)
+        return {"success": True, "rows_written": len(ids)}
+
+    async def close(self) -> None:
+        self._client = None
+
+
 CONNECTOR_REGISTRY: Dict[str, type] = {
     "postgresql": PostgreSQLConnector,
     "mysql": MySQLConnector,
@@ -531,6 +683,7 @@ CONNECTOR_REGISTRY: Dict[str, type] = {
     "excel": ExcelConnector,
     "obs": OBSConnector,
     "hadoop": HadoopHDFSConnector,
+    "chroma": ChromaConnector,
 }
 
 
@@ -585,6 +738,12 @@ class ConnectorManager:
         finally:
             await connector.close()
 
+    async def read_table(self, datasource_id: str, table_name: str, limit: int = 50000) -> dict:
+        df = await self.query_table(datasource_id, table_name, limit=limit)
+        columns = list(df.columns)
+        rows = df.to_dict(orient="records")
+        return {"columns": columns, "rows": rows, "row_count": len(rows)}
+
     async def get_table_schema(self, datasource_id: str, table_name: str):
         from sqlalchemy import select as sa_select
         from app.models.datasource import DataSource
@@ -612,6 +771,31 @@ class ConnectorManager:
                 "row_count": stats.get("row_count", 0),
                 "column_count": len(columns),
             }
+        finally:
+            await connector.close()
+
+    async def write_table(self, datasource_id: str, table_name: str, records: list):
+        from sqlalchemy import select as sa_select
+        from app.models.datasource import DataSource
+        from uuid import UUID as UUIDType
+
+        try:
+            ds_uuid = UUIDType(datasource_id) if isinstance(datasource_id, str) else datasource_id
+        except (ValueError, AttributeError):
+            ds_uuid = datasource_id
+
+        result = await self._session.execute(
+            sa_select(DataSource).where(DataSource.id == ds_uuid)
+        )
+        ds = result.scalar_one_or_none()
+        if not ds:
+            raise ValueError(f"数据源不存在: {datasource_id}")
+
+        connector = get_connector(ds.type, ds.connection_config or {})
+        try:
+            if hasattr(connector, 'write_table_data'):
+                return await connector.write_table_data(table_name, records)
+            return {"success": False, "message": f"连接器 {ds.type} 不支持写入操作"}
         finally:
             await connector.close()
 

@@ -8,6 +8,7 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const isStreaming = ref(false)
   const streamingContent = ref('')
+  const streamingReasoning = ref('')
   let abortController: AbortController | null = null
 
   async function fetchSessions() {
@@ -59,6 +60,7 @@ export const useChatStore = defineStore('chat', () => {
 
     isStreaming.value = true
     streamingContent.value = ''
+    streamingReasoning.value = ''
 
     abortController = new AbortController()
     let aiIndex = -1
@@ -69,7 +71,9 @@ export const useChatStore = defineStore('chat', () => {
         content,
         abortController.signal,
         (event: StreamEvent) => {
-          if (event.type === 'content' && event.content) {
+          if (event.type === 'reasoning' && event.content) {
+            streamingReasoning.value += event.content
+          } else if (event.type === 'content' && event.content) {
             streamingContent.value += event.content
             if (aiIndex < 0) {
               const assistantMessage: ChatMessage = {
@@ -77,6 +81,7 @@ export const useChatStore = defineStore('chat', () => {
                 session_id: currentSessionId.value!,
                 role: 'assistant',
                 content: streamingContent.value,
+                reasoning: streamingReasoning.value || undefined,
                 code_blocks: null,
                 table_data: null,
                 charts: null,
@@ -88,6 +93,7 @@ export const useChatStore = defineStore('chat', () => {
               messages.value[aiIndex] = {
                 ...messages.value[aiIndex],
                 content: streamingContent.value,
+                reasoning: streamingReasoning.value || undefined,
               }
             }
           }
@@ -144,6 +150,7 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     isStreaming,
     streamingContent,
+    streamingReasoning,
     fetchSessions,
     createSession,
     switchSession,

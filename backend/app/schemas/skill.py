@@ -99,6 +99,14 @@ class SkillModifyRequest(BaseModel):
     instruction: str = Field(..., description="自然语言修改指令")
 
 
+class SkillDebugChatRequest(BaseModel):
+    message: str = Field(..., description="用户调试消息")
+    history: list = Field(default_factory=list, description="对话历史 [{role, content}]")
+    script_name: str = Field(default="main.py", description="脚本名称")
+    datasource_id: Optional[str] = Field(None, description="数据源ID")
+    table_name: Optional[str] = Field(None, description="表名")
+
+
 class SkillScriptInfo(BaseModel):
     name: str
     content: str

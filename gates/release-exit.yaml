@@ -1,0 +1,28 @@
+# Release Exit Gate
+# Validates release packaging outputs
+
+rules:
+  - id: release-notes-exist
+    type: exec
+    blocking: true
+    message: "Release notes must be generated"
+    command: "test -f {release_notes}"
+
+  - id: release-branch-created
+    type: exec
+    blocking: true
+    message: "Release branch must exist"
+    command: "git branch --list 'rel/{req}' | grep -q ."
+
+  - id: version-tagged
+    type: exec
+    blocking: true
+    message: "Release must be tagged with a version"
+    command: "git tag --list 'v*' | grep -q ."
+
+  - id: changelog-has-release-section
+    type: section-check
+    blocking: false
+    message: "CHANGELOG.md should have a release section"
+    file: "{changelog}"
+    required_sections: 1

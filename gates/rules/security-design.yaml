@@ -1,0 +1,74 @@
+# 安全设计规范 Gate 规则
+# 来源: openJiuwen-security-design-guide.md
+
+rules:
+  - id: sec-no-hardcoded-key
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "#3-3"
+    message: "禁止在代码中硬编码密钥"
+    pattern: "(?:password|secret|private_key|api_key|apiKey|secretKey)\\s*[:=]\\s*['\"][^'\"]+['\"]"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+      - "**/*.java"
+    excludes:
+      - "**/*.d.ts"
+      - "**/*.test.*"
+      - "**/*Test.java"
+
+  - id: sec-no-insecure-hash
+    type: regex-check
+    blocking: true
+    severity: error
+    scope: incremental
+    source: "#3-2"
+    message: "禁止使用不安全的哈希算法 (MD5/SHA1)"
+    pattern: "\\b(?:createHash|crypto\\.createHash|hashlib\\.)\\s*\\(\\s*['\"](?:md5|sha1|MD5|SHA1)['\"]"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+    excludes:
+      - "**/*.d.ts"
+
+  - id: sec-no-insecure-protocol
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "#5-4"
+    message: "禁止使用不安全的协议 (ftp/telnet)"
+    pattern: "(?:ftp://|telnet://)"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+      - "**/*.java"
+      - "**/*.yaml"
+      - "**/*.json"
+    excludes: []
+
+  - id: sec-no-ssl-tls-old
+    type: regex-check
+    blocking: true
+    severity: warning
+    scope: incremental
+    source: "#2-2"
+    message: "禁止使用旧版 SSL/TLS 协议 (SSL2.0/3.0, TLS1.0/1.1)"
+    pattern: "(?:SSL[23]\\.0|TLS1\\.[01])\\b"
+    match_mode: absent
+    includes:
+      - "**/*.ts"
+      - "**/*.js"
+      - "**/*.py"
+      - "**/*.java"
+      - "**/*.yaml"
+      - "**/*.json"
+    excludes: []

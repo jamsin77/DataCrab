@@ -1,6 +1,7 @@
 """Skill Runner - 沙箱执行 Skill 脚本"""
 
 import json
+import math
 import os
 import sys
 import time
@@ -12,6 +13,16 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from app.core.config import settings
+
+
+def _sanitize_nans(obj):
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_nans(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nans(v) for v in obj]
+    return obj
 
 def _strip_main_block(script_content: str) -> str:
     """去掉脚本中 if __name__ == '__main__': 块，避免与模板的 __main__ 块冲突"""
@@ -75,7 +86,17 @@ def _run_async_query(script_code):
             pass
     return None
 
-def query_table_data(datasource_id, table_name, limit=1000, offset=0, order_by=None):
+def _sanitize_nans(obj):
+    import math
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {{k: _sanitize_nans(v) for k, v in obj.items()}}
+    if isinstance(obj, list):
+        return [_sanitize_nans(v) for v in obj]
+    return obj
+
+def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_by=None):
     print(f"[SkillRunner] query_table: ds={{datasource_id}}, table={{table_name}}, limit={{limit}}")
     code = (
         "import asyncio, json, sys\\n"
@@ -99,7 +120,7 @@ def query_table_data(datasource_id, table_name, limit=1000, offset=0, order_by=N
         return pd.DataFrame(data)
     return pd.DataFrame()
 
-def get_table_schema(datasource_id, table_name):
+def _dc_get_table_schema(datasource_id, table_name):
     code = (
         "import asyncio, json, sys\\n"
         "sys.path.insert(0, r'{backend_path}')\\n"
@@ -117,7 +138,7 @@ def get_table_schema(datasource_id, table_name):
     data = _run_async_query(code)
     return data if data else {{"columns": [], "row_count": 0}}
 
-def get_datasource_id_by_name(name):
+def _dc_get_datasource_id_by_name(name):
     code = (
         "import asyncio, json, sys\\n"
         "sys.path.insert(0, r'{backend_path}')\\n"
@@ -139,29 +160,89 @@ def get_datasource_id_by_name(name):
     data = _run_async_query(code)
     return data
 
+def get_table_data(datasource_id, table_name, limit=1000, offset=0):
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            datasource_id = _resolved
+    df = _dc_query_table_data(datasource_id, table_name, limit, offset)
+    return {{"success": True, "data": df.to_dict(orient="records"), "columns": list(df.columns), "row_count": len(df)}}
+
+def write_table_data(datasource_id, table_name, records=None, data=None):
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            datasource_id = _resolved
+    _records = data if data is not None else records
+    import json as _json, subprocess, sys as _sys, tempfile as _tf, os as _os
+    _tmp = _tf.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
+    _tmp.write(_json.dumps(_sanitize_nans(_records), ensure_ascii=False))
+    _tmp.close()
+    try:
+        code = (
+            "import asyncio, json, sys, os\\n"
+            "sys.path.insert(0, r'{backend_path}')\\n"
+            "from app.core.database import async_session\\n"
+            "from app.services.connectors import get_connector_manager\\n"
+            "\\n"
+            "async def _q():\\n"
+            "    with open(r'{{tmp_path}}', encoding='utf-8') as _f:\\n"
+            "        _records = json.load(_f)\\n"
+            "    async with async_session() as session:\\n"
+            "        mgr = get_connector_manager(session)\\n"
+            "        return await mgr.write_table('{{ds_id}}', '{{tbl}}', _records)\\n"
+            "\\n"
+            "result = asyncio.run(_q())\\n"
+            "print(json.dumps(result or {{{{}}}}))\\n"
+            "os.unlink(r'{{tmp_path}}')\\n"
+        ).format(ds_id=datasource_id, tbl=table_name, tmp_path=_tmp.name.replace('\\\\', '/'))
+        _result = _run_async_query(code)
+    finally:
+        try:
+            _os.unlink(_tmp.name)
+        except OSError:
+            pass
+    return _result if _result else {{"success": False, "message": "write failed"}}
+
+# Inject into builtins so scripts using get_data_accessor() can find them
+import builtins as _builtins
+_builtins.get_table_data = get_table_data
+_builtins.write_table_data = write_table_data
+
 # __SCRIPT_CONTENT__
 
 if __name__ == "__main__":
     input_data = _get_input()
     params = _get_params()
     if USES_ARGPARSE:
-        sys.argv = _build_argv_from_params(params)
-        result = {function_name}()
+        import inspect as _inspect
+        _sig = _inspect.signature({function_name})
+        _mapped_params = {{}}
+        for _pname in _sig.parameters:
+            if _pname in params:
+                _mapped_params[_pname] = params[_pname]
+            elif _pname == "table_names" and "tables" in params:
+                _mapped_params[_pname] = params["tables"]
+            elif _pname == "datasource_name" and "datasource" in params:
+                _mapped_params[_pname] = params["datasource"]
+        result = {function_name}(**_mapped_params)
     else:
         result = {function_name}(input_data, **params) if input_data is not None else {function_name}(**params)
     if result is not None:
         if hasattr(result, "to_dict"):
-            print("__RESULT__" + json.dumps(result.to_dict(orient="records"), ensure_ascii=False, default=str))
+            print("__RESULT__" + json.dumps(_sanitize_nans(result.to_dict(orient="records")), ensure_ascii=False, default=str))
         elif isinstance(result, dict):
             serializable = {{}}
             for k, v in result.items():
                 if hasattr(v, "to_dict"):
-                    serializable[k] = v.to_dict(orient="records")
+                    serializable[k] = _sanitize_nans(v.to_dict(orient="records"))
                 else:
-                    serializable[k] = v
+                    serializable[k] = _sanitize_nans(v)
             print("__RESULT__" + json.dumps(serializable, ensure_ascii=False, default=str))
         elif isinstance(result, list):
-            print("__RESULT__" + json.dumps(result, ensure_ascii=False, default=str))
+            print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str))
         else:
             print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False))
 """
@@ -225,14 +306,15 @@ def run_skill_script(
             parameters["datasource"] = datasource_name
         else:
             parameters["datasource"] = datasource_id
-    if table_name and "tables" not in parameters and "table" not in parameters and "table_name" not in parameters:
+    if table_name and "tables" not in parameters and "table" not in parameters and "table_name" not in parameters and "table_names" not in parameters:
         if uses_argparse:
             parameters["tables"] = [table_name]
+            parameters["table_names"] = [table_name]
         else:
             parameters["table_name"] = table_name
 
-    data_json = json.dumps(input_data, ensure_ascii=False, default=str) if input_data is not None else "None"
-    params_json = json.dumps(parameters, ensure_ascii=False, default=str)
+    data_literal = repr(input_data) if input_data is not None else "None"
+    params_literal = repr(parameters)
 
     backend_path = Path(__file__).resolve().parent.parent.parent
     cwd = str(Path.cwd())
@@ -240,8 +322,8 @@ def run_skill_script(
     cwd_str = cwd.replace("\\", "/")
 
     runner_script = SKILL_RUNNER_TEMPLATE.format(
-        injected_data=data_json,
-        injected_params=params_json,
+        injected_data=data_literal,
+        injected_params=params_literal,
         function_name=function_name,
         uses_argparse=uses_argparse,
         backend_path=backend_path_str,
@@ -277,6 +359,7 @@ def run_skill_script(
                 try:
                     json_str = line.split("__RESULT__", 1)[1].strip()
                     result = json.loads(json_str)
+                    result = _sanitize_nans(result)
                     stdout = stdout.replace(line, "")
                 except json.JSONDecodeError:
                     pass

@@ -10,6 +10,7 @@
           <el-option label="MySQL" value="mysql" />
           <el-option label="CSV" value="csv" />
           <el-option label="Excel" value="excel" />
+          <el-option label="ChromaDB 向量库" value="chroma" />
           <el-option label="OBS" value="obs" />
           <el-option label="Hadoop" value="hadoop" />
         </el-select>
@@ -56,6 +57,7 @@
             <el-option label="MySQL" value="mysql" />
             <el-option label="CSV 文件" value="csv" />
             <el-option label="Excel 文件" value="excel" />
+            <el-option label="ChromaDB 向量库" value="chroma" />
             <el-option label="OBS 华为云对象存储" value="obs" />
             <el-option label="Hadoop HDFS" value="hadoop" />
           </el-select>
@@ -134,6 +136,19 @@
           </el-form-item>
           <el-form-item label="基础路径">
             <el-input v-model="configForm.base_path" placeholder="/user/data" />
+          </el-form-item>
+        </template>
+
+        <template v-if="configForm.type === 'chroma'">
+          <el-form-item label="数据目录" required>
+            <el-input v-model="configForm.file_path" placeholder="D:/chroma-data">
+              <template #prepend>
+                <el-icon><FolderOpened /></el-icon>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="说明">
+            <span style="color:#909399;font-size:12px">ChromaDB 嵌入式向量库，数据持久化到本地目录。集合（Collection）即数据表。</span>
           </el-form-item>
         </template>
       </el-form>
@@ -241,6 +256,7 @@ function getTypeLabel(type: string): string {
     mysql: 'MySQL',
     csv: 'CSV',
     excel: 'Excel',
+    chroma: 'ChromaDB',
     obs: 'OBS',
     hadoop: 'Hadoop',
   }
@@ -253,6 +269,7 @@ function getTypeTagType(type: string): string {
     mysql: 'warning',
     csv: 'success',
     excel: 'success',
+    chroma: 'danger',
     obs: 'danger',
     hadoop: 'info',
   }
@@ -358,6 +375,8 @@ function buildConnectionConfig(): Record<string, any> {
       if (configForm.sheet_name) cfg.sheet_name = configForm.sheet_name
       return cfg
     }
+    case 'chroma':
+      return { persist_directory: configForm.file_path || 'd:/chroma-data' }
     case 'obs':
       return {
         endpoint: configForm.endpoint,

@@ -1,4 +1,4 @@
-# DataCrab 技术架构设计文�?
+﻿# DataCrab 技术架构设计文�?
 ## 1. 系统架构概览
 
 ### 1.1 整体架构
@@ -830,6 +830,11 @@ tags: [filter, transform]
 | PUT | /api/v1/skills/{id}/scripts/{name} | 更新或创建脚本 |
 | DELETE | /api/v1/skills/{id}/scripts/{name} | 删除脚本 |
 | POST | /api/v1/skills/{id}/run | 执行 Skill 脚本 |
+| POST | /api/v1/skills/{id}/run-stream | 执行 Skill 脚本（SSE 流式，实时推送执行状态） |
+| POST | /api/v1/skills/{id}/run-nl | 自然语言执行 Skill（LLM 推断参数后运行） |
+| POST | /api/v1/skills/{id}/run-nl-stream | 自然语言执行 Skill（SSE 流式，含推理过程） |
+| POST | /api/v1/skills/{id}/modify-stream | AI 修改技能（SSE 流式，含思考过程） |
+| POST | /api/v1/skills/{id}/debug-chat | AI 调试助手（SSE 流式，支持推理过程展示、自动执行/修改脚本） |
 | POST | /api/v1/skills/generate | AI 生成完整 Skill 包 |
 | POST | /api/v1/skills/{id}/clone | 克隆技能 |
 | POST | /api/v1/skills/search | 搜索技能 |
@@ -888,20 +893,72 @@ SkillView.vue 提供完整的技能管理界面：
 - AI 生成技能对话框（输入自然语言描述，AI 自动生成完整 Skill 包）
 - 技能详情抽屉（三个 Tab 页）：
   - SKILL.md Tab：编辑和预览 SKILL.md 内容
-  - 脚本列表 Tab：查看/编辑/执行脚本
+  - 脚本列表 Tab：查看/编辑脚本，可从脚本直接打开调试
   - 属性 Tab：查看技能元数据
-- 技能执行对话框（选择数据源、输入表名、配置 JSON 参数，显示执行结果）
+- 自然语言修改（AI 修改 Drawer，流式展示思考/生成过程）
+- 技能调试界面（合并执行与 AI 调试助手）：
+  - 左侧执行面板：自然语言 / 命令行 / JSON 参数三种输入方式，执行结果实时展示
+  - 右侧 AI 调试面板：ChatGPT 风格对话，AI 可自动执行脚本或修改脚本
+  - AI 回复展示推理过程（蓝色推理卡片），含旋转图标和思考内容
+  - SSE 流式响应，实时展示推理和回复内容
 - 技能下载（导出为 .zip）和删除功能
 
-#### 2.5.7 技能执行流程
+#### 2.5.7 技能执行与调试流程
 
+##### 基础执行流程
 ```
 客户端请求 POST /api/v1/skills/{id}/run
   → skill_runner.run_skill_script()
   → 构建 SKILL_RUNNER_TEMPLATE（注入数据、参数、工具函数）
   → subprocess.run() 在独立 Python 进程中执行
   → 解析 stdout 中的 __RESULT__ 标记获取返回值
+  → _sanitize_nans() 递归替换 NaN/Infinity 为 None
   → 返回 SkillRunResponse { success, result, stdout, execution_time_ms }
+```
+
+##### SSE 流式执行
+```
+POST /api/v1/skills/{id}/run-stream
+  → SSE 事件流：executing → done/error
+  → 实时推送执行状态和结果
+```
+
+##### 自然语言执行
+```
+POST /api/v1/skills/{id}/run-nl-stream
+  → LLM 推断执行参数（thinking → content → inferred_params）
+  → 自动注入 datasource/tables 参数
+  → 执行脚本并流式返回结果
+```
+
+##### AI 调试助手
+```
+POST /api/v1/skills/{id}/debug-chat
+  → 系统提示词包含 SKILL.md + 脚本内容上下文
+  → LLM 支持输出动作 JSON：{"action": "run"} 触发执行，{"action": "modify_script"} 触发脚本修改
+  → SSE 事件流：thinking（推理过程）→ content（回复内容）→ run_result/script_updated → done
+  → 前端展示推理过程卡片（蓝色边框，旋转图标 + 思考内容）
+  → 支持多轮对话，上下文包含历史消息和执行结果
+```
+
+##### 调试界面布局
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  调试: 技能名称                                      [关闭 X]  │
+├────────────────────────────────┬─────────────────────────────────┤
+│  执行面板                      │  AI 调试助手                    │
+│  ┌──────────────────────────┐  │  ┌───────────────────────────┐  │
+│  │ [自然语言][命令行][JSON] │  │  │  推理过程                  │  │
+│  │                          │  │  │  🔄 AI 正在分析脚本...     │  │
+│  │  输入区域                │  │  │  检查到第23行可能有...     │  │
+│  │  [执行]                  │  │  ├───────────────────────────┤  │
+│  ├──────────────────────────┤  │  │  AI 回复                  │  │
+│  │  执行结果                │  │  │  建议将 limit 参数...      │  │
+│  │  ✅ 执行成功 120ms       │  │  │  [执行成功] [脚本已更新]   │  │
+│  │  返回数据: ...           │  │  ├───────────────────────────┤  │
+│  └──────────────────────────┘  │  │  [输入调试指令...]  [发送] │  │
+│                                │  └───────────────────────────┘  │
+└────────────────────────────────┴─────────────────────────────────┘
 ```
 
 #### 2.5.8 内置技能列表
@@ -921,13 +978,480 @@ SkillLibrary 预置了以下数据处理技能：
 | rename | transform | 重命名列 |
 | stats | analysis | 统计描述 |
 
-### 2.6 智能代码生成模块
+### 2.6 流程模块（Pipeline）
 
-#### 2.5.1 模块架构
+#### 2.6.1 设计理念
+
+**流程（Pipeline）是 DataCrab 的核心编排概念——每个流程就是一个 Python 主函数。**
+
+抛弃 DAG 节点/边的工作流模型，流程的本质是：**一个 Python 主函数 + 它调用的 Skill 脚本**。用户只需理解一个 Python 函数就能掌握整个数据处理逻辑。
+
+**核心原则**：
+- **一个流程 = 一个 Python 主函数**：主函数负责编排数据读取、处理、写入的完整逻辑
+- **Skill → 主函数转换**：一键将 Skill 脚本转换为可独立运行的 Python 主函数，主函数调用 Skill 的脚本来完成工作
+- **代码可视化**：前端展示主函数源码（语法高亮），并解析出主函数对 Skill 脚本的调用关系图
+- **直接执行**：无需 DAG 引擎，直接运行主函数即可得到结果
+
+```
+┌──────────────────────────────────────────────────────────┐
+│   流程: 文物数据清洗                                      │
+│                                                          │
+│   def main(datasource, tables, primary_key, options):    │
+│       # 1. 读取数据                                       │
+│       from app.services.connectors import ConnectorManager │
+│       df = ConnectorManager.read_table(datasource, tables) │
+│                                                          │
+│       # 2. 调用 Skill 脚本处理                            │
+│       result = clean_data_main(df, primary_key, options) │
+│                                                          │
+│       # 3. 写入结果                                       │
+│       ConnectorManager.write_table(datasource, tables,   │
+│                                    result)               │
+│       return result                                      │
+│                                                          │
+│   调用关系:  [Skill: data-cleaning-deduplication]        │
+│             main() ──▶ scripts/main.py :: clean_data_main()│
+└──────────────────────────────────────────────────────────┘
+```
+
+#### 2.6.2 与 Skill 的关系
+
+| 维度 | Skill | Pipeline（流程） |
+|------|-------|-----------------|
+| **本质** | 模块化能力包（SKILL.md + scripts/） | 可执行的完整 Python 程序 |
+| **组成** | 文档 + 脚本 + 参考资料 | Python 主函数源码 |
+| **运行方式** | 子进程沙箱执行单个脚本 | 直接执行主函数 |
+| **来源** | 上传 / AI 生成 | 从 Skill 转换 / 手动编写 / AI 生成 |
+| **关系** | 被流程调用 | 调用一个或多个 Skill 的脚本 |
+
+#### 2.6.3 数据模型
+
+```python
+class Pipeline(Base):
+    """流程定义 - 一个完整的 Python 主函数"""
+    __tablename__ = "pipelines"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    display_name = Column(String(200))
+    description = Column(Text)
+
+    # 核心：Python 主函数源码
+    main_code = Column(Text, nullable=False)
+    """
+    def main(datasource: str, tables: List[str], **kwargs):
+        '''文物数据清洗流程'''
+        from app.services.connectors import ConnectorManager
+
+        cm = ConnectorManager()
+        df = cm.read_table(datasource, tables[0])
+
+        # 调用 Skill 的 main 脚本
+        result = clean_data_main(df, **kwargs)
+
+        cm.write_table(datasource, tables[0], result)
+        return result
+    """
+
+    # 主函数签名信息（从 main_code 解析得出）
+    entry_function = Column(String(100), default="main")  # 入口函数名
+    parameters = Column(JSON)
+    """
+    [
+        {"name": "datasource", "type": "str", "required": true, "description": "数据源ID"},
+        {"name": "tables", "type": "list", "required": true, "description": "表名列表"}
+    ]
+    """
+
+    # 调用关系：主函数调用了哪些 Skill 脚本
+    skill_calls = Column(JSON)
+    """
+    [
+        {
+            "skill_id": "uuid",
+            "skill_name": "data-cleaning-deduplication",
+            "script": "scripts/main.py",
+            "function": "clean_data_main",
+            "line": 12
+        }
+    ]
+    """
+
+    # 来源
+    source_skill_id = Column(UUID(as_uuid=True))  # 从哪个 Skill 转换而来
+
+    # 元数据
+    version = Column(Integer, default=1)
+    tags = Column(JSON)
+    category = Column(String(50))
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    visibility = Column(String(20), default="private")
+
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PipelineExecution(Base):
+    """流程执行记录"""
+    __tablename__ = "pipeline_executions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pipeline_id = Column(UUID(as_uuid=True), ForeignKey("pipelines.id"), nullable=False)
+
+    status = Column(String(20), default="pending")  # pending, running, success, failed, cancelled
+
+    # 运行时参数
+    inputs = Column(JSON)
+    outputs = Column(JSON)
+
+    # 时间与耗时
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    duration_ms = Column(Integer)
+
+    # 错误信息
+    error_message = Column(Text)
+
+    # 执行日志（stdout/stderr）
+    logs = Column(Text)
+
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+```
+
+#### 2.6.4 流程生成器（Pipeline Builder）
+
+Pipeline Builder 的核心任务是**生成一个完整的 Python 主函数**，而不是构建 DAG。
+
+##### 从 Skill 生成流程
+
+```
+用户点击"转为流程"
+    │
+    ├─ 1. 读取 Skill 的 SKILL.md（元数据 + 参数定义）
+    │
+    ├─ 2. 读取 Skill 的 scripts/ 目录（所有脚本内容）
+    │
+    ├─ 3. LLM 生成 Python 主函数
+    │     ├─ 注入：Skill 的脚本内容（作为被调用的模块）
+    │     ├─ 注入：数据源信息（可用的 datasource/table）
+    │     ├─ 生成：import 语句 + 主函数定义
+    │     ├─ 主函数内：
+    │     │   ├─ ConnectorManager.read_table() 读取数据
+    │     │   ├─ 调用 Skill 脚本的入口函数处理数据
+    │     │   └─ ConnectorManager.write_table() 写入结果
+    │     └─ 主函数支持命令行参数（argparse）
+    │
+    ├─ 4. 解析调用关系
+    │     └─ AST 分析 main_code，提取对 Skill 脚本函数的调用
+    │
+    └─ 5. 创建 Pipeline 记录 + 返回前端
+```
+
+##### LLM Prompt 模板
+
+```python
+PIPELINE_BUILDER_PROMPT = """你是一个 Python 代码生成器，将 Skill 转换为可执行的 Python 主函数。
+
+## 输入信息
+- Skill 名称: {skill_name}
+- Skill 描述: {skill_description}
+- Skill 参数: {skill_params}
+- Skill 脚本内容: {skill_scripts}
+
+## 输出要求
+生成一个完整的 Python 主函数文件，包含：
+
+### 1. 文件头注释
+```python
+'''
+流程: {pipeline_display_name}
+描述: {description}
+从 Skill 生成: {skill_name}
+'''
+```
+
+### 2. import 区域
+```python
+import argparse
+import os
+import pandas as pd
+from app.services.connectors import ConnectorManager
+```
+
+### 3. Skill 脚本的内联函数
+将 Skill 的每个脚本的函数定义内联到主文件中，函数名加 `_skill_` 前缀以避免冲突。
+
+### 4. 主函数
+```python
+def main(datasource_name: str, table_name: str, **kwargs):
+    cm = ConnectorManager()
+    df = cm.read_table(datasource_name, table_name)
+    result = _skill_main(df, **kwargs)
+    cm.write_table(datasource_name, table_name, result)
+    return result
+```
+
+### 5. argparse 入口（支持命令行直接运行）
+```python
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="...")
+    parser.add_argument("datasource_name", type=str, help="数据源名称")
+    ...
+    args = parser.parse_args()
+    main(**vars(args))
+```
+
+## 重要规则
+- 必须使用 `ConnectorManager.read_table()` / `ConnectorManager.write_table()` 进行数据读写
+- 数据源参数用名称而非 UUID，`ConnectorManager` 内部自动解析
+- 所有 Skill 脚本函数前加 `_skill_` 前缀
+- 处理边界情况（空表、列不存在等）
+- 函数签名和参数要有类型注解
+```
+
+#### 2.6.5 执行引擎
+
+流程执行直接运行 Python 主函数，无需 DAG 遍历。
+
+```python
+class PipelineExecutor:
+    """流程执行器 - 直接运行 Python 主函数"""
+
+    async def execute(
+        self, pipeline: Pipeline, inputs: dict, db_session=None
+    ) -> PipelineExecution:
+        execution = PipelineExecution(
+            pipeline_id=pipeline.id,
+            status="running",
+            inputs=inputs,
+            started_at=datetime.utcnow(),
+        )
+
+        try:
+            # 1. 动态编译主函数代码
+            module_code = compile(pipeline.main_code, f"<pipeline_{pipeline.id}>", "exec")
+            namespace = {"__name__": "__pipeline__", "__builtins__": __builtins__}
+            exec(module_code, namespace)
+
+            # 2. 获取入口函数
+            func = namespace.get(pipeline.entry_function or "main")
+            if not callable(func):
+                raise ValueError(f"入口函数 '{pipeline.entry_function}' 不可调用")
+
+            # 3. 调用主函数
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: func(**inputs)
+            )
+
+            execution.status = "success"
+            execution.outputs = _sanitize_nans(result)
+        except Exception as e:
+            execution.status = "failed"
+            execution.error_message = str(e)
+        finally:
+            execution.finished_at = datetime.utcnow()
+            if execution.started_at:
+                execution.duration_ms = int(
+                    (execution.finished_at - execution.started_at).total_seconds() * 1000
+                )
+
+        return execution
+
+    async def execute_stream(
+        self, pipeline: Pipeline, inputs: dict, db_session=None
+    ) -> AsyncGenerator[dict, None]:
+        """SSE 流式执行，实时推送状态"""
+        yield {"type": "status", "status": "running", "message": "流程开始执行..."}
+
+        execution = PipelineExecution(
+            pipeline_id=pipeline.id,
+            status="running",
+            inputs=inputs,
+            started_at=datetime.utcnow(),
+        )
+        yield {"type": "status", "status": "running", "message": "编译主函数..."}
+
+        try:
+            module_code = compile(pipeline.main_code, f"<pipeline_{pipeline.id}>", "exec")
+            namespace = {"__name__": "__pipeline__", "__builtins__": __builtins__}
+            exec(module_code, namespace)
+            func = namespace.get(pipeline.entry_function or "main")
+
+            yield {"type": "status", "status": "running", "message": "执行主函数..."}
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: func(**inputs))
+
+            execution.status = "success"
+            execution.outputs = _sanitize_nans(result)
+            yield {"type": "done", "status": "success", "outputs": execution.outputs}
+        except Exception as e:
+            execution.status = "failed"
+            execution.error_message = str(e)
+            yield {"type": "error", "status": "failed", "message": str(e)}
+        finally:
+            execution.finished_at = datetime.utcnow()
+            if execution.started_at:
+                execution.duration_ms = int(
+                    (execution.finished_at - execution.started_at).total_seconds() * 1000
+                )
+```
+
+#### 2.6.6 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/v1/pipelines | 获取流程列表（支持名称/标签筛选） |
+| GET | /api/v1/pipelines/{id} | 获取流程详情（含 main_code） |
+| POST | /api/v1/pipelines | 创建流程（手动编写 main_code） |
+| PUT | /api/v1/pipelines/{id} | 更新流程（修改 main_code 等） |
+| DELETE | /api/v1/pipelines/{id} | 删除流程 |
+| **POST** | **/api/v1/pipelines/from-skill/{skill_id}** | **从 Skill 生成流程（LLM 生成 main_code）** |
+| POST | /api/v1/pipelines/{id}/run | 执行流程 |
+| POST | /api/v1/pipelines/{id}/run-stream | SSE 流式执行 |
+| GET | /api/v1/pipelines/{id}/executions | 获取执行历史 |
+| GET | /api/v1/pipelines/executions/{eid} | 获取单次执行详情 |
+| POST | /api/v1/pipelines/{id}/clone | 克隆流程 |
+
+#### 2.6.7 前端界面
+
+##### 流程列表页
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ [新建流程] [从Skill生成▼]  [分类筛选▼]  [搜索流程...]          │
+├──────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────┐  ┌─────────────────────┐            │
+│  │ 📄 文物数据清洗      │  │ 📄 销售数据分析      │            │
+│  │ 从 Skill 生成        │  │ 手动编写             │            │
+│  │ 调用 2 个脚本        │  │ 调用 1 个脚本        │            │
+│  │ 上次: 成功 3.2s      │  │ 上次: 失败           │            │
+│  │                      │  │                      │            │
+│  │ [查看代码] [运行]    │  │ [查看代码] [运行]    │            │
+│  │ [调度] [删除]        │  │ [调度] [删除]        │            │
+│  └─────────────────────┘  └─────────────────────┘            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+##### 流程详情页（代码 + 调用关系）
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  流程: 文物数据清洗                        [编辑] [运行▶] [调度] │
+├────────────────────────┬─────────────────────────────────────────┤
+│  主函数代码 (Python)    │  调用关系                                │
+│  ┌────────────────────┐ │  ┌───────────────────────────────────┐ │
+│  │ 1 │ '''            │ │  │  main()                           │ │
+│  │ 2 │ 流程: 文物...  │ │  │  ├── ConnectorManager.read_table()│ │
+│  │ 3 │ '''            │ │  │  ├──▶ Skill: data-cleaning        │ │
+│  │ 4 │                │ │  │  │    └─ scripts/main.py          │ │
+│  │ 5 │ import ...     │ │  │  │       :: clean_data_main()     │ │
+│  │ 6 │                │ │  │  └── ConnectorManager.write_table()│ │
+│  │ 7 │ def main(...): │ │  └───────────────────────────────────┘ │
+│  │ 8 │     cm = ...   │ │                                         │
+│  │ 9 │     df = cm... │ │  执行历史                               │
+│  │10 │     result =   │ │  ┌───────────────────────────────────┐ │
+│  │11 │         _skill │ │  │ ✅ 2026-06-18 10:30  3.2s  成功   │ │
+│  │12 │     cm.write.. │ │  │ ✅ 2026-06-18 09:15  2.8s  成功   │ │
+│  │13 │     return ... │ │  │ ❌ 2026-06-17 14:20  0.5s  失败   │ │
+│  │14 │                │ │  └───────────────────────────────────┘ │
+│  │15 │ if __name__... │ │                                         │
+│  └────────────────────┘ │                                         │
+├────────────────────────┴─────────────────────────────────────────┤
+│  [Monaco Editor - Python 语法高亮]                                │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+##### Skill → 流程转换入口
+
+在 Skill 页面，"转为工作流"按钮改为"转为流程"：
+
+```
+┌─────────────────────────────────┐
+│ 数据清洗去重                     │
+│ 对数据进行去重和空值处理          │
+│                                  │
+│ [调试] [下载] [修改]             │
+│ [转为流程▶]                      │
+└─────────────────────────────────┘
+```
+
+点击后弹出确认对话框（SSE 流式展示生成过程）：
+
+```
+┌──────────────────────────────────────┐
+│  将 Skill 转换为流程                  │
+│                                      │
+│  Skill: 数据清洗去重                  │
+│  包含脚本: main.py                    │
+│                                      │
+│  Skill Creator 正在生成流程代码...    │
+│  ┌────────────────────────────────┐  │
+│  │ 正在分析 Skill 结构...          │  │
+│  │ 正在生成 Python 主函数...       │  │
+│  │ 生成完成，3 个函数调用已识别     │  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  流程名称: [数据清洗去重 - 流程]      │
+│                                      │
+│         [取消]    [创建并查看]        │
+└──────────────────────────────────────┘
+```
+
+##### 前端技术选型
+
+| 组件 | 库 | 说明 |
+|------|-----|------|
+| 代码编辑/展示 | Monaco Editor | Python 语法高亮，代码编辑，只读模式 |
+| 调用关系图 | 自定义 Vue 组件 | 树形展示主函数 → Skill 脚本的调用链 |
+| 列表页 | Element Plus Card | 流程卡片网格 |
+| 执行状态 | SSE EventSource | 实时推送执行进度 |
+
+#### 2.6.8 流程与调度的关系
+
+流程可关联调度配置，实现定时/事件触发的自动化执行：
+
+```
+Pipeline ──1:1──▶ Schedule
+                   ├─ task_type: "pipeline"
+                   ├─ task_target_id: pipeline.id
+                   ├─ cron: "0 2 * * *"    (每天凌晨2点)
+                   ├─ event: 数据源更新     (事件触发)
+                   └─ manual: 手动触发
+```
+
+调度触发后创建 PipelineExecution 记录，状态实时推送至前端。
+
+#### 2.6.9 实现状态
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| Pipeline 数据模型 | ⬜ 待实现 | Pipeline + PipelineExecution |
+| Pipeline Builder（Skill→流程） | ⬜ 待实现 | LLM 生成 Python 主函数 |
+| 流程执行引擎 | ⬜ 待实现 | 动态编译 + exec 运行主函数 |
+| API 端点 | ⬜ 待实现 | CRUD + from-skill + run + run-stream + clone |
+| 前端列表页 | ⬜ 待实现 | 流程卡片网格 |
+| 前端详情页 | ⬜ 待实现 | 代码展示 + 调用关系图 |
+| Skill 页面"转为流程"按钮 | ⬜ 待实现 | 替换旧的"转为工作流"按钮 |
+| SSE 流式生成+执行 | ⬜ 待实现 | LLM 生成过程流式展示 + 执行过程流式推送 |
+
+**废弃的旧功能**：
+- ~~DAG 节点/边模型~~
+- ~~Vue Flow 画布编辑器~~
+- ~~Kahn 拓扑排序~~
+- ~~多引擎适配（Prefect/Airflow）~~
+- ~~节点类型枚举（skill/condition/parallel 等）~~
+- ~~参数映射表达式（$upstream.$input）~~
+
+### 2.7 智能代码生成模块
+
+### 2.7.1 模块架构
 ```
 ┌─────────────────────────────────────────�?�?     Intelligent Code Generator         �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  NL Code Parser                �?  �?�? �?  - 自然语言解析                 �?  �?�? �?  - 意图识别                     �?  �?�? �?  - 实体提取                     �?  �?�? �?  - 代码结构生成                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Skill Composition Engine      �?  �?�? �?  - 技能匹�?                    �?  �?�? �?  - 技能组�?                    �?  �?�? �?  - 参数推理                     �?  �?�? �?  - 代码优化                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────��   �?�? �?  Code Validator                �?  �?�? �?  - 代码验证                     �?  �?�? �?  - 语法检�?                    �?  �?�? �?  - 参数校验                     �?  �?�? �?  - 可执行性分�?                �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Code Executor                 �?  �?�? �?  - 动态算子加�?                �?  �?�? �?  - 代码执行                     �?  �?�? �?  - 结果收集                     �?  �?�? �?  - 错误处理                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.5.2 自然语言代码生成
 ```python
 class NLCodeGenerator:
     """自然语言代码生成�?""
@@ -1106,7 +1630,6 @@ class NLCodeGenerator:
         )
 ```
 
-#### 2.5.3 Skills技能组�?```python
 class SkillCompositionEngine:
     """技能组合引�?""
     
@@ -1194,7 +1717,7 @@ class SkillCompositionEngine:
         return optimized
 ```
 
-#### 2.5.4 动态代码执�?```python
+#### 2.9.4 动态代码执�?```python
 class DynamicCodeExecutor:
     """动态流程执行器"""
     
@@ -1265,7 +1788,6 @@ class DynamicCodeExecutor:
         return result
 ```
 
-#### 2.5.5 代码定义模型
 ```python
 class ComposedCode(Base):
     __tablename__ = "composed_codes"
@@ -1326,75 +1848,105 @@ class ComposedCode(Base):
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
 ```
 
-### 2.6 调度系统模块
+### 2.8 调度系统模块
 
-#### 2.6.1 调度架构
+#### 2.8.1 调度架构
 ```
 ┌─────────────────────────────────────────�?�?        Scheduler Service               �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Schedule Manager              �?  �?�? �?  - 调度配置管理                 �?  �?�? �?  - 调度策略配置                 �?  �?�? �?  - 调度历史记录                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Cron Scheduler                �?  �?�? �?  - Cron表达式解�?              �?  �?�? �?  - 定时任务触发                 �?  �?�? �?  - 任务队列管理                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Event Scheduler               �?  �?�? �?  - 事件监听                     �?  �?�? �?  - 事件触发                     �?  �?�? �?  - 实时调度                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Task Executor                 �?  �?�? �?  - 任务执行                     �?  �?�? �?  - 状态监�?                    �?  �?�? �?  - 失败重试                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.6.2 调度配置模型
+#### 2.8.2 调度配置模型
 ```python
 class Schedule(Base):
     __tablename__ = "schedules"
-    
-    id = Column(UUID, primary_key=True)
-    code_id = Column(UUID, ForeignKey("composed_codes.id"))
-    
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+
+    # 任务类型和目标
+    task_type = Column(String(20), nullable=False)  # pipeline, operator, skill
+    task_target_id = Column(UUID(as_uuid=True), nullable=False)
+    task_params = Column(JSON)  # 执行参数
+
     # 调度类型
-    schedule_type = Column(String(20))  # cron, event, manual
-    
+    schedule_type = Column(String(20), nullable=False)  # cron, interval, manual
+
     # Cron配置
-    cron_expression = Column(String(100))  # "0 0 * * *"
+    cron_expression = Column(String(100))
     timezone = Column(String(50), default="Asia/Shanghai")
-    
+
+    # 间隔配置（秒）
+    interval_seconds = Column(Integer)
+
     # 事件配置
-    event_config = Column(JSON)  # 事件触发配置
-    
+    event_config = Column(JSON)
+
     # 执行配置
     max_retries = Column(Integer, default=3)
-    retry_interval = Column(Integer, default=60)  # �?    timeout = Column(Integer, default=3600)  # �?    
-    # 状�?    status = Column(String(20))  # active, paused, stopped
+    retry_interval = Column(Integer, default=60)
+    timeout = Column(Integer, default=3600)
+    concurrent_runs = Column(Integer, default=1)
+
+    # 状态
+    status = Column(String(20), index=True, default="active")  # active, paused, stopped
     last_run_at = Column(DateTime)
     next_run_at = Column(DateTime)
-    
-    created_by = Column(UUID, ForeignKey("users.id"))
+    last_run_status = Column(String(20))
+
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    executions = relationship("TaskExecution", back_populates="schedule", lazy="selectin")
 ```
 
-#### 2.6.3 任务执行模型
+#### 2.8.3 任务执行模型
 ```python
 class TaskExecution(Base):
     __tablename__ = "task_executions"
-    
-    id = Column(UUID, primary_key=True)
-    schedule_id = Column(UUID, ForeignKey("schedules.id"))
-    code_id = Column(UUID, ForeignKey("composed_codes.id"))
-    
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_id = Column(UUID(as_uuid=True), ForeignKey("schedules.id", ondelete="CASCADE"), index=True)
+
+    # 任务信息
+    task_type = Column(String(20), nullable=False)  # pipeline, operator, skill
+    task_target_id = Column(UUID(as_uuid=True), nullable=False)
+
     # 执行信息
-    status = Column(String(20))  # pending, running, success, failed
+    status = Column(String(20), nullable=False, index=True)  # pending, running, success, failed, timeout
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
-    duration = Column(Integer)  # 毫秒
-    
+    duration = Column(Integer)  # 秒
+
     # 执行结果
-    result = Column(JSON)  # 执行结果
-    error_message = Column(Text)  # 错误信息
-    
+    result = Column(JSON)
+    error_message = Column(Text)
+    exit_code = Column(Integer)
+
     # 重试信息
     retry_count = Column(Integer, default=0)
-    
-    # 执行日志
-    logs = Column(Text)  # 执行日志
-    
-    # 血缘关�?    input_data = Column(JSON)  # 输入数据�?    output_data = Column(JSON)  # 输出数据�?    
-    created_at = Column(DateTime, default=datetime.utcnow)
-```
 
-### 2.7 元数据管理模�?
-#### 2.7.1 元数据架�?```
+    # 执行日志
+    logs = Column(Text)
+
+    # 血缘关系
+    input_data = Column(JSON)
+    output_data = Column(JSON)
+
+    # 触发方式
+    trigger_type = Column(String(20), default="schedule")  # schedule, manual, event
+    triggered_by = Column(UUID(as_uuid=True))
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 关系
+    schedule = relationship("Schedule", back_populates="executions")
+```
+### 2.9 元数据管理模�?
+#### 2.9.1 元数据架�?```
 ┌─────────────────────────────────────────�?�?        Metadata Manager                �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Technical Metadata            �?  �?�? �?  - 表结构信�?                  �?  �?�? �?  - 字段类型                     �?  �?�? �?  - 索引信息                     �?  �?�? �?  - 数据统计                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Business Metadata             �?  �?�? �?  - 业务含义                     �?  �?�? �?  - 数据�?                      �?  �?�? �?  - 数据质量规则                 �?  �?�? �?  - 数据所有�?                  �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Operational Metadata          �?  �?�? �?  - 执行统计                     �?  �?�? �?  - 访问记录                     �?  �?�? �?  - 数据血�?                    �?  �?�? �?  - 变更历史                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.7.2 元数据模�?```python
+#### 2.9.2 元数据模�?```python
 class TableMetadata(Base):
     __tablename__ = "table_metadata"
     
@@ -1423,9 +1975,9 @@ class TableMetadata(Base):
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
 ```
 
-### 2.8 权限管理模块
+### 2.10 权限管理模块
 
-#### 2.8.1 RBAC权限模型
+#### 2.10.1 RBAC权限模型
 ```python
 class User(Base):
     __tablename__ = "users"
@@ -1473,7 +2025,7 @@ class Permission(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 ```
 
-#### 2.8.2 权限检查逻辑
+#### 2.10.2 权限检查逻辑
 ```python
 class PermissionChecker:
     """权限检查器"""
@@ -1507,9 +2059,9 @@ class PermissionChecker:
         return False
 ```
 
-### 2.9 代码生成模块
+### 2.11 代码生成模块
 
-#### 2.9.1 代码生成流程
+#### 2.11.1 代码生成流程
 ```
 Code Definition (JSON)
     �?AST解析与转�?    �?代码模板渲染
@@ -1518,7 +2070,7 @@ Code Definition (JSON)
     �?可执行Python脚本
 ```
 
-#### 2.9.2 代码生成�?```python
+#### 2.13.2 代码生成�?```python
 class CodeGenerator:
     """代码生成�?""
     
@@ -1560,7 +2112,7 @@ if __name__ == "__main__":
         return formatted_code
 ```
 
-#### 2.9.3 代码模板示例
+#### 2.11.3 代码模板示例
 ```python
 # 数据源连接模�?DATASOURCE_TEMPLATE = """
 def connect_{name}():
@@ -1590,13 +2142,13 @@ def {operator_name}({inputs}):
 """
 ```
 
-### 2.10 环境管理模块
+### 2.12 环境管理模块
 
-#### 2.10.1 环境隔离架构
+#### 2.12.1 环境隔离架构
 ```
 ┌─────────────────────────────────────────�?�?        Environment Manager             �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Development Environment       �?  �?�? �?  - 开发测�?                    �?  �?�? �?  - 沙箱数据                     �?  �?�? �?  - 调试模式                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Testing Environment           �?  �?�? �?  - 集成测试                     �?  �?�? �?  - 测试数据                     �?  �?�? �?  - 性能测试                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Production Environment        �?  �?�? �?  - 生产运行                     �?  �?�? �?  - 真实数据                     �?  �?�? �?  - 高可用部�?                  �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.10.2 环境迁移机制
+#### 2.12.2 环境迁移机制
 ```python
 class EnvironmentMigrator:
     """环境迁移�?""
@@ -1835,130 +2387,102 @@ CREATE TABLE skill_versions (
     UNIQUE(skill_id, version)
 );
 
--- Skill Pipeline 表（技能组合流水线�?CREATE TABLE skill_pipelines (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+#### 流程表
+ + "`" + @"
+sql
+CREATE TABLE pipelines (
+    id UUID PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     display_name VARCHAR(200),
     description TEXT,
-    skill_steps JSONB NOT NULL,
-    """
-    [
-        {
-            "step_id": "step_1",
-            "skill_id": "uuid",
-            "skill_name": "FilterOperator",
-            "order": 1,
-            "input_mapping": {"data": "$input.raw_data"},
-            "output_mapping": {"result": "$context.filtered_data"},
-            "parameters": {"condition": "age > 18"}
-        },
-        {
-            "step_id": "step_2",
-            "skill_id": "uuid",
-            "skill_name": "GroupByOperator",
-            "order": 2,
-            "input_mapping": {"data": "$context.filtered_data"},
-            "output_mapping": {"result": "$output.final_result"},
-            "parameters": {"group_by": "category"}
-        }
-    ]
-    """
-    input_schema JSONB,
-    """
-    {
-        "raw_data": {
-            "type": "DataFrame",
-            "description": "原始输入数据",
-            "required": true
-        }
-    }
-    """
-    output_schema JSONB,
-    """
-    {
-        "final_result": {
-            "type": "DataFrame",
-            "description": "最终处理结�?
-        }
-    }
-    """
+
+    -- Python 主函数源码
+    main_code TEXT NOT NULL,
+
+    -- 主函数签名
+    entry_function VARCHAR(100) DEFAULT 'main',
+    parameters JSON,
+
+    -- 调用关系（主函数调用了哪些 Skill 脚本）
+    skill_calls JSON,
+
+    -- 来源
+    source_skill_id UUID,
+
+    -- 元数据
     version INTEGER DEFAULT 1,
-    parent_id UUID REFERENCES skill_pipelines(id),
-    created_by UUID REFERENCES users(id),
-    visibility VARCHAR(20),
-    permissions JSONB,
-    tags JSONB,
+    tags JSON,
     category VARCHAR(50),
+    created_by UUID REFERENCES users(id),
+    visibility VARCHAR(20) DEFAULT 'private',
+
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Pipeline 执行历史�?CREATE TABLE pipeline_executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    pipeline_id UUID REFERENCES skill_pipelines(id) ON DELETE CASCADE,
-    status VARCHAR(20) NOT NULL, -- pending, running, completed, failed
-    inputs JSONB,
-    outputs JSONB,
-    step_results JSONB,
-    """
-    {
-        "step_1": {"status": "completed", "output": {...}},
-        "step_2": {"status": "completed", "output": {...}}
-    }
-    """
+CREATE TABLE pipeline_executions (
+    id UUID PRIMARY KEY,
+    pipeline_id UUID REFERENCES pipelines(id) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    inputs JSON,
+    outputs JSON,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
-    duration INTEGER,
+    duration_ms INTEGER,
     error_message TEXT,
-    error_step VARCHAR(50),
+    logs TEXT,
     created_by UUID REFERENCES users(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-```
-
+ + "`" + @"
 #### 调度与执行表
 ```sql
--- 调度�?CREATE TABLE schedules (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    code_id UUID REFERENCES composed_codes(id) ON DELETE CASCADE,
+CREATE TABLE schedules (
+    id UUID PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    task_type VARCHAR(20) NOT NULL,
+    task_target_id UUID NOT NULL,
+    task_params JSON,
     schedule_type VARCHAR(20) NOT NULL,
     cron_expression VARCHAR(100),
     timezone VARCHAR(50) DEFAULT 'Asia/Shanghai',
-    event_config JSONB,
+    interval_seconds INTEGER,
+    event_config JSON,
     max_retries INTEGER DEFAULT 3,
     retry_interval INTEGER DEFAULT 60,
     timeout INTEGER DEFAULT 3600,
-    status VARCHAR(20),
+    concurrent_runs INTEGER DEFAULT 1,
+    status VARCHAR(20) DEFAULT 'active',
     last_run_at TIMESTAMP,
     next_run_at TIMESTAMP,
+    last_run_status VARCHAR(20),
     created_by UUID REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 任务执行�?CREATE TABLE task_executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE task_executions (
+    id UUID PRIMARY KEY,
     schedule_id UUID REFERENCES schedules(id) ON DELETE CASCADE,
-    code_id UUID REFERENCES composed_codes(id),
+    task_type VARCHAR(20) NOT NULL,
+    task_target_id UUID NOT NULL,
     status VARCHAR(20) NOT NULL,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
     duration INTEGER,
-    result JSONB,
+    result JSON,
     error_message TEXT,
+    exit_code INTEGER,
     retry_count INTEGER DEFAULT 0,
     logs TEXT,
-    input_data JSONB,
-    output_data JSONB,
+    input_data JSON,
+    output_data JSON,
+    trigger_type VARCHAR(20) DEFAULT 'schedule',
+    triggered_by UUID,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-```
-
-## 4. API接口设计
-
-### 4.1 RESTful API规范
-
-#### 数据源管理API
 ```
 POST   /api/v1/datasources              # 创建数据�?GET    /api/v1/datasources              # 获取数据源列�?GET    /api/v1/datasources/{id}         # 获取数据源详�?PUT    /api/v1/datasources/{id}         # 更新数据�?DELETE /api/v1/datasources/{id}         # 删除数据�?POST   /api/v1/datasources/{id}/test    # 测试连接
 GET    /api/v1/datasources/{id}/schema  # 获取数据源结�?```

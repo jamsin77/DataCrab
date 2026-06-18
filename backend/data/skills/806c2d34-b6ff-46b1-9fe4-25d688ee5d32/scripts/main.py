@@ -1,215 +1,199 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8
 """
-数据清洗和去重主处理脚本
+数据清洗和去重技能 - 主处理脚本
+对指定数据表进行批量清洗和去重，直接在原表修改
 """
 
 import pandas as pd
 from typing import List, Dict, Any, Optional
 import logging
-from datetime import datetime
+import argparse
+import json
+import sys
 
-def clean_and_deduplicate_data(
-    df: pd.DataFrame,
-    cleaning_options: Optional[Dict[str, Any]] = None,
-    table_name: str = "unknown"
-) -> pd.DataFrame:
-    """
-    清洗和去重处理函数
+
+def setup_logging(output_log: Optional[str] = None):
+    """配置日志输出"""
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if output_log:
+        try:
+            handlers.append(logging.FileHandler(output_log, encoding='utf-8'))
+        except:
+            pass
     
-    Args:
-        df: 输入的数据DataFrame
-        cleaning_options: 清洗选项配置
-        table_name: 表名（用于日志记录）
-        
-    Returns:
-        清洗后的DataFrame
-    """
-    # 初始化日志
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(f"DataCleaner_{table_name}")
-    logger.info(f"开始处理表: {table_name}")
-    logger.info(f"原始数据形状: {df.shape}")
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+    return logging.getLogger("DataCleaner")
+
+
+def get_data_accessor():
+    """获取数据访问器 - 使用平台注入的函数"""
+    # 从全局命名空间获取平台注入的函数
+    get_func = globals().get('get_table_data')
+    write_func = globals().get('write_table_data')
     
-    # 默认清洗选项
-    if cleaning_options is None:
-        cleaning_options = {
-            "remove_empty": True,
-            "deduplicate_columns": None,
-            "convert_types": {}
-        }
+    if get_func and write_func:
+        return get_func, write_func
     
-    # 记录原始数据质量
-    logger.info(f"原始数据缺失值统计:\n{df.isnull().sum()}")
+    # 尝试从 builtins 获取
+    import builtins
+    if hasattr(builtins, 'get_table_data') and hasattr(builtins, 'write_table_data'):
+        return getattr(builtins, 'get_table_data'), getattr(builtins, 'write_table_data')
     
-    # 1. 空值处理
-    if cleaning_options.get("remove_empty", True):
-        original_count = len(df)
-        df = df.dropna(how='all')  # 删除全为空的行
-        df = df.dropna(subset=cleaning_options.get("deduplicate_columns", []))  # 在去重列中删除空值
-        logger.info(f"删除全空行后数据形状: {df.shape} (删除了 {original_count - len(df)} 行)")
+    return None, None
+
+
+def query_table_data(datasource: str, table_name: str, logger: logging.Logger = None) -> pd.DataFrame:
+    """查询数据表数据"""
+    get_func, _ = get_data_accessor()
     
-    # 2. 数据类型转换
-    type_conversions = cleaning_options.get("convert_types", {})
-    for column, dtype in type_conversions.items():
-        if column in df.columns:
-            try:
-                if dtype == 'datetime':
-                    df[column] = pd.to_datetime(df[column])
-                elif dtype == 'numeric':
-                    df[column] = pd.to_numeric(df[column], errors='coerce')
-                else:
-                    df[column] = df[column].astype(dtype)
-                logger.info(f"列 {column} 已转换为 {dtype} 类型")
-            except Exception as e:
-                logger.warning(f"列 {column} 类型转换失败: {str(e)}")
+    if get_func is None:
+        raise Exception("无法获取数据访问函数，请确保在 DataCrab 平台环境中运行")
     
-    # 3. 去重处理
-    deduplicate_columns = cleaning_options.get("deduplicate_columns")
-    if deduplicate_columns:
-        if not isinstance(deduplicate_columns, list):
-            deduplicate_columns = [deduplicate_columns]
-        
-        # 检查指定的列是否存在
-        existing_columns = [col for col in deduplicate_columns if col in df.columns]
-        if not existing_columns:
-            logger.warning("指定的去重列不存在，跳过去重操作")
-        else:
-            original_count = len(df)
-            df = df.drop_duplicates(subset=existing_columns, keep='first')
-            logger.info(f"去重后数据形状: {df.shape} (删除了 {original_count - len(df)} 重复行)")
-            logger.info(f"基于列 {existing_columns} 进行去重")
+    try:
+        result = get_func(datasource_id=datasource, table_name=table_name)
+        if result.get("success"):
+            data = result.get("data", [])
+            if isinstance(data, list) and len(data) > 0:
+                return pd.DataFrame(data)
+            elif isinstance(data, pd.DataFrame):
+                return data
+        raise Exception(result.get('message', '未知错误'))
+    except Exception as e:
+        raise Exception(f"获取数据失败: {e}")
+
+
+def write_table_data_back(datasource: str, table_name: str, df: pd.DataFrame, logger: logging.Logger = None) -> Dict[str, Any]:
+    """将数据写回原表"""
+    _, write_func = get_data_accessor()
     
-    # 记录最终数据质量
-    logger.info(f"处理后数据缺失值统计:\n{df.isnull().sum()}")
-    logger.info(f"处理完成，最终数据形状: {df.shape}")
+    if write_func is None:
+        raise Exception("无法获取数据写入函数，请确保在 DataCrab 平台环境中运行")
     
+    records = df.to_dict(orient='records')
+    try:
+        result = write_func(
+            datasource_id=datasource,
+            table_name=table_name,
+            data=records
+        )
+        return result
+    except Exception as e:
+        raise Exception(f"写入数据失败: {e}")
+
+
+def clean_data(df: pd.DataFrame, primary_key: str, cleaning_options: Dict[str, bool], logger: logging.Logger) -> pd.DataFrame:
+    """执行数据清洗和去重"""
+    initial_count = len(df)
+    
+    remove_empty = cleaning_options.get('remove_empty', True)
+    remove_all_empty = cleaning_options.get('remove_all_empty', True)
+    deduplicate = cleaning_options.get('deduplicate', True)
+    
+    # 删除所有列均为空值的行
+    if remove_all_empty:
+        before = len(df)
+        df = df.dropna(how='all')
+        logger.info(f"删除全空行: {before - len(df)} 行")
+    
+    # 基于主键删除空值
+    if remove_empty and primary_key and primary_key in df.columns:
+        before = len(df)
+        df = df.dropna(subset=[primary_key])
+        logger.info(f"删除主键空值行: {before - len(df)} 行")
+    
+    # 基于主键去重
+    if deduplicate and primary_key and primary_key in df.columns:
+        before = len(df)
+        df = df.drop_duplicates(subset=[primary_key], keep='first')
+        logger.info(f"删除重复行: {before - len(df)} 行")
+    
+    logger.info(f"总处理结果: 原始 {initial_count} 行 -> 清洗后 {len(df)} 行")
     return df
 
-def process_tables(
-    datasource_id: str,
-    table_names: List[str],
-    cleaning_options: Optional[Dict[str, Any]] = None,
-    output_log: Optional[str] = None
-) -> Dict[str, pd.DataFrame]:
-    """
-    处理多个数据表的主函数
+
+def main(datasource: str = None, table_names: List[str] = None, primary_key: str = None,
+         cleaning_options: Dict[str, bool] = None, output_log: str = None):
+    """主处理函数"""
+    # 从全局变量获取参数（平台注入方式）
+    if datasource is None:
+        datasource = globals().get('datasource_id') or globals().get('datasource')
+    if table_names is None:
+        table_names = globals().get('table_names') or globals().get('tables')
+    if primary_key is None:
+        primary_key = globals().get('primary_key')
+    if cleaning_options is None:
+        cleaning_options = globals().get('cleaning_options')
+    if output_log is None:
+        output_log = globals().get('output_log')
     
-    Args:
-        datasource_id: 数据源ID
-        table_names: 数据表名称列表
-        cleaning_options: 清洗选项配置
-        output_log: 日志输出路径
-        
-    Returns:
-        处理后的数据表字典 {表名: DataFrame}
-    """
-    # 配置日志输出
-    if output_log:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(output_log),
-                logging.StreamHandler()
-            ]
-        )
-    else:
-        logging.basicConfig(level=logging.INFO)
+    logger = setup_logging(output_log)
+    logger.info(f"开始数据清洗，数据源: {datasource}, 表: {table_names}")
     
-    logger = logging.getLogger("MainProcessor")
-    logger.info(f"开始处理数据源: {datasource_id}")
-    logger.info(f"待处理表: {', '.join(table_names)}")
+    if not datasource or not table_names:
+        raise ValueError("缺少必要参数: datasource 和 table_names")
     
-    results = {}
+    if cleaning_options is None:
+        cleaning_options = {'remove_empty': True, 'remove_all_empty': True, 'deduplicate': True}
+    
+    # 确保 table_names 是列表
+    if isinstance(table_names, str):
+        table_names = [table_names]
+    
+    results = {'success': True, 'tables_processed': [], 'errors': []}
     
     for table_name in table_names:
         try:
-            logger.info(f"正在处理表: {table_name}")
+            logger.info(f"处理表: {table_name}")
+            df = query_table_data(datasource, table_name, logger)
+            logger.info(f"读取数据: {len(df)} 行, {len(df.columns)} 列")
             
-            # 查询表数据
-            df = query_table_data(datasource_id, table_name)
+            # 确定主键
+            pk = primary_key
+            if not pk and len(df.columns) > 0:
+                pk = df.columns[0]
+                logger.info(f"未指定主键，使用第一列 '{pk}' 作为主键")
             
-            # 获取表结构
-            schema = get_table_schema(datasource_id, table_name)
-            logger.info(f"表结构: {schema}")
+            # 执行清洗
+            df_cleaned = clean_data(df, pk, cleaning_options, logger)
             
-            # 执行清洗和去重
-            cleaned_df = clean_and_deduplicate_data(
-                df=df,
-                cleaning_options=cleaning_options,
-                table_name=table_name
-            )
+            # 写回原表
+            write_result = write_table_data_back(datasource, table_name, df_cleaned, logger)
+            logger.info(f"写入结果: {write_result}")
             
-            # 保存结果
-            results[table_name] = cleaned_df
-            
-            logger.info(f"表 {table_name} 处理完成")
-            
+            results['tables_processed'].append({
+                'table': table_name,
+                'rows_before': len(df),
+                'rows_after': len(df_cleaned)
+            })
         except Exception as e:
-            logger.error(f"处理表 {table_name} 时发生错误: {str(e)}")
-            continue
+            logger.error(f"处理表 {table_name} 失败: {e}")
+            results['errors'].append({'table': table_name, 'error': str(e)})
     
-    logger.info(f"所有表处理完成，共处理 {len(results)} 个表")
+    results['success'] = len(results['errors']) == 0
     return results
 
-def main():
-    """
-    主函数，用于命令行执行
-    """
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="数据清洗和去重工具")
-    parser.add_argument("--datasource", required=True, help="数据源名称")
-    parser.add_argument("--tables", nargs="+", required=True, help="要处理的表名列表")
-    parser.add_argument("--output-log", help="日志输出路径")
-    
-    # 清洗选项参数
-    parser.add_argument("--no-remove-empty", action="store_false", dest="remove_empty", 
-                       help="不删除空值记录")
-    parser.add_argument("--deduplicate-columns", nargs="+", 
-                       help="用于去重的列名列表")
-    parser.add_argument("--convert-types", nargs="*", 
-                       help="数据类型转换，格式: 列名1:类型1,列名2:类型2")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='数据清洗和去重')
+    parser.add_argument('--datasource', required=True, help='数据源ID')
+    parser.add_argument('--tables', required=True, nargs='+', help='表名列表')
+    parser.add_argument('--primary-key', default=None, help='主键列名')
+    parser.add_argument('--cleaning-options', default='{}', help='清洗选项JSON')
+    parser.add_argument('--output-log', default=None, help='日志输出路径')
     
     args = parser.parse_args()
+    cleaning_opts = json.loads(args.cleaning_options) if args.cleaning_options else {}
     
-    # 获取数据源ID
-    datasource_id = get_datasource_id_by_name(args.datasource)
-    if not datasource_id:
-        print(f"错误: 未找到数据源 {args.datasource}")
-        return
-    
-    # 解析清洗选项
-    cleaning_options = {
-        "remove_empty": args.remove_empty if hasattr(args, 'remove_empty') else True
-    }
-    
-    if args.deduplicate_columns:
-        cleaning_options["deduplicate_columns"] = args.deduplicate_columns
-    
-    if args.convert_types:
-        type_mapping = {}
-        for item in args.convert_types:
-            if ":" in item:
-                col, dtype = item.split(":", 1)
-                type_mapping[col] = dtype
-        cleaning_options["convert_types"] = type_mapping
-    
-    # 处理表
-    results = process_tables(
-        datasource_id=datasource_id,
+    result = main(
+        datasource=args.datasource,
         table_names=args.tables,
-        cleaning_options=cleaning_options,
+        primary_key=args.primary_key,
+        cleaning_options=cleaning_opts,
         output_log=args.output_log
     )
-    
-    # 输出处理结果摘要
-    print("\n处理结果摘要:")
-    for table_name, df in results.items():
-        print(f"表 {table_name}: {df.shape[0]} 行, {df.shape[1]} 列")
-    
-    return results
-
-if __name__ == "__main__":
-    main()
+    print(json.dumps(result, ensure_ascii=False, indent=2))

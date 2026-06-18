@@ -1,0 +1,26 @@
+# Development Entry Gate
+# Validates inputs before TDD cycle starts
+
+rules:
+  - id: task-split-ready
+    type: yaml-field-check
+    blocking: true
+    message: "task-split.md must exist with features and tasks"
+    file: "{task_split}"
+    required_fields:
+      - features
+      - tasks
+
+  - id: arch-outputs-ready
+    type: yaml-field-check
+    blocking: true
+    message: "Architecture SPI must be defined"
+    file: "{arch_doc}"
+    required_fields:
+      - spi
+
+  - id: context-md-exists
+    type: exec
+    blocking: false
+    message: "CONTEXT.md should exist for domain vocabulary"
+    command: "test -f {context}"

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>调度API测试</title>
+</head>
+<body>
+    <h1>调度API测试</h1>
+    <div id="result"></div>
+    
+    <script>
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>测试中...</p>';
+            
+            try {
+                // 测试1: 健康检查
+                resultDiv.innerHTML += '<h2>1. 健康检查</h2>';
+                const health = await fetch('http://localhost:8001/health');
+                resultDiv.innerHTML += `<p>状态: ${health.status}</p>`;
+                
+                // 测试2: 调度列表
+                resultDiv.innerHTML += '<h2>2. 调度列表</h2>';
+                const schedules = await fetch('http://localhost:8001/api/v1/schedules');
+                const scheduleData = await schedules.json();
+                resultDiv.innerHTML += `<p>状态: ${schedules.status}</p>`;
+                resultDiv.innerHTML += `<pre>${JSON.stringify(scheduleData, null, 2)}</pre>`;
+                
+                // 测试3: 统计信息
+                resultDiv.innerHTML += '<h2>3. 统计信息</h2>';
+                const stats = await fetch('http://localhost:8001/api/v1/schedules/stats/overview');
+                const statsData = await stats.json();
+                resultDiv.innerHTML += `<p>状态: ${stats.status}</p>`;
+                resultDiv.innerHTML += `<pre>${JSON.stringify(statsData, null, 2)}</pre>`;
+                
+            } catch (error) {
+                resultDiv.innerHTML += `<p style="color: red;">错误: ${error.message}</p>`;
+            }
+        }
+        
+        testAPI();
+    </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 """Skill Creator - AI 生成完整 Skill 包"""
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, AsyncGenerator
 
 from loguru import logger
 
@@ -153,3 +153,76 @@ def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str
     assets_dir.mkdir(exist_ok=True)
 
     logger.info(f"Skill 文件夹已创建: {skill_path}")
+
+
+async def generate_skill_stream(prompt: str) -> AsyncGenerator[Dict[str, Any], None]:
+    """流式生成 Skill 包，逐步返回生成过程"""
+    await llm_manager.initialize()
+
+    yield {"type": "status", "message": "正在分析需求..."}
+
+    user_prompt = f"""请根据以下需求，创建一个完整的 Skill 包：
+
+{prompt}
+
+请输出：
+1. SKILL.md（包含 YAML front matter + Markdown 内容）
+2. scripts/main.py（核心处理脚本）
+3. 如果必要，scripts/ 下可以有更多脚本
+4. 如果有参考资料，输出 references/
+
+使用以下格式输出：
+
+===SKILL_MD===
+（SKILL.md 完整内容）
+===SKILL_MD_END===
+
+===SCRIPT:main.py===
+（脚本内容）
+===SCRIPT_END===
+
+（如有其他脚本，继续用 ===SCRIPT:文件名.py=== 格式）
+"""
+
+    yield {"type": "status", "message": "正在调用 LLM 生成..."}
+
+    full_response = ""
+    try:
+        async for chunk in llm_manager.chat_stream_with_messages(
+            messages=[
+                {"role": "system", "content": SKILL_CREATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        ):
+            full_response += chunk
+            yield {"type": "chunk", "content": chunk}
+
+            if "===SKILL_MD===" in full_response and "===SKILL_MD_END===" not in full_response:
+                if "===SKILL_MD_END===" not in chunk:
+                    yield {"type": "progress", "message": "正在生成 SKILL.md..."}
+
+            for marker in ["===SCRIPT:"]:
+                if marker in full_response:
+                    last_script_start = full_response.rfind(marker)
+                    remaining = full_response[last_script_start:]
+                    if "===SCRIPT_END===" not in remaining:
+                        script_name_match = remaining[len(marker):].split("===")
+                        if script_name_match:
+                            yield {"type": "progress", "message": f"正在生成脚本 {script_name_match[0]}..."}
+
+    except Exception as e:
+        logger.error(f"Skill Creator 流式生成失败: {e}")
+        yield {"type": "error", "message": str(e)}
+        return
+
+    yield {"type": "status", "message": "生成完成，正在解析..."}
+
+    parsed = _parse_creator_response(full_response)
+
+    if not parsed.get("skill_md"):
+        yield {"type": "error", "message": "LLM 未生成有效的 SKILL.md，请重试"}
+        return
+
+    yield {"type": "status", "message": f"解析完成：SKILL.md + {len(parsed.get('scripts', {}))} 个脚本"}
+    yield {"type": "done", "data": parsed}

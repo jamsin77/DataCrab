@@ -46,11 +46,14 @@
           <el-button size="small" type="primary" @click="openDetail(skill)">
             <el-icon><Edit /></el-icon> 修改
           </el-button>
-          <el-button size="small" type="success" plain @click="openRun(skill)">
-            <el-icon><VideoPlay /></el-icon> 执行
+          <el-button size="small" type="success" plain @click="openDebug(skill)">
+            <el-icon><VideoPlay /></el-icon> 调试
           </el-button>
           <el-button size="small" @click="downloadSkill(skill)">
             <el-icon><Download /></el-icon> 下载
+          </el-button>
+          <el-button size="small" type="warning" plain @click="convertToWorkflow(skill)">
+            <el-icon><Share /></el-icon> 转为流程
           </el-button>
           <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
             <el-icon><Delete /></el-icon>
@@ -84,7 +87,7 @@
     </el-dialog>
 
     <!-- ==================== AI 生成对话框 ==================== -->
-    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="550px" @closed="generatePrompt = ''">
+    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="680px" @closed="onGenerateDialogClosed">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           Skill Creator 将根据需求描述生成完整 Skill 包（SKILL.md + 脚本）
@@ -97,11 +100,34 @@
             type="textarea"
             :rows="5"
             placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条"
+            :disabled="generating"
           />
         </el-form-item>
       </el-form>
+
+      <div v-if="generating || genLog.length" class="gen-process">
+        <div class="gen-process-header" @click="genLogCollapsed = !genLogCollapsed">
+          <span>{{ generating ? '生成中...' : '生成完成' }}</span>
+          <el-icon :class="{ 'gen-collapse-icon': true, 'gen-collapse-rotated': !genLogCollapsed }"><ArrowDown /></el-icon>
+        </div>
+        <div v-show="!genLogCollapsed" class="gen-process-body">
+          <div v-if="genStatusText" class="gen-status-line">
+            <el-icon class="gen-spin"><Loading /></el-icon> {{ genStatusText }}
+          </div>
+          <div class="gen-log-scroll" ref="genLogRef">
+            <div v-for="(line, idx) in genLog" :key="idx" class="gen-log-line" :class="'gen-log-' + line.type">
+              <span v-if="line.type === 'status'" class="gen-log-label">[状态]</span>
+              <span v-else-if="line.type === 'progress'" class="gen-log-label">[进度]</span>
+              <span v-else-if="line.type === 'chunk'" class="gen-log-label">[输出]</span>
+              <span v-else-if="line.type === 'error'" class="gen-log-label">[错误]</span>
+              <span class="gen-log-text">{{ line.text }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
-        <el-button @click="showGenerateDialog = false">取消</el-button>
+        <el-button @click="showGenerateDialog = false" :disabled="generating">取消</el-button>
         <el-button type="primary" @click="handleGenerate" :loading="generating">
           {{ generating ? 'AI 生成中...' : '开始生成' }}
         </el-button>
@@ -189,8 +215,8 @@
                     <el-button size="small" type="primary" @click="saveScriptContent(script.name)" :loading="savingScript">
                       <el-icon><Check /></el-icon> 保存
                     </el-button>
-                    <el-button size="small" type="success" @click="openRun(detailSkill, script.name)">
-                      <el-icon><VideoPlay /></el-icon> 执行
+                    <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)">
+                      <el-icon><VideoPlay /></el-icon> 调试
                     </el-button>
                   </div>
                 </div>
@@ -225,116 +251,176 @@
       </div>
     </el-drawer>
 
-    <!-- ==================== 执行技能对话框 ==================== -->
-    <el-dialog v-model="execDialog" title="执行技能" width="750px" destroy-on-close @closed="execResult = null">
-      <div v-if="execSkill" class="exec-container">
-        <div class="exec-info">
-          <span class="exec-skill-name">{{ execSkill.display_name || execSkill.name }}</span>
-          <el-tag size="small" type="primary">脚本: {{ execScriptName }}</el-tag>
-        </div>
-
-        <el-tabs v-model="execTab" style="margin-top:16px">
-          <el-tab-pane label="自然语言调用" name="nl">
-            <el-alert type="info" :closable="false" style="margin-bottom:12px">
-              <template #title>用自然语言描述你想要执行的操作，AI 将自动推断参数并调用技能</template>
-            </el-alert>
-            <el-form label-width="100px">
-              <el-form-item label="数据源">
-                <el-select v-model="execDatasourceId" placeholder="选择数据源（可选）" clearable style="width:100%">
-                  <el-option
-                    v-for="ds in datasources"
-                    :key="ds.id"
-                    :label="ds.name"
-                    :value="ds.id"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="调用指令">
-                <el-input
-                  v-model="execNLQuery"
-                  type="textarea"
-                  :rows="4"
-                  placeholder="例如：帮我查询明代的青铜器数据，限制返回50条"
-                />
-              </el-form-item>
-            </el-form>
-            <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px">
-              <el-button type="primary" @click="handleRunSkillNL" :loading="execRunning">
-                <el-icon><MagicStick /></el-icon> AI 调用
-              </el-button>
-            </div>
-          </el-tab-pane>
-
-          <el-tab-pane label="命令调用" name="cmd">
-            <el-alert type="info" :closable="false" style="margin-bottom:12px">
-              <template #title>使用 / 命令直接调用技能，格式：/技能名 参数1=值1 参数2=值2</template>
-            </el-alert>
-
-            <div v-if="skillParams.length" class="cmd-params-form">
-              <div class="cmd-params-title">参数填写（根据技能定义自动生成）</div>
-              <el-form label-width="100px" size="small">
-                <el-form-item v-for="p in skillParams" :key="p.name" :label="p.display_name || p.name" :required="p.required">
-                  <el-select v-if="p.is_datasource" v-model="cmdParamValues[p.name]" placeholder="选择数据源" clearable style="width:100%">
-                    <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.name" />
-                  </el-select>
-                  <el-select v-else-if="p.is_table" v-model="cmdParamValues[p.name]" placeholder="选择表名" clearable style="width:100%">
-                    <el-option v-for="t in tableOptions" :key="t" :label="t" :value="t" />
-                  </el-select>
-                  <el-input v-else-if="p.type === 'int'" v-model.number="cmdParamValues[p.name]" :placeholder="p.description || p.name" type="number" />
-                  <el-switch v-else-if="p.type === 'bool'" v-model="cmdParamValues[p.name]" />
-                  <el-input v-else v-model="cmdParamValues[p.name]" :placeholder="p.description || p.name" />
-                </el-form-item>
-              </el-form>
-              <el-button type="primary" size="small" @click="buildCmdFromParams" style="margin-bottom:12px">
-                生成命令
-              </el-button>
-            </div>
-
-            <div v-if="cmdExamples.length" class="cmd-examples">
-              <div class="cmd-examples-title">命令示例（点击填入）</div>
-              <div class="cmd-example-item" v-for="ex in cmdExamples" :key="ex.cmd" @click="execCmdStr = ex.cmd">
-                <code>{{ ex.cmd }}</code>
-                <span v-if="ex.desc" class="cmd-example-desc">{{ ex.desc }}</span>
+    <!-- ==================== 调试技能 Dialog ==================== -->
+    <el-dialog
+      v-model="debugDrawer"
+      :title="'调试: ' + (debugSkill?.display_name || debugSkill?.name || '')"
+      width="95%"
+      top="2vh"
+      destroy-on-close
+      @closed="resetDebug"
+    >
+      <div v-if="debugSkill" class="debug-layout">
+        <div class="debug-left">
+          <el-tabs v-model="execTab">
+            <el-tab-pane label="自然语言" name="nl">
+              <div class="nl-hint" v-if="nlHint">
+                <el-icon><InfoFilled /></el-icon>
+                <span>{{ nlHint }}</span>
               </div>
-            </div>
-
-            <div class="cmd-input-row">
               <el-input
-                v-model="execCmdStr"
+                v-model="execNLQuery"
                 type="textarea"
                 :rows="3"
-                :placeholder="cmdPlaceholder"
-                @keydown.enter.ctrl="handleRunCmd"
+                :placeholder="nlPlaceholder"
               />
-              <el-button type="primary" @click="handleRunCmd" :loading="execRunning" style="margin-top:8px">
-                <el-icon><CaretRight /></el-icon> 执行
+              <el-button type="primary" style="margin-top:10px" :loading="execRunning" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
+                <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
-            </div>
-            <div v-if="cmdParseHint" class="cmd-parse-hint">
-              <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
+            </el-tab-pane>
 
-        <div v-if="execResult" class="exec-result">
-          <div class="exec-result-header">
-            <el-tag :type="execResult.success ? 'success' : 'danger'">
-              {{ execResult.success ? '成功' : '失败' }}
-            </el-tag>
-            <span v-if="execResult.execution_time_ms" class="exec-time">
-              {{ execResult.execution_time_ms }}ms
-            </span>
+            <el-tab-pane label="命令行" name="cmd">
+              <div class="cmd-input-row">
+                <div v-if="cmdExamples.length" class="cmd-examples">
+                  <div class="cmd-examples-title">示例命令</div>
+                  <div v-for="(ex, i) in cmdExamples" :key="i" class="cmd-example-item" @click="execCmdStr = ex.cmd">
+                    <code>{{ ex.cmd }}</code>
+                    <span class="cmd-example-desc">{{ ex.desc }}</span>
+                  </div>
+                </div>
+
+                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" size="small" />
+                <div v-if="cmdParseHint" class="cmd-parse-hint">
+                  <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
+                </div>
+              </div>
+              <el-button type="primary" size="small" style="margin-top:8px" :loading="execRunning" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
+                <el-icon><VideoPlay /></el-icon> 执行
+              </el-button>
+            </el-tab-pane>
+
+            <el-tab-pane label="JSON 参数" name="json">
+              <el-input
+                v-model="execParamsStr"
+                type="textarea"
+                :rows="6"
+                placeholder='{"key": "value"}'
+              />
+              <el-button type="primary" style="margin-top:10px" :loading="execRunning" @click="handleRunSkill">
+                <el-icon><VideoPlay /></el-icon> 执行
+              </el-button>
+            </el-tab-pane>
+          </el-tabs>
+
+          <div v-if="execThinking && execPhase !== 'idle'" class="exec-thinking-box">
+            <div class="exec-thinking-header">
+              <el-icon class="thinking-spin"><Loading /></el-icon>
+              <span class="exec-thinking-title">{{ execPhase === 'thinking' ? 'AI 正在思考...' : '正在执行...' }}</span>
+            </div>
+            <div class="exec-thinking-content">{{ execThinking }}</div>
           </div>
-          <div v-if="execResult.error" class="exec-error-block">
-            <pre>{{ execResult.error }}</pre>
+
+          <div v-if="execResult" class="exec-result" style="margin-top:16px">
+            <div class="exec-result-header">
+              <el-tag :type="execResult.success ? 'success' : 'danger'">
+                {{ execResult.success ? '执行成功' : '执行失败' }}
+              </el-tag>
+              <span v-if="execResult.execution_time_ms" class="exec-time">{{ execResult.execution_time_ms }}ms</span>
+            </div>
+            <div v-if="execResult.error" class="exec-error-block"><pre>{{ execResult.error }}</pre></div>
+            <div v-if="execResult.stdout" class="exec-stdout-block"><pre>{{ execResult.stdout }}</pre></div>
+            <div v-if="execResult.result != null" class="exec-result-block">
+              <div class="exec-label">返回数据</div>
+              <pre>{{ formatResult(execResult.result) }}</pre>
+            </div>
           </div>
-          <div v-if="execResult.stdout" class="exec-stdout-block">
-            <div class="exec-label">标准输出:</div>
-            <pre>{{ execResult.stdout }}</pre>
+        </div>
+
+        <div class="debug-right">
+          <div class="debug-chat-header">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>AI 调试助手</span>
           </div>
-          <div v-if="execResult.result !== undefined && execResult.result !== null" class="exec-result-block">
-            <div class="exec-label">返回结果:</div>
-            <pre>{{ formatResult(execResult.result) }}</pre>
+          <div class="debug-message-list" ref="debugMsgListRef">
+            <div v-if="debugMessages.length === 0" class="debug-empty">
+              <p>输入消息调试技能，例如"运行一下"、"帮我优化这个脚本"</p>
+            </div>
+            <div
+              v-for="(msg, idx) in debugMessages"
+              :key="idx"
+              class="debug-message"
+              :class="msg.role"
+            >
+              <div class="debug-msg-avatar">
+                <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">{{ agentName }}</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+              </div>
+              <div class="debug-msg-body">
+                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-else class="debug-msg-assistant">
+                  <div v-if="msg.thinking" class="debug-msg-thinking">
+                    <div class="thinking-header">
+                      <el-icon class="thinking-spin"><Loading /></el-icon>
+                      <span>推理过程</span>
+                    </div>
+                    <div class="thinking-body">{{ msg.thinking }}</div>
+                  </div>
+                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.runResult" class="debug-msg-runresult">
+                    <div class="runresult-header">
+                      <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
+                        {{ msg.runResult.success ? '执行成功' : '执行失败' }}
+                      </el-tag>
+                      <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
+                    </div>
+                    <div v-if="msg.runResult.error" class="debug-result-error"><pre>{{ msg.runResult.error }}</pre></div>
+                    <div v-if="msg.runResult.stdout" class="debug-result-stdout">
+                      <el-collapse>
+                        <el-collapse-item title="标准输出">
+                          <pre>{{ msg.runResult.stdout }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                    <div v-if="msg.runResult.result != null" class="debug-result-data">
+                      <el-collapse>
+                        <el-collapse-item title="返回数据">
+                          <pre>{{ formatResult(msg.runResult.result) }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                  </div>
+                  <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
+                    <el-tag type="warning" size="small">脚本已更新: {{ msg.scriptUpdated }}</el-tag>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="debugStreaming && !debugMessages.length" class="debug-message assistant">
+              <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">{{ agentName }}</el-avatar></div>
+              <div class="debug-msg-body">
+                <div class="typing-indicator"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="debug-input-area">
+            <el-input
+              v-model="debugInput"
+              type="textarea"
+              :rows="2"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              placeholder="输入调试指令... (Enter发送)"
+              @keydown="handleDebugKeyDown"
+              :disabled="debugStreaming"
+            />
+            <el-button
+              type="primary"
+              circle
+              :disabled="!debugInput.trim() || debugStreaming"
+              @click="handleDebugSend"
+            >
+              <el-icon><Promotion /></el-icon>
+            </el-button>
           </div>
         </div>
       </div>
@@ -343,19 +429,34 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
+  Promotion, ChatDotRound, InfoFilled, Share,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
 
+const router = useRouter()
 const skills = ref<any[]>([])
 const categories = ref<string[]>([])
 const filterCategory = ref('')
 const searchQuery = ref('')
+const agentName = ref('DC')
+
+async function loadAgentConfig() {
+  try {
+    const config = await api.get('/chat/agent/config')
+    if (config && config.short_name) {
+      agentName.value = config.short_name
+    }
+  } catch (e) {
+    // 使用默认值
+  }
+}
 
 const filteredSkills = computed(() => {
   let list = skills.value
@@ -474,6 +575,23 @@ function downloadSkill(skill: any) {
 }
 
 // ==================== 删除 ====================
+
+async function convertToWorkflow(skill: any) {
+  try {
+    const token = localStorage.getItem('access_token')
+    const resp = await fetch(`/api/v1/pipelines/from-skill/${skill.id}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!resp.ok) throw new Error(await resp.text())
+    const pl = await resp.json()
+    ElMessage.success(`流程 "${pl.display_name || pl.name}" 已生成`)
+    router.push('/pipeline')
+  } catch (e: any) {
+    ElMessage.error('转换失败: ' + (e.message || '未知错误'))
+  }
+}
+
 async function confirmDelete(skill: any) {
   try {
     await ElMessageBox.confirm(
@@ -495,6 +613,23 @@ async function confirmDelete(skill: any) {
 const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
+const genLog = ref<{ type: string; text: string }[]>([])
+const genLogCollapsed = ref(false)
+const genStatusText = ref('')
+const genLogRef = ref<HTMLElement | null>(null)
+
+function onGenerateDialogClosed() {
+  generatePrompt.value = ''
+  genLog.value = []
+  genStatusText.value = ''
+  genLogCollapsed.value = false
+}
+
+function scrollGenLog() {
+  nextTick(() => {
+    if (genLogRef.value) genLogRef.value.scrollTop = genLogRef.value.scrollHeight
+  })
+}
 
 async function handleGenerate() {
   if (!generatePrompt.value.trim()) {
@@ -502,19 +637,74 @@ async function handleGenerate() {
     return
   }
   generating.value = true
+  genLog.value = []
+  genStatusText.value = '正在启动...'
+  genLogCollapsed.value = false
+
   try {
-    const res = await api.post('/skills/generate', { prompt: generatePrompt.value.trim() }, { timeout: 180000 })
-    ElMessage.success(`技能 "${res.display_name || res.name}" 已生成`)
-    showGenerateDialog.value = false
-    generatePrompt.value = ''
-    await loadSkills()
-    detailSkill.value = res
-    mdEditContent.value = res.skill_md || ''
-    modifyInstruction.value = ''
-    detailTab.value = 'md'
-    detailDrawer.value = true
+    const token = localStorage.getItem('access_token')
+    const response = await fetch('/api/v1/skills/generate-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ prompt: generatePrompt.value.trim() }),
+    })
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(err)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6))
+          if (data.type === 'status') {
+            genStatusText.value = data.message
+            genLog.value.push({ type: 'status', text: data.message })
+          } else if (data.type === 'progress') {
+            genStatusText.value = data.message
+            genLog.value.push({ type: 'progress', text: data.message })
+          } else if (data.type === 'chunk') {
+            const text = data.content || ''
+            if (text.trim()) {
+              genLog.value.push({ type: 'chunk', text: text.replace(/\n/g, '\\n') })
+            }
+          } else if (data.type === 'done') {
+            genStatusText.value = data.message
+            genLog.value.push({ type: 'status', text: data.message })
+          } else if (data.type === 'error') {
+            genLog.value.push({ type: 'error', text: data.message })
+            ElMessage.error(data.message)
+          } else if (data.type === 'created') {
+            const skill = data.skill
+            genStatusText.value = '生成完成！'
+            genLog.value.push({ type: 'status', text: `技能 "${skill.display_name || skill.name}" 已创建` })
+            ElMessage.success(`技能 "${skill.display_name || skill.name}" 已生成`)
+            showGenerateDialog.value = false
+            await loadSkills()
+            detailSkill.value = skill
+            mdEditContent.value = skill.skill_md || ''
+            modifyInstruction.value = ''
+            detailTab.value = 'md'
+            detailDrawer.value = true
+          }
+          scrollGenLog()
+        } catch {}
+      }
+    }
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '生成失败')
+    ElMessage.error(e.message || '生成失败')
+    genLog.value.push({ type: 'error', text: e.message || '生成失败' })
   } finally {
     generating.value = false
   }
@@ -667,42 +857,41 @@ async function saveScriptContent(name: string) {
   }
 }
 
-// ==================== 执行技能 ====================
-const execDialog = ref(false)
-const execSkill = ref<any>(null)
-const execScriptName = ref('main.py')
-const execDatasourceId = ref('')
-const execTableName = ref('')
-const execParamsStr = ref('')
+// ==================== 调试技能 ====================
+const debugDrawer = ref(false)
+const debugSkill = ref<any>(null)
+const debugScriptName = ref('main.py')
+
+// 执行面板
 const execRunning = ref(false)
 const execResult = ref<any>(null)
+const execThinking = ref('')
+const execPhase = ref<'thinking' | 'executing' | 'idle'>('idle')
 const execTab = ref('nl')
 const execNLQuery = ref('')
 const execCmdStr = ref('')
+const execParamsStr = ref('')
 const skillParams = ref<any[]>([])
 const cmdParamValues = reactive<Record<string, any>>({})
-const tableOptions = ref<string[]>([])
+const cmdExampleDsName = ref('')
+const cmdExampleTableName = ref('')
 
-// 监听数据源选择，自动加载表列表
-watch(execDatasourceId, async (newVal) => {
-  if (newVal) {
-    try {
-      const ds = datasources.value.find((d: any) => d.id === newVal)
-      if (ds) {
-        const tree = await api.get(`/datasources/${newVal}/tree`)
-        tableOptions.value = tree.map((t: any) => t.label || t.table_name).filter(Boolean)
-      }
-    } catch (e) {
-      console.error('加载表列表失败', e)
-      tableOptions.value = []
-    }
-  } else {
-    tableOptions.value = []
-  }
-})
+// Chat 面板
+interface DebugMessage {
+  role: 'user' | 'assistant'
+  content: string
+  thinking?: string
+  runResult?: any
+  scriptUpdated?: string
+}
+
+const debugMessages = ref<DebugMessage[]>([])
+const debugInput = ref('')
+const debugStreaming = ref(false)
+const debugMsgListRef = ref<HTMLElement>()
 
 const cmdPlaceholder = computed(() => {
-  const name = execSkill.value?.name || 'skill'
+  const name = debugSkill.value?.name || 'skill'
   if (skillParams.value.length) {
     const paramHint = skillParams.value
       .filter((p: any) => p.required)
@@ -711,6 +900,85 @@ const cmdPlaceholder = computed(() => {
     return `/${name} ${paramHint}`
   }
   return `/${name} 参数1=值1 参数2=值2`
+})
+
+const nlHint = computed(() => {
+  if (!debugSkill.value) return ''
+  const skill = debugSkill.value
+  const desc = skill.description || ''
+  
+  // 根据技能描述生成提示
+  if (desc.includes('清洗') || desc.includes('去重')) {
+    return '告诉我要清洗哪个数据源的哪个表，我会帮你去除重复和空值数据'
+  }
+  if (desc.includes('检索') || desc.includes('搜索') || desc.includes('查询')) {
+    return '用自然语言描述你想查找的内容，我会帮你检索相关数据'
+  }
+  if (desc.includes('分析') || desc.includes('统计')) {
+    return '描述你想分析的数据维度，我会生成统计报告'
+  }
+  if (desc.includes('导出')) {
+    return '告诉我要导出哪些数据，我会帮你生成文件'
+  }
+  if (desc.includes('采集') || desc.includes('爬取')) {
+    return '描述要采集的数据来源和数量，我会帮你获取数据'
+  }
+  if (desc.includes('转换') || desc.includes('处理')) {
+    return '描述数据转换需求，我会帮你处理数据'
+  }
+  
+  // 默认提示
+  return ''
+})
+
+const nlPlaceholder = computed(() => {
+  if (!debugSkill.value) return '用自然语言描述你想做什么'
+  
+  const skill = debugSkill.value
+  const name = skill.display_name || skill.name || ''
+  const desc = skill.description || ''
+  const params = skillParams.value
+  
+  // 根据技能名称和描述生成示例
+  if (name.includes('文物') || desc.includes('文物')) {
+    return '例如：检索明代的青铜器，限制返回20条'
+  }
+  if (desc.includes('清洗') || desc.includes('去重')) {
+    return '例如：清洗"文物"数据源的"全国文物"表，去除重复数据'
+  }
+  if (desc.includes('检索') || desc.includes('搜索')) {
+    if (params.length > 0) {
+      const examples = params.slice(0, 2).map(p => {
+        if (p.example) return `${p.name}为${p.example}`
+        return `${p.name}为某个值`
+      })
+      return `例如：查找${examples.join('，')}的数据`
+    }
+    return '例如：查找符合条件的数据'
+  }
+  if (desc.includes('分析') || desc.includes('统计')) {
+    return '例如：统计各类型数据的分布情况'
+  }
+  if (desc.includes('导出')) {
+    return '例如：导出查询结果到Excel文件'
+  }
+  if (desc.includes('采集')) {
+    return '例如：采集100条数据并保存'
+  }
+  
+  // 根据参数生成示例
+  if (params.length > 0) {
+    const requiredParams = params.filter((p: any) => p.required)
+    if (requiredParams.length > 0) {
+      const firstParam = requiredParams[0]
+      if (firstParam.example) {
+        return `例如：设置${firstParam.name}为${firstParam.example}`
+      }
+    }
+  }
+  
+  // 默认
+  return '用自然语言描述你想做什么'
 })
 
 const cmdParseHint = computed(() => {
@@ -731,52 +999,91 @@ const cmdParseHint = computed(() => {
 })
 
 const cmdExamples = computed(() => {
-  const name = execSkill.value?.name || 'skill'
+  const name = debugSkill.value?.name || 'skill'
   const params = skillParams.value
+  const examples: { cmd: string; desc: string }[] = []
+  
+  const firstDs = datasources.value?.[0]
+  const dsName = cmdExampleDsName.value || firstDs?.name || ''
+  const tblName = cmdExampleTableName.value || ''
+
+  function paramValue(p: any): string {
+    if (p.is_datasource) return dsName || '数据源名'
+    if (p.is_table) return tblName || '表名'
+    if (p.example) return String(p.example)
+    if (p.default !== undefined && p.default !== null) return String(p.default)
+    if (p.type === 'bool') return 'true'
+    if (p.type === 'int' || p.type === 'float') {
+      if (p.name.includes('limit') || p.name.includes('count')) return '10'
+      if (p.name.includes('max')) return '100'
+      return '1'
+    }
+    if (p.name.includes('path') || p.name.includes('file') || p.name.includes('log')) return './output.log'
+    if (p.name.includes('name')) return '名称'
+    if (p.name.includes('id')) return 'ID'
+    return '值'
+  }
+
   if (!params.length) {
-    return [
-      { cmd: `/${name} datasource=数据源名 table=表名`, desc: '基本调用' },
-      { cmd: `/${name} column=名称 limit=50`, desc: '带参数调用' },
-    ]
+    examples.push({ cmd: `/${name}`, desc: '基本调用' })
+    examples.push({ cmd: `/${name} param1=value1 param2=value2`, desc: '带参数调用' })
+    return examples
   }
 
   const required = params.filter((p: any) => p.required)
   const optional = params.filter((p: any) => !p.required)
-  const examples: { cmd: string; desc: string }[] = []
 
-  const requiredPart = required.map((p: any) => {
-    const val = p.is_datasource ? '数据源名' : p.is_table ? '表名' : p.example || `值`
-    return `${p.name}=${val}`
-  }).join(' ')
+  if (required.length > 0) {
+    const requiredPart = required.map((p: any) => `${p.name}=${paramValue(p)}`).join(' ')
+    examples.push({ cmd: `/${name} ${requiredPart}`, desc: '必填参数' })
+  } else {
+    examples.push({ cmd: `/${name}`, desc: '基本调用' })
+  }
 
-  examples.push({ cmd: `/${name} ${requiredPart}`, desc: '必填参数调用' })
-
-  if (optional.length > 0) {
-    const allPart = [...required, ...optional.slice(0, 2)].map((p: any) => {
-      const val = p.is_datasource ? '数据源名' : p.is_table ? '表名' : p.example || p.default || '值'
-      return `${p.name}=${val}`
-    }).join(' ')
-    examples.push({ cmd: `/${name} ${allPart}`, desc: '完整参数调用' })
+  const additionalParams = optional.slice(0, 2)
+  if (additionalParams.length > 0) {
+    const allParams = [...required, ...additionalParams]
+    const allPart = allParams.map((p: any) => `${p.name}=${paramValue(p)}`).join(' ')
+    examples.push({ cmd: `/${name} ${allPart}`, desc: '完整参数' })
   }
 
   return examples
 })
 
-async function openRun(skill: any, scriptName?: string) {
-  execSkill.value = skill
-  execScriptName.value = scriptName || (skill.scripts?.[0]?.name || 'main.py')
-  execDatasourceId.value = ''
-  execTableName.value = ''
+
+function resetDebug() {
+  debugSkill.value = null
+  execRunning.value = false
+  execResult.value = null
+  execThinking.value = ''
+  execPhase.value = 'idle'
+  execNLQuery.value = ''
+  execCmdStr.value = ''
   execParamsStr.value = ''
+  execTab.value = 'nl'
+  skillParams.value = []
+  cmdExampleDsName.value = ''
+  cmdExampleTableName.value = ''
+  debugMessages.value = []
+  debugInput.value = ''
+  debugStreaming.value = false
+}
+
+async function openDebug(skill: any, scriptName?: string) {
+  debugSkill.value = skill
+  debugScriptName.value = scriptName || (skill.scripts?.[0]?.name || 'main.py')
+  execResult.value = null
+  execThinking.value = ''
+  execPhase.value = 'idle'
   execNLQuery.value = ''
   execCmdStr.value = `/${skill.name || 'skill'} `
+  execParamsStr.value = ''
   execTab.value = 'nl'
-  execResult.value = null
   skillParams.value = []
-  for (const key of Object.keys(cmdParamValues)) {
-    delete cmdParamValues[key]
-  }
-  execDialog.value = true
+  debugMessages.value = []
+  debugInput.value = ''
+  debugStreaming.value = false
+  debugDrawer.value = true
 
   try {
     const params = await api.get(`/skills/${skill.id}/params`)
@@ -790,13 +1097,26 @@ async function openRun(skill: any, scriptName?: string) {
         cmdParamValues[p.name] = ''
       }
     }
+
+    const hasDs = params.some((p: any) => p.is_datasource)
+    if (hasDs && datasources.value.length) {
+      const ds = datasources.value[0]
+      cmdExampleDsName.value = ds.name || ''
+      try {
+        const tree = await api.get(`/datasources/${ds.id}/tree`)
+        const tableNodes = (tree || []).filter((n: any) => n.type === 'excel_sheet' || n.type === 'csv' || n.type === 'table')
+        if (tableNodes.length) {
+          cmdExampleTableName.value = tableNodes[0].label || tableNodes[0].metadata?.table_name || ''
+        }
+      } catch { /* ignore */ }
+    }
   } catch {
     /* ignore */
   }
 }
 
 function buildCmdFromParams() {
-  const name = execSkill.value?.name || 'skill'
+  const name = debugSkill.value?.name || 'skill'
   const parts = [`/${name}`]
   for (const p of skillParams.value) {
     const val = cmdParamValues[p.name]
@@ -815,7 +1135,7 @@ function buildCmdFromParams() {
 }
 
 async function handleRunSkill() {
-  if (!execSkill.value) return
+  if (!debugSkill.value) return
   execRunning.value = true
   execResult.value = null
 
@@ -832,11 +1152,9 @@ async function handleRunSkill() {
 
   try {
     const res = await api.post(
-      `/skills/${execSkill.value.id}/run`,
+      `/skills/${debugSkill.value.id}/run`,
       {
-        script_name: execScriptName.value,
-        datasource_id: execDatasourceId.value || undefined,
-        table_name: execTableName.value || undefined,
+        script_name: debugScriptName.value,
         parameters,
       },
       { timeout: 60000 }
@@ -853,38 +1171,93 @@ async function handleRunSkill() {
 }
 
 async function handleRunSkillNL() {
-  if (!execSkill.value) return
+  if (!debugSkill.value) return
   if (!execNLQuery.value.trim()) {
     ElMessage.warning('请输入调用指令')
     return
   }
   execRunning.value = true
   execResult.value = null
+  execThinking.value = ''
+  execPhase.value = 'thinking'
 
   try {
-    const res = await api.post(
-      `/skills/${execSkill.value.id}/run-nl`,
-      {
-        query: execNLQuery.value.trim(),
-        script_name: execScriptName.value,
-        datasource_id: execDatasourceId.value || undefined,
-        table_name: execTableName.value || undefined,
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-nl-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      { timeout: 120000 }
-    )
-    execResult.value = res
+      body: JSON.stringify({
+        query: execNLQuery.value.trim(),
+        script_name: debugScriptName.value,
+      }),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+
+          if (data.type === 'thinking') {
+            execThinking.value += data.content
+          } else if (data.type === 'content') {
+            execPhase.value = 'executing'
+            if (!execThinking.value) {
+              execThinking.value = '正在推断参数...'
+            }
+          } else if (data.type === 'inferred_params') {
+            execPhase.value = 'executing'
+            if (!execThinking.value) {
+              execThinking.value = '参数推断完成'
+            }
+          } else if (data.type === 'executing') {
+            execPhase.value = 'executing'
+          } else if (data.type === 'done') {
+            if (data.result) {
+              execResult.value = data.result
+            }
+          } else if (data.type === 'error') {
+            execResult.value = { success: false, error: data.content || '执行失败' }
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
   } catch (e: any) {
     execResult.value = {
       success: false,
-      error: e.response?.data?.detail || String(e),
+      error: e.response?.data?.detail || e.message || String(e),
     }
   } finally {
     execRunning.value = false
+    execPhase.value = 'idle'
   }
 }
 
 async function handleRunCmd() {
-  if (!execSkill.value) return
+  if (!debugSkill.value) return
   const cmd = execCmdStr.value.trim()
   if (!cmd) {
     ElMessage.warning('请输入命令')
@@ -894,7 +1267,6 @@ async function handleRunCmd() {
   let parameters: Record<string, any> = {}
   let datasourceName = ''
   let tableName = ''
-  let dsId = execDatasourceId.value
 
   if (cmd.startsWith('/')) {
     const parts = cmd.split(/\s+/)
@@ -923,39 +1295,193 @@ async function handleRunCmd() {
     return
   }
 
-  if (datasourceName && !dsId) {
+  let dsId: string | undefined
+  if (datasourceName) {
     const ds = datasources.value.find((d: any) => d.name === datasourceName)
     if (ds) dsId = ds.id
   }
 
   execRunning.value = true
   execResult.value = null
+  execThinking.value = ''
+  execPhase.value = 'executing'
 
   try {
-    const res = await api.post(
-      `/skills/${execSkill.value.id}/run`,
-      {
-        script_name: execScriptName.value,
-        datasource_id: dsId || undefined,
-        table_name: tableName || execTableName.value || undefined,
-        parameters,
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      { timeout: 60000 }
-    )
-    execResult.value = res
+      body: JSON.stringify({
+        script_name: debugScriptName.value,
+        datasource_id: dsId,
+        table_name: tableName || undefined,
+        parameters,
+      }),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+
+          if (data.type === 'executing') {
+            execThinking.value = data.message || '正在执行技能脚本...'
+          } else if (data.type === 'done') {
+            if (data.result) {
+              execResult.value = data.result
+            }
+          } else if (data.type === 'error') {
+            execResult.value = { success: false, error: data.content || '执行失败' }
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
   } catch (e: any) {
     execResult.value = {
       success: false,
-      error: e.response?.data?.detail || String(e),
+      error: e.response?.data?.detail || e.message || String(e),
     }
   } finally {
     execRunning.value = false
+    execPhase.value = 'idle'
+  }
+}
+
+// Chat 调试面板
+function handleDebugKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleDebugSend()
+  }
+}
+
+async function handleDebugSend() {
+  if (!debugSkill.value || !debugInput.value.trim() || debugStreaming.value) return
+
+  const userMsg = debugInput.value.trim()
+  debugMessages.value.push({ role: 'user', content: userMsg })
+  debugInput.value = ''
+  debugStreaming.value = true
+
+  const assistantIdx = debugMessages.value.length
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+
+  try {
+    const token = localStorage.getItem('access_token')
+    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+      role: m.role,
+      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+    }))
+
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        message: userMsg,
+        history,
+        script_name: debugScriptName.value,
+      }),
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let thinkingDone = false
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          const msg = debugMessages.value[assistantIdx]
+
+          if (data.type === 'thinking') {
+            msg.thinking = (msg.thinking || '') + data.content
+          } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) {
+              thinkingDone = true
+            }
+            msg.content += data.content
+          } else if (data.type === 'executing') {
+            msg.thinking = data.message || '正在执行技能...'
+          } else if (data.type === 'run_result') {
+            msg.runResult = data.result
+            if (!msg.content) {
+              msg.content = data.result?.success ? '技能执行完成' : '技能执行失败'
+            }
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+          } else if (data.type === 'error') {
+            msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          }
+        } catch {
+          // skip
+        }
+      }
+    }
+
+    const finalMsg = debugMessages.value[assistantIdx]
+    if (finalMsg.thinking && !thinkingDone) {
+      finalMsg.thinking = ''
+    }
+
+  } catch (e: any) {
+    debugMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+  } finally {
+    debugStreaming.value = false
+    await nextTick(() => {
+      if (debugMsgListRef.value) {
+        debugMsgListRef.value.scrollTop = debugMsgListRef.value.scrollHeight
+      }
+    })
   }
 }
 
 onMounted(() => {
   loadSkills()
   loadDatasources()
+  loadAgentConfig()
 })
 </script>
 
@@ -1221,83 +1747,148 @@ onMounted(() => {
   }
 }
 
-// Execution
-.exec-container {
-  .exec-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    .exec-skill-name {
-      font-weight: 600;
-      font-size: 16px;
-    }
-  }
+// Debug Layout
+.debug-layout {
+  display: flex;
+  height: 75vh;
+  gap: 0;
+}
+
+.debug-left {
+  flex: 0 0 45%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0 16px 16px;
+  border-right: 1px solid #ebeef5;
+}
+
+.debug-right {
+  flex: 0 0 55%;
+  display: flex;
+  flex-direction: column;
+  background: #fafafa;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.debug-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #ebeef5;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  background: #fff;
 }
 
 .cmd-input-row {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.nl-hint {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: #f0f9ff;
+  border: 1px solid #b3d8ff;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #409eff;
+  line-height: 1.5;
+  
+  .el-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+  }
 }
 
 .cmd-examples {
   background: #fafafa;
   border: 1px solid #ebeef5;
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 12px;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
 
   .cmd-examples-title {
-    font-size: 12px;
+    font-size: 11px;
     color: #909399;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
   }
 
   .cmd-example-item {
     cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 4px;
-    margin-bottom: 4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-bottom: 2px;
     transition: background 0.2s;
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: 6px;
 
-    &:hover {
-      background: #ecf5ff;
-    }
+    &:hover { background: #ecf5ff; }
 
     code {
       font-family: 'Consolas', 'Monaco', monospace;
-      font-size: 13px;
+      font-size: 12px;
       color: #409eff;
       white-space: nowrap;
     }
 
     .cmd-example-desc {
-      font-size: 12px;
+      font-size: 11px;
       color: #909399;
     }
   }
 }
 
-.cmd-params-form {
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
-  border-radius: 6px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
-
-  .cmd-params-title {
-    font-size: 12px;
-    color: #606266;
-    font-weight: 600;
-    margin-bottom: 8px;
-  }
-}
 
 .cmd-parse-hint {
   margin-top: 8px;
+}
+
+.exec-thinking-box {
+  margin-top: 16px;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+
+  .exec-thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #ecf5ff;
+    border-bottom: 1px solid #e4e7ed;
+    font-size: 13px;
+    color: #409eff;
+
+    .thinking-spin { animation: rotate 1.2s linear infinite; }
+    .exec-thinking-title { font-weight: 500; }
+  }
+
+  .exec-thinking-content {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #606266;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  .exec-thinking-placeholder {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #c0c4cc;
+  }
 }
 
 .exec-result {
@@ -1335,6 +1926,233 @@ onMounted(() => {
       max-height: 300px; overflow-y: auto;
     }
   }
+}
+
+// Chat Panel
+.debug-message-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: #c0c4cc;
+
+  p {
+    font-size: 14px;
+    text-align: center;
+    line-height: 1.6;
+    padding: 0 12px;
+  }
+}
+
+.debug-message {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+
+  &.user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+
+    .debug-msg-user {
+      background: #409eff;
+      color: #fff;
+      border-radius: 10px 10px 2px 10px;
+      padding: 6px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-width: 85%;
+    }
+  }
+
+  &.assistant {
+    align-self: flex-start;
+    max-width: 100%;
+
+    .debug-msg-assistant {
+      background: #fff;
+      border: 1px solid #e4e7ed;
+      border-radius: 10px 10px 10px 2px;
+      padding: 8px 12px;
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+  }
+}
+
+.debug-msg-avatar {
+  flex-shrink: 0;
+}
+
+.debug-msg-body {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.debug-msg-thinking {
+  margin-bottom: 8px;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ecf5ff;
+
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #409eff;
+    font-weight: 500;
+    border-bottom: 1px solid #d9ecff;
+
+    .thinking-spin { animation: rotate 1.2s linear infinite; }
+  }
+
+  .thinking-body {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #606266;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+}
+
+.debug-msg-content {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+
+  :deep(pre) {
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  :deep(table) {
+    width: 100%;
+    table-layout: fixed;
+    word-break: break-all;
+  }
+
+  :deep(code) {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+}
+
+.debug-msg-runresult {
+  margin-top: 6px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+
+  .runresult-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: #f5f7fa;
+    border-bottom: 1px solid #e4e7ed;
+  }
+
+  .exec-time {
+    font-size: 11px;
+    color: #909399;
+  }
+
+  .debug-result-error {
+    padding: 6px 10px;
+    pre {
+      margin: 0;
+      font-size: 12px;
+      color: #f56c6c;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  }
+
+  .debug-result-stdout,
+  .debug-result-data {
+    :deep(.el-collapse-item__header) {
+      font-size: 12px;
+      height: 28px;
+      line-height: 28px;
+      padding-left: 10px;
+    }
+    pre {
+      margin: 0;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+  }
+}
+
+.debug-msg-script-updated {
+  margin-top: 6px;
+}
+
+.debug-input-area {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid #ebeef5;
+  background: #fff;
+
+  .el-textarea { 
+    flex: 1;
+    font-size: 14px;
+  }
+  .el-button { margin-bottom: 4px; }
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+
+  span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #c0c4cc;
+    animation: typing 1.4s infinite ease-in-out both;
+
+    &:nth-child(1) { animation-delay: 0s; }
+    &:nth-child(2) { animation-delay: 0.2s; }
+    &:nth-child(3) { animation-delay: 0.4s; }
+  }
+}
+
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
 }
 </style>
 
@@ -1376,5 +2194,74 @@ onMounted(() => {
   a { color: #409eff; }
   hr { border: none; border-top: 1px solid #e4e7ed; margin: 20px 0; }
   strong { font-weight: 600; color: #1d1d1f; }
+}
+</style>
+
+<style lang="scss" scoped>
+.gen-process {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  margin-top: 16px;
+  background: #fafbfc;
+  overflow: hidden;
+}
+.gen-process-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  border-bottom: 1px solid #ebeef5;
+  user-select: none;
+}
+.gen-collapse-icon {
+  transition: transform 0.2s;
+}
+.gen-collapse-rotated {
+  transform: rotate(180deg);
+}
+.gen-process-body {
+  padding: 12px 16px;
+}
+.gen-status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #409eff;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.gen-spin {
+  animation: gen-rotate 1s linear infinite;
+}
+@keyframes gen-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.gen-log-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  background: #1e1e1e;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.gen-log-line {
+  margin: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.gen-log-status { color: #67c23a; }
+.gen-log-progress { color: #e6a23c; }
+.gen-log-chunk { color: #c0c4cc; }
+.gen-log-error { color: #f56c6c; }
+.gen-log-label {
+  font-weight: 600;
+  margin-right: 6px;
 }
 </style>

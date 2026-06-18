@@ -50,6 +50,3 @@ class ComposedCode(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    # 关系
-    schedules = relationship("Schedule", back_populates="code", lazy="selectin")
