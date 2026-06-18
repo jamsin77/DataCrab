@@ -1,24 +1,28 @@
 <template>
   <div class="skill-page">
     <div class="toolbar">
-      <el-button type="primary" @click="showUploadDialog = true">
-        <el-icon><Upload /></el-icon>
-        上传 Skill 包
-      </el-button>
-      <el-button type="success" @click="showGenerateDialog = true">
-        <el-icon><MagicStick /></el-icon>
-        生成技能
-      </el-button>
-      <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 160px">
-        <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-      </el-select>
-      <el-input
-        v-model="searchQuery"
-        placeholder="搜索技能"
-        style="width: 260px"
-        clearable
-        :prefix-icon="Search"
-      />
+      <div class="toolbar-left">
+        <el-button type="primary" @click="showUploadDialog = true">
+          <el-icon><Upload /></el-icon>
+          上传 Skill 包
+        </el-button>
+        <el-button type="success" @click="showGenerateDialog = true">
+          <el-icon><MagicStick /></el-icon>
+          生成技能
+        </el-button>
+      </div>
+      <div class="toolbar-right">
+        <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
+          <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+        </el-select>
+        <el-input
+          v-model="searchQuery"
+          placeholder="搜索技能"
+          style="width: 220px"
+          clearable
+          :prefix-icon="Search"
+        />
+      </div>
     </div>
 
     <div class="op-grid">
@@ -1495,9 +1499,22 @@ onMounted(() => {
 
 .toolbar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
+  justify-content: space-between;
   align-items: center;
+  margin-bottom: 20px;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  
+  .toolbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
 }
 
 .op-grid {
@@ -1823,13 +1840,13 @@ onMounted(() => {
 
   .cmd-example-item {
     cursor: pointer;
-    padding: 2px 6px;
+    padding: 4px 8px;
     border-radius: 3px;
-    margin-bottom: 2px;
+    margin-bottom: 4px;
     transition: background 0.2s;
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    flex-direction: column;
+    gap: 2px;
 
     &:hover { background: #ecf5ff; }
 
@@ -1837,7 +1854,9 @@ onMounted(() => {
       font-family: 'Consolas', 'Monaco', monospace;
       font-size: 12px;
       color: #409eff;
-      white-space: nowrap;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.4;
     }
 
     .cmd-example-desc {

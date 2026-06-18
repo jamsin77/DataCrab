@@ -40,19 +40,23 @@
 
     <!-- 工具栏 -->
     <div class="toolbar">
-      <el-button type="primary" @click="openCreateDialog">
-        <el-icon><Plus /></el-icon> 新建调度
-      </el-button>
-      <el-select v-model="filterStatus" placeholder="状态筛选" clearable style="width: 120px">
-        <el-option label="运行中" value="active" />
-        <el-option label="已暂停" value="paused" />
-        <el-option label="已停止" value="stopped" />
-      </el-select>
-      <el-select v-model="filterTaskType" placeholder="任务类型" clearable style="width: 120px">
-        <el-option label="算子" value="operator" />
-        <el-option label="技能" value="skill" />
-        <el-option label="流程" value="workflow" />
-      </el-select>
+      <div class="toolbar-left">
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon><Plus /></el-icon> 新建调度
+        </el-button>
+      </div>
+      <div class="toolbar-right">
+        <el-select v-model="filterStatus" placeholder="状态筛选" clearable style="width: 120px">
+          <el-option label="运行中" value="active" />
+          <el-option label="已暂停" value="paused" />
+          <el-option label="已停止" value="stopped" />
+        </el-select>
+        <el-select v-model="filterTaskType" placeholder="任务类型" clearable style="width: 120px">
+          <el-option label="算子" value="operator" />
+          <el-option label="技能" value="skill" />
+          <el-option label="流程" value="workflow" />
+        </el-select>
+      </div>
     </div>
 
     <!-- 调度列表 -->
@@ -801,8 +805,21 @@ function formatInterval(seconds: number) {
   border-radius: 8px;
   margin-bottom: 16px;
   display: flex;
-  gap: 12px;
+  justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  
+  .toolbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
 }
 
 .schedule-name {

@@ -1,31 +1,35 @@
 <template>
   <div class="operator-page">
     <div class="toolbar">
-      <el-upload
-        :show-file-list="false"
-        :before-upload="handleUpload"
-        accept=".py"
-        :http-request="uploadOperator"
-      >
-        <el-button type="primary">
-          <el-icon><Upload /></el-icon>
-          上传Python脚本
+      <div class="toolbar-left">
+        <el-upload
+          :show-file-list="false"
+          :before-upload="handleUpload"
+          accept=".py"
+          :http-request="uploadOperator"
+        >
+          <el-button type="primary">
+            <el-icon><Upload /></el-icon>
+            上传Python脚本
+          </el-button>
+        </el-upload>
+        <el-button type="success" @click="showGenerateDialog = true">
+          <el-icon><MagicStick /></el-icon>
+          生成算子
         </el-button>
-      </el-upload>
-      <el-button type="success" @click="showGenerateDialog = true">
-        <el-icon><MagicStick /></el-icon>
-        生成算子
-      </el-button>
-      <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 160px">
-        <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-      </el-select>
-      <el-input
-        v-model="searchQuery"
-        placeholder="搜索算子"
-        style="width: 260px"
-        clearable
-        :prefix-icon="Search"
-      />
+      </div>
+      <div class="toolbar-right">
+        <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
+          <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+        </el-select>
+        <el-input
+          v-model="searchQuery"
+          placeholder="搜索算子"
+          style="width: 220px"
+          clearable
+          :prefix-icon="Search"
+        />
+      </div>
     </div>
 
     <div class="op-grid">
@@ -603,9 +607,22 @@ onMounted(loadOperators)
 
 .toolbar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
+  justify-content: space-between;
   align-items: center;
+  margin-bottom: 20px;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  
+  .toolbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
 }
 
 .op-grid {

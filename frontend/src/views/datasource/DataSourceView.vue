@@ -1,11 +1,13 @@
 <template>
   <div class="datasource-container">
     <div class="toolbar">
-      <el-button type="primary" @click="openCreateDialog">
-        <el-icon><Plus /></el-icon> 新建数据源
-      </el-button>
-      <div class="type-filter">
-        <el-select v-model="typeFilter" placeholder="类型筛选" clearable @change="fetchDataSources" style="width: 150px;">
+      <div class="toolbar-left">
+        <el-button type="primary" @click="openCreateDialog">
+          <el-icon><Plus /></el-icon> 新建数据源
+        </el-button>
+      </div>
+      <div class="toolbar-right">
+        <el-select v-model="typeFilter" placeholder="类型筛选" clearable @change="fetchDataSources" style="width: 140px;">
           <el-option label="PostgreSQL" value="postgresql" />
           <el-option label="MySQL" value="mysql" />
           <el-option label="CSV" value="csv" />
