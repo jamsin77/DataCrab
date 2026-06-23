@@ -66,6 +66,8 @@
               <el-option label="通义千问 Long" value="qwen-long" />
             </el-option-group>
             <el-option-group label="智谱AI">
+              <el-option label="GLM-5.2" value="glm-5.2" />
+              <el-option label="GLM-5.1" value="glm-5.1" />
               <el-option label="GLM-5" value="glm-5" />
               <el-option label="GLM-4" value="glm-4" />
               <el-option label="GLM-4 Plus" value="glm-4-plus" />
@@ -187,7 +189,7 @@ const modelProviders = ref([
   { name: 'OpenAI', models: 'gpt-4, gpt-4o, gpt-3.5-turbo', note: '官方API: api.openai.com' },
   { name: 'Azure OpenAI', models: 'gpt-4, gpt-35-turbo', note: '需设置API地址' },
   { name: '通义千问', models: 'qwen-max, qwen-plus, qwen-turbo', note: 'API: dashscope.aliyuncs.com' },
-  { name: '智谱AI', models: 'glm-5, glm-4, glm-3-turbo', note: 'API: open.bigmodel.cn' },
+  { name: '智谱AI', models: 'glm-5.2, glm-5.1, glm-5, glm-4, glm-3-turbo', note: 'API: open.bigmodel.cn' },
   { name: '本地部署', models: '自定义', note: '如vLLM、Ollama' },
 ])
 

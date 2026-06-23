@@ -1,9 +1,27 @@
 """数据源相关Schema"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Any, List
 from datetime import datetime
 from uuid import UUID
+
+from app.services.connectors import SUPPORTED_DATASOURCE_TYPES
+
+_SENSITIVE_KEYS = {"password", "secret_key", "access_key", "secret", "token", "apikey", "api_key"}
+
+
+def _mask_config(config: dict) -> dict:
+    if not isinstance(config, dict):
+        return config
+    masked = {}
+    for k, v in config.items():
+        if isinstance(v, dict):
+            masked[k] = _mask_config(v)
+        elif k.lower() in _SENSITIVE_KEYS:
+            masked[k] = "***"
+        else:
+            masked[k] = v
+    return masked
 
 
 class DataSourceCreate(BaseModel):
@@ -12,6 +30,13 @@ class DataSourceCreate(BaseModel):
     connection_config: dict
     business_metadata: Optional[dict] = None
     security_level: Optional[str] = None
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        if v not in SUPPORTED_DATASOURCE_TYPES:
+            raise ValueError(f"不支持的数据源类型: {v}，支持的类型: {', '.join(SUPPORTED_DATASOURCE_TYPES)}")
+        return v
 
 
 class DataSourceUpdate(BaseModel):
@@ -34,6 +59,11 @@ class DataSourceResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_active: bool
+
+    @field_validator("connection_config", mode="before")
+    @classmethod
+    def mask_sensitive_fields(cls, v: dict) -> dict:
+        return _mask_config(v)
 
     class Config:
         from_attributes = True

@@ -189,7 +189,14 @@
       </el-form>
       <template #footer>
         <el-button @click="showGenerateDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleGenerate" :loading="generating">
+        <el-button
+          v-if="generating"
+          type="danger"
+          @click="stopGenerate"
+        >
+          <el-icon><VideoPause /></el-icon> 停止
+        </el-button>
+        <el-button type="primary" @click="handleGenerate" :loading="generating" :disabled="generating">
           {{ generating ? 'AI 生成中...' : '开始生成' }}
         </el-button>
       </template>
@@ -212,7 +219,14 @@
       </el-form>
       <template #footer>
         <el-button @click="showModifyDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleModify" :loading="modifying">
+        <el-button
+          v-if="modifying"
+          type="danger"
+          @click="stopModify"
+        >
+          <el-icon><VideoPause /></el-icon> 停止
+        </el-button>
+        <el-button type="primary" @click="handleModify" :loading="modifying" :disabled="modifying">
           {{ modifying ? 'AI 修改中...' : '开始修改' }}
         </el-button>
       </template>
@@ -244,7 +258,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument } from '@element-plus/icons-vue'
+import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -503,11 +517,13 @@ function categoryColor(cat: string) {
 const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
+let generateAbortController: AbortController | null = null
 
 const showModifyDialog = ref(false)
 const modifyTarget = ref<any>(null)
 const modifyInstruction = ref('')
 const modifying = ref(false)
+let modifyAbortController: AbortController | null = null
 
 async function handleGenerate() {
   if (!generatePrompt.value.trim()) {
@@ -515,17 +531,32 @@ async function handleGenerate() {
     return
   }
   generating.value = true
+  generateAbortController = new AbortController()
   try {
-    const res = await api.post('/operators/generate', { prompt: generatePrompt.value.trim() }, { timeout: 120000 })
+    const res = await api.post('/operators/generate', { prompt: generatePrompt.value.trim() }, {
+      timeout: 120000,
+      signal: generateAbortController.signal,
+    })
     ElMessage.success(`算子 "${res.display_name || res.name}" 已生成`)
     showGenerateDialog.value = false
     generatePrompt.value = ''
     await loadOperators()
     setTimeout(() => openDebug(res), 300)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '生成失败')
+    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
+      ElMessage.info('已取消生成')
+    } else {
+      ElMessage.error(e.response?.data?.detail || '生成失败')
+    }
   } finally {
     generating.value = false
+    generateAbortController = null
+  }
+}
+
+function stopGenerate() {
+  if (generateAbortController) {
+    generateAbortController.abort()
   }
 }
 
@@ -542,10 +573,14 @@ async function handleModify() {
   }
   if (!modifyTarget.value) return
   modifying.value = true
+  modifyAbortController = new AbortController()
   try {
     const res = await api.post(`/operators/${modifyTarget.value.id}/modify`, {
       instruction: modifyInstruction.value.trim(),
-    }, { timeout: 120000 })
+    }, {
+      timeout: 120000,
+      signal: modifyAbortController.signal,
+    })
     ElMessage.success(`算子 "${res.display_name || res.name}" 已修改`)
     showModifyDialog.value = false
     modifyInstruction.value = ''
@@ -553,9 +588,20 @@ async function handleModify() {
     await loadOperators()
     setTimeout(() => openDebug(res), 300)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '修改失败')
+    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
+      ElMessage.info('已取消修改')
+    } else {
+      ElMessage.error(e.response?.data?.detail || '修改失败')
+    }
   } finally {
     modifying.value = false
+    modifyAbortController = null
+  }
+}
+
+function stopModify() {
+  if (modifyAbortController) {
+    modifyAbortController.abort()
   }
 }
 
@@ -682,6 +728,7 @@ onMounted(loadOperators)
     gap: 8px;
     margin-top: auto;
     padding-top: 12px;
+    align-items: center;
   }
 }
 

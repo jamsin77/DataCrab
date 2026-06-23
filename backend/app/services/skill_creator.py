@@ -36,21 +36,51 @@ description: 技能描述
 
 ## scripts/*.py 规范
 - 使用 pandas 处理数据
-- 第一个参数是 DataFrame
 - 函数名和参数要有类型注解
 - 有完整的 docstring
 - 处理边界情况（空表、列不存在等）
 - 使用 print() 输出处理进度
 
-## 内置工具函数（可在脚本中直接调用）
-- query_table_data(datasource_id, table_name, limit, offset, order_by) → DataFrame
-- get_table_schema(datasource_id, table_name) → dict
-- get_datasource_id_by_name(name) → str
+## 内置工具函数（可在脚本中直接调用，无需 import）
+- query_table_data(datasource_id, table_name, limit=1000) → dict: {"success": bool, "data": [行dict], "columns": [列名], "row_count": int}
+- get_table_data(datasource_id, table_name, limit=1000) → 同 query_table_data
+- get_table_schema(datasource_id, table_name) → dict: {"columns": [...], "row_count": int}
+- get_datasource_id_by_name(name) → str (数据源UUID)
+- write_table_data(datasource_id, table_name, records=...) → dict
+
+⚠️ **绝对禁止** `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！
+⚠️ **绝对禁止** `pip install datacrab`，datacrab 不是可安装的包！
+⚠️ 上述函数由运行环境自动注入到全局作用域，脚本中直接使用即可
+⚠️ `if __name__ == '__main__':` 块会被系统自动去掉，main() 由系统调用
 
 ## 数据源参考
 - "文物测试数据" (Excel)
 - "SQLite测试数据库" (SQLite)
-- "CSVFormTest" (CSV)"""
+- "CSVFormTest" (CSV)
+
+🚫 安全红线（必须遵守）：
+- Skill 只能处理用户的业务数据，绝不能修改 DataCrab 平台自身
+- 不得生成访问或修改平台系统表（users, roles, permissions, data_sources等）的代码
+- 不得生成修改平台源代码、配置文件的代码
+- 不得生成删除或篡改平台用户、角色、权限的代码
+- 如果用户要求创建修改平台本身的技能，在脚本中抛出 ValueError("不允许修改平台自身")
+- 脚本中只能操作用户数据源的业务数据，不能操作平台系统数据
+
+✅ 技能属于用户内容，可以自由创建和修改：
+- 用户可以自由创建、修改、调试、删除自己的技能
+- 技能脚本可以查询和处理用户数据源中的业务数据
+- 技能脚本可以使用内置工具函数（query_table_data, get_table_schema, get_datasource_id_by_name）访问用户数据
+
+✅ 创建后必验证（必须遵守）：
+- 脚本中必须包含自测逻辑：在 if __name__ == "__main__" 块中用少量示例数据调用主函数
+- 自测应验证：1) 脚本无语法错误 2) 主函数能正常执行 3) 返回结果格式正确
+- 如果自测发现问题，在输出中说明原因并提供修复后的脚本
+
+✅ 输出默认同源（必须遵守）：
+- 数据处理生成新文件时，如果用户未指定输出路径（output_dir），默认保存到 DataSource（数据源）指定的文件路径下（即 connection_config.file_path 所在目录）
+- 脚本中必须提供 output_dir 参数，且默认值应为 DataSource 文件所在目录
+- 如果 DataSource 来自数据库而非文件，需要用户明确指定输出路径
+- 在 SKILL.md 中说明输出路径的默认行为"""
 
 
 async def generate_skill(prompt: str) -> Dict[str, Any]:

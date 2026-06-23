@@ -7,16 +7,16 @@ from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.models.datasource import DataSource, TableMetadata
+from app.models.datasource import DataSource
 from app.models.user import User
 from app.schemas.datasource import (
     DataSourceCreate,
     DataSourceUpdate,
     DataSourceResponse,
     ConnectionTestResult,
-    TableMetadataResponse,
     TreeNode,
     TableDataResponse,
     TableStatsResponse,
@@ -51,7 +51,7 @@ async def create_datasource(
 
 @router.get("", response_model=list[DataSourceResponse])
 async def list_datasources(
-    type: Optional[str] = None,
+    datasource_type: Optional[str] = Query(None, alias="type"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -59,8 +59,8 @@ async def list_datasources(
 ):
     """获取数据源列表"""
     query = select(DataSource).where(DataSource.is_active == True)
-    if type:
-        query = query.where(DataSource.type == type)
+    if datasource_type:
+        query = query.where(DataSource.type == datasource_type)
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
@@ -113,7 +113,8 @@ async def delete_datasource(
     datasource = result.scalar_one_or_none()
     if not datasource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
-    await db.delete(datasource)
+    datasource.is_active = False
+    await db.flush()
 
 
 @router.post("/{datasource_id}/test", response_model=ConnectionTestResult)
@@ -173,11 +174,11 @@ async def get_datasource_tree(
             tree_nodes.append(node)
 
         return tree_nodes
-    except ValueError:
-        return []
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"获取数据源树异常: {e}")
-        return []
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.get("/{datasource_id}/tables/{table_name}/data", response_model=TableDataResponse)
@@ -248,11 +249,11 @@ async def get_table_stats(
             column_count=stats.get("column_count", 0),
             size_bytes=stats.get("size_bytes", 0),
         )
-    except ValueError:
-        return TableStatsResponse(row_count=0, column_count=0, size_bytes=0)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"获取表统计异常: {e}")
-        return TableStatsResponse(row_count=0, column_count=0, size_bytes=0)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.get("/{datasource_id}/tables/{table_name}/quality", response_model=QualityAnalysisResponse)
@@ -317,8 +318,8 @@ async def get_table_quality(
             issues=issues,
             suggestions=suggestions,
         )
-    except ValueError:
-        return QualityAnalysisResponse(completeness=1.0, consistency=1.0, issues=[], suggestions=[])
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"获取数据质量分析异常: {e}")
-        return QualityAnalysisResponse(completeness=1.0, consistency=1.0, issues=[], suggestions=[])
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

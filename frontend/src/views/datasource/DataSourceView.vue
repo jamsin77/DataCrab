@@ -38,12 +38,15 @@
           {{ formatDate(row.created_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="360">
+      <el-table-column label="操作" width="400">
         <template #default="{ row }">
-          <el-button size="small" @click="testConnection(row.id)">测试</el-button>
-          <el-button size="small" @click="browseDataSource(row)">浏览</el-button>
-          <el-button size="small" type="warning" @click="editDataSource(row)">修改</el-button>
-          <el-button size="small" type="danger" @click="deleteDataSource(row.id)">删除</el-button>
+          <div class="table-actions">
+            <el-button size="small" @click="testConnection(row.id)">测试</el-button>
+            <el-button size="small" @click="browseDataSource(row)">浏览</el-button>
+            <el-button size="small" type="success" @click="syncMetadata(row)" :loading="row._syncing">同步元数据</el-button>
+            <el-button size="small" type="warning" @click="editDataSource(row)">修改</el-button>
+            <el-button size="small" type="danger" @click="deleteDataSource(row.id)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -96,15 +99,34 @@
         </template>
 
         <template v-if="configForm.type === 'excel'">
-          <el-form-item label="文件路径" required>
+          <el-form-item label="数据模式">
+            <el-radio-group v-model="configForm.excel_mode">
+              <el-radio value="file">单文件</el-radio>
+              <el-radio value="folder">文件夹</el-radio>
+              <el-radio value="files">多文件</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="configForm.excel_mode === 'file'" label="文件路径" required>
             <el-input v-model="configForm.file_path" placeholder="D:/data/file.xlsx">
-              <template #prepend>
-                <el-icon><Document /></el-icon>
-              </template>
+              <template #prepend><el-icon><Document /></el-icon></template>
             </el-input>
           </el-form-item>
-          <el-form-item label="工作表名">
-            <el-input v-model="configForm.sheet_name" placeholder="Sheet1（留空默认第一张表）" />
+          <el-form-item v-if="configForm.excel_mode === 'folder'" label="文件夹路径" required>
+            <el-input v-model="configForm.file_path" placeholder="D:/data/ (该文件夹下所有 .xlsx/.xls 文件将自动作为数据集)">
+              <template #prepend><el-icon><FolderOpened /></el-icon></template>
+            </el-input>
+          </el-form-item>
+          <el-form-item v-if="configForm.excel_mode === 'files'" label="文件列表" required>
+            <div v-for="(fp, i) in configForm.file_paths" :key="i" class="multi-file-row">
+              <el-input :model-value="fp" @update:model-value="(v: string) => configForm.file_paths[i] = v" placeholder="D:/data/file.xlsx">
+                <template #prepend><el-icon><Document /></el-icon></template>
+              </el-input>
+              <el-button text type="danger" @click="configForm.file_paths.splice(i, 1)">删除</el-button>
+            </div>
+            <el-button size="small" type="primary" plain @click="configForm.file_paths.push('')">+ 添加文件</el-button>
+          </el-form-item>
+          <el-form-item label="说明">
+            <span style="color:#909399;font-size:12px">多Sheet文件：第一个Sheet用文件名作为数据集名，其余Sheet用 文件名_Sheet名 命名</span>
           </el-form-item>
         </template>
 
@@ -239,6 +261,8 @@ const configForm = reactive({
   user: '',
   password: '',
   file_path: '',
+  file_paths: [] as string[],
+  excel_mode: 'file',
   sheet_name: '',
   endpoint: '',
   access_key: '',
@@ -315,6 +339,8 @@ function resetForm() {
   configForm.user = ''
   configForm.password = ''
   configForm.file_path = ''
+  configForm.file_paths = []
+  configForm.excel_mode = 'file'
   configForm.sheet_name = ''
   configForm.endpoint = ''
   configForm.access_key = ''
@@ -343,6 +369,8 @@ function editDataSource(source: any) {
   defaultSet('user', cfg.user || '')
   defaultSet('password', cfg.password || '')
   defaultSet('file_path', cfg.file_path || '')
+  defaultSet('file_paths', cfg.file_paths || [])
+  defaultSet('excel_mode', cfg.mode || 'file')
   defaultSet('sheet_name', cfg.sheet_name || '')
   defaultSet('endpoint', cfg.endpoint || '')
   defaultSet('access_key', cfg.access_key || '')
@@ -373,8 +401,16 @@ function buildConnectionConfig(): Record<string, any> {
     case 'csv':
       return { file_path: configForm.file_path }
     case 'excel': {
-      const cfg: Record<string, any> = { file_path: configForm.file_path }
-      if (configForm.sheet_name) cfg.sheet_name = configForm.sheet_name
+      const mode = configForm.excel_mode
+      const cfg: Record<string, any> = { mode }
+      if (mode === 'folder') {
+        cfg.file_path = configForm.file_path
+      } else if (mode === 'files') {
+        cfg.file_paths = configForm.file_paths
+        cfg.file_path = configForm.file_paths[0] || ''
+      } else {
+        cfg.file_path = configForm.file_path
+      }
       return cfg
     }
     case 'chroma':
@@ -523,6 +559,18 @@ async function deleteDataSource(id: string) {
     ElMessage.error(extractError(e))
   }
 }
+
+async function syncMetadata(row: any) {
+  row._syncing = true
+  try {
+    const res = await api.post(`/metadata/datasources/${row.id}/sync`, {}, { timeout: 120000 })
+    ElMessage.success(`元数据同步完成: ${res.synced} 张表`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '同步失败')
+  } finally {
+    row._syncing = false
+  }
+}
 </script>
 
 <style lang="scss" scoped>
@@ -537,6 +585,19 @@ async function deleteDataSource(id: string) {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  
+  .toolbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
 }
 
 .browse-layout {
@@ -612,5 +673,18 @@ async function deleteDataSource(id: string) {
   align-items: center;
   justify-content: center;
   min-height: 300px;
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.multi-file-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  width: 100%;
 }
 </style>

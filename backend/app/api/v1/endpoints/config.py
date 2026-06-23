@@ -299,9 +299,11 @@ async def list_available_models(
             {"id": "qwen-long", "name": "通义千问 Long", "description": "超长上下文"},
         ],
         "glm": [
-            {"id": "glm-4", "name": "GLM-4", "description": "智谱AI最新模型"},
-            {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "增强版模型"},
+            {"id": "glm-5.2", "name": "GLM-5.2", "description": "智谱AI最新一代模型"},
+            {"id": "glm-5.1", "name": "GLM-5.1", "description": "智谱AI新一代模型"},
             {"id": "glm-5", "name": "GLM-5", "description": "智谱AI新一代模型"},
+            {"id": "glm-4", "name": "GLM-4", "description": "智谱AI主力模型"},
+            {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "增强版模型"},
             {"id": "glm-3-turbo", "name": "GLM-3 Turbo", "description": "快速响应模型"},
         ],
         "embedding": [

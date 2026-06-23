@@ -341,7 +341,6 @@ async def upload_skill(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
-        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill 包已上传: {name} ({skill.id})")
         return _build_detail(skill)
     except HTTPException:
@@ -480,7 +479,6 @@ async def update_skill_script(
     folder = _get_skill_folder(skill_id)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_script(folder, script_name, request.content)
-    await _sync_scripts_to_operators(skill, folder, db, current_user)
     return {"name": script_name, "ok": True}
 
 
@@ -920,8 +918,15 @@ async def debug_skill_chat(
     system_prompt = (
         "你是 DataCrab 平台的技能调试助手。你正在帮助用户调试和优化一个技能（Skill）。\n\n"
         "## 你的能力\n"
-        "1. **执行技能**：当用户想要运行技能时，输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 来触发执行\n"
-        "2. **修改脚本**：当用户想要修改技能脚本时，输出 JSON `{\"action\": \"modify_script\", \"script_name\": \"main.py\", \"content\": \"...完整脚本内容...\"}` 来更新脚本\n"
+        "1. **修改脚本**：输出以下格式的标记来更新脚本：\n"
+        "```json\n"
+        '{"action": "modify_script", "script_name": "main.py"}\n'
+        "```\n"
+        "紧接着输出：\n"
+        "```python\n"
+        "# 完整的脚本内容\n"
+        "```\n"
+        "2. **执行技能**：输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 来触发执行\n"
         "3. **分析问题**：分析执行结果中的错误，给出建议\n"
         "4. **解释代码**：解释技能脚本的功能和逻辑\n\n"
         "## 当前技能信息\n"
@@ -929,15 +934,39 @@ async def debug_skill_chat(
         f"- 技能描述：{skill.description or '无'}\n"
         f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
         f"- 表名：{request.table_name or '未选择'}\n\n"
-        f"## SKILL.md\n```\n{skill_md[:2000]}\n```\n\n"
-        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:4000]}\n```\n\n"
-        "## 重要规则\n"
-        "- 当用户说\"运行\"、\"执行\"、\"试试\"、\"调试\"等时，输出 run action\n"
-        "- run action 的 parameters 会传给技能脚本，对于 argparse 脚本只需传业务参数（如 datasource、tables），不需要传 datasource_id\n"
-        "- 当用户要求修改代码时，输出 modify_script action，提供完整的脚本内容\n"
-        "- 执行结果会在下一轮对话中提供，你不需要自己模拟结果\n"
-        "- 先用自然语言回复用户，然后在最后单独一行输出 action JSON\n"
-        "- 如果只是回答问题或分析，不需要输出任何 action\n"
+        f"## SKILL.md\n```\n{skill_md[:3000]}\n```\n\n"
+        f"## 当前脚本（{request.script_name}）\n```python\n{script_content}\n```\n\n"
+        "## 脚本运行环境（必须了解）\n"
+        "脚本在沙箱中执行，系统会自动注入以下内置函数到全局作用域，脚本中**直接使用即可，无需 import**：\n"
+        "- `query_table_data(datasource_id, table_name, limit=1000)` → 返回 {\"success\": bool, \"data\": [行dict], \"columns\": [列名], \"row_count\": int}\n"
+        "- `get_table_data(datasource_id, table_name, limit=1000)` → 同 query_table_data\n"
+        "- `get_table_schema(datasource_id, table_name)` → 返回表结构\n"
+        "- `get_datasource_id_by_name(name)` → 按名称查找数据源ID\n"
+        "- `write_table_data(datasource_id, table_name, records=...)` → 写入数据\n\n"
+        "⚠️ **绝对禁止**在脚本中 `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！\n"
+        "⚠️ **绝对禁止**在脚本中 `pip install datacrab`，datacrab 不是可安装的包！\n"
+        "⚠️ `if __name__ == '__main__':` 块会被系统自动去掉，argparse 脚本的 main() 由系统调用\n\n"
+        "## Action 输出格式\n"
+        "- **run action**：单独一行 JSON，如 `{\"action\": \"run\", \"parameters\": {\"split_column\": \"批次\"}}`\n"
+        "- **modify_script action**：先用 JSON 声明 action，紧接着用 ```python 代码块提供完整脚本\n"
+        "- run 的 parameters 只需传业务参数，不要传 datasource_id/table_name（系统会自动注入）\n"
+        "- 可以在同一回复中先 modify_script 再 run，系统会按顺序执行\n"
+        "- modify_script 的代码块中必须是完整的脚本，不能只写修改的部分\n"
+        "- 如果只是回答问题或分析，不需要输出任何 action\n\n"
+        "## 🚫 安全红线\n"
+        "- 技能只能处理用户的业务数据，绝不能修改 DataCrab 平台自身\n"
+        "- 修改脚本时，确保脚本不会访问或修改平台的系统表和配置\n"
+        "- 脚本中只能操作用户数据源的业务数据，不能操作平台系统数据\n\n"
+        "## ✅ 技能属于用户内容，可以自由修改\n"
+        "- 用户可以自由创建、修改、调试、删除自己的技能\n"
+        "- 技能脚本可以使用内置工具函数访问用户数据\n\n"
+        "## ✅ 修改后必验证\n"
+        "- 输出 modify_script 后，必须紧接着在同一回复中输出 run action 来验证\n"
+        "- 如果验证失败，分析错误并再次 modify_script + run\n"
+        "- 只有验证通过才算修改完成\n\n"
+        "## 📂 输出默认同源\n"
+        "- 数据处理生成新文件时，如果用户未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下\n"
+        "- 如果 DataSource 来自数据库，需要询问用户输出路径"
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -954,47 +983,53 @@ async def debug_skill_chat(
                 if chunk["type"] == "content":
                     full_content += chunk["content"]
 
-            action = None
-            lines = full_content.strip().split("\n")
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("{") and '"action"' in stripped:
-                    try:
-                        action = json_mod.loads(stripped)
-                    except json_mod.JSONDecodeError:
-                        pass
-                    break
+            actions = []
+            import re as _re
+            for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]modify_script["\x27]\s*,\s*["\x27]script_name["\x27]\s*:\s*["\x27]([^"\x27]*)["\x27]\s*\}', full_content):
+                script_name = m.group(1) or request.script_name
+                code_match = _re.search(r'```python\s*\n(.*?)```', full_content[m.end():], _re.DOTALL)
+                if not code_match:
+                    code_match = _re.search(r'```\s*\n(.*?)```', full_content[m.end():m.end()+50000], _re.DOTALL)
+                if code_match:
+                    actions.append({"action": "modify_script", "script_name": script_name, "content": code_match.group(1).strip()})
 
-            if action and action.get("action") == "run":
-                parameters = action.get("parameters", {})
-                for key in ["datasource_id", "datasource_name", "table_name", "table_names", "table"]:
-                    parameters.pop(key, None)
+            for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\})\s*\}', full_content):
+                try:
+                    params = json_mod.loads(m.group(1).replace("'", '"'))
+                    actions.append({"action": "run", "parameters": params})
+                except json_mod.JSONDecodeError:
+                    pass
 
-                yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
+            for action in actions:
+                if action.get("action") == "modify_script":
+                    script_name = action.get("script_name", request.script_name)
+                    new_content = action.get("content", "")
+                    if new_content:
+                        write_skill_script(folder, script_name, new_content)
+                        yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
 
-                exec_result = run_skill_script(
-                    skill_path=folder,
-                    script_name=request.script_name,
-                    parameters=parameters,
-                    input_data=None,
-                    datasource_id=request.datasource_id,
-                    datasource_name=ds_name,
-                    table_name=request.table_name,
-                )
+                elif action.get("action") == "run":
+                    parameters = action.get("parameters", {})
+                    for key in ["datasource_id", "datasource_name"]:
+                        parameters.pop(key, None)
 
-                exec_result = _sanitize_nans(exec_result)
-                yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
 
-                skill.usage_count = (skill.usage_count or 0) + 1
-                await db.flush()
+                    exec_result = run_skill_script(
+                        skill_path=folder,
+                        script_name=request.script_name,
+                        parameters=parameters,
+                        input_data=None,
+                        datasource_id=request.datasource_id,
+                        datasource_name=ds_name,
+                        table_name=request.table_name,
+                    )
 
-            elif action and action.get("action") == "modify_script":
-                script_name = action.get("script_name", request.script_name)
-                new_content = action.get("content", "")
-                if new_content:
-                    write_skill_script(folder, script_name, new_content)
-                    await _sync_scripts_to_operators(skill, folder, db, current_user)
-                    yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
+                    exec_result = _sanitize_nans(exec_result)
+                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+
+                    skill.usage_count = (skill.usage_count or 0) + 1
+                    await db.flush()
 
             yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
@@ -1045,7 +1080,7 @@ async def generate_skill_endpoint(
     skill = Skill(
         id=skill_id,
         name=name,
-        display_name=front_matter.get("name", name),
+        display_name=name,
         description=front_matter.get("description", ""),
         skill_path=str(folder),
         tags=front_matter.get("tags", ["ai_generated"]),
@@ -1056,7 +1091,6 @@ async def generate_skill_endpoint(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
-    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"Skill Creator 已生成技能: {name} ({skill.id})")
     return _build_detail(skill)
 
@@ -1112,7 +1146,7 @@ async def generate_skill_stream_endpoint(
         skill = Skill(
             id=skill_id,
             name=name,
-            display_name=front_matter.get("name", name),
+            display_name=name,
             description=front_matter.get("description", ""),
             skill_path=str(folder),
             tags=front_matter.get("tags", ["ai_generated"]),
@@ -1123,7 +1157,6 @@ async def generate_skill_stream_endpoint(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
-        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill Creator 流式生成技能: {name} ({skill.id})")
 
         from app.schemas.skill import SkillDetailResponse
@@ -1198,7 +1231,12 @@ async def modify_skill(
                 "你是一个 Skill 文档编辑器。根据用户的自然语言指令修改 SKILL.md 文件。\n"
                 "SKILL.md 是 YAML front matter + Markdown 格式的技能描述文档。\n"
                 "保持 YAML front matter 格式，只修改用户要求的部分。\n"
-                "输出完整的 SKILL.md 内容，不要用代码块包裹。"
+                "输出完整的 SKILL.md 内容，不要用代码块包裹。\n\n"
+                "🚫 安全红线：Skill 只能处理用户的业务数据，不能修改 DataCrab 平台自身。\n"
+                "如果用户要求修改 SKILL.md 使技能能够操作平台系统数据，请拒绝并说明原因。\n\n"
+                "✅ 修改后必验证：修改 SKILL.md 后，请重新读取确认修改内容已正确反映。\n"
+                "如果修改涉及脚本逻辑，建议在修改后执行技能验证效果。\n\n"
+                "📂 输出默认同源：数据处理生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。"
             ),
         },
         {
@@ -1271,7 +1309,12 @@ async def modify_skill_stream(
                 "你是一个 Skill 文档编辑器。根据用户的自然语言指令修改 SKILL.md 文件。\n"
                 "SKILL.md 是 YAML front matter + Markdown 格式的技能描述文档。\n"
                 "保持 YAML front matter 格式，只修改用户要求的部分。\n"
-                "输出完整的 SKILL.md 内容，不要用代码块包裹。"
+                "输出完整的 SKILL.md 内容，不要用代码块包裹。\n\n"
+                "🚫 安全红线：Skill 只能处理用户的业务数据，不能修改 DataCrab 平台自身。\n"
+                "如果用户要求修改 SKILL.md 使技能能够操作平台系统数据，请拒绝并说明原因。\n\n"
+                "✅ 修改后必验证：修改 SKILL.md 后，请重新读取确认修改内容已正确反映。\n"
+                "如果修改涉及脚本逻辑，建议在修改后执行技能验证效果。\n\n"
+                "📂 输出默认同源：数据处理生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。"
             ),
         },
         {

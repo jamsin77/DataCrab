@@ -129,31 +129,39 @@ class AgentService:
             if not datasource:
                 return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
 
+            limit = args.get("limit", 100)
             connector = get_connector(datasource.type, datasource.connection_config or {})
-            df = await connector.get_table_data(args["table_name"], page=1, page_size=50000)
 
             filter_column = args.get("filter_column")
             filter_value = args.get("filter_value")
-            if filter_column and filter_value and filter_column in df.columns:
-                if "|" in filter_value:
-                    mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
-                else:
-                    mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
-                df = df[mask]
-
             sort_column = args.get("sort_column")
-            if sort_column and sort_column in df.columns:
-                df = df.sort_values(by=sort_column, ascending=args.get("sort_order", "asc") == "asc")
 
-            total = len(df)
-            limit = args.get("limit", 100)
-            if limit and limit > 0:
-                df = df.head(limit)
+            if filter_column or sort_column:
+                df = await connector.get_table_data(args["table_name"], page=1, page_size=50000)
+                if filter_column and filter_value and filter_column in df.columns:
+                    if "|" in filter_value:
+                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
+                    else:
+                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
+                    df = df[mask]
+                if sort_column and sort_column in df.columns:
+                    df = df.sort_values(by=sort_column, ascending=args.get("sort_order", "asc") == "asc")
+                total = len(df)
+                if limit and limit > 0:
+                    df = df.head(limit)
+            else:
+                total = 0
+                try:
+                    stats = await connector.get_table_stats(args["table_name"])
+                    total = stats.get("row_count", 0)
+                except Exception:
+                    pass
+                df = await connector.get_table_data(args["table_name"], page=1, page_size=limit or 100)
 
             await connector.close()
 
             return json.dumps({
-                "total_matched": total,
+                "total_matched": total or len(df),
                 "returned_rows": len(df),
                 "columns": list(df.columns),
                 "rows": df.fillna("").to_dict(orient="records"),

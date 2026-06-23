@@ -132,7 +132,10 @@
 
       <template #footer>
         <el-button @click="showGenerateDialog = false" :disabled="generating">取消</el-button>
-        <el-button type="primary" @click="handleGenerate" :loading="generating">
+        <el-button v-if="generating" type="danger" @click="stopGenerate">
+          <el-icon><VideoPause /></el-icon> 停止
+        </el-button>
+        <el-button type="primary" @click="handleGenerate" :loading="generating" :disabled="generating">
           {{ generating ? 'AI 生成中...' : '开始生成' }}
         </el-button>
       </template>
@@ -160,13 +163,21 @@
               class="nl-modify-input"
             />
             <el-button
+              v-if="!modifying"
               type="primary"
               @click="handleModifySkill"
-              :loading="modifying"
               :disabled="!modifyInstruction.trim()"
             >
               <el-icon><MagicStick /></el-icon>
               AI 修改
+            </el-button>
+            <el-button
+              v-else
+              type="danger"
+              @click="modifyAbortCtrl?.abort()"
+            >
+              <el-icon><VideoPause /></el-icon>
+              停止
             </el-button>
           </div>
           <div v-if="modifyError" class="modify-error">
@@ -276,7 +287,8 @@
                 v-model="execNLQuery"
                 type="textarea"
                 :rows="3"
-                :placeholder="nlPlaceholder"
+                :placeholder="nlPlaceholder + ' (↑↓浏览历史)'"
+                @keydown="handleNLKeyDown"
               />
               <el-button type="primary" style="margin-top:10px" :loading="execRunning" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
@@ -293,7 +305,7 @@
                   </div>
                 </div>
 
-                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" size="small" />
+                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" type="textarea" :rows="2" size="small" @keydown="handleCmdKeyDown" />
                 <div v-if="cmdParseHint" class="cmd-parse-hint">
                   <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
                 </div>
@@ -413,14 +425,23 @@
               type="textarea"
               :rows="2"
               :autosize="{ minRows: 1, maxRows: 4 }"
-              placeholder="输入调试指令... (Enter发送)"
+              placeholder="输入调试指令... (Enter发送, ↑↓浏览历史)"
               @keydown="handleDebugKeyDown"
               :disabled="debugStreaming"
             />
             <el-button
+              v-if="debugStreaming"
+              type="danger"
+              circle
+              @click="stopDebugGeneration"
+            >
+              <el-icon><VideoPause /></el-icon>
+            </el-button>
+            <el-button
+              v-else
               type="primary"
               circle
-              :disabled="!debugInput.trim() || debugStreaming"
+              :disabled="!debugInput.trim()"
               @click="handleDebugSend"
             >
               <el-icon><Promotion /></el-icon>
@@ -433,12 +454,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, watch, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
-  Promotion, ChatDotRound, InfoFilled, Share,
+  Promotion, ChatDotRound, InfoFilled, Share, VideoPause,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -617,6 +638,7 @@ async function confirmDelete(skill: any) {
 const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
+let generateAbortController: AbortController | null = null
 const genLog = ref<{ type: string; text: string }[]>([])
 const genLogCollapsed = ref(false)
 const genStatusText = ref('')
@@ -627,6 +649,12 @@ function onGenerateDialogClosed() {
   genLog.value = []
   genStatusText.value = ''
   genLogCollapsed.value = false
+}
+
+function stopGenerate() {
+  if (generateAbortController) {
+    generateAbortController.abort()
+  }
 }
 
 function scrollGenLog() {
@@ -641,6 +669,7 @@ async function handleGenerate() {
     return
   }
   generating.value = true
+  generateAbortController = new AbortController()
   genLog.value = []
   genStatusText.value = '正在启动...'
   genLogCollapsed.value = false
@@ -651,6 +680,7 @@ async function handleGenerate() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ prompt: generatePrompt.value.trim() }),
+      signal: generateAbortController.signal,
     })
     if (!response.ok) {
       const err = await response.text()
@@ -707,10 +737,15 @@ async function handleGenerate() {
       }
     }
   } catch (e: any) {
-    ElMessage.error(e.message || '生成失败')
-    genLog.value.push({ type: 'error', text: e.message || '生成失败' })
+    if (e.name === 'AbortError') {
+      genLog.value.push({ type: 'status', text: '已停止生成' })
+    } else {
+      ElMessage.error(e.message || '生成失败')
+      genLog.value.push({ type: 'error', text: e.message || '生成失败' })
+    }
   } finally {
     generating.value = false
+    generateAbortController = null
   }
 }
 
@@ -893,6 +928,73 @@ const debugMessages = ref<DebugMessage[]>([])
 const debugInput = ref('')
 const debugStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
+let debugAbortController: AbortController | null = null
+
+// ==================== 输入历史记录（localStorage 持久化） ====================
+const HISTORY_MAX = 100
+
+function loadHistory(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(`dc_skill_history_${key}`)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveHistory(key: string, list: string[]) {
+  try {
+    localStorage.setItem(`dc_skill_history_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
+  } catch {}
+}
+
+const nlHistory = ref<string[]>(loadHistory('nl'))
+const nlHistoryIdx = ref(-1)
+const cmdHistory = ref<string[]>(loadHistory('cmd'))
+const cmdHistoryIdx = ref(-1)
+const chatHistory = ref<string[]>(loadHistory('chat'))
+const chatHistoryIdx = ref(-1)
+
+function pushHistory(list: Ref<string[]>, idx: Ref<number>, value: string, storageKey: string) {
+  const v = value.trim()
+  if (!v) return
+  if (list.value[list.value.length - 1] !== v) {
+    list.value.push(v)
+    if (list.value.length > HISTORY_MAX) {
+      list.value = list.value.slice(-HISTORY_MAX)
+    }
+    saveHistory(storageKey, list.value)
+  }
+  idx.value = -1
+}
+
+function onHistoryKey(e: KeyboardEvent, list: Ref<string[]>, idx: Ref<number>, model: Ref<string>, savedDraft: Ref<string>) {
+  if (e.key === 'ArrowUp') {
+    if (list.value.length === 0) return
+    e.preventDefault()
+    if (idx.value === -1) {
+      savedDraft.value = model.value
+      idx.value = list.value.length - 1
+    } else if (idx.value > 0) {
+      idx.value--
+    }
+    model.value = list.value[idx.value]
+  } else if (e.key === 'ArrowDown') {
+    if (idx.value === -1) return
+    e.preventDefault()
+    if (idx.value < list.value.length - 1) {
+      idx.value++
+      model.value = list.value[idx.value]
+    } else {
+      idx.value = -1
+      model.value = savedDraft.value
+    }
+  }
+}
+
+const nlDraft = ref('')
+const cmdDraft = ref('')
+const chatDraft = ref('')
 
 const cmdPlaceholder = computed(() => {
   const name = debugSkill.value?.name || 'skill'
@@ -1180,6 +1282,7 @@ async function handleRunSkillNL() {
     ElMessage.warning('请输入调用指令')
     return
   }
+  pushHistory(nlHistory, nlHistoryIdx, execNLQuery.value, 'nl')
   execRunning.value = true
   execResult.value = null
   execThinking.value = ''
@@ -1267,6 +1370,7 @@ async function handleRunCmd() {
     ElMessage.warning('请输入命令')
     return
   }
+  pushHistory(cmdHistory, cmdHistoryIdx, cmd, 'cmd')
 
   let parameters: Record<string, any> = {}
   let datasourceName = ''
@@ -1380,6 +1484,32 @@ function handleDebugKeyDown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleDebugSend()
+    return
+  }
+  onHistoryKey(e, chatHistory, chatHistoryIdx, debugInput, chatDraft)
+}
+
+function handleNLKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleRunSkillNL()
+    return
+  }
+  onHistoryKey(e, nlHistory, nlHistoryIdx, execNLQuery, nlDraft)
+}
+
+function handleCmdKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleRunCmd()
+    return
+  }
+  onHistoryKey(e, cmdHistory, cmdHistoryIdx, execCmdStr, cmdDraft)
+}
+
+function stopDebugGeneration() {
+  if (debugAbortController) {
+    debugAbortController.abort()
   }
 }
 
@@ -1387,9 +1517,11 @@ async function handleDebugSend() {
   if (!debugSkill.value || !debugInput.value.trim() || debugStreaming.value) return
 
   const userMsg = debugInput.value.trim()
+  pushHistory(chatHistory, chatHistoryIdx, userMsg, 'chat')
   debugMessages.value.push({ role: 'user', content: userMsg })
   debugInput.value = ''
   debugStreaming.value = true
+  debugAbortController = new AbortController()
 
   const assistantIdx = debugMessages.value.length
   debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
@@ -1412,6 +1544,7 @@ async function handleDebugSend() {
         history,
         script_name: debugScriptName.value,
       }),
+      signal: debugAbortController.signal,
     })
 
     if (!response.ok) {
@@ -1471,9 +1604,19 @@ async function handleDebugSend() {
     }
 
   } catch (e: any) {
-    debugMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+    if (e.name === 'AbortError') {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg.content) {
+        msg.content += '\n\n*[已停止生成]*'
+      } else {
+        msg.content = '*[已停止生成]*'
+      }
+    } else {
+      debugMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+    }
   } finally {
     debugStreaming.value = false
+    debugAbortController = null
     await nextTick(() => {
       if (debugMsgListRef.value) {
         debugMsgListRef.value.scrollTop = debugMsgListRef.value.scrollHeight
@@ -1578,6 +1721,7 @@ onMounted(() => {
     gap: 8px;
     margin-top: auto;
     padding-top: 12px;
+    align-items: center;
   }
 }
 
@@ -1869,6 +2013,14 @@ onMounted(() => {
 
 .cmd-parse-hint {
   margin-top: 8px;
+  
+  .el-tag {
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.4;
+    height: auto;
+    padding: 4px 8px;
+  }
 }
 
 .exec-thinking-box {

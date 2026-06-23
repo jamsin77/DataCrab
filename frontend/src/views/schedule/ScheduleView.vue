@@ -125,26 +125,28 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="success" @click="triggerNow(row)">
-            <el-icon><CaretRight /></el-icon> 执行
-          </el-button>
-          <el-button v-if="row.status === 'active'" size="small" @click="pauseSchedule(row.id)">
-            <el-icon><VideoPause /></el-icon> 暂停
-          </el-button>
-          <el-button v-if="row.status === 'paused'" size="small" type="primary" @click="resumeSchedule(row.id)">
-            <el-icon><VideoPlay /></el-icon> 恢复
-          </el-button>
-          <el-button size="small" @click="viewExecutions(row)">
-            <el-icon><Document /></el-icon> 历史
-          </el-button>
-          <el-button size="small" @click="openEditDialog(row)">
-            <el-icon><Edit /></el-icon>
-          </el-button>
-          <el-button size="small" type="danger" @click="deleteSchedule(row.id)">
-            <el-icon><Delete /></el-icon>
-          </el-button>
+          <div class="table-actions">
+            <el-button size="small" type="success" @click="triggerNow(row)">
+              <el-icon><CaretRight /></el-icon> 执行
+            </el-button>
+            <el-button v-if="row.status === 'active'" size="small" @click="pauseSchedule(row.id)">
+              <el-icon><VideoPause /></el-icon> 暂停
+            </el-button>
+            <el-button v-if="row.status === 'paused'" size="small" type="primary" @click="resumeSchedule(row.id)">
+              <el-icon><VideoPlay /></el-icon> 恢复
+            </el-button>
+            <el-button size="small" @click="viewExecutions(row)">
+              <el-icon><Document /></el-icon> 历史
+            </el-button>
+            <el-button size="small" @click="openEditDialog(row)">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+            <el-button size="small" type="danger" @click="deleteSchedule(row.id)">
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -884,5 +886,12 @@ function formatInterval(seconds: number) {
     font-family: monospace;
     font-size: 13px;
   }
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 </style>

@@ -1,5 +1,8 @@
 """数据库连接器实现"""
 
+import re
+import asyncio
+import glob
 from typing import List, Dict, Any, Optional
 import os
 import io
@@ -10,6 +13,14 @@ import httpx
 from loguru import logger
 
 from app.services.datasource import BaseConnector
+
+_SAFE_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
+def _validate_identifier(name: str) -> str:
+    if not name or not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(f"非法的表名标识符: {name}")
+    return name
 
 
 class PostgreSQLConnector(BaseConnector):
@@ -35,12 +46,13 @@ class PostgreSQLConnector(BaseConnector):
             conn = await self.connect()
             if conn and self._connection:
                 await self._connection.execute("SELECT 1")
-                await self.close()
                 return True
             return False
         except Exception as e:
             logger.error(f"PostgreSQL测试连接失败: {e}")
             return False
+        finally:
+            await self.close()
 
     async def get_schema(self) -> List[Dict[str, Any]]:
         if not self._connection:
@@ -56,9 +68,10 @@ class PostgreSQLConnector(BaseConnector):
     ) -> pd.DataFrame:
         if not self._connection:
             await self.connect()
+        _validate_identifier(table)
         offset = (page - 1) * page_size
         rows = await self._connection.fetch(
-            f"SELECT * FROM {table} LIMIT {page_size} OFFSET {offset}"
+            f'SELECT * FROM "{table}" LIMIT $1 OFFSET $2', page_size, offset
         )
         return pd.DataFrame([dict(r) for r in rows])
 
@@ -71,7 +84,8 @@ class PostgreSQLConnector(BaseConnector):
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
         if not self._connection:
             await self.connect()
-        count = await self._connection.fetchval(f"SELECT COUNT(*) FROM {table}")
+        _validate_identifier(table)
+        count = await self._connection.fetchval(f'SELECT COUNT(*) FROM "{table}"')
         return {"row_count": count}
 
     async def close(self) -> None:
@@ -106,11 +120,13 @@ class MySQLConnector(BaseConnector):
             result = await self.connect()
             if result and self._connection:
                 await self._connection.ping()
-                await self.close()
-            return result
+                return True
+            return False
         except Exception as e:
             logger.error(f"MySQL测试连接失败: {e}")
             return False
+        finally:
+            await self.close()
 
     async def get_schema(self) -> List[Dict[str, Any]]:
         if not self._connection:
@@ -130,9 +146,10 @@ class MySQLConnector(BaseConnector):
             await self.connect()
         if not self._connection:
             return pd.DataFrame()
+        _validate_identifier(table)
         offset = (page - 1) * page_size
         async with self._connection.cursor() as cur:
-            await cur.execute(f"SELECT * FROM `{table}` LIMIT {page_size} OFFSET {offset}")
+            await cur.execute(f"SELECT * FROM `{table}` LIMIT %s OFFSET %s", (page_size, offset))
             rows = await cur.fetchall()
             cols = [desc[0] for desc in cur.description]
         return pd.DataFrame(rows, columns=cols)
@@ -153,6 +170,7 @@ class MySQLConnector(BaseConnector):
             await self.connect()
         if not self._connection:
             return {}
+        _validate_identifier(table)
         async with self._connection.cursor() as cur:
             await cur.execute(f"SELECT COUNT(*) FROM `{table}`")
             count = (await cur.fetchone())[0]
@@ -210,34 +228,114 @@ class CSVConnector(BaseConnector):
 
 
 class ExcelConnector(BaseConnector):
-    """Excel文件连接器"""
+    """Excel文件连接器 — 支持单文件、多文件、文件夹模式"""
+
+    def _get_excel_files(self) -> List[str]:
+        """根据 config 返回所有 Excel 文件路径"""
+        mode = self.config.get("mode", "file")
+        file_path = self.config.get("file_path", "")
+        file_paths = self.config.get("file_paths", [])
+
+        if mode == "folder":
+            folder = file_path
+            if not folder or not os.path.isdir(folder):
+                return []
+            files = []
+            for ext in ("*.xlsx", "*.xls"):
+                files.extend(glob.glob(os.path.join(folder, ext)))
+            return sorted(files)
+        elif mode == "files" and file_paths:
+            return [f for f in file_paths if os.path.exists(f)]
+        else:
+            if file_path and os.path.exists(file_path):
+                return [file_path]
+            return []
+
+    @staticmethod
+    def _parse_table_name(table_name: str) -> tuple:
+        """将 table_name 解析为 (file_path, sheet_name_or_index)
+        规则: '文件名' → 第一个Sheet; '文件名_Sheet名' → 对应Sheet
+        """
+        if "|" in table_name:
+            parts = table_name.split("|", 1)
+            return parts[0], parts[1]
+        return table_name, 0
 
     async def connect(self) -> bool:
         return True
 
     async def test_connection(self) -> bool:
-        return os.path.exists(self.config.get("file_path", ""))
+        files = self._get_excel_files()
+        return len(files) > 0
 
     async def get_schema(self) -> List[Dict[str, Any]]:
-        file_path = self.config.get("file_path", "")
-        if not os.path.exists(file_path):
+        """返回所有文件所有Sheet的列表
+        table_name 规则:
+          - 文件的第一个Sheet: 文件名(不含扩展名)
+          - 文件的其他Sheet: 文件名_Sheet名
+        """
+        files = self._get_excel_files()
+        if not files:
             return []
-        try:
-            xl = pd.ExcelFile(file_path)
-            return [{"table_name": s, "table_type": "excel_sheet"} for s in xl.sheet_names]
-        except Exception:
-            return [{"table_name": os.path.basename(file_path), "table_type": "excel"}]
+
+        result = []
+        for fpath in files:
+            base = os.path.splitext(os.path.basename(fpath))[0]
+            try:
+                xl = pd.ExcelFile(fpath)
+                for i, sheet in enumerate(xl.sheet_names):
+                    if i == 0:
+                        table_name = base
+                    else:
+                        table_name = f"{base}_{sheet}"
+                    result.append({
+                        "table_name": table_name,
+                        "table_type": "excel_sheet",
+                        "file_path": fpath,
+                        "sheet_name": sheet,
+                        "sheet_index": i,
+                    })
+            except Exception:
+                result.append({
+                    "table_name": base,
+                    "table_type": "excel",
+                    "file_path": fpath,
+                    "sheet_name": None,
+                    "sheet_index": 0,
+                })
+        return result
 
     async def get_table_data(
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
-        file_path = self.config.get("file_path", "")
-        sheet_name = table if table else self.config.get("sheet_name", 0)
+        files = self._get_excel_files()
+        file_path, sheet_name = self._parse_table_name(table)
+
+        # 如果 table_name 就是文件名(不含扩展名)，找到对应文件
+        if file_path in [os.path.splitext(os.path.basename(f))[0] for f in files]:
+            for f in files:
+                if os.path.splitext(os.path.basename(f))[0] == file_path:
+                    file_path = f
+                    break
+
+        # 如果 file_path 还是名字而非路径，尝试匹配
+        if not os.path.isabs(file_path):
+            for f in files:
+                if os.path.splitext(os.path.basename(f))[0] == file_path or os.path.basename(f) == file_path:
+                    file_path = f
+                    break
+
         try:
             df = pd.read_excel(file_path, sheet_name=sheet_name)
         except Exception:
-            df = pd.read_excel(file_path, sheet_name=0)
+            try:
+                df = pd.read_excel(file_path, sheet_name=0)
+            except Exception:
+                if files:
+                    df = pd.read_excel(files[0], sheet_name=0)
+                else:
+                    return pd.DataFrame()
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
@@ -245,19 +343,38 @@ class ExcelConnector(BaseConnector):
         return pd.DataFrame()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
-        file_path = self.config.get("file_path", "")
-        sheet_name = table if table else self.config.get("sheet_name", 0)
+        files = self._get_excel_files()
+        file_path, sheet_name = self._parse_table_name(table)
+
+        if not os.path.isabs(file_path):
+            for f in files:
+                if os.path.splitext(os.path.basename(f))[0] == file_path or os.path.basename(f) == file_path:
+                    file_path = f
+                    break
+
         try:
             df = pd.read_excel(file_path, sheet_name=sheet_name)
         except Exception:
-            df = pd.read_excel(file_path, sheet_name=0)
+            try:
+                df = pd.read_excel(file_path, sheet_name=0)
+            except Exception:
+                if files:
+                    df = pd.read_excel(files[0], sheet_name=0)
+                else:
+                    return {"row_count": 0, "column_count": 0}
         return {"row_count": len(df), "column_count": len(df.columns)}
 
     async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
-        file_path = self.config.get("file_path", "")
-        sheet_name = table if table else self.config.get("sheet_name", 0)
+        files = self._get_excel_files()
+        file_path, sheet_name = self._parse_table_name(table)
+
+        if not os.path.isabs(file_path):
+            for f in files:
+                if os.path.splitext(os.path.basename(f))[0] == file_path or os.path.basename(f) == file_path:
+                    file_path = f
+                    break
+
         try:
-            import os
             if not os.path.exists(file_path):
                 return {"success": False, "message": f"文件不存在: {file_path}"}
             df_new = pd.DataFrame(records)
@@ -323,9 +440,9 @@ class OBSConnector(BaseConnector):
             if connected and self._client:
                 bucket = self.config.get("bucket", "")
                 if bucket:
-                    self._client.bucket_exists(bucket)
+                    await asyncio.to_thread(self._client.bucket_exists, bucket)
                 else:
-                    self._client.list_buckets()
+                    await asyncio.to_thread(self._client.list_buckets)
                 return True
             return False
         except Exception as e:
@@ -343,7 +460,7 @@ class OBSConnector(BaseConnector):
 
         try:
             if bucket:
-                objects = self._client.list_objects(bucket, prefix=prefix)
+                objects = await asyncio.to_thread(self._client.list_objects, bucket, prefix)
                 return [
                     {
                         "table_name": obj.object_name,
@@ -354,7 +471,7 @@ class OBSConnector(BaseConnector):
                     for obj in objects
                 ]
             else:
-                buckets = self._client.list_buckets()
+                buckets = await asyncio.to_thread(self._client.list_buckets)
                 return [
                     {"table_name": b.name, "table_type": "obs_bucket",
                      "creation_date": str(b.creation_date)}
@@ -375,7 +492,7 @@ class OBSConnector(BaseConnector):
 
         bucket = self.config.get("bucket", "")
         try:
-            response = self._client.get_object(bucket, table)
+            response = await asyncio.to_thread(self._client.get_object, bucket, table)
             content = response.read()
             response.close()
             response.release_conn()
@@ -406,7 +523,7 @@ class OBSConnector(BaseConnector):
 
         bucket = self.config.get("bucket", "")
         try:
-            stat = self._client.stat_object(bucket, table)
+            stat = await asyncio.to_thread(self._client.stat_object, bucket, table)
             return {
                 "row_count": 0,
                 "size_bytes": stat.size,
@@ -575,7 +692,7 @@ class ChromaConnector(BaseConnector):
     async def connect(self) -> bool:
         try:
             client = self._get_client()
-            client.heartbeat()
+            await asyncio.to_thread(client.heartbeat)
             return True
         except Exception as e:
             logger.error(f"ChromaDB连接失败: {e}")
@@ -584,7 +701,7 @@ class ChromaConnector(BaseConnector):
     async def test_connection(self) -> bool:
         try:
             client = self._get_client()
-            client.heartbeat()
+            await asyncio.to_thread(client.heartbeat)
             return True
         except Exception as e:
             logger.error(f"ChromaDB测试连接失败: {e}")
@@ -592,7 +709,7 @@ class ChromaConnector(BaseConnector):
 
     async def get_schema(self) -> List[Dict[str, Any]]:
         client = self._get_client()
-        collections = client.list_collections()
+        collections = await asyncio.to_thread(client.list_collections)
         return [
             {"table_name": c.name, "table_type": "chroma_collection", "id": str(c.id), "count": c.count()}
             for c in collections
@@ -603,9 +720,10 @@ class ChromaConnector(BaseConnector):
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
         client = self._get_client()
-        collection = client.get_collection(table)
+        collection = await asyncio.to_thread(client.get_collection, table)
         offset = (page - 1) * page_size
-        result = collection.get(
+        result = await asyncio.to_thread(
+            collection.get,
             include=["documents", "metadatas"],
             limit=page_size,
             offset=offset,
@@ -627,14 +745,24 @@ class ChromaConnector(BaseConnector):
         collection_name = p.get("collection")
         if not collection_name:
             return pd.DataFrame()
-        collection = client.get_collection(collection_name)
+        collection = await asyncio.to_thread(client.get_collection, collection_name)
         query_texts = p.get("query_texts")
         query_embeddings = p.get("query_embeddings")
         n_results = p.get("n_results", 10)
         if query_texts:
-            results = collection.query(query_texts=[query_texts] if isinstance(query_texts, str) else query_texts, n_results=n_results, include=["documents", "metadatas", "distances"])
+            results = await asyncio.to_thread(
+                collection.query,
+                query_texts=[query_texts] if isinstance(query_texts, str) else query_texts,
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
         elif query_embeddings:
-            results = collection.query(query_embeddings=[query_embeddings] if not isinstance(query_embeddings[0], list) else query_embeddings, n_results=n_results, include=["documents", "metadatas", "distances"])
+            results = await asyncio.to_thread(
+                collection.query,
+                query_embeddings=[query_embeddings] if not isinstance(query_embeddings[0], list) else query_embeddings,
+                n_results=n_results,
+                include=["documents", "metadatas", "distances"],
+            )
         else:
             return pd.DataFrame()
         rows = []
@@ -653,14 +781,14 @@ class ChromaConnector(BaseConnector):
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
         client = self._get_client()
         try:
-            collection = client.get_collection(table)
+            collection = await asyncio.to_thread(client.get_collection, table)
             return {"row_count": collection.count(), "name": collection.name}
         except Exception:
             return {"row_count": 0}
 
     async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         client = self._get_client()
-        collection = client.get_or_create_collection(table)
+        collection = await asyncio.to_thread(client.get_or_create_collection, table)
         ids = [r.get("id", str(i)) for i, r in enumerate(records)]
         documents = [r.get("document", r.get("text", "")) for r in records]
         metadatas = [r.get("metadata", r.get("metadatas", {})) for r in records]
@@ -669,22 +797,109 @@ class ChromaConnector(BaseConnector):
         kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
         if has_embeddings:
             kwargs["embeddings"] = [e for e in embeddings]
-        collection.upsert(**kwargs)
+        await asyncio.to_thread(collection.upsert, **kwargs)
         return {"success": True, "rows_written": len(ids)}
 
     async def close(self) -> None:
         self._client = None
 
 
+class SQLiteConnector(BaseConnector):
+    """SQLite连接器"""
+
+    async def connect(self) -> bool:
+        try:
+            import aiosqlite
+            db_path = self.config.get("database", self.config.get("file_path", ""))
+            if not db_path:
+                logger.error("SQLite配置缺少必要参数: database 或 file_path")
+                return False
+            self._connection = await aiosqlite.connect(db_path)
+            self._connection.row_factory = aiosqlite.Row
+            return True
+        except Exception as e:
+            logger.error(f"SQLite连接失败: {e}")
+            return False
+
+    async def test_connection(self) -> bool:
+        try:
+            conn = await self.connect()
+            if conn and self._connection:
+                await self._connection.execute("SELECT 1")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"SQLite测试连接失败: {e}")
+            return False
+        finally:
+            await self.close()
+
+    async def get_schema(self) -> List[Dict[str, Any]]:
+        if not self._connection:
+            await self.connect()
+        if not self._connection:
+            return []
+        async with self._connection.execute(
+            "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [{"table_name": r["name"], "table_type": r["type"]} for r in rows]
+
+    async def get_table_data(
+        self, table: str, page: int = 1, page_size: int = 20,
+        filters: Optional[Dict] = None, sort: Optional[Dict] = None,
+    ) -> pd.DataFrame:
+        if not self._connection:
+            await self.connect()
+        if not self._connection:
+            return pd.DataFrame()
+        _validate_identifier(table)
+        offset = (page - 1) * page_size
+        async with self._connection.execute(
+            f'SELECT * FROM "{table}" LIMIT ? OFFSET ?', (page_size, offset)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return pd.DataFrame([dict(r) for r in rows], columns=columns)
+
+    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        if not self._connection:
+            await self.connect()
+        if not self._connection:
+            return pd.DataFrame()
+        async with self._connection.execute(query) as cursor:
+            rows = await cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return pd.DataFrame([dict(r) for r in rows], columns=columns)
+
+    async def get_table_stats(self, table: str) -> Dict[str, Any]:
+        if not self._connection:
+            await self.connect()
+        if not self._connection:
+            return {}
+        _validate_identifier(table)
+        async with self._connection.execute(f'SELECT COUNT(*) FROM "{table}"') as cursor:
+            row = await cursor.fetchone()
+        return {"row_count": row[0] if row else 0}
+
+    async def close(self) -> None:
+        if self._connection:
+            await self._connection.close()
+            self._connection = None
+
+
 CONNECTOR_REGISTRY: Dict[str, type] = {
     "postgresql": PostgreSQLConnector,
     "mysql": MySQLConnector,
+    "sqlite": SQLiteConnector,
     "csv": CSVConnector,
     "excel": ExcelConnector,
     "obs": OBSConnector,
     "hadoop": HadoopHDFSConnector,
     "chroma": ChromaConnector,
 }
+
+SUPPORTED_DATASOURCE_TYPES = list(CONNECTOR_REGISTRY.keys())
 
 
 def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector:

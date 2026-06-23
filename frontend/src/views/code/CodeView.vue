@@ -1,8 +1,14 @@
 <template>
   <div class="code-container">
     <div class="toolbar">
-      <el-button type="primary" @click="showGenerateDialog = true"><el-icon><MagicStick /></el-icon> 从自然语言生成</el-button>
-      <el-button @click="showCreateDialog = true"><el-icon><Plus /></el-icon> 手动创建</el-button>
+      <div class="toolbar-left">
+        <el-button type="primary" @click="showGenerateDialog = true">
+          <el-icon><MagicStick /></el-icon> 从自然语言生成
+        </el-button>
+        <el-button @click="showCreateDialog = true">
+          <el-icon><Plus /></el-icon> 手动创建
+        </el-button>
+      </div>
     </div>
     <el-table :data="codes" stripe>
       <el-table-column prop="name" label="名称" />
@@ -10,10 +16,12 @@
       <el-table-column prop="category" label="分类" width="120" />
       <el-table-column prop="version" label="版本" width="80" />
       <el-table-column prop="execution_count" label="执行次数" width="100" />
-      <el-table-column label="操作" width="200">
+      <el-table-column label="操作" width="160">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="executeCode(row.id)">执行</el-button>
-          <el-button size="small" @click="viewCode(row.id)">详情</el-button>
+          <div class="table-actions">
+            <el-button size="small" type="primary" @click="executeCode(row.id)">执行</el-button>
+            <el-button size="small" @click="viewCode(row.id)">详情</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -60,6 +68,29 @@ function viewCode(id: string) { /* TODO */ }
 </script>
 
 <style lang="scss" scoped>
-.code-container { padding: 20px; background: #fff; border-radius: 8px; }
-.toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
+.code-container {
+  padding: 20px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 </style>

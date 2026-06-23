@@ -31,11 +31,17 @@ def parse_python_script(script_content: str) -> Dict[str, Any]:
     }
 
     func_def = None
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not node.name.startswith("_"):
+    func_names = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+            func_names.append(node)
+    if func_names:
+        for node in func_names:
+            if node.name == "main":
                 func_def = node
                 break
+        if func_def is None:
+            func_def = func_names[0]
 
     if func_def is None:
         return result

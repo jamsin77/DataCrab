@@ -60,14 +60,18 @@
 ```
 用户输入自然语言 ─────────────────────────────────────────>
 
-系统处理�?1. 意图识别（数据处理、创建算子、创建Pipeline、查询数据）
-2. 自动匹配技�?算子
+系统处理：1. 意图识别（数据处理、创建算子、创建Pipeline、查询数据）
+2. 自动匹配技能/算子
 3. 生成执行代码
 4. 流式响应返回结果
 
-AI回复�?- 文本解释
+AI回复：- 文本解释
 - 可执行代码块（一键执行）
-- 数据表格（可导出�?- 图表可视�?
+- 数据表格（可导出）- 图表可视化
+
+关键边界：DataCrab 不能修改平台自身，但可以帮用户创建和修改用户自己的对话、算子、技能。
+算子和技能中的脚本只能操作用户的业务数据，不能操作平台系统数据。
+
 用户确认/调整 ─────────────────────────────────────────────>
 ```
 
@@ -582,7 +586,11 @@ async def generate_operator(request: OperatorGenerateRequest):
 ```
 
 ##### 2.4.4.3 AI 修改算子
-选择已有算子 → 输入修改指令 → LLM 基于原脚本修改 → 覆盖更新 → 自动跳转调试页面
+选择已有算子 → 输入修改指令 → LLM 基于原脚本修改 → **自动验证修改是否正确** → 覆盖更新 → 自动跳转调试页面
+
+**修改后必验证**：修改算子脚本后，系统必须自动调用调试端点（POST /operators/debug）验证修改未引入错误。如果验证失败，应提示用户并提供修复建议。
+
+**输出默认同源**：算子生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。
 
 **API 端点**: `POST /operators/{operator_id}/modify`
 **请求体**:
@@ -658,6 +666,10 @@ async def clone_operator(operator_id, request: OperatorCloneRequest):
 
 ##### 2.4.4.5 算子调试
 点击调试按钮 → 右侧抽屉打开 → 左侧显示可编辑的 Python 脚本 → 右侧显示调试面板 → 填写入参/可选参数 → 点击执行 → 展示 stdout/返回结果/错误信息
+
+**修改后必验证**：在调试面板中修改脚本后，必须自动执行一次验证运行，确保修改后的脚本能正常工作。
+
+**输出默认同源**：算子生成新文件时，如果未指定 output_dir，默认保存到 DataSource（数据源）指定的文件路径下。
 
 **API 端点**: `POST /operators/debug`
 **调试执行流程**:
@@ -936,6 +948,8 @@ POST /api/v1/skills/{id}/run-nl-stream
 POST /api/v1/skills/{id}/debug-chat
   → 系统提示词包含 SKILL.md + 脚本内容上下文
   → LLM 支持输出动作 JSON：{"action": "run"} 触发执行，{"action": "modify_script"} 触发脚本修改
+  → 修改后必验证：modify_script 后必须自动 run 验证
+  → 输出默认同源：生成新文件时默认保存到 DataSource（数据源）指定的文件路径下
   → SSE 事件流：thinking（推理过程）→ content（回复内容）→ run_result/script_updated → done
   → 前端展示推理过程卡片（蓝色边框，旋转图标 + 思考内容）
   → 支持多轮对话，上下文包含历史消息和执行结果
@@ -1942,38 +1956,359 @@ class TaskExecution(Base):
     # 关系
     schedule = relationship("Schedule", back_populates="executions")
 ```
-### 2.9 元数据管理模�?
-#### 2.9.1 元数据架�?```
-┌─────────────────────────────────────────�?�?        Metadata Manager                �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Technical Metadata            �?  �?�? �?  - 表结构信�?                  �?  �?�? �?  - 字段类型                     �?  �?�? �?  - 索引信息                     �?  �?�? �?  - 数据统计                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Business Metadata             �?  �?�? �?  - 业务含义                     �?  �?�? �?  - 数据�?                      �?  �?�? �?  - 数据质量规则                 �?  �?�? �?  - 数据所有�?                  �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Operational Metadata          �?  �?�? �?  - 执行统计                     �?  �?�? �?  - 访问记录                     �?  �?�? �?  - 数据血�?                    �?  �?�? �?  - 变更历史                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+### 2.9 元数据管理模块
 
-#### 2.9.2 元数据模�?```python
-class TableMetadata(Base):
-    __tablename__ = "table_metadata"
-    
-    id = Column(UUID, primary_key=True)
-    data_source_id = Column(UUID, ForeignKey("data_sources.id"))
-    
-    # 表信�?    table_name = Column(String(200), nullable=False)
-    table_type = Column(String(50))  # table, view, stream
-    
-    # 技术元数据
-    schema = Column(JSON)  # 表结�?    row_count = Column(BigInteger)  # 行数
-    size_bytes = Column(BigInteger)  # 大小
-    
-    # 业务元数�?    business_name = Column(String(200))  # 业务名称
-    business_description = Column(Text)  # 业务描述
-    data_domain = Column(String(100))  # 数据�?    data_owner = Column(String(100))  # 数据所有�?    
-    # 数据质量
-    quality_rules = Column(JSON)  # 质量规则
-    quality_score = Column(Float)  # 质量评分
-    
-    # 安全等级
-    security_level = Column(String(20))  # public, internal, confidential, secret
-    
-    # 血缘关�?    lineage = Column(JSON)  # 数据血�?    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, onupdate=datetime.utcnow)
+#### 2.9.1 设计目标
+
+对平台中所有数据集（数据源中的表/文件）建立统一的元数据中心，分为**技术元数据**和**业务元数据**两大类，支持：
+- 技术元数据在配置数据源时一键自动同步
+- 业务元数据通过大模型分析数据样本自动补充，也支持人工编辑
+- 元数据全生命周期管理：采集 → 存储 → 补充 → 查询 → 血缘追踪
+
+#### 2.9.2 元数据架构
+
 ```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Metadata Manager                             │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│  技术元数据       │  业务元数据       │  运营元数据               │
+│  Technical       │  Business        │  Operational              │
+├──────────────────┼──────────────────┼───────────────────────────┤
+│ · 数据集ID        │ · 业务系统来源    │ · 最后访问时间             │
+│ · 数据集名称      │ · 业务描述        │ · 访问次数                 │
+│ · 数据集类型      │ · 业务标签(多)    │ · 最近同步时间             │
+│ · 数据集格式      │ · 业务用途        │ · 数据变更记录             │
+│ · 存放地址        │ · 数据域          │ · 质量评分                 │
+│ · 格式定义(Schema)│ · 数据所有者      │ · 质量规则                 │
+│ · 数据量预估      │ · 安全等级        │ · 数据血缘                 │
+│ · 字段统计        │ · 保留策略        │                           │
+│ · 分区信息        │                  │                           │
+├──────────────────┼──────────────────┼───────────────────────────┤
+│  ← 自动同步       │  ← AI补充 + 人工   │  ← 自动采集                │
+│  (Connector提取)  │  (LLM分析样本)    │  (运行时记录)              │
+└──────────────────┴──────────────────┴───────────────────────────┘
+```
+
+#### 2.9.3 元数据数据模型
+
+```python
+class TableMetadata(Base):
+    """数据集元数据模型（一个数据源的一张表/文件 = 一条元数据记录）"""
+    __tablename__ = "table_metadata"
+
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    data_source_id = Column(UUID, ForeignKey("data_sources.id", ondelete="CASCADE"), index=True)
+
+    # ========== 技术元数据 ==========
+    # 基础信息
+    table_name = Column(String(200), nullable=False)          # 数据集名称（表名/文件名/Sheet名）
+    table_type = Column(String(50))                           # 数据集类型: table, view, sheet, file
+    storage_format = Column(String(50))                       # 数据集格式: csv, excel, parquet, mysql, postgres...
+    storage_location = Column(String(500))                    # 存放地址: 文件路径 / 数据库主机:端口/库名
+    source_connector = Column(String(50))                     # 来源连接器类型
+
+    # Schema 定义
+    table_schema = Column(JSON)                               # 格式定义: [{"name": "col", "dtype": "VARCHAR(255)", "nullable": true, "description": "..."}]
+    primary_keys = Column(JSON)                               # 主键列
+    indexes = Column(JSON)                                    # 索引信息
+
+    # 数据量统计
+    row_count = Column(BigInteger)                            # 行数（预估/实际）
+    size_bytes = Column(BigInteger)                           # 存储大小（字节）
+    column_count = Column(Integer)                            # 列数
+    sample_data = Column(JSON)                                # 样本数据（前5行，用于AI分析）
+    column_stats = Column(JSON)                               # 字段统计: {"col": {"min":.., "max":.., "null_rate":.., "unique_count":..}}
+
+    # 分区与分区键（适用于大数据源）
+    partition_info = Column(JSON)                             # 分区信息: {"partitioned": true, "partition_keys": ["date"], "partition_count": 30}
+
+    # ========== 业务元数据 ==========
+    business_name = Column(String(200))                      # 业务名称（如"全国重点文物保护单位名录"）
+    business_description = Column(Text)                      # 业务描述
+    business_tags = Column(JSON)                             # 业务标签（多个）: ["文物", "文化遗产", "国家级"]
+    business_purpose = Column(Text)                           # 业务用途（如"用于文物统计分析与保护规划"）
+    source_system = Column(String(200))                      # 产生该数据集的业务系统名称
+    data_domain = Column(String(100))                        # 数据域: 文物、财务、人事、销售...
+    data_owner = Column(String(100))                         # 数据所有者（部门/人）
+    data_steward = Column(String(100))                       # 数据管理员
+
+    # 安全与合规
+    security_level = Column(String(20))                      # 安全等级: public, internal, confidential, secret
+    retention_policy = Column(String(200))                   # 保留策略: 如"永久保留"、"保留5年"
+
+    # ========== 运营元数据 ==========
+    last_synced_at = Column(DateTime)                        # 最后技术元数据同步时间
+    last_accessed_at = Column(DateTime)                      # 最后访问时间
+    access_count = Column(Integer, default=0)                # 访问次数
+
+    # 数据质量
+    quality_rules = Column(JSON)                             # 质量规则: [{"rule": "not_null", "column": "name"}]
+    quality_score = Column(Float)                            # 质量评分 (0-100)
+    quality_details = Column(JSON)                           # 质量详情: {"completeness": 98.5, "accuracy": 95.0, "consistency": 100}
+
+    # 数据血缘
+    lineage = Column(JSON)                                   # 血缘关系: {"upstream": [...], "downstream": [...]}
+
+    # AI 补充元数据
+    ai_enriched = Column(Boolean, default=False)             # 是否经过AI补充业务元数据
+    ai_enriched_at = Column(DateTime)                        # AI补充时间
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    data_source = relationship("DataSource", back_populates="table_metadata")
+```
+
+#### 2.9.4 技术元数据自动同步
+
+在数据源创建/编辑时，用户可选择"同步技术元数据"，系统通过 Connector 自动提取所有表的技术元数据。
+
+```python
+# 数据源创建/编辑时的同步选项
+class DataSourceSyncRequest(BaseModel):
+    sync_technical_metadata: bool = True     # 是否同步技术元数据
+    sample_rows: int = 5                     # 采样行数（用于AI分析和预览）
+    max_tables: int = 100                    # 最大同步表数
+
+# 同步流程
+async def sync_technical_metadata(datasource: DataSource, db: AsyncSession):
+    """
+    1. 通过 Connector 获取数据源所有表/文件列表
+    2. 对每个表提取技术元数据：
+       a. 调用 connector.get_schema() → 表结构、字段类型
+       b. 调用 connector.get_table_stats() → 行数、大小
+       c. 调用 connector.get_table_data(table, page=1, page_size=5) → 样本数据
+       d. 计算字段统计（空值率、唯一值数、min/max）
+    3. 写入/更新 table_metadata 表
+    4. 标记 last_synced_at
+    """
+    connector = get_connector(datasource.type, datasource.connection_config)
+    try:
+        schema_list = await connector.get_schema()          # 所有表/Sheet
+
+        for table_info in schema_list:
+            table_name = table_info["table_name"]
+
+            # 提取表结构
+            df_sample = await connector.get_table_data(table_name, page=1, page_size=5)
+            stats = await connector.get_table_stats(table_name)
+
+            # 计算字段统计
+            column_stats = {}
+            for col in df_sample.columns:
+                column_stats[col] = {
+                    "dtype": str(df_sample[col].dtype),
+                    "null_rate": float(df_sample[col].isna().mean()),
+                    "unique_count": int(df_sample[col].nunique()),
+                }
+                if df_sample[col].dtype in ['int64', 'float64']:
+                    column_stats[col]["min"] = df_sample[col].min()
+                    column_stats[col]["max"] = df_sample[col].max()
+
+            # 推断存储格式
+            storage_format = datasource.type  # mysql, excel, csv...
+
+            # 推断存放地址
+            if datasource.type in ("csv", "excel"):
+                storage_location = datasource.connection_config.get("file_path", "")
+            elif datasource.type in ("mysql", "postgres"):
+                cfg = datasource.connection_config
+                storage_location = f"{cfg.get('host')}:{cfg.get('port')}/{cfg.get('database')}"
+            else:
+                storage_location = str(datasource.connection_config)
+
+            # 写入或更新（保留已有业务元数据，只更新技术元数据）
+            existing = await db.execute(
+                select(TableMetadata).where(
+                    TableMetadata.data_source_id == datasource.id,
+                    TableMetadata.table_name == table_name,
+                )
+            )
+            meta = existing.scalar_one_or_none()
+
+            tech_data = {
+                "table_name": table_name,
+                "table_type": table_info.get("table_type", "table"),
+                "storage_format": storage_format,
+                "storage_location": storage_location,
+                "source_connector": datasource.type,
+                "table_schema": [
+                    {"name": c, "dtype": str(df_sample[c].dtype), "nullable": bool(df_sample[c].isna().any())}
+                    for c in df_sample.columns
+                ],
+                "row_count": stats.get("row_count", 0),
+                "column_count": len(df_sample.columns),
+                "size_bytes": stats.get("size_bytes"),
+                "sample_data": df_sample.fillna("").to_dict(orient="records"),
+                "column_stats": column_stats,
+                "last_synced_at": datetime.utcnow(),
+            }
+
+            if meta:
+                for k, v in tech_data.items():
+                    setattr(meta, k, v)
+            else:
+                meta = TableMetadata(data_source_id=datasource.id, **tech_data)
+                db.add(meta)
+
+        await db.flush()
+    finally:
+        await connector.close()
+```
+
+**同步时机：**
+- 数据源创建时：用户勾选"同步技术元数据"（默认勾选）
+- 数据源编辑时：用户手动触发"重新同步"
+- 定时任务：可选配置定时同步（如每天凌晨）
+
+#### 2.9.5 业务元数据 AI 补充
+
+通过大模型分析样本数据和已有技术元数据，自动生成业务元数据建议。
+
+```python
+class BusinessMetadataAIRequest(BaseModel):
+    table_metadata_id: UUID
+    force_refresh: bool = False       # 是否强制重新生成
+
+async def enrich_business_metadata(meta: TableMetadata, db: AsyncSession):
+    """
+    通过 LLM 分析样本数据，自动补充业务元数据：
+    1. 将技术元数据 + 样本数据组装为 prompt
+    2. LLM 推断业务名称、描述、标签、用途、数据域
+    3. 用户确认后写入业务元数据字段
+    """
+    prompt = f"""请分析以下数据集的技术信息和样本数据，推断业务元数据。
+
+## 技术信息
+- 数据源名称: {meta.data_source.name if meta.data_source else '未知'}
+- 数据集名称: {meta.table_name}
+- 存储格式: {meta.storage_format}
+- 字段结构: {json.dumps(meta.table_schema, ensure_ascii=False)}
+- 行数: {meta.row_count}
+- 字段统计: {json.dumps(meta.column_stats, ensure_ascii=False)}
+
+## 样本数据（前5行）
+{json.dumps(meta.sample_data, ensure_ascii=False, default=str)}
+
+## 请输出 JSON 格式的业务元数据
+{{
+    "business_name": "数据集的业务名称",
+    "business_description": "一段话描述这个数据集包含什么数据、有什么特征",
+    "business_tags": ["标签1", "标签2", "标签3"],
+    "business_purpose": "这个数据集可能的业务用途",
+    "source_system": "可能产生该数据的业务系统",
+    "data_domain": "数据域分类",
+    "security_level": "public/internal/confidential/secret"
+}}
+
+只输出 JSON，不要任何解释。"""
+
+    result = await llm_manager.chat_with_messages(
+        [{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=500,
+    )
+
+    # 解析 LLM 输出并写入
+    parsed = json.loads(result.strip().strip("```json").strip("```"))
+    for key, value in parsed.items():
+        setattr(meta, key, value)
+    meta.ai_enriched = True
+    meta.ai_enriched_at = datetime.utcnow()
+    await db.flush()
+```
+
+#### 2.9.6 API 设计
+
+```
+# 技术元数据同步
+POST   /api/v1/datasources/{id}/sync-metadata        # 触发技术元数据同步
+GET    /api/v1/datasources/{id}/metadata              # 获取数据源下所有表的元数据
+
+# 元数据 CRUD
+GET    /api/v1/metadata                                # 元数据列表（支持筛选/搜索/分页）
+GET    /api/v1/metadata/{table_metadata_id}            # 元数据详情
+PUT    /api/v1/metadata/{table_metadata_id}            # 编辑元数据（主要编辑业务元数据）
+
+# 业务元数据 AI 补充
+POST   /api/v1/metadata/{table_metadata_id}/ai-enrich  # AI补充业务元数据
+
+# 元数据搜索
+GET    /api/v1/metadata/search?q=文物&tag=文化遗产      # 按名称/描述/标签搜索
+
+# 元数据统计
+GET    /api/v1/metadata/stats                          # 元数据统计概览
+```
+
+#### 2.9.7 前端页面设计
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  元数据管理                                                      │
+├──────────┬──────────────────────────────────────────────────────┤
+│ 筛选栏   │  元数据列表                                           │
+│          │  ┌────────────────────────────────────────────────┐  │
+│ 数据源▼  │  │ ☑ 全国重点文物 | excel | 988行 × 5列          │  │
+│ 数据域▼  │  │   🏷 文物,文化遗产  | 业务名称: 全国文物名录   │  │
+│ 标签▼    │  │   📊 质量: 98分 | 🕐 同步: 2024-01-15         │  │
+│          │  ├────────────────────────────────────────────────┤  │
+│ 搜索框   │  │ ☑ 销售明细表   | mysql | 50000行 × 12列       │  │
+│ [搜索]   │  │   🏷 销售,财务    | 业务名称: 销售订单明细    │  │
+│          │  │   📊 质量: 85分 | 🕐 同步: 2024-01-14         │  │
+│          │  └────────────────────────────────────────────────┘  │
+├──────────┴──────────────────────────────────────────────────────┤
+│  元数据详情（点击列表项展开）                                     │
+│  ┌──────────────────────┬─────────────────────────────────────┐ │
+│  │ 技术元数据            │ 业务元数据                          │ │
+│  │                      │                                     │ │
+│  │ 数据集名称: 全国文物  │ 业务名称: [全国文物名录____]        │ │
+│  │ 类型: excel/sheet     │ 业务描述: [包含全国重点文保单位___] │ │
+│  │ 格式: excel           │ 业务标签: [文物] [文化遗产] [+]     │ │
+│  │ 地址: D:\wenwu\...    │ 业务用途: [文物统计分析与保护规划_] │ │
+│  │ 行数: 988             │ 来源系统: [国家文物局____________]  │ │
+│  │ 列数: 5               │ 数据域:   [文物 ▼]                 │ │
+│  │                      │ 安全等级: [internal ▼]              │ │
+│  │ 字段定义:             │                                     │ │
+│  │ ┌列名─类型─可空─描述─┐│ [AI补充业务元数据] [保存修改]       │ │
+│  │ │名称  str   ✗   ___ ││                                     │ │
+│  │ │时代  str   ✗   ___ ││                                     │ │
+│  │ │批次  str   ✗   ___ ││                                     │ │
+│  │ └───────────────────┘│                                     │ │
+│  │                      │                                     │ │
+│  │ [重新同步技术元数据]  │                                     │ │
+│  └──────────────────────┴─────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 2.9.8 元数据在平台中的应用
+
+| 应用场景 | 说明 |
+|---------|------|
+| **对话上下文** | chat.py 的 `build_datasource_context` 读取元数据，为 LLM 提供表结构、业务含义、数据域等上下文 |
+| **技能/算子生成** | skill_creator / operator SYSTEM_PROMPT 注入元数据，让 LLM 了解数据结构再生成脚本 |
+| **数据目录** | 前端元数据管理页面作为数据目录，用户可浏览搜索所有数据集 |
+| **数据血缘** | 记录数据处理流程的输入/输出关系，追溯数据来源 |
+| **数据质量监控** | 基于质量规则自动检测数据质量问题，计算质量评分 |
+| **数据安全** | 按安全等级控制数据访问权限 |
+
+#### 2.9.9 与数据源模块的集成
+
+数据源创建/编辑流程中增加"同步技术元数据"选项：
+
+```
+数据源创建流程:
+1. 用户填写连接配置 → 测试连接
+2. 勾选"同步技术元数据"（默认勾选）
+3. 系统自动:
+   a. 获取所有表/Sheet 列表
+   b. 逐表提取 Schema、行数、样本数据
+   c. 写入 table_metadata 表
+4. 创建完成 → 跳转元数据管理页面
+5. 用户可点击"AI补充业务元数据"让 LLM 分析并填充业务字段
+6. 用户可手动编辑业务元数据
+```
+
+数据源编辑流程中增加"重新同步"按钮，点击后重新提取技术元数据（保留已有业务元数据不覆盖）。
 
 ### 2.10 权限管理模块
 
@@ -2856,9 +3191,27 @@ volumes:
 
 ## 6. 安全设计
 
-### 6.1 认证与授�?- **JWT认证**: 使用JWT进行用户认证
-- **RBAC**: 基于角色的访问控�?- **API密钥**: 支持API密钥认证
-- **OAuth2**: 支持第三方登�?
+### 6.1 操作边界（核心安全原则）
+
+**DataCrab 不能修改平台自身，但可以帮用户创建和修改用户自己的对话、算子、技能。**
+
+| 类别 | 说明 | 能否修改 |
+|------|------|----------|
+| DataCrab 平台自身 | 源代码、配置、用户/角色/权限、系统表、基础设施 | ❌ 禁止 |
+| 用户定义的对话 | 用户创建的会话、消息 | ✅ 允许 |
+| 用户定义的算子 | 用户创建的算子脚本 | ✅ 允许 |
+| 用户定义的技能 | 用户创建的技能包和脚本 | ✅ 允许 |
+| 用户的业务数据 | 数据源中的业务数据 | ✅ 允许 |
+
+此规则已写入：
+- personal.md（最高优先级行为规则）
+- CONTEXT.md（项目上下文）
+- chat.py _build_system_prompt（对话提示词）
+- operator.py SYSTEM_PROMPT（算子提示词）
+- skill.py 调试助手/修改提示词（技能提示词）
+- skill_creator.py SKILL_CREATOR_SYSTEM_PROMPT（技能创建提示词）
+- pipeline_builder.py PIPELINE_BUILDER_SYSTEM_PROMPT（流程提示词）
+
 ### 6.2 数据安全
 - **传输加密**: HTTPS/TLS加密传输
 - **存储加密**: 敏感数据加密存储

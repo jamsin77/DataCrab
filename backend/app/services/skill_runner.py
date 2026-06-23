@@ -209,6 +209,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None):
 # Inject into builtins so scripts using get_data_accessor() can find them
 import builtins as _builtins
 _builtins.get_table_data = get_table_data
+_builtins.query_table_data = get_table_data
 _builtins.write_table_data = write_table_data
 
 # __SCRIPT_CONTENT__
@@ -217,34 +218,27 @@ if __name__ == "__main__":
     input_data = _get_input()
     params = _get_params()
     if USES_ARGPARSE:
-        import inspect as _inspect
-        _sig = _inspect.signature({function_name})
-        _mapped_params = {{}}
-        for _pname in _sig.parameters:
-            if _pname in params:
-                _mapped_params[_pname] = params[_pname]
-            elif _pname == "table_names" and "tables" in params:
-                _mapped_params[_pname] = params["tables"]
-            elif _pname == "datasource_name" and "datasource" in params:
-                _mapped_params[_pname] = params["datasource"]
-        result = {function_name}(**_mapped_params)
+        import sys as _sys
+        _argv = _build_argv_from_params(params)
+        _sys.argv = _argv
+        main()
     else:
         result = {function_name}(input_data, **params) if input_data is not None else {function_name}(**params)
-    if result is not None:
-        if hasattr(result, "to_dict"):
-            print("__RESULT__" + json.dumps(_sanitize_nans(result.to_dict(orient="records")), ensure_ascii=False, default=str))
-        elif isinstance(result, dict):
-            serializable = {{}}
-            for k, v in result.items():
-                if hasattr(v, "to_dict"):
-                    serializable[k] = _sanitize_nans(v.to_dict(orient="records"))
-                else:
-                    serializable[k] = _sanitize_nans(v)
-            print("__RESULT__" + json.dumps(serializable, ensure_ascii=False, default=str))
-        elif isinstance(result, list):
-            print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str))
-        else:
-            print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False))
+        if result is not None:
+            if hasattr(result, "to_dict"):
+                print("__RESULT__" + json.dumps(_sanitize_nans(result.to_dict(orient="records")), ensure_ascii=False, default=str))
+            elif isinstance(result, dict):
+                serializable = {{}}
+                for k, v in result.items():
+                    if hasattr(v, "to_dict"):
+                        serializable[k] = _sanitize_nans(v.to_dict(orient="records"))
+                    else:
+                        serializable[k] = _sanitize_nans(v)
+                print("__RESULT__" + json.dumps(serializable, ensure_ascii=False, default=str))
+            elif isinstance(result, list):
+                print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str))
+            else:
+                print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False))
 """
 
 
@@ -288,11 +282,11 @@ def run_skill_script(
                 if node.module == "argparse":
                     uses_argparse = True
         if not uses_argparse:
-            for node in ast.iter_child_nodes(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if not node.name.startswith("_"):
-                        function_name = node.name
-                        break
+            func_names = [node.name for node in ast.iter_child_nodes(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")]
+            if "main" in func_names:
+                function_name = "main"
+            elif func_names:
+                function_name = func_names[0]
         if uses_argparse:
             logger.info(f"检测到 argparse 脚本，将参数转为命令行格式")
     except SyntaxError:
@@ -300,6 +294,7 @@ def run_skill_script(
 
     if uses_argparse:
         script_content = _strip_main_block(script_content)
+        function_name = "main"
 
     if datasource_id and "datasource" not in parameters and "datasource_id" not in parameters:
         if uses_argparse and datasource_name:

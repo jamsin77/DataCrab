@@ -2,22 +2,26 @@
   <div class="workflow-view">
     <template v-if="!editingWorkflow">
       <div class="wf-toolbar">
-        <el-button type="primary" @click="showCreateDialog = true">新建流程</el-button>
-        <el-dropdown @command="handleFromSkill" style="margin-left: 8px">
-          <el-button>从Skill转换 <i class="el-icon-arrow-down el-icon--right"></i></el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-for="s in skills" :key="s.id" :command="s.id">
-                {{ s.display_name || s.name }}
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-select v-model="engineFilter" placeholder="引擎筛选" clearable size="small" style="width:120px;margin-left:16px" @change="loadWorkflows">
-          <el-option label="本地" value="local" />
-          <el-option label="Prefect" value="prefect" />
-        </el-select>
-        <el-input v-model="searchText" placeholder="搜索流程..." size="small" style="width:200px;margin-left:12px" clearable @input="loadWorkflows" />
+        <div class="toolbar-left">
+          <el-button type="primary" @click="showCreateDialog = true">新建流程</el-button>
+          <el-dropdown @command="handleFromSkill">
+            <el-button>从Skill转换 <i class="el-icon-arrow-down el-icon--right"></i></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="s in skills" :key="s.id" :command="s.id">
+                  {{ s.display_name || s.name }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+        <div class="toolbar-right">
+          <el-select v-model="engineFilter" placeholder="引擎筛选" clearable size="small" style="width:120px" @change="loadWorkflows">
+            <el-option label="本地" value="local" />
+            <el-option label="Prefect" value="prefect" />
+          </el-select>
+          <el-input v-model="searchText" placeholder="搜索流程..." size="small" style="width:200px" clearable @input="loadWorkflows" />
+        </div>
       </div>
 
       <div class="wf-grid" v-if="workflows.length">
@@ -442,7 +446,25 @@ function removeSelectedNode() {
 
 <style scoped>
 .workflow-view { padding: 20px; height: calc(100vh - 60px); overflow-y: auto; }
-.wf-toolbar { display: flex; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+.wf-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  gap: 12px;
+  
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  
+  .toolbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+}
 .wf-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .wf-card { cursor: pointer; transition: transform 0.2s; }
 .wf-card:hover { transform: translateY(-2px); }
@@ -450,7 +472,13 @@ function removeSelectedNode() {
 .wf-card-name { font-weight: 600; font-size: 15px; }
 .wf-card-desc { font-size: 13px; color: #909399; margin-bottom: 8px; min-height: 36px; }
 .wf-card-meta { font-size: 12px; color: #b0b0b0; margin-bottom: 8px; }
-.wf-card-actions { display: flex; gap: 4px; border-top: 1px solid #ebeef5; padding-top: 8px; }
+.wf-card-actions {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid #ebeef5;
+  padding-top: 8px;
+  align-items: center;
+}
 .wf-editor { display: flex; flex-direction: column; height: calc(100vh - 80px); }
 .wf-editor-topbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #fff; border-bottom: 1px solid #e4e7ed; }
 .wf-editor-title { font-weight: 600; font-size: 16px; flex: 1; }

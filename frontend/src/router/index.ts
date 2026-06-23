@@ -38,6 +38,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/datasource/DataSourceView.vue'),
       },
       {
+        path: 'metadata',
+        name: 'Metadata',
+        component: () => import('@/views/metadata/MetadataView.vue'),
+      },
+      {
         path: 'skill',
         name: 'Skill',
         component: () => import('@/views/skill/SkillView.vue'),

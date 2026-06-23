@@ -30,6 +30,10 @@
           <el-icon><Connection /></el-icon>
           <template #title>数据源</template>
         </el-menu-item>
+        <el-menu-item index="/metadata">
+          <el-icon><Files /></el-icon>
+          <template #title>元数据</template>
+        </el-menu-item>
         <el-menu-item index="/operator">
           <el-icon><Operation /></el-icon>
           <template #title>算子</template>

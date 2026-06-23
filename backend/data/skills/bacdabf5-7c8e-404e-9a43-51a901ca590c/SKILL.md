@@ -22,8 +22,8 @@ tags:
 
 | 参数名 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| datasource_name | string | 是 | 数据源名称（如 "SQLite测试数据库"） |
-| table_name | string | 是 | 待分割的数据表名称 |
+| datasource | string | 是 | 数据源名称（如 "SQLite测试数据库"） |
+| tables | string | 是 | 待分割的数据表名称 |
 | split_column | string | 是 | 用于分割的列名 |
 | output_filename | string | 是 | 输出的 Excel 文件名（无需后缀） |
 | mapping_instruction | string | 否 | 映射指令。如果提供，将尝试使用 AI 将列值映射到新分类。例如："请根据区县名称判断所属的地级市" |
@@ -32,12 +32,12 @@ tags:
 
 ### 必选参数示例
 ```bash
-python main.py --datasource_name "文物测试数据库" --table_name "文物信息表" --split_column "区县" --output_filename "文物按区县分类"
+python main.py --datasource "文物测试数据库" --tables "文物信息表" --split_column "区县" --output_filename "文物按区县分类"
 ```
 
 ### 全部参数示例
 ```bash
-python main.py --datasource_name "文物测试数据库" --table_name "文物信息表" --split_column "区县" --output_filename "文物按地级市分类" --mapping_instruction "请判断以下区县属于哪个地级市"
+python main.py --datasource "文物测试数据库" --tables "文物信息表" --split_column "区县" --output_filename "文物按地级市分类" --mapping_instruction "请判断以下区县属于哪个地级市"
 ```
 
 ## 4. 脚本说明

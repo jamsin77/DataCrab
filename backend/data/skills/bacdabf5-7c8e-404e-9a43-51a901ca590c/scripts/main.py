@@ -1,94 +1,78 @@
 """
 数据表分割导出技能主脚本
-
-用法:
-    python main.py --datasource_name <数据源名称> --table_name <表名> --split_column <列名> --output_filename <输出文件名> [--mapping_instruction <映射指令>]
-
-示例 - 必选参数:
-    python main.py --datasource_name "文物测试数据库" --table_name "文物信息表" --split_column "区县" --output_filename "文物按区县分类"
-
-示例 - 全部参数:
-    python main.py --datasource_name "文物测试数据库" --table_name "文物信息表" --split_column "区县" --output_filename "文物按地级市分类" --mapping_instruction "请判断以下区县属于哪个地级市"
 """
 
 import argparse
-import json
 import pandas as pd
 import os
 from typing import Optional, Dict, List
 
+# ==================== 省份名称映射表 ====================
+PROVINCE_MAP = {
+    "北京": "北京市", "天津": "天津市", "上海": "上海市", "重庆": "重庆市",
+    "河北": "河北省", "山西": "山西省", "辽宁": "辽宁省", "吉林": "吉林省",
+    "黑龙江": "黑龙江省", "江苏": "江苏省", "浙江": "浙江省", "安徽": "安徽省",
+    "福建": "福建省", "江西": "江西省", "山东": "山东省", "河南": "河南省",
+    "湖北": "湖北省", "湖南": "湖南省", "广东": "广东省", "海南": "海南省",
+    "四川": "四川省", "贵州": "贵州省", "云南": "云南省", "陕西": "陕西省",
+    "甘肃": "甘肃省", "青海": "青海省", "台湾": "台湾省",
+    "内蒙古": "内蒙古自治区", "广西": "广西壮族自治区", "西藏": "西藏自治区",
+    "宁夏": "宁夏回族自治区", "新疆": "新疆维吾尔自治区",
+    "香港": "香港特别行政区", "澳门": "澳门特别行政区"
+}
+
 def get_ai_category_mapping(values: List[str], instruction: str) -> Dict[str, str]:
     """
-    AI分类映射函数（模拟实现）
-    
-    Args:
-        values: 需要映射的原始值列表
-        instruction: 映射指令描述
-    
-    Returns:
-        映射字典 {原值: 新分类}
+    简单映射：根据地址字符串前缀或包含的省份名进行映射
+    匹配不到则映射为 "其他"
     """
-    # 模拟映射逻辑 - 实际应用中应调用LLM API
-    # 这里使用简单的规则匹配作为示例
     mapping = {}
     for val in values:
-        # 简单示例：根据关键词判断
-        if "海淀" in str(val) or "朝阳" in str(val) or "东城" in str(val) or "西城" in str(val):
-            mapping[val] = "北京市"
-        elif "浦东" in str(val) or "黄浦" in str(val) or "徐汇" in str(val):
-            mapping[val] = "上海市"
-        elif "天河" in str(val) or "越秀" in str(val) or "荔湾" in str(val):
-            mapping[val] = "广州市"
-        elif "南山" in str(val) or "福田" in str(val) or "罗湖" in str(val):
-            mapping[val] = "深圳市"
-        else:
+        val_str = str(val).strip()
+        matched = False
+        
+        for prov_key, prov_name in PROVINCE_MAP.items():
+            if prov_key in val_str:
+                mapping[val] = prov_name
+                matched = True
+                break
+                
+        if not matched:
             mapping[val] = "其他"
-    
-    print(f"AI映射结果: {mapping}")
+            
+    print(f"映射结果: {mapping}")
     return mapping
 
-def export_split_excel(
-    df: pd.DataFrame, 
-    split_column: str, 
-    output_filename: str, 
-    mapping_instruction: Optional[str] = None
-) -> str:
-    """
-    核心处理函数：根据分割列或AI映射结果将DataFrame分割并写入Excel的不同Sheet。
-    
-    Args:
-        df (pd.DataFrame): 待处理的源数据表。
-        split_column (str): 用于分割的列名。
-        output_filename (str): 输出文件名（不含扩展名）。
-        mapping_instruction (Optional[str]): AI映射指令，如为空则直接按列值分割。
-    
-    Returns:
-        str: 生成的文件路径。
-    """
+def export_split_excel(df: pd.DataFrame, split_column: str, output_filename: str, mapping_instruction: Optional[str] = None, output_dir: Optional[str] = None) -> str:
+    """分割数据表并导出为Excel多Sheet"""
     if df.empty:
         print("输入数据为空，无法执行分割操作。")
         return ""
     
     if split_column not in df.columns:
-        print(f"错误：数据表中不存在列 '{split_column}'")
+        print(f"错误：数据表中不存在列 '{split_column}'，可用列: {list(df.columns)}")
         return ""
 
     print(f"开始处理数据，总行数: {len(df)}")
     
     if mapping_instruction:
-        print(f"检测到映射指令: '{mapping_instruction}'，正在启用AI辅助分类...")
+        print(f"检测到映射指令: '{mapping_instruction}'，正在启用智能辅助分类...")
         unique_values = df[split_column].dropna().unique().tolist()
         category_map = get_ai_category_mapping(unique_values, mapping_instruction)
-        df['__split_category__'] = df[split_column].apply(
-            lambda x: category_map.get(x, "未分类") if pd.notna(x) else "未分类"
-        )
+        df['__split_category__'] = df[split_column].apply(lambda x: category_map.get(x, "其他") if pd.notna(x) else "其他")
         group_column = '__split_category__'
     else:
         print(f"直接按列 '{split_column}' 的值进行分割...")
         group_column = split_column
 
     grouped = df.groupby(group_column, dropna=False)
-    file_path = f"{output_filename}.xlsx"
+    
+    base_name = os.path.splitext(os.path.basename(output_filename))[0]
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = os.path.join(output_dir, f"{base_name}.xlsx")
+    else:
+        file_path = f"{base_name}.xlsx"
     
     try:
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -97,7 +81,6 @@ def export_split_excel(
                 print(f"正在写入 Sheet: {sheet_name} (行数: {len(group_df)})")
                 export_df = group_df.drop(columns=['__split_category__'], errors='ignore')
                 export_df.to_excel(writer, sheet_name=sheet_name, index=False)
-        
         print(f"导出完成: {file_path}")
         return file_path
     except Exception as e:
@@ -106,30 +89,44 @@ def export_split_excel(
 
 def main():
     parser = argparse.ArgumentParser(description='数据表分割导出技能')
-    parser.add_argument('--datasource_name', required=True, help='数据源名称')
-    parser.add_argument('--table_name', required=True, help='数据表名称')
+    parser.add_argument('--datasource', required=True, help='数据源名称或ID')
+    parser.add_argument('--tables', nargs='+', required=True, help='数据表名称')
+    parser.add_argument('--table_names', nargs='+', help='数据表名称（别名）')
     parser.add_argument('--split_column', required=True, help='分割列名')
-    parser.add_argument('--output_filename', required=True, help='输出文件名（不含扩展名）')
-    parser.add_argument('--mapping_instruction', default=None, help='AI映射指令（可选）')
+    parser.add_argument('--output_filename', required=True, help='输出文件名或路径')
+    parser.add_argument('--mapping_instruction', default=None, help='AI映射指令')
+    parser.add_argument('--datasource_id', default=None, help='数据源ID')
+    parser.add_argument('--output_dir', default=None, help='输出目录')
     
     args = parser.parse_args()
     
-    # 模拟数据 - 实际应用中应从数据源读取
-    # 示例数据
-    df = pd.DataFrame({
-        '区县': ['海淀区', '朝阳区', '东城区', '浦东新区', '黄浦区', '天河区', '南山区'],
-        '文物名称': ['故宫', '颐和园', '天坛', '东方明珠', '外滩建筑群', '陈家祠', '锦绣中华'],
-        '级别': ['世界遗产', '世界遗产', '世界遗产', '5A景区', '4A景区', '4A景区', '5A景区']
-    })
+    table_name = args.tables[0] if args.tables else (args.table_names[0] if args.table_names else '')
+    print(f"参数: datasource={args.datasource}, table={table_name}, split_column={args.split_column}")
     
-    print(f"参数: datasource_name={args.datasource_name}, table_name={args.table_name}, split_column={args.split_column}, output_filename={args.output_filename}")
+    ds_id = args.datasource_id or args.datasource
+    print(f"正在从数据源 '{ds_id}' 获取表 '{table_name}'...")
     
-    export_split_excel(
-        df=df,
-        split_column=args.split_column,
-        output_filename=args.output_filename,
-        mapping_instruction=args.mapping_instruction
-    )
-
-if __name__ == '__main__':
-    main()
+    try:
+        result = query_table_data(ds_id, table_name)
+        if result.get("success") and result.get("data"):
+            df = pd.DataFrame(result["data"])
+            if result.get("columns"):
+                df = df[[c for c in result["columns"] if c in df.columns]]
+            print(f"成功获取数据，共 {len(df)} 行")
+            print(f"数据列: {list(df.columns)}")
+        else:
+            print(f"查询数据失败: {result}")
+            return
+    except Exception as e:
+        print(f"获取数据失败: {e}")
+        return
+    
+    output_dir = args.output_dir
+    output_filename = args.output_filename
+    if not output_dir and output_filename:
+        parent = os.path.dirname(output_filename)
+        if parent:
+            output_dir = parent
+            output_filename = os.path.basename(output_filename)
+    
+    export_split_excel(df, args.split_column, output_filename, args.mapping_instruction, output_dir)

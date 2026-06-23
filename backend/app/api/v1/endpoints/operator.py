@@ -207,17 +207,17 @@ async def debug_operator(
 
     start_time = time.time()
 
-    old_stdout = sys.stdout
-    captured_stdout = io.StringIO()
-    sys.stdout = captured_stdout
+    captured_output = io.StringIO()
 
     try:
-        local_ns = _build_operator_namespace(current_user.id)
+        local_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured_output, **kw)}
+        local_ns.update(_build_operator_namespace(current_user.id))
+
         exec(operator.script_content, local_ns)
 
         func = local_ns.get(operator.function_name or "")
         if not func:
-            raise ValueError(f"脚本中未找到函数: {operator.function_name}")
+            raise ValueError(f"脚本中未找到函数: {operator.function_name}，可用函数: {[k for k in local_ns if callable(local_ns[k]) and not k.startswith('_')]}")
 
         params = request.parameters or {}
 
@@ -242,7 +242,7 @@ async def debug_operator(
         return OperatorDebugResponse(
             success=True,
             result=result_value,
-            stdout=captured_stdout.getvalue() or None,
+            stdout=captured_output.getvalue() or None,
             execution_time_ms=round(elapsed, 2),
         )
     except Exception as e:
@@ -250,11 +250,9 @@ async def debug_operator(
         return OperatorDebugResponse(
             success=False,
             error=f"{type(e).__name__}: {str(e)}\n\n{traceback.format_exc()}",
-            stdout=captured_stdout.getvalue() or None,
+            stdout=captured_output.getvalue() or None,
             execution_time_ms=round(elapsed, 2),
         )
-    finally:
-        sys.stdout = old_stdout
 
 
 @router.put("/{operator_id}/script", response_model=OperatorResponse)
@@ -444,14 +442,36 @@ SYSTEM_PROMPT = """你是一个专业的Python数据算子脚本生成器。你�
 2. 函数必须有类型注解（type hints）和完整的docstring
 3. 函数参数应该包含数据输入参数和配置参数，都要有合理的默认值
 4. 脚本中可以定义辅助函数和导入必要的库
-5. 脚本中可以使用以下预置工具函数（无需import）：
-   - query_table_data(datasource_id, table_name, **kwargs) -> DataFrame: 从数据源查询表数据
-   - get_table_schema(datasource_id, table_name) -> dict: 获取表结构信息
-   - get_datasource_id_by_name(name) -> str: 根据数据源名称获取UUID
-6. 相关数据源名称可以参考：文物测试数据（Excel类型）、SQLite测试数据库、CSVFormTest
-7. 输出使用print()打印关键信息，方便调试
-8. 如果使用pandas，已经内置导入，无需再import
-9. 只输出Python代码，不要任何解释文字，不要markdown代码块标记（不要```python和```），直接输出纯代码
+5. 只输出Python代码，不要任何解释文字，不要markdown代码块标记（不要```python和```），直接输出纯代码
+
+## 内置工具函数（脚本中直接使用，无需 import）
+- query_table_data(datasource_id, table_name, **kwargs) -> DataFrame: 从数据源查询表数据，返回 pandas DataFrame
+- get_table_schema(datasource_id, table_name) -> dict: 获取表结构信息
+- get_datasource_id_by_name(name) -> str: 根据数据源名称获取UUID
+- pd (pandas) 和 json 已内置，无需再 import
+
+⚠️ **绝对禁止** `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！
+⚠️ **绝对禁止** `pip install datacrab`，datacrab 不是可安装的包！
+⚠️ 上述工具函数由运行环境自动注入，脚本中直接使用即可
+
+🚫 安全红线（必须遵守）：
+- 算子只能处理用户的业务数据，绝不能修改 DataCrab 平台自身
+- 不得生成访问或修改平台系统表（users, roles, permissions等）的代码
+- 不得生成修改平台源代码、配置文件的代码
+- 算子脚本中只能操作用户的业务数据，不能操作平台系统数据
+
+✅ 算子属于用户内容，可以自由创建和修改：
+- 用户可以自由创建、修改、调试、删除自己的算子脚本
+- 算子脚本可以使用内置工具函数访问用户数据
+
+✅ 修改后必验证（必须遵守）：
+- 生成或修改脚本后，必须在脚本末尾添加自测逻辑：if __name__ == "__main__" 块中用示例数据调用主函数
+- 自测逻辑应使用少量测试数据（如3-5行），验证主函数能正常执行并返回预期结果
+- 如果自测失败，在输出中说明失败原因和修复建议
+
+✅ 输出默认同源（必须遵守）：
+- 数据处理生成新文件时，如果用户未指定输出路径（output_dir），默认保存到 DataSource（数据源）指定的文件路径下（即 connection_config.file_path 所在目录）
+- 如果 DataSource 来自数据库而非文件，需要用户明确指定输出路径
 
 输出格式：直接输出纯Python代码，第一个字符必须是import或def等Python关键字。"""
 
@@ -488,7 +508,26 @@ async def generate_operator(
     try:
         parsed = parse_python_script(script_content)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"生成的脚本语法错误: {e}")
+        logger.warning(f"生成的脚本语法错误，尝试自动修复: {e}")
+        fix_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": request.prompt},
+            {"role": "assistant", "content": raw_code},
+            {"role": "user", "content": f"上面的代码有语法错误：{e}。请修复并重新输出完整的纯Python代码。注意：不要使用中文标点符号（如中文逗号、中文冒号），所有标点必须是英文半角。"},
+        ]
+        try:
+            fixed_code = await llm_manager.chat_with_messages(fix_messages, temperature=0.2, max_tokens=3000)
+            script_content = fixed_code.strip()
+            if script_content.startswith("```"):
+                lines = script_content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                script_content = "\n".join(lines).strip()
+            parsed = parse_python_script(script_content)
+        except Exception as fix_err:
+            raise HTTPException(status_code=400, detail=f"生成脚本语法错误且自动修复失败: {e}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"生成脚本解析失败: {e}")
 
@@ -517,6 +556,15 @@ async def generate_operator(
     db.add(operator)
     await db.flush()
     await db.refresh(operator)
+
+    try:
+        local_ns = {"__builtins__": __builtins__}
+        local_ns.update(_build_operator_namespace(current_user.id))
+        exec(script_content, local_ns)
+        logger.info(f"算子生成后自动验证通过: {script_name}")
+    except Exception as e:
+        logger.warning(f"算子生成后自动验证失败（不影响保存）: {e}")
+
     return operator
 
 
@@ -561,7 +609,26 @@ async def modify_operator(
     try:
         parsed = parse_python_script(script_content)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"修改后的脚本语法错误: {e}")
+        logger.warning(f"修改后的脚本语法错误，尝试自动修复: {e}")
+        fix_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"以下是现有算子的脚本代码：\n\n```python\n{operator.script_content}\n```\n\n请根据以下要求修改这个算子：\n{request.instruction}"},
+            {"role": "assistant", "content": raw_code},
+            {"role": "user", "content": f"上面的代码有语法错误：{e}。请修复并重新输出完整的纯Python代码。注意：不要使用中文标点符号，所有标点必须是英文半角。"},
+        ]
+        try:
+            fixed_code = await llm_manager.chat_with_messages(fix_messages, temperature=0.2, max_tokens=3000)
+            script_content = fixed_code.strip()
+            if script_content.startswith("```"):
+                lines = script_content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                script_content = "\n".join(lines).strip()
+            parsed = parse_python_script(script_content)
+        except Exception as fix_err:
+            raise HTTPException(status_code=400, detail=f"修改后脚本语法错误且自动修复失败: {e}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"修改后脚本解析失败: {e}")
 
@@ -594,4 +661,23 @@ async def modify_operator(
 
     await db.flush()
     await db.refresh(operator)
+
+    try:
+        local_ns = _build_operator_namespace(current_user.id)
+        exec(script_content, local_ns)
+        test_func = local_ns.get(func_name)
+        if test_func and not inspect.iscoroutinefunction(test_func):
+            sig = inspect.signature(test_func)
+            test_params = {}
+            for pname, param in sig.parameters.items():
+                if param.default is inspect.Parameter.empty and pname not in local_ns:
+                    if param.annotation in (pd.DataFrame, "DataFrame") or pname in ("data", "df", "input_data"):
+                        test_params[pname] = pd.DataFrame([{"test": 1}])
+                    else:
+                        test_params[pname] = None
+            test_func(**test_params)
+            logger.info(f"算子修改后自动验证通过: {operator.name}")
+    except Exception as e:
+        logger.warning(f"算子修改后自动验证失败（不影响保存）: {e}")
+
     return operator
