@@ -92,7 +92,7 @@
           <el-form-item label="文件路径" required>
             <el-input v-model="configForm.file_path" placeholder="D:/data/file.csv">
               <template #prepend>
-                <el-icon><Document /></el-icon>
+                <el-button @click="openFsBrowser('file', '.csv')" :icon="Document" />
               </template>
             </el-input>
           </el-form-item>
@@ -108,18 +108,24 @@
           </el-form-item>
           <el-form-item v-if="configForm.excel_mode === 'file'" label="文件路径" required>
             <el-input v-model="configForm.file_path" placeholder="D:/data/file.xlsx">
-              <template #prepend><el-icon><Document /></el-icon></template>
+              <template #prepend>
+                <el-button @click="openFsBrowser('file', '.xlsx,.xls')" :icon="Document" />
+              </template>
             </el-input>
           </el-form-item>
           <el-form-item v-if="configForm.excel_mode === 'folder'" label="文件夹路径" required>
             <el-input v-model="configForm.file_path" placeholder="D:/data/ (该文件夹下所有 .xlsx/.xls 文件将自动作为数据集)">
-              <template #prepend><el-icon><FolderOpened /></el-icon></template>
+              <template #prepend>
+                <el-button @click="openFsBrowser('folder')" :icon="FolderOpened" />
+              </template>
             </el-input>
           </el-form-item>
           <el-form-item v-if="configForm.excel_mode === 'files'" label="文件列表" required>
             <div v-for="(fp, i) in configForm.file_paths" :key="i" class="multi-file-row">
               <el-input :model-value="fp" @update:model-value="(v: string) => configForm.file_paths[i] = v" placeholder="D:/data/file.xlsx">
-                <template #prepend><el-icon><Document /></el-icon></template>
+                <template #prepend>
+                  <el-button @click="openFsBrowser('file', '.xlsx,.xls', i)" :icon="Document" />
+                </template>
               </el-input>
               <el-button text type="danger" @click="configForm.file_paths.splice(i, 1)">删除</el-button>
             </div>
@@ -167,7 +173,7 @@
           <el-form-item label="数据目录" required>
             <el-input v-model="configForm.file_path" placeholder="D:/chroma-data">
               <template #prepend>
-                <el-icon><FolderOpened /></el-icon>
+                <el-button @click="openFsBrowser('folder')" :icon="FolderOpened" />
               </template>
             </el-input>
           </el-form-item>
@@ -225,6 +231,14 @@
         <el-button @click="showBrowseDialog = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <FileSystemBrowser
+      v-model="showFsBrowser"
+      :mode="fsBrowserMode"
+      :ext="fsBrowserExt"
+      :default-path="fsBrowserDefaultPath"
+      @select="onFsSelect"
+    />
   </div>
 </template>
 
@@ -232,6 +246,8 @@
 import { ref, onMounted, reactive } from 'vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
+import { Document, FolderOpened } from '@element-plus/icons-vue'
+import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 
 const dataSources = ref<any[]>([])
 const showCreateDialog = ref(false)
@@ -245,6 +261,11 @@ const browseLoading = ref(false)
 const typeFilter = ref('')
 const editId = ref<string | null>(null)
 const saving = ref(false)
+const showFsBrowser = ref(false)
+const fsBrowserMode = ref<'file' | 'folder'>('file')
+const fsBrowserExt = ref('')
+const fsBrowserDefaultPath = ref('D:/')
+const fsBrowserTargetIndex = ref(-1)
 
 const defaultPorts: Record<string, number> = {
   postgresql: 5432,
@@ -569,6 +590,22 @@ async function syncMetadata(row: any) {
     ElMessage.error(e.response?.data?.detail || '同步失败')
   } finally {
     row._syncing = false
+  }
+}
+
+function openFsBrowser(mode: 'file' | 'folder', ext = '', targetIndex = -1) {
+  fsBrowserMode.value = mode
+  fsBrowserExt.value = ext
+  fsBrowserTargetIndex.value = targetIndex
+  fsBrowserDefaultPath.value = configForm.file_path || 'D:/'
+  showFsBrowser.value = true
+}
+
+function onFsSelect(path: string) {
+  if (fsBrowserTargetIndex.value >= 0) {
+    configForm.file_paths[fsBrowserTargetIndex.value] = path
+  } else {
+    configForm.file_path = path
   }
 }
 </script>
