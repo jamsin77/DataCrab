@@ -154,7 +154,7 @@ class LLMManager:
             stream=True,
         )
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
+            if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
     async def chat_stream_with_messages(
@@ -177,7 +177,7 @@ class LLMManager:
             stream=True,
         )
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
+            if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
     async def chat_stream_with_thinking(
@@ -199,6 +199,8 @@ class LLMManager:
             stream=True,
         )
         async for chunk in stream:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                 yield {"type": "thinking", "content": delta.reasoning_content}

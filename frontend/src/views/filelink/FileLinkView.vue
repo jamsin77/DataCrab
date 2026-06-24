@@ -97,7 +97,7 @@
     </el-dialog>
 
     <!-- 预览对话框 -->
-    <el-dialog v-model="showPreviewDialog" :title="previewFile?.name" width="800px">
+    <el-dialog v-model="showPreviewDialog" :title="previewingFile?.name" width="800px">
       <pre class="preview-content">{{ previewContent }}</pre>
     </el-dialog>
   </div>
@@ -106,7 +106,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import api from '@/api/index'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 interface FileLink {
   id: string
@@ -229,11 +229,14 @@ function editLink(link: FileLink) {
 
 async function deleteLink(id: string) {
   try {
+    await ElMessageBox.confirm('确定要删除此文件链接吗？', '确认删除', { type: 'warning' })
     await api.delete(`/filelinks/${id}`)
     ElMessage.success('删除成功')
     await fetchFileLinks()
   } catch (e: any) {
-    ElMessage.error(extractError(e))
+    if (e !== 'cancel') {
+      ElMessage.error(extractError(e))
+    }
   }
 }
 
@@ -280,7 +283,22 @@ async function previewFile(file: FileInfo) {
 async function downloadFile(file: FileInfo) {
   if (!browsingLink.value) return
   const subpath = browsePath.value ? `${browsePath.value}/${file.name}` : file.name
-  window.open(`/api/v1/filelinks/${browsingLink.value.id}/download?subpath=${encodeURIComponent(subpath)}`, '_blank')
+  try {
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(`/api/v1/filelinks/${browsingLink.value.id}/download?subpath=${encodeURIComponent(subpath)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!response.ok) throw new Error('下载失败')
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.name
+    a.click()
+    window.URL.revokeObjectURL(url)
+  } catch (e: any) {
+    ElMessage.error(extractError(e))
+  }
 }
 
 function resetForm() {

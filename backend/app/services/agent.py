@@ -142,7 +142,7 @@ class AgentService:
                     if "|" in filter_value:
                         mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
                     else:
-                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
+                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=False)
                     df = df[mask]
                 if sort_column and sort_column in df.columns:
                     df = df.sort_values(by=sort_column, ascending=args.get("sort_order", "asc") == "asc")

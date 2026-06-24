@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from app.api.deps import get_current_user
+from app.models.user import User
 
 router = APIRouter()
 
@@ -11,6 +13,7 @@ async def browse_filesystem(
     path: str = Query("D:/", description="浏览路径"),
     mode: str = Query("file", description="选择模式: file / folder"),
     ext: str = Query("", description="文件扩展名过滤，逗号分隔，如 .xlsx,.xls"),
+    current_user: User = Depends(get_current_user),
 ):
     if not os.path.isdir(path):
         parent = str(Path(path).parent)

@@ -2,6 +2,7 @@
 
 import io
 import math
+import re
 import shutil
 import tempfile
 import zipfile
@@ -309,6 +310,10 @@ async def upload_skill(
 
     try:
         with zipfile.ZipFile(tmp_path, "r") as zf:
+            for member in zf.infolist():
+                member_path = (folder / member.filename).resolve()
+                if not str(member_path).startswith(str(folder.resolve())):
+                    raise HTTPException(status_code=400, detail=f"非法文件路径: {member.filename}")
             zf.extractall(folder)
 
         skill_md_path = folder / "SKILL.md"
@@ -642,6 +647,9 @@ async def get_skill_params(
         params = _extract_params_from_md(skill_md)
 
     return params
+
+
+@router.post("/{skill_id}/run-nl")
 async def run_skill_nl(
     skill_id: UUID,
     request: SkillRunNLRequest,
@@ -1529,6 +1537,3 @@ def _extract_params_from_md(skill_md: str) -> list[SkillParamDef]:
         elif in_param_table and not stripped.startswith("|"):
             in_param_table = False
     return params
-
-
-import re

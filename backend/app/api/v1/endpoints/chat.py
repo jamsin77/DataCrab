@@ -111,6 +111,7 @@ async def build_datasource_context(
     result = await db.execute(
         select(DataSource).where(
             DataSource.is_active == True,
+            DataSource.created_by == user_id,
         )
     )
     sources = result.scalars().all()
@@ -668,6 +669,12 @@ async def list_messages(
     current_user: User = Depends(get_current_user),
 ):
     """获取消息列表"""
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == current_user.id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在或无权访问")
     result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)

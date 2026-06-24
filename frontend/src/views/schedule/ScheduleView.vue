@@ -332,7 +332,7 @@
         <el-table-column label="操作" width="120">
           <template #default="{ row }">
             <el-button size="small" @click="viewExecutionDetail(row)">详情</el-button>
-            <el-button v-if="row.status === 'failed'" size="small" type="warning">重试</el-button>
+            <el-button v-if="row.status === 'failed'" size="small" type="warning" @click="retryExecution(row)">重试</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -395,6 +395,7 @@ const schedules = ref<any[]>([])
 const stats = ref<any>({})
 const operators = ref<any[]>([])
 const skills = ref<any[]>([])
+const workflows = ref<any[]>([])
 
 const filterStatus = ref('')
 const filterTaskType = ref('')
@@ -471,6 +472,8 @@ const taskOptions = computed(() => {
     return operators.value.map(o => ({ id: o.id, name: o.display_name || o.name }))
   } else if (createForm.value.task_type === 'skill') {
     return skills.value.map(s => ({ id: s.id, name: s.display_name || s.name }))
+  } else if (createForm.value.task_type === 'workflow') {
+    return workflows.value.map(w => ({ id: w.id, name: w.name }))
   }
   return []
 })
@@ -481,21 +484,14 @@ onMounted(async () => {
     loadStats(),
     loadOperators(),
     loadSkills(),
+    loadWorkflows(),
   ])
 })
 
 async function loadSchedules() {
   try {
-    // 检查是否已登录
-    const token = localStorage.getItem('access_token')
-    if (!token) {
-      ElMessage.warning('请先登录')
-      return
-    }
-    
     schedules.value = await api.get('/schedules')
   } catch (e: any) {
-    console.error('加载调度列表失败:', e)
     const errorMsg = e.response?.data?.detail || e.message || '未知错误'
     if (e.response?.status === 401) {
       ElMessage.error('登录已过期，请重新登录')
@@ -529,6 +525,14 @@ async function loadSkills() {
   }
 }
 
+async function loadWorkflows() {
+  try {
+    workflows.value = await api.get('/workflows')
+  } catch (e: any) {
+    // ignore
+  }
+}
+
 function openCreateDialog() {
   editMode.value = false
   createForm.value = {
@@ -555,6 +559,24 @@ function openCreateDialog() {
 function openEditDialog(schedule: any) {
   editMode.value = true
   currentSchedule.value = schedule
+  let intervalValue = 1
+  let intervalUnit = 'hours'
+  if (schedule.interval_seconds) {
+    const secs = schedule.interval_seconds
+    if (secs >= 86400 && secs % 86400 === 0) {
+      intervalValue = secs / 86400
+      intervalUnit = 'days'
+    } else if (secs >= 3600 && secs % 3600 === 0) {
+      intervalValue = secs / 3600
+      intervalUnit = 'hours'
+    } else if (secs >= 60 && secs % 60 === 0) {
+      intervalValue = secs / 60
+      intervalUnit = 'minutes'
+    } else {
+      intervalValue = secs
+      intervalUnit = 'seconds'
+    }
+  }
   createForm.value = {
     name: schedule.name,
     description: schedule.description || '',
@@ -564,8 +586,8 @@ function openEditDialog(schedule: any) {
     schedule_type: schedule.schedule_type,
     cron_expression: schedule.cron_expression || '',
     timezone: schedule.timezone || 'Asia/Shanghai',
-    interval_value: 1,
-    interval_unit: 'hours',
+    interval_value: intervalValue,
+    interval_unit: intervalUnit,
     interval_seconds: schedule.interval_seconds || 3600,
     max_retries: schedule.max_retries || 3,
     retry_interval: schedule.retry_interval || 60,
@@ -724,6 +746,18 @@ async function viewExecutionDetail(exec: any) {
     showExecutionDetail.value = true
   } catch (e: any) {
     ElMessage.error('加载详情失败')
+  }
+}
+
+async function retryExecution(exec: any) {
+  try {
+    await api.post(`/schedules/${exec.schedule_id}/trigger`)
+    ElMessage.success('任务已重新触发')
+    if (currentSchedule.value) {
+      executions.value = await api.get(`/schedules/${currentSchedule.value.id}/executions`)
+    }
+  } catch (e: any) {
+    ElMessage.error('重试失败')
   }
 }
 

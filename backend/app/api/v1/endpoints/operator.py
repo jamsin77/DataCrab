@@ -15,7 +15,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from loguru import logger
 
 from app.core.database import get_db, async_session
@@ -327,7 +327,7 @@ async def list_operators(
     current_user: User = Depends(get_current_user),
 ):
     """获取算子列表"""
-    query = select(Operator)
+    query = select(Operator).where((Operator.author == current_user.id) | (Operator.visibility == "public"))
     if category:
         query = query.where(Operator.category == category)
     query = query.order_by(Operator.updated_at.desc()).offset(skip).limit(limit)

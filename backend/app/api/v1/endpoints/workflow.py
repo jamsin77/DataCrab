@@ -112,7 +112,7 @@ async def update_workflow(
     if "nodes" in update_data and update_data["nodes"] is not None:
         update_data["nodes"] = [n.model_dump() if hasattr(n, "model_dump") else n for n in update_data["nodes"]]
     if "edges" in update_data and update_data["edges"] is not None:
-        update_data["edges"] = [e.model_dump() if hasattr(e, "model_dump") else e for n in update_data["edges"]]
+        update_data["edges"] = [e.model_dump() if hasattr(e, "model_dump") else e for e in update_data["edges"]]
 
     for key, val in update_data.items():
         if val is not None:

@@ -773,7 +773,7 @@ function openDetail(skill: any) {
   modifyPhase.value = 'idle'
   detailTab.value = 'md'
 
-  scriptContents.value = {}
+  Object.keys(scriptContents).forEach(k => delete scriptContents[k])
   expandedScript.value = ''
   for (const s of (skill.scripts || [])) {
     scriptContents[s.name] = ''

@@ -191,9 +191,9 @@ async def browse_directory(
     # 构建完整路径
     base_path = Path(file_link.path)
     if subpath:
-        # 防止路径遍历攻击
         full_path = (base_path / subpath).resolve()
-        if not str(full_path).startswith(str(base_path.resolve())):
+        base_resolved = str(base_path.resolve())
+        if not (str(full_path) == base_resolved or str(full_path).startswith(base_resolved + os.sep)):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
     else:
         full_path = base_path
@@ -245,7 +245,8 @@ async def download_file(
     base_path = Path(file_link.path)
     if subpath:
         full_path = (base_path / subpath).resolve()
-        if not str(full_path).startswith(str(base_path.resolve())):
+        base_resolved = str(base_path.resolve())
+        if not (str(full_path) == base_resolved or str(full_path).startswith(base_resolved + os.sep)):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
     else:
         full_path = base_path

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from croniter import croniter
 
 from app.core.database import get_db
@@ -52,7 +52,7 @@ async def create_schedule(
             raise HTTPException(status_code=400, detail="Cron调度需要提供cron_expression")
         try:
             croniter(request.cron_expression)
-        except:
+        except Exception:
             raise HTTPException(status_code=400, detail="无效的Cron表达式")
     
     # 计算下次执行时间
@@ -141,7 +141,7 @@ async def update_schedule(
         try:
             cron = croniter(update_data["cron_expression"], datetime.utcnow())
             schedule.next_run_at = cron.get_next(datetime)
-        except:
+        except Exception:
             raise HTTPException(status_code=400, detail="无效的Cron表达式")
     
     for key, value in update_data.items():
@@ -294,38 +294,34 @@ async def get_schedule_stats(
     current_user: User = Depends(get_current_user),
 ):
     """获取调度统计概览"""
-    # 总调度数
-    total_result = await db.execute(select(Schedule))
-    total = len(total_result.scalars().all())
+    total_result = await db.execute(select(func.count(Schedule.id)))
+    total = total_result.scalar() or 0
     
-    # 各状态数量
-    active_result = await db.execute(select(Schedule).where(Schedule.status == "active"))
-    active = len(active_result.scalars().all())
+    active_result = await db.execute(select(func.count(Schedule.id)).where(Schedule.status == "active"))
+    active = active_result.scalar() or 0
     
-    paused_result = await db.execute(select(Schedule).where(Schedule.status == "paused"))
-    paused = len(paused_result.scalars().all())
+    paused_result = await db.execute(select(func.count(Schedule.id)).where(Schedule.status == "paused"))
+    paused = paused_result.scalar() or 0
     
-    # 今日执行数
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     today_result = await db.execute(
-        select(TaskExecution).where(TaskExecution.created_at >= today)
+        select(func.count(TaskExecution.id)).where(TaskExecution.created_at >= today)
     )
-    today_executions = len(today_result.scalars().all())
+    today_executions = today_result.scalar() or 0
     
-    # 成功/失败数
     success_result = await db.execute(
-        select(TaskExecution).where(
+        select(func.count(TaskExecution.id)).where(
             and_(TaskExecution.created_at >= today, TaskExecution.status == "success")
         )
     )
-    success = len(success_result.scalars().all())
+    success = success_result.scalar() or 0
     
     failed_result = await db.execute(
-        select(TaskExecution).where(
+        select(func.count(TaskExecution.id)).where(
             and_(TaskExecution.created_at >= today, TaskExecution.status == "failed")
         )
     )
-    failed = len(failed_result.scalars().all())
+    failed = failed_result.scalar() or 0
     
     return {
         "total_schedules": total,

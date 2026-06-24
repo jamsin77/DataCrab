@@ -87,6 +87,7 @@ async def login(
 
     # 更新最后登录时间
     user.last_login_at = datetime.utcnow()
+    await db.flush()
 
     # 生成令牌
     token_data = {"sub": str(user.id)}

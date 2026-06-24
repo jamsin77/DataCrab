@@ -84,7 +84,7 @@
             <el-input v-model="configForm.user" placeholder="请输入用户名" />
           </el-form-item>
           <el-form-item label="密码" required>
-            <el-input v-model="configForm.password" type="password" show-password placeholder="请输入密码" />
+            <el-input v-model="configForm.password" type="password" show-password :placeholder="editId ? '留空则不修改密码' : '请输入密码'" />
           </el-form-item>
         </template>
 
@@ -245,7 +245,7 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive } from 'vue'
 import api from '@/api/index'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, FolderOpened } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 
@@ -388,14 +388,14 @@ function editDataSource(source: any) {
   defaultSet('port', cfg.port || defaultPorts[source.type] || 0)
   defaultSet('database', cfg.database || '')
   defaultSet('user', cfg.user || '')
-  defaultSet('password', cfg.password || '')
+  defaultSet('password', '')
   defaultSet('file_path', cfg.file_path || '')
   defaultSet('file_paths', cfg.file_paths || [])
   defaultSet('excel_mode', cfg.mode || 'file')
   defaultSet('sheet_name', cfg.sheet_name || '')
   defaultSet('endpoint', cfg.endpoint || '')
-  defaultSet('access_key', cfg.access_key || '')
-  defaultSet('secret_key', cfg.secret_key || '')
+  defaultSet('access_key', '')
+  defaultSet('secret_key', '')
   defaultSet('bucket', cfg.bucket || '')
   defaultSet('secure', cfg.secure !== undefined ? cfg.secure : true)
   defaultSet('base_path', cfg.base_path || '/')
@@ -411,14 +411,18 @@ function buildConnectionConfig(): Record<string, any> {
   const type = configForm.type
   switch (type) {
     case 'postgresql':
-    case 'mysql':
-      return {
+    case 'mysql': {
+      const cfg: Record<string, any> = {
         host: configForm.host,
         port: configForm.port,
         database: configForm.database,
         user: configForm.user,
-        password: configForm.password,
       }
+      if (configForm.password) {
+        cfg.password = configForm.password
+      }
+      return cfg
+    }
     case 'csv':
       return { file_path: configForm.file_path }
     case 'excel': {
@@ -436,14 +440,16 @@ function buildConnectionConfig(): Record<string, any> {
     }
     case 'chroma':
       return { persist_directory: configForm.file_path || 'd:/chroma-data' }
-    case 'obs':
-      return {
+    case 'obs': {
+      const cfg: Record<string, any> = {
         endpoint: configForm.endpoint,
-        access_key: configForm.access_key,
-        secret_key: configForm.secret_key,
         bucket: configForm.bucket,
         secure: configForm.secure,
       }
+      if (configForm.access_key) cfg.access_key = configForm.access_key
+      if (configForm.secret_key) cfg.secret_key = configForm.secret_key
+      return cfg
+    }
     case 'hadoop':
       return {
         host: configForm.host,
@@ -573,11 +579,14 @@ async function selectBrowseTable(tableName: string) {
 
 async function deleteDataSource(id: string) {
   try {
+    await ElMessageBox.confirm('确定要删除此数据源吗？删除后不可恢复。', '确认删除', { type: 'warning' })
     await api.delete(`/datasources/${id}`)
     ElMessage.success('删除成功')
     await fetchDataSources()
   } catch (e: any) {
-    ElMessage.error(extractError(e))
+    if (e !== 'cancel') {
+      ElMessage.error(extractError(e))
+    }
   }
 }
 

@@ -21,6 +21,7 @@ from app.schemas.datasource import (
     TableDataResponse,
     TableStatsResponse,
     QualityAnalysisResponse,
+    _SENSITIVE_KEYS,
 )
 from app.api.deps import get_current_user
 from app.services.connectors import get_connector
@@ -58,7 +59,7 @@ async def list_datasources(
     current_user: User = Depends(get_current_user),
 ):
     """获取数据源列表"""
-    query = select(DataSource).where(DataSource.is_active == True)
+    query = select(DataSource).where(DataSource.is_active == True, DataSource.created_by == current_user.id)
     if datasource_type:
         query = query.where(DataSource.type == datasource_type)
     query = query.offset(skip).limit(limit)
@@ -94,6 +95,21 @@ async def update_datasource(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+
+    if "connection_config" in update_data and update_data["connection_config"] is not None:
+        new_config = update_data["connection_config"]
+        old_config = datasource.connection_config or {}
+        merged = {}
+        for k, v in new_config.items():
+            if k.lower() in _SENSITIVE_KEYS and v == "***":
+                merged[k] = old_config.get(k, v)
+            else:
+                merged[k] = v
+        for k, v in old_config.items():
+            if k not in merged:
+                merged[k] = v
+        update_data["connection_config"] = merged
+
     for key, value in update_data.items():
         setattr(datasource, key, value)
 
