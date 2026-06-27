@@ -16,7 +16,7 @@ from app.models.filelink import FileLink
 from app.services.connectors import get_connector
 from loguru import logger
 
-MAX_AGENT_ITERATIONS = 5
+MAX_AGENT_ITERATIONS = 12
 
 TOOLS = [
     {
@@ -269,6 +269,19 @@ class AgentService:
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+    async def _execute_tool_calls_parallel(self, tool_calls: list, ctx: AgentContext) -> list:
+        """并行执行多个独立工具调用，返回结果列表"""
+        async def _safe_execute(tc):
+            try:
+                func_args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                func_args = {}
+            result = await self._execute_tool(tc["function"]["name"], func_args, ctx)
+            return {"tool_call_id": tc["id"], "content": result}
+
+        results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
+        return list(results)
+
     async def run(self, messages: List[Dict[str, str]], ctx: AgentContext) -> str:
         await llm_manager.initialize()
         local_messages = list(messages)
@@ -287,13 +300,9 @@ class AgentService:
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            for tc in tool_calls:
-                try:
-                    func_args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    func_args = {}
-                result = await self._execute_tool(tc["function"]["name"], func_args, ctx)
-                local_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            results = await self._execute_tool_calls_parallel(tool_calls, ctx)
+            for r in results:
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
 
         return "处理超时，请简化您的问题后重试。"
 
@@ -318,7 +327,7 @@ class AgentService:
             if content:
                 yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'type': 'status', 'content': '正在执行操作...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'content': f'正在执行 {len(tool_calls)} 个操作...'}, ensure_ascii=False)}\n\n"
 
             local_messages.append({
                 "role": "assistant",
@@ -326,13 +335,9 @@ class AgentService:
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            for tc in tool_calls:
-                try:
-                    func_args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    func_args = {}
-                result = await self._execute_tool(tc["function"]["name"], func_args, ctx)
-                local_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            results = await self._execute_tool_calls_parallel(tool_calls, ctx)
+            for r in results:
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
 
         yield f"data: {json.dumps({'type': 'content', 'content': '处理超时，请简化您的问题后重试。'}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

@@ -19,10 +19,11 @@ TYPE_MAP = {
 
 
 def parse_python_script(script_content: str) -> Dict[str, Any]:
-    """解析Python脚本，提取函数签名、参数、返回值等信息"""
-    tree = ast.parse(script_content)
-
-    result = {
+    """解析Python脚本，提取函数签名、参数、返回值等信息（仅返回第一个公开函数，保持向后兼容）"""
+    results = parse_python_script_multi(script_content)
+    if results:
+        return results[0]
+    return {
         "function_name": None,
         "description": "",
         "parameters": [],
@@ -30,73 +31,80 @@ def parse_python_script(script_content: str) -> Dict[str, Any]:
         "outputs": [],
     }
 
-    func_def = None
+
+def parse_python_script_multi(script_content: str) -> List[Dict[str, Any]]:
+    """解析Python脚本，为每个公开函数提取函数签名、参数、返回值等信息"""
+    tree = ast.parse(script_content)
+
     func_names = []
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
             func_names.append(node)
-    if func_names:
-        for node in func_names:
-            if node.name == "main":
-                func_def = node
-                break
-        if func_def is None:
-            func_def = func_names[0]
 
-    if func_def is None:
-        return result
+    if not func_names:
+        return []
 
-    result["function_name"] = func_def.name
-
-    docstring = ast.get_docstring(func_def)
-    if docstring:
-        result["description"] = docstring.strip()
-
-    args = func_def.args
-    all_args = list(args.args) if args.args else []
-    all_args += list(args.kwonlyargs) if args.kwonlyargs else []
-
-    defaults_count = len(args.defaults)
-    no_default_count = len(all_args) - defaults_count
-
-    for i, arg in enumerate(all_args):
-        anno_type = _get_annotation_str(arg.annotation) if arg.annotation else None
-
-        has_default = i >= no_default_count
-        default_index = i - no_default_count if has_default else -1
-        raw_default = args.defaults[default_index] if has_default and default_index < len(args.defaults) else None
-        default_value = _serialize_default(raw_default)
-
-        if anno_type is None and default_value is not None:
-            anno_type = _infer_type_from_default(default_value)
-        if anno_type is None:
-            anno_type = _infer_type_from_name(arg.arg)
-
-        param_info = {
-            "name": arg.arg,
-            "type": anno_type,
-            "required": not has_default,
-            "default": default_value,
+    results = []
+    for func_def in func_names:
+        result = {
+            "function_name": func_def.name,
+            "description": "",
+            "parameters": [],
+            "inputs": [],
+            "outputs": [],
         }
-        result["parameters"].append(param_info)
 
-        if not has_default:
-            result["inputs"].append({
+        docstring = ast.get_docstring(func_def)
+        if docstring:
+            result["description"] = docstring.strip()
+
+        args = func_def.args
+        all_args = list(args.args) if args.args else []
+        all_args += list(args.kwonlyargs) if args.kwonlyargs else []
+
+        defaults_count = len(args.defaults)
+        no_default_count = len(all_args) - defaults_count
+
+        for i, arg in enumerate(all_args):
+            anno_type = _get_annotation_str(arg.annotation) if arg.annotation else None
+
+            has_default = i >= no_default_count
+            default_index = i - no_default_count if has_default else -1
+            raw_default = args.defaults[default_index] if has_default and default_index < len(args.defaults) else None
+            default_value = _serialize_default(raw_default)
+
+            if anno_type is None and default_value is not None:
+                anno_type = _infer_type_from_default(default_value)
+            if anno_type is None:
+                anno_type = _infer_type_from_name(arg.arg)
+
+            param_info = {
                 "name": arg.arg,
                 "type": anno_type,
-                "required": True,
+                "required": not has_default,
+                "default": default_value,
+            }
+            result["parameters"].append(param_info)
+
+            if not has_default:
+                result["inputs"].append({
+                    "name": arg.arg,
+                    "type": anno_type,
+                    "required": True,
+                })
+
+        return_annotation = func_def.returns
+        if return_annotation:
+            result["outputs"].append({
+                "name": "result",
+                "type": _get_annotation_str(return_annotation),
             })
+        else:
+            result["outputs"].append({"name": "result", "type": "any"})
 
-    return_annotation = func_def.returns
-    if return_annotation:
-        result["outputs"].append({
-            "name": "result",
-            "type": _get_annotation_str(return_annotation),
-        })
-    else:
-        result["outputs"].append({"name": "result", "type": "any"})
+        results.append(result)
 
-    return result
+    return results
 
 
 def _get_annotation_str(node) -> str:

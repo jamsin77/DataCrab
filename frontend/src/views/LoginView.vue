@@ -38,6 +38,8 @@
       <div class="register-link">
         还没有账号？
         <el-link type="primary" @click="showRegister = true">注册</el-link>
+        <span class="divider">|</span>
+        <el-link type="primary" @click="showReset = true">忘记密码</el-link>
       </div>
     </div>
 
@@ -59,6 +61,28 @@
         <el-button type="primary" :loading="registerLoading" @click="handleRegister">注册</el-button>
       </template>
     </el-dialog>
+
+    <!-- 重置密码对话框 -->
+    <el-dialog v-model="showReset" title="重置密码" width="400px">
+      <el-form ref="resetFormRef" :model="resetForm" :rules="resetRules">
+        <el-form-item prop="username" label="用户名">
+          <el-input v-model="resetForm.username" />
+        </el-form-item>
+        <el-form-item prop="old_password" label="旧密码">
+          <el-input v-model="resetForm.old_password" type="password" show-password />
+        </el-form-item>
+        <el-form-item prop="new_password" label="新密码">
+          <el-input v-model="resetForm.new_password" type="password" show-password />
+        </el-form-item>
+        <el-form-item prop="confirm_password" label="确认新密码">
+          <el-input v-model="resetForm.confirm_password" type="password" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showReset = false">取消</el-button>
+        <el-button type="primary" :loading="resetLoading" @click="handleReset">确认重置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -66,6 +90,7 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/api/auth'
 import { ElMessage } from 'element-plus'
 import type { FormInstance } from 'element-plus'
 
@@ -77,6 +102,9 @@ const registerFormRef = ref<FormInstance>()
 const loading = ref(false)
 const showRegister = ref(false)
 const registerLoading = ref(false)
+const showReset = ref(false)
+const resetLoading = ref(false)
+const resetFormRef = ref<FormInstance>()
 
 const form = reactive({ username: '', password: '' })
 const rules = {
@@ -124,6 +152,52 @@ async function handleLogin() {
     ElMessage.error(extractError(e) || '登录失败')
   } finally {
     loading.value = false
+  }
+}
+
+const resetForm = reactive({ username: '', old_password: '', new_password: '', confirm_password: '' })
+
+const resetRules = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  old_password: [
+    { required: true, message: '请输入旧密码', trigger: 'blur' },
+    { min: 6, message: '密码至少6位', trigger: 'blur' },
+  ],
+  new_password: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '密码至少6位', trigger: 'blur' },
+  ],
+  confirm_password: [
+    { required: true, message: '请确认新密码', trigger: 'blur' },
+    {
+      validator: (_rule: any, value: string, callback: any) => {
+        if (value !== resetForm.new_password) {
+          callback(new Error('两次输入的密码不一致'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+
+async function handleReset() {
+  const valid = await resetFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  resetLoading.value = true
+  try {
+    await authApi.resetPassword(resetForm.username, resetForm.old_password, resetForm.new_password)
+    ElMessage.success('密码重置成功，请用新密码登录')
+    showReset.value = false
+    resetForm.username = ''
+    resetForm.old_password = ''
+    resetForm.new_password = ''
+    resetForm.confirm_password = ''
+  } catch (e: any) {
+    ElMessage.error(extractError(e) || '重置失败')
+  } finally {
+    resetLoading.value = false
   }
 }
 
@@ -176,6 +250,11 @@ async function handleRegister() {
   .register-link {
     text-align: center;
     color: #999;
+
+    .divider {
+      margin: 0 8px;
+      color: #dcdfe6;
+    }
   }
 }
 </style>

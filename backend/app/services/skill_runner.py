@@ -1,5 +1,6 @@
 """Skill Runner - 沙箱执行 Skill 脚本"""
 
+import asyncio
 import json
 import math
 import os
@@ -76,6 +77,7 @@ def _run_async_query(script_code):
     proc = subprocess.run(
         [sys.executable, "-c", script_code],
         capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
         cwd=r"{cwd}"
     )
     output_lines = [l for l in proc.stdout.strip().split("\\n") if l.strip()]
@@ -169,6 +171,44 @@ def get_table_data(datasource_id, table_name, limit=1000, offset=0):
     df = _dc_query_table_data(datasource_id, table_name, limit, offset)
     return {{"success": True, "data": df.to_dict(orient="records"), "columns": list(df.columns), "row_count": len(df)}}
 
+query_table_data = get_table_data
+
+def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
+    # 在技能脚本中直接调用平台大模型
+    # prompt: 用户消息
+    # system_prompt: 可选的系统提示词
+    # temperature: 温度参数 (0.0-2.0)
+    # max_tokens: 最大token数
+    # 返回: 大模型的文本回复
+    import json as _json
+    _bp = r'{backend_path}'
+    _payload = _json.dumps({{"prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens)}}, ensure_ascii=False)
+    _runner = (
+        "import asyncio, json, sys\\n"
+        "sys.path.insert(0, r'" + _bp + "')\\n"
+        "from app.services.llm import llm_manager\\n"
+        "\\n"
+        "_payload = " + repr(_payload) + "\\n"
+        "_cfg = json.loads(_payload)\\n"
+        "\\n"
+        "async def _q():\\n"
+        "    await llm_manager.initialize()\\n"
+        "    messages = []\\n"
+        "    if _cfg['system_prompt']:\\n"
+        "        messages.append({{'role': 'system', 'content': _cfg['system_prompt']}})\\n"
+        "    messages.append({{'role': 'user', 'content': _cfg['prompt']}})\\n"
+        "    if len(messages) > 1:\\n"
+        "        return await llm_manager.chat_with_messages(messages, temperature=_cfg['temperature'], max_tokens=_cfg['max_tokens'])\\n"
+        "    return await llm_manager.chat(_cfg['prompt'], temperature=_cfg['temperature'], max_tokens=_cfg['max_tokens'])\\n"
+        "\\n"
+        "r = asyncio.run(_q())\\n"
+        "print(json.dumps(r, ensure_ascii=False))\\n"
+    )
+    result = _run_async_query(_runner)
+    if result is not None:
+        return result
+    return ""
+
 def write_table_data(datasource_id, table_name, records=None, data=None):
     import re as _re
     if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
@@ -211,6 +251,7 @@ import builtins as _builtins
 _builtins.get_table_data = get_table_data
 _builtins.query_table_data = get_table_data
 _builtins.write_table_data = write_table_data
+_builtins.llm_chat = llm_chat
 
 # __SCRIPT_CONTENT__
 
@@ -282,11 +323,19 @@ def run_skill_script(
                 if node.module == "argparse":
                     uses_argparse = True
         if not uses_argparse:
-            func_names = [node.name for node in ast.iter_child_nodes(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")]
-            if "main" in func_names:
-                function_name = "main"
-            elif func_names:
-                function_name = func_names[0]
+            func_defs = [(node.name, node) for node in ast.iter_child_nodes(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")]
+            if func_defs:
+                def _param_count(func_node):
+                    return len(func_node.args.args) + len(func_node.args.kwonlyargs) + len(func_node.args.posonlyargs)
+                best = max(func_defs, key=lambda f: _param_count(f[1]))
+                if "main" in [f[0] for f in func_defs]:
+                    main_node = next(f[1] for f in func_defs if f[0] == "main")
+                    if _param_count(main_node) > 0:
+                        function_name = "main"
+                    else:
+                        function_name = best[0]
+                else:
+                    function_name = best[0]
         if uses_argparse:
             logger.info(f"检测到 argparse 脚本，将参数转为命令行格式")
     except SyntaxError:
@@ -336,6 +385,8 @@ def run_skill_script(
             [sys.executable, temp_path],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=str(skill_path),
             env={**os.environ, "PYTHONPATH": str(backend_path)},
@@ -345,7 +396,12 @@ def run_skill_script(
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
 
-        if stderr.strip():
+        if proc.returncode != 0:
+            error_msg = stderr.strip() or stdout.strip()[:500] or "脚本执行失败（无错误输出）"
+        else:
+            error_msg = None
+
+        if stderr.strip() and proc.returncode == 0:
             stdout += "\n[stderr]\n" + stderr
 
         result = None
@@ -363,7 +419,7 @@ def run_skill_script(
         return {
             "success": proc.returncode == 0,
             "result": result,
-            "error": stderr.strip() if proc.returncode != 0 else None,
+            "error": error_msg,
             "stdout": stdout.strip(),
             "execution_time_ms": round(elapsed_ms, 2),
         }
@@ -386,3 +442,30 @@ def run_skill_script(
             os.unlink(temp_path)
         except:
             pass
+
+
+async def run_skill_script_async(
+    skill_path: Path,
+    script_name: str = "main.py",
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    datasource_id: str = None,
+    table_name: str = None,
+    datasource_name: str = None,
+    timeout: int = None,
+) -> Dict[str, Any]:
+    """异步执行 Skill 脚本，委托给同步版本以避免 Windows 上的 NotImplementedError"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: run_skill_script(
+            skill_path=skill_path,
+            script_name=script_name,
+            parameters=parameters,
+            input_data=input_data,
+            datasource_id=datasource_id,
+            table_name=table_name,
+            datasource_name=datasource_name,
+            timeout=timeout,
+        ),
+    )

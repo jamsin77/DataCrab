@@ -22,6 +22,7 @@ from app.schemas.auth import (
     TokenRefreshRequest,
     TokenResponse,
     UserResponse,
+    ResetPasswordRequest,
 )
 from app.api.deps import get_current_user
 
@@ -132,6 +133,33 @@ async def refresh_token(
         access_token=access_token,
         refresh_token=new_refresh_token,
     )
+
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """重置密码（需验证旧密码）"""
+    result = await db.execute(select(User).where(User.username == request.username))
+    user = result.scalar_one_or_none()
+
+    if not user or not verify_password(request.old_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或旧密码错误",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户已被禁用",
+        )
+
+    user.password_hash = get_password_hash(request.new_password)
+    await db.flush()
+
+    return {"message": "密码重置成功"}
 
 
 @router.get("/me", response_model=UserResponse)

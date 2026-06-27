@@ -84,3 +84,9 @@ class OperatorModifyRequest(BaseModel):
 
 class OperatorCloneRequest(BaseModel):
     name: str = Field(..., max_length=100, description="新算子名称")
+
+
+class OperatorDebugChatRequest(BaseModel):
+    message: str = Field(..., description="用户调试消息")
+    history: Optional[List[Dict[str, str]]] = Field(default=[], description="对话历史")
+    context: Optional[Dict[str, Any]] = Field(default={}, description="调试上下文")

@@ -88,6 +88,30 @@ class PostgreSQLConnector(BaseConnector):
         count = await self._connection.fetchval(f'SELECT COUNT(*) FROM "{table}"')
         return {"row_count": count}
 
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not self._connection:
+            await self.connect()
+        if not self._connection:
+            return {"success": False, "message": "数据库连接失败"}
+        if not records:
+            return {"success": True, "rows_written": 0}
+        try:
+            _validate_identifier(table)
+            columns = list(records[0].keys())
+            for col in columns:
+                _validate_identifier(col)
+            col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
+            await self._connection.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
+            placeholders = ", ".join(f"${i+1}" for i in range(len(columns)))
+            col_names = ", ".join(f'"{c}"' for c in columns)
+            insert_sql = f'INSERT INTO "{table}" ({col_names}) VALUES ({placeholders})'
+            for record in records:
+                values = [str(v) if v is not None else None for v in (record.get(c) for c in columns)]
+                await self._connection.execute(insert_sql, *values)
+            return {"success": True, "rows_written": len(records)}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     async def close(self) -> None:
         if self._connection:
             await self._connection.close()

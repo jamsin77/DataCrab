@@ -6,8 +6,10 @@ from typing import Optional
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import selectinload
+
+from app.services.permission_service import get_accessible_resource_ids, check_permission
 
 from app.core.database import get_db
 from app.models.datasource import DataSource
@@ -59,7 +61,14 @@ async def list_datasources(
     current_user: User = Depends(get_current_user),
 ):
     """获取数据源列表"""
-    query = select(DataSource).where(DataSource.is_active == True, DataSource.created_by == current_user.id)
+    shared_ids = await get_accessible_resource_ids(db, current_user.id, "datasource")
+    query = select(DataSource).where(
+        DataSource.is_active == True,
+        or_(
+            DataSource.created_by == current_user.id,
+            DataSource.id.in_(shared_ids) if shared_ids else False,
+        ),
+    )
     if datasource_type:
         query = query.where(DataSource.type == datasource_type)
     query = query.offset(skip).limit(limit)
@@ -78,6 +87,11 @@ async def get_datasource(
     datasource = result.scalar_one_or_none()
     if not datasource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+    is_owner = datasource.created_by == current_user.id
+    if not is_owner and not current_user.is_superuser:
+        has_perm = await check_permission(db, current_user.id, "datasource", datasource_id, "view", is_owner=False)
+        if not has_perm:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此数据源")
     return datasource
 
 

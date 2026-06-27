@@ -91,7 +91,7 @@
     </el-dialog>
 
     <!-- ==================== AI 生成对话框 ==================== -->
-    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="680px" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="680px" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           Skill Creator 将根据需求描述生成完整 Skill 包（SKILL.md + 脚本）
@@ -147,6 +147,7 @@
       :title="detailSkill?.display_name || detailSkill?.name || '技能详情'"
       size="70%"
       destroy-on-close
+      :close-on-press-escape="false"
     >
       <div v-if="detailSkill" class="detail-container">
         <div class="nl-modify-section">
@@ -196,6 +197,18 @@
         </div>
 
         <el-divider />
+
+        <div class="detail-actions-row">
+          <el-button
+            type="warning"
+            size="small"
+            :loading="summarizingErrors"
+            @click="handleSummarizeErrors"
+          >
+            <el-icon><MagicStick /></el-icon> 总结经验
+          </el-button>
+          <span class="detail-actions-hint">分析历史错误，总结经验写入 SKILL.md</span>
+        </div>
 
         <div class="detail-preview-label">技能详情预览</div>
 
@@ -273,12 +286,20 @@
       width="95%"
       top="2vh"
       destroy-on-close
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
       @closed="resetDebug"
     >
       <div v-if="debugSkill" class="debug-layout">
         <div class="debug-left">
           <el-tabs v-model="execTab">
             <el-tab-pane label="自然语言" name="nl">
+              <div v-if="nlExamples.length" class="nl-examples">
+                <div class="nl-examples-title">示例</div>
+                <div v-for="(ex, i) in nlExamples" :key="i" class="nl-example-item" @click="execNLQuery = ex">
+                  <span class="nl-example-text">{{ ex }}</span>
+                </div>
+              </div>
               <div class="nl-hint" v-if="nlHint">
                 <el-icon><InfoFilled /></el-icon>
                 <span>{{ nlHint }}</span>
@@ -290,7 +311,10 @@
                 :placeholder="nlPlaceholder + ' (↑↓浏览历史)'"
                 @keydown="handleNLKeyDown"
               />
-              <el-button type="primary" style="margin-top:10px" :loading="execRunning" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
+              <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
+                <el-icon><VideoPause /></el-icon> 停止
+              </el-button>
+              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -310,7 +334,10 @@
                   <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
                 </div>
               </div>
-              <el-button type="primary" size="small" style="margin-top:8px" :loading="execRunning" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
+              <el-button v-if="execRunning" type="danger" size="small" style="margin-top:8px" @click="stopExec">
+                <el-icon><VideoPause /></el-icon> 停止
+              </el-button>
+              <el-button v-else type="primary" size="small" style="margin-top:8px" :loading="false" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -322,7 +349,10 @@
                 :rows="6"
                 placeholder='{"key": "value"}'
               />
-              <el-button type="primary" style="margin-top:10px" :loading="execRunning" @click="handleRunSkill">
+              <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
+                <el-icon><VideoPause /></el-icon> 停止
+              </el-button>
+              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkill">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -764,6 +794,7 @@ const modifyAbortCtrl = ref<AbortController | null>(null)
 const expandedScript = ref('')
 const scriptContents = reactive<Record<string, string>>({})
 const savingScript = ref(false)
+const summarizingErrors = ref(false)
 
 function openDetail(skill: any) {
   detailSkill.value = skill
@@ -843,6 +874,9 @@ async function handleModifySkill() {
             modifyInstruction.value = ''
             ElMessage.success('技能已通过 AI 修改')
             await loadSkills()
+            if (debugDrawer.value) {
+              refreshDebugContext()
+            }
           } else if (data.type === 'error') {
             modifyError.value = data.content || '修改失败'
           } else if (data.type === 'cancelled') {
@@ -889,10 +923,35 @@ async function saveScriptContent(name: string) {
     })
     ElMessage.success(`脚本 ${name} 已保存`)
     detailSkill.value.scripts = await api.get(`/skills/${detailSkill.value.id}/scripts`)
+    if (debugDrawer.value) {
+      refreshDebugContext()
+    }
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
   } finally {
     savingScript.value = false
+  }
+}
+
+async function handleSummarizeErrors() {
+  if (!detailSkill.value) return
+  summarizingErrors.value = true
+  try {
+    const res = await api.post(`/skills/${detailSkill.value.id}/summarize-errors`)
+    if (res.error_count === 0) {
+      ElMessage.info('暂无错误记录，无需总结')
+    } else {
+      ElMessage.success(res.message || `已总结 ${res.error_count} 条错误记录`)
+      const updated = await api.get(`/skills/${detailSkill.value.id}`)
+      if (updated) {
+        detailSkill.value = updated
+        mdEditContent.value = updated.skill_md || ''
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '总结失败')
+  } finally {
+    summarizingErrors.value = false
   }
 }
 
@@ -903,10 +962,20 @@ const debugScriptName = ref('main.py')
 
 // 执行面板
 const execRunning = ref(false)
+let execAbortController: AbortController | null = null
 const execResult = ref<any>(null)
 const execThinking = ref('')
 const execPhase = ref<'thinking' | 'executing' | 'idle'>('idle')
 const execTab = ref('nl')
+
+function stopExec() {
+  if (execAbortController) {
+    execAbortController.abort()
+    execAbortController = null
+  }
+  execRunning.value = false
+  execPhase.value = 'idle'
+}
 const execNLQuery = ref('')
 const execCmdStr = ref('')
 const execParamsStr = ref('')
@@ -1008,12 +1077,69 @@ const cmdPlaceholder = computed(() => {
   return `/${name} 参数1=值1 参数2=值2`
 })
 
+const nlExamples = computed(() => {
+  if (!debugSkill.value) return []
+  const md = debugSkill.value.skill_md || ''
+  if (!md) return []
+  const examples: string[] = []
+  const lines = md.split('\n')
+  let inUsage = false
+  let usageLevel = 0
+  let collectingCodeBlock = false
+  let codeBuf = ''
+  for (const line of lines) {
+    const heading = line.trim().match(/^(#{1,4})\s+(.*)/)
+    if (heading) {
+      const level = heading[1].length
+      const title = heading[2].replace(/[📌🚀📋💡📝🔍]/g, '').trim()
+      if (!inUsage && /使用方式|用法|使用示例|示例|调用|如何使用/i.test(title)) {
+        inUsage = true
+        usageLevel = level
+        continue
+      }
+      if (inUsage && level <= usageLevel) {
+        inUsage = false
+        if (collectingCodeBlock) {
+          collectingCodeBlock = false
+          if (codeBuf.trim()) examples.push(codeBuf.trim())
+          codeBuf = ''
+        }
+        continue
+      }
+    }
+    if (inUsage) {
+      if (line.trim().startsWith('```')) {
+        if (collectingCodeBlock) {
+          collectingCodeBlock = false
+          if (codeBuf.trim()) examples.push(codeBuf.trim())
+          codeBuf = ''
+        } else {
+          collectingCodeBlock = true
+          codeBuf = ''
+        }
+        continue
+      }
+      if (collectingCodeBlock) {
+        codeBuf += line + '\n'
+      } else {
+        const trimmed = line.trim()
+        if (trimmed && !trimmed.startsWith('|') && !trimmed.startsWith('#') && !trimmed.startsWith('-') && trimmed.length > 5 && trimmed.length < 200) {
+          if (/例如|比如|示例|将["""]|从["""]|对["""]|查找|筛选|统计|导出|清洗|迁移|转换/.test(trimmed)) {
+            examples.push(trimmed)
+          }
+        }
+      }
+    }
+  }
+  return examples.slice(0, 3)
+})
+
 const nlHint = computed(() => {
   if (!debugSkill.value) return ''
   const skill = debugSkill.value
   const desc = skill.description || ''
-  
-  // 根据技能描述生成提示
+  const examples = nlExamples.value
+  if (examples.length > 0) return ''
   if (desc.includes('清洗') || desc.includes('去重')) {
     return '告诉我要清洗哪个数据源的哪个表，我会帮你去除重复和空值数据'
   }
@@ -1032,20 +1158,19 @@ const nlHint = computed(() => {
   if (desc.includes('转换') || desc.includes('处理')) {
     return '描述数据转换需求，我会帮你处理数据'
   }
-  
-  // 默认提示
   return ''
 })
 
 const nlPlaceholder = computed(() => {
   if (!debugSkill.value) return '用自然语言描述你想做什么'
-  
+  const examples = nlExamples.value
+  if (examples.length > 0) {
+    return examples[0]
+  }
   const skill = debugSkill.value
   const name = skill.display_name || skill.name || ''
   const desc = skill.description || ''
   const params = skillParams.value
-  
-  // 根据技能名称和描述生成示例
   if (name.includes('文物') || desc.includes('文物')) {
     return '例如：检索明代的青铜器，限制返回20条'
   }
@@ -1054,11 +1179,11 @@ const nlPlaceholder = computed(() => {
   }
   if (desc.includes('检索') || desc.includes('搜索')) {
     if (params.length > 0) {
-      const examples = params.slice(0, 2).map(p => {
+      const pExamples = params.slice(0, 2).map((p: any) => {
         if (p.example) return `${p.name}为${p.example}`
         return `${p.name}为某个值`
       })
-      return `例如：查找${examples.join('，')}的数据`
+      return `例如：查找${pExamples.join('，')}的数据`
     }
     return '例如：查找符合条件的数据'
   }
@@ -1071,8 +1196,6 @@ const nlPlaceholder = computed(() => {
   if (desc.includes('采集')) {
     return '例如：采集100条数据并保存'
   }
-  
-  // 根据参数生成示例
   if (params.length > 0) {
     const requiredParams = params.filter((p: any) => p.required)
     if (requiredParams.length > 0) {
@@ -1082,8 +1205,6 @@ const nlPlaceholder = computed(() => {
       }
     }
   }
-  
-  // 默认
   return '用自然语言描述你想做什么'
 })
 
@@ -1173,16 +1294,26 @@ function resetDebug() {
   debugMessages.value = []
   debugInput.value = ''
   debugStreaming.value = false
+  if (execAbortController) {
+    execAbortController.abort()
+    execAbortController = null
+  }
 }
 
 async function openDebug(skill: any, scriptName?: string) {
-  debugSkill.value = skill
-  debugScriptName.value = scriptName || (skill.scripts?.[0]?.name || 'main.py')
+  let freshSkill = skill
+  try {
+    const detail = await api.get(`/skills/${skill.id}`)
+    if (detail) freshSkill = detail
+  } catch { /* use passed skill */ }
+
+  debugSkill.value = freshSkill
+  debugScriptName.value = scriptName || (freshSkill.scripts?.[0]?.name || 'main.py')
   execResult.value = null
   execThinking.value = ''
   execPhase.value = 'idle'
   execNLQuery.value = ''
-  execCmdStr.value = `/${skill.name || 'skill'} `
+  execCmdStr.value = `/${freshSkill.name || 'skill'} `
   execParamsStr.value = ''
   execTab.value = 'nl'
   skillParams.value = []
@@ -1192,7 +1323,7 @@ async function openDebug(skill: any, scriptName?: string) {
   debugDrawer.value = true
 
   try {
-    const params = await api.get(`/skills/${skill.id}/params`)
+    const params = await api.get(`/skills/${freshSkill.id}/params`)
     skillParams.value = params || []
     for (const p of params) {
       if (p.default !== null && p.default !== undefined) {
@@ -1221,6 +1352,44 @@ async function openDebug(skill: any, scriptName?: string) {
   }
 }
 
+async function refreshDebugContext() {
+  if (!debugSkill.value) return
+  try {
+    const detail = await api.get(`/skills/${debugSkill.value.id}`)
+    if (detail) {
+      debugSkill.value = { ...debugSkill.value, ...detail }
+    }
+    const params = await api.get(`/skills/${debugSkill.value.id}/params`)
+    skillParams.value = params || []
+    for (const p of params) {
+      if (!(p.name in cmdParamValues)) {
+        if (p.default !== null && p.default !== undefined) {
+          cmdParamValues[p.name] = p.default
+        } else if (p.type === 'bool') {
+          cmdParamValues[p.name] = false
+        } else {
+          cmdParamValues[p.name] = ''
+        }
+      }
+    }
+
+    const hasDs = params.some((p: any) => p.is_datasource)
+    if (hasDs && datasources.value.length) {
+      const ds = datasources.value[0]
+      cmdExampleDsName.value = ds.name || ''
+      try {
+        const tree = await api.get(`/datasources/${ds.id}/tree`)
+        const tableNodes = (tree || []).filter((n: any) => n.type === 'excel_sheet' || n.type === 'csv' || n.type === 'table')
+        if (tableNodes.length) {
+          cmdExampleTableName.value = tableNodes[0].label || tableNodes[0].metadata?.table_name || ''
+        }
+      } catch { /* ignore */ }
+    }
+
+    buildCmdFromParams()
+  } catch { /* ignore */ }
+}
+
 function buildCmdFromParams() {
   const name = debugSkill.value?.name || 'skill'
   const parts = [`/${name}`]
@@ -1244,6 +1413,8 @@ async function handleRunSkill() {
   if (!debugSkill.value) return
   execRunning.value = true
   execResult.value = null
+  execPhase.value = 'executing'
+  execAbortController = new AbortController()
 
   let parameters: any = {}
   if (execParamsStr.value.trim()) {
@@ -1252,27 +1423,77 @@ async function handleRunSkill() {
     } catch {
       ElMessage.error('参数格式错误，请输入有效的 JSON')
       execRunning.value = false
+      execAbortController = null
       return
     }
   }
 
   try {
-    const res = await api.post(
-      `/skills/${debugSkill.value.id}/run`,
-      {
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
         script_name: debugScriptName.value,
         parameters,
-      },
-      { timeout: 60000 }
-    )
-    execResult.value = res
+      }),
+      signal: execAbortController.signal,
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+
+          if (data.type === 'executing') {
+            execThinking.value = data.message || '正在执行技能脚本...'
+          } else if (data.type === 'done') {
+            if (data.result != null) {
+              execResult.value = data.result
+            }
+          } else if (data.type === 'error') {
+            execResult.value = { success: false, error: data.content || '执行失败' }
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
   } catch (e: any) {
-    execResult.value = {
-      success: false,
-      error: e.response?.data?.detail || String(e),
+    if (e.name === 'AbortError') {
+      execResult.value = { success: false, error: '已停止' }
+    } else {
+      execResult.value = {
+        success: false,
+        error: e.response?.data?.detail || e.message || String(e),
+      }
     }
   } finally {
     execRunning.value = false
+    execPhase.value = 'idle'
+    execAbortController = null
   }
 }
 
@@ -1287,6 +1508,7 @@ async function handleRunSkillNL() {
   execResult.value = null
   execThinking.value = ''
   execPhase.value = 'thinking'
+  execAbortController = new AbortController()
 
   try {
     const token = localStorage.getItem('access_token')
@@ -1300,6 +1522,7 @@ async function handleRunSkillNL() {
         query: execNLQuery.value.trim(),
         script_name: debugScriptName.value,
       }),
+      signal: execAbortController.signal,
     })
 
     if (!response.ok) {
@@ -1341,7 +1564,7 @@ async function handleRunSkillNL() {
           } else if (data.type === 'executing') {
             execPhase.value = 'executing'
           } else if (data.type === 'done') {
-            if (data.result) {
+            if (data.result != null) {
               execResult.value = data.result
             }
           } else if (data.type === 'error') {
@@ -1353,13 +1576,18 @@ async function handleRunSkillNL() {
       }
     }
   } catch (e: any) {
-    execResult.value = {
-      success: false,
-      error: e.response?.data?.detail || e.message || String(e),
+    if (e.name === 'AbortError') {
+      execResult.value = { success: false, error: '已停止' }
+    } else {
+      execResult.value = {
+        success: false,
+        error: e.response?.data?.detail || e.message || String(e),
+      }
     }
   } finally {
     execRunning.value = false
     execPhase.value = 'idle'
+    execAbortController = null
   }
 }
 
@@ -1385,10 +1613,8 @@ async function handleRunCmd() {
         const val = parts[i].slice(eq + 1)
         if (key === 'datasource') {
           datasourceName = val
-          parameters['datasource'] = val
         } else if (key === 'table' || key === 'tables') {
           tableName = val
-          parameters['tables'] = val.split(',')
         } else {
           try {
             parameters[key] = JSON.parse(val)
@@ -1413,6 +1639,7 @@ async function handleRunCmd() {
   execResult.value = null
   execThinking.value = ''
   execPhase.value = 'executing'
+  execAbortController = new AbortController()
 
   try {
     const token = localStorage.getItem('access_token')
@@ -1428,6 +1655,7 @@ async function handleRunCmd() {
         table_name: tableName || undefined,
         parameters,
       }),
+      signal: execAbortController.signal,
     })
 
     if (!response.ok) {
@@ -1457,7 +1685,7 @@ async function handleRunCmd() {
           if (data.type === 'executing') {
             execThinking.value = data.message || '正在执行技能脚本...'
           } else if (data.type === 'done') {
-            if (data.result) {
+            if (data.result != null) {
               execResult.value = data.result
             }
           } else if (data.type === 'error') {
@@ -1469,13 +1697,18 @@ async function handleRunCmd() {
       }
     }
   } catch (e: any) {
-    execResult.value = {
-      success: false,
-      error: e.response?.data?.detail || e.message || String(e),
+    if (e.name === 'AbortError') {
+      execResult.value = { success: false, error: '已停止' }
+    } else {
+      execResult.value = {
+        success: false,
+        error: e.response?.data?.detail || e.message || String(e),
+      }
     }
   } finally {
     execRunning.value = false
     execPhase.value = 'idle'
+    execAbortController = null
   }
 }
 
@@ -1543,6 +1776,12 @@ async function handleDebugSend() {
         message: userMsg,
         history,
         script_name: debugScriptName.value,
+        context: {
+          exec_tab: execTab.value,
+          nl_query: execNLQuery.value || '',
+          cmd_str: execCmdStr.value || '',
+          json_params: execParamsStr.value || '',
+        },
       }),
       signal: debugAbortController.signal,
     })
@@ -1589,6 +1828,7 @@ async function handleDebugSend() {
             }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
+            refreshDebugContext()
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           }
@@ -1739,6 +1979,18 @@ onMounted(() => {
   font-size: 13px;
   color: #909399;
   margin-bottom: 8px;
+}
+
+.detail-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.detail-actions-hint {
+  font-size: 12px;
+  color: #909399;
 }
 
 .nl-modify-section {
@@ -1966,6 +2218,37 @@ onMounted(() => {
   .el-icon {
     font-size: 16px;
     flex-shrink: 0;
+  }
+}
+
+.nl-examples {
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+
+  .nl-examples-title {
+    font-size: 11px;
+    color: #909399;
+    margin-bottom: 4px;
+  }
+
+  .nl-example-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: background 0.2s;
+    line-height: 1.5;
+
+    &:hover {
+      background: #ecf5ff;
+    }
+
+    .nl-example-text {
+      font-size: 13px;
+      color: #606266;
+    }
   }
 }
 

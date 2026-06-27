@@ -1,9 +1,11 @@
 """SKILL.md 解析器 - 解析 YAML front matter + Markdown 内容"""
 
+import json
 import re
 import yaml
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 
 def parse_skill_md(content: str) -> Dict[str, Any]:
@@ -112,9 +114,22 @@ def read_skill_script(skill_path: Path, script_name: str) -> Optional[str]:
 
 
 def write_skill_script(skill_path: Path, script_name: str, content: str):
-    """写入脚本内容"""
+    """写入脚本内容，自动剥离AI可能多包的代码围栏"""
     scripts_dir = skill_path / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
+    content = content.strip()
+    if content.startswith("```python"):
+        lines = content.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    elif content.startswith("```"):
+        lines = content.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
     (scripts_dir / script_name).write_text(content, encoding="utf-8")
 
 
@@ -131,3 +146,80 @@ def list_skill_scripts(skill_path: Path) -> list:
             "size": f.stat().st_size,
         })
     return result
+
+
+# ==================== 错误日志与经验总结 ====================
+
+ERROR_LOG_FILE = "error_log.json"
+LESSONS_SECTION_HEADER = "## 常见问题与经验"
+
+
+def read_error_log(skill_path: Path) -> List[Dict[str, Any]]:
+    """读取技能的错误日志"""
+    log_path = skill_path / ERROR_LOG_FILE
+    if not log_path.exists():
+        return []
+    try:
+        return json.loads(log_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def append_error_log(
+    skill_path: Path,
+    script_name: str,
+    error_type: str,
+    error_message: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    stdout: str = "",
+    source: str = "run",
+):
+    """追加一条错误记录"""
+    log = read_error_log(skill_path)
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "script_name": script_name,
+        "error_type": error_type,
+        "error_message": error_message[:500],
+        "parameters": parameters or {},
+        "stdout_preview": stdout[:200] if stdout else "",
+        "source": source,
+    }
+    log.append(entry)
+    if len(log) > 200:
+        log = log[-200:]
+    (skill_path / ERROR_LOG_FILE).write_text(
+        json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def read_lessons(skill_path: Path) -> str:
+    """从 SKILL.md 中读取「常见问题与经验」章节内容"""
+    skill_md = read_skill_md(skill_path)
+    if not skill_md:
+        return ""
+    match = re.search(
+        rf"{re.escape(LESSONS_SECTION_HEADER)}\s*\n(.*?)(?=\n## |\Z)",
+        skill_md,
+        re.DOTALL,
+    )
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def write_lessons(skill_path: Path, lessons_content: str):
+    """将经验总结写入 SKILL.md 的「常见问题与经验」章节（不存在则追加）"""
+    skill_md = read_skill_md(skill_path)
+    if not skill_md:
+        return
+
+    section = f"{LESSONS_SECTION_HEADER}\n\n{lessons_content.strip()}\n"
+
+    if LESSONS_SECTION_HEADER in skill_md:
+        pattern = rf"{re.escape(LESSONS_SECTION_HEADER)}\s*\n.*?(?=\n## |\Z)"
+        skill_md = re.sub(pattern, section, skill_md, flags=re.DOTALL)
+    else:
+        skill_md = skill_md.rstrip() + "\n\n" + section
+
+    write_skill_md(skill_path, skill_md)

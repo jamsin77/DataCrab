@@ -27,6 +27,15 @@ description: 技能描述
 ---
 ```
 
+⚠️ **name 命名规范（必须遵守）**：
+- name 必须是根据用户需求语义生成的有意义英文名，用短横线连接
+- 禁止使用 generate_skill、new_skill、custom_skill 等无意义通用名称
+- 命名应体现技能的核心功能，例如：
+  - 用户需求"按朝代筛选文物" → name: filter-by-dynasty
+  - 用户需求"数据缺失值填充" → name: fill-missing-values
+  - 用户需求"销售数据月度统计" → name: monthly-sales-stats
+  - 用户需求"删除重复记录" → name: remove-duplicates
+
 ## SKILL.md 内容规范
 用 Markdown 编写，包含：
 1. 功能说明
@@ -42,21 +51,31 @@ description: 技能描述
 - 使用 print() 输出处理进度
 
 ## 内置工具函数（可在脚本中直接调用，无需 import）
-- query_table_data(datasource_id, table_name, limit=1000) → dict: {"success": bool, "data": [行dict], "columns": [列名], "row_count": int}
-- get_table_data(datasource_id, table_name, limit=1000) → 同 query_table_data
-- get_table_schema(datasource_id, table_name) → dict: {"columns": [...], "row_count": int}
+
+### 数据查询函数
+- query_table_data(datasource_id_or_name, table_name, limit=1000) → dict: {"success": bool, "data": [行dict], "columns": [列名], "row_count": int}
+- get_table_data(datasource_id_or_name, table_name, limit=1000) → 同 query_table_data
+- get_table_schema(datasource_id_or_name, table_name) → dict: {"columns": [...], "row_count": int}
 - get_datasource_id_by_name(name) → str (数据源UUID)
-- write_table_data(datasource_id, table_name, records=...) → dict
+- write_table_data(datasource_id_or_name, table_name, records=...) → dict
+
+### 大模型调用函数
+- llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000) → str: 调用平台大模型
+  - prompt: 用户消息（必填）
+  - system_prompt: 系统提示词，用于设定AI角色和规则（可选）
+  - temperature: 温度参数 0.0-2.0，越高越随机（默认0.7）
+  - max_tokens: 最大生成token数（默认2000）
+  - 返回: 大模型的文本回复
+  - 用途: 在脚本中调用AI进行文本分析、翻译、分类、摘要、数据质量检查等
+  - 示例: result = llm_chat("分析这组数据的趋势", system_prompt="你是数据分析师")
+
+### 内置变量
+- pd (pandas) 和 json 已内置，无需再 import
 
 ⚠️ **绝对禁止** `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！
 ⚠️ **绝对禁止** `pip install datacrab`，datacrab 不是可安装的包！
 ⚠️ 上述函数由运行环境自动注入到全局作用域，脚本中直接使用即可
 ⚠️ `if __name__ == '__main__':` 块会被系统自动去掉，main() 由系统调用
-
-## 数据源参考
-- "文物测试数据" (Excel)
-- "SQLite测试数据库" (SQLite)
-- "CSVFormTest" (CSV)
 
 🚫 安全红线（必须遵守）：
 - Skill 只能处理用户的业务数据，绝不能修改 DataCrab 平台自身
@@ -80,17 +99,135 @@ description: 技能描述
 - 数据处理生成新文件时，如果用户未指定输出路径（output_dir），默认保存到 DataSource（数据源）指定的文件路径下（即 connection_config.file_path 所在目录）
 - 脚本中必须提供 output_dir 参数，且默认值应为 DataSource 文件所在目录
 - 如果 DataSource 来自数据库而非文件，需要用户明确指定输出路径
-- 在 SKILL.md 中说明输出路径的默认行为"""
+- 在 SKILL.md 中说明输出路径的默认行为
+
+## 示例 Skill 包
+
+用户需求："按朝代筛选文物数据"
+
+===SKILL_MD===
+---
+name: filter-by-dynasty
+description: 按朝代筛选文物数据，支持单朝代和多朝代筛选
+version: "1.0.0"
+tags:
+  - 筛选
+  - 文物
+  - 朝代
+---
+
+# 按朝代筛选文物
+
+## 功能说明
+从文物数据源中按朝代筛选记录，支持单个或多个朝代（逗号分隔）。
+
+## 使用方式
+```
+筛选 "文物数据" 中朝代为 "唐" 的文物
+```
+```
+从 "文物数据" 的 artifacts 表中筛选朝代为 "唐,宋" 的文物
+```
+
+## 参数规范
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `datasource_name` | str | ✅ | - | 数据源名称 |
+| `table_name` | str | ❌ | artifacts | 表名 |
+| `dynasties` | str | ✅ | - | 朝代，多个用逗号分隔 |
+| `output_dir` | str | ❌ | None | 输出目录 |
+
+## 脚本说明
+
+| 脚本 | 说明 |
+|------|------|
+| `main.py` | 核心筛选脚本 |
+===SKILL_MD_END===
+
+===SCRIPT:main.py===
+import pandas as pd
+from typing import Dict, Any, Optional, List
+
+def filter_by_dynasty(
+    datasource_name: str,
+    table_name: str = "artifacts",
+    dynasties: str = "",
+    output_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    ds_id = get_datasource_id_by_name(datasource_name)
+    if not ds_id:
+        raise ValueError(f"找不到数据源: {datasource_name}")
+
+    result = query_table_data(ds_id, table_name)
+    if not result.get("success"):
+        raise ValueError(f"读取数据失败: {result.get('error')}")
+
+    df = pd.DataFrame(result["data"], columns=result["columns"])
+    if df.empty:
+        return {"success": True, "filtered_count": 0, "data": []}
+
+    dynasty_list = [d.strip() for d in dynasties.split(",") if d.strip()]
+    dynasty_col = None
+    for col in df.columns:
+        if "朝代" in col or "dynasty" in col.lower():
+            dynasty_col = col
+            break
+
+    if dynasty_col is None:
+        raise ValueError(f"未找到朝代列，现有列: {list(df.columns)}")
+
+    filtered = df[df[dynasty_col].astype(str).isin(dynasty_list)]
+    print(f"筛选完成: {len(df)} → {len(filtered)} 条 (朝代: {', '.join(dynasty_list)})")
+
+    if output_dir:
+        import os
+        path = os.path.join(output_dir, f"filtered_{table_name}.csv")
+        filtered.to_csv(path, index=False, encoding="utf-8-sig")
+        print(f"已保存: {path}")
+
+    return {
+        "success": True,
+        "filtered_count": len(filtered),
+        "columns": list(filtered.columns),
+        "data": filtered.to_dict(orient="records")[:10],
+    }
 
 
-async def generate_skill(prompt: str) -> Dict[str, Any]:
+def main(**params):
+    return filter_by_dynasty(**params)
+===SCRIPT_END==="""
+
+
+async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = "") -> Dict[str, Any]:
     """根据自然语言描述生成完整 Skill 包"""
     await llm_manager.initialize()
+
+    ds_section = ""
+    if datasource_info:
+        ds_section = f"""
+
+## 当前用户的数据源
+{datasource_info}
+
+请在脚本中使用上述真实的数据源名称和表名，使用 get_datasource_id_by_name("数据源名称") 获取数据源ID。
+"""
+
+    lessons_section = ""
+    if lessons:
+        lessons_section = f"""
+
+## 历史经验总结（从过往技能错误中学习，避免同类问题）
+{lessons}
+
+请在生成脚本时参考以上经验，避免犯相同的错误。如果经验中有相关的修复建议，在脚本中体现。
+"""
 
     user_prompt = f"""请根据以下需求，创建一个完整的 Skill 包：
 
 {prompt}
-
+{ds_section}
+{lessons_section}
 请输出：
 1. SKILL.md（包含 YAML front matter + Markdown 内容）
 2. scripts/main.py（核心处理脚本）
@@ -185,16 +322,37 @@ def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str
     logger.info(f"Skill 文件夹已创建: {skill_path}")
 
 
-async def generate_skill_stream(prompt: str) -> AsyncGenerator[Dict[str, Any], None]:
+async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons: str = "") -> AsyncGenerator[Dict[str, Any], None]:
     """流式生成 Skill 包，逐步返回生成过程"""
     await llm_manager.initialize()
 
     yield {"type": "status", "message": "正在分析需求..."}
 
+    ds_section = ""
+    if datasource_info:
+        ds_section = f"""
+
+## 当前用户的数据源
+{datasource_info}
+
+请在脚本中使用上述真实的数据源名称和表名，使用 get_datasource_id_by_name("数据源名称") 获取数据源ID。
+"""
+
+    lessons_section = ""
+    if lessons:
+        lessons_section = f"""
+
+## 历史经验总结（从过往技能错误中学习，避免同类问题）
+{lessons}
+
+请在生成脚本时参考以上经验，避免犯相同的错误。如果经验中有相关的修复建议，在脚本中体现。
+"""
+
     user_prompt = f"""请根据以下需求，创建一个完整的 Skill 包：
 
 {prompt}
-
+{ds_section}
+{lessons_section}
 请输出：
 1. SKILL.md（包含 YAML front matter + Markdown 内容）
 2. scripts/main.py（核心处理脚本）

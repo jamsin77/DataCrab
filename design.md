@@ -145,6 +145,7 @@ Notebook 界面为用户提供代码编辑和执行环境，作为对话交互�
 - 表结构查看（字段、类型、描述）
 - 数据预览（采样数据展示）
 - 元数据搜索
+- 浏览数据表时显示总行数："共 X 条，显示前 Y 行"（后端 `get_table_stats()` 提供总行数）
 
 ##### 界面布局（简化）
 ```
@@ -270,11 +271,206 @@ class LLMManager:
     ) -> str:
         """与大模型对话"""
         model_config = self.get_model_config(model)
-        response = await model_config.chat(prompt, temperature)
+         response = await model_config.chat(prompt, temperature)
         return response
 ```
 
-#### 2.3.3 Skills技能库
+#### 2.3.3 大模型公开API
+
+DataCrab 将底层大模型能力以 RESTful API 形式开放，用户可直接通过 HTTP 请求调用平台配置的大模型，支持多种调用模式。
+
+##### API 端点列表
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| POST | /api/v1/llm/chat | 大模型对话（非流式） | 需认证 |
+| POST | /api/v1/llm/chat-messages | 大模型多轮对话（非流式） | 需认证 |
+| POST | /api/v1/llm/chat-stream | 大模型对话（SSE流式） | 需认证 |
+| POST | /api/v1/llm/chat-stream-messages | 大模型多轮对话（SSE流式） | 需认证 |
+| POST | /api/v1/llm/chat-stream-thinking | 大模型多轮对话（SSE流式，含推理过程） | 需认证 |
+| POST | /api/v1/llm/embeddings | 生成文本嵌入向量 | 需认证 |
+
+##### 请求/响应格式
+
+**非流式对话** `POST /api/v1/llm/chat`
+```json
+// 请求
+{
+    "message": "帮我分析这组数据",
+    "model": null,           // 可选，不传则用系统默认模型
+    "temperature": 0.7,      // 0.0-2.0
+    "max_tokens": 2000       // 1-32000
+}
+
+// 响应
+{
+    "content": "分析结果...",
+    "model": "glm-5.2"
+}
+```
+
+**多轮对话（非流式）** `POST /api/v1/llm/chat-messages`
+```json
+// 请求
+{
+    "messages": [
+        {"role": "system", "content": "你是一个数据分析助手"},
+        {"role": "user", "content": "帮我分析数据"},
+        {"role": "assistant", "content": "好的，请提供数据"},
+        {"role": "user", "content": "数据如下..."}
+    ],
+    "model": null,
+    "temperature": 0.7,
+    "max_tokens": 2000
+}
+
+// 响应
+{
+    "content": "根据数据分析...",
+    "model": "glm-5.2"
+}
+```
+
+**SSE流式对话** `POST /api/v1/llm/chat-stream`
+```
+// 请求（JSON）
+{"message": "帮我分析数据", "temperature": 0.7}
+
+// 响应（SSE事件流）
+data: {"type": "content", "content": "根据"}
+data: {"type": "content", "content": "数据分析"}
+data: {"type": "done"}
+```
+
+**SSE流式+推理过程** `POST /api/v1/llm/chat-stream-thinking`
+```
+// 请求（JSON，支持多轮messages）
+{
+    "messages": [{"role": "user", "content": "帮我分析数据"}],
+    "temperature": 0.7
+}
+
+// 响应（SSE事件流）
+data: {"type": "thinking", "content": "用户需要分析数据，我应该..."}
+data: {"type": "content", "content": "根据数据分析"}
+data: {"type": "done"}
+```
+
+**嵌入向量** `POST /api/v1/llm/embeddings`
+```json
+// 请求
+{"text": "要嵌入的文本"}
+
+// 响应
+{
+    "embedding": [0.0023, -0.0091, ...],
+    "dimensions": 1536
+}
+```
+
+##### 前端界面
+
+在「配置 → 大模型对话」页面，用户可以直接与平台配置的大模型对话：
+- ChatGPT风格对话界面，支持多轮对话
+- 三种调用模式切换：流式+推理 / 流式输出 / 非流式
+- 温度参数滑块调节
+- 推理过程蓝色卡片展示（流式+推理模式）
+- Markdown渲染回复内容
+- 支持停止生成和清空对话
+
+##### 调用示例（curl）
+
+```bash
+# 非流式对话
+curl -X POST http://localhost:8000/api/v1/llm/chat \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello", "temperature": 0.7}'
+
+# 流式+推理对话
+curl -X POST http://localhost:8000/api/v1/llm/chat-stream-thinking \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "temperature": 0.7}'
+
+# 嵌入向量
+curl -X POST http://localhost:8000/api/v1/llm/embeddings \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "要嵌入的文本"}'
+```
+
+##### 在算子和技能脚本中调用大模型
+
+除了通过 HTTP API 对外开放，DataCrab 还将大模型能力注入到算子和技能的执行沙箱中，脚本代码可直接调用 `llm_chat()` 函数，无需走 HTTP 请求。
+
+**注入方式**：
+- **算子调试执行**（`exec()` 沙箱）：通过 `_build_operator_namespace()` 注入同步 `llm_chat` 函数，内部用 `_run_async_in_thread()` 调用 `llm_manager`
+- **技能脚本执行**（`subprocess` 沙箱）：通过 `SKILL_RUNNER_TEMPLATE` 模板注入 `llm_chat` 函数，内部启动子进程调用 `llm_manager`
+
+**函数签名**：
+```python
+def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
+    """
+    在算子/技能脚本中直接调用平台大模型
+
+    参数:
+        prompt: 用户消息（必填）
+        system_prompt: 系统提示词，用于设定AI角色和规则（可选）
+        temperature: 温度参数，0.0-2.0，越高越随机（默认0.7）
+        max_tokens: 最大生成token数（默认2000）
+
+    返回:
+        str: 大模型的文本回复
+    """
+```
+
+**算子脚本中使用示例**：
+```python
+import pandas as pd
+from typing import Dict, Any
+
+def translate_data(data, target_language="en"):
+    """翻译数据中的文本列"""
+    df = data if hasattr(data, 'columns') else pd.DataFrame(data)
+
+    # 调用平台大模型翻译
+    result = llm_chat(
+        prompt=f"将以下JSON数据中的中文翻译为{target_language}，保持JSON结构不变：\n{df.to_json(orient='records')}",
+        system_prompt="你是一个专业翻译助手，只返回翻译后的JSON，不要添加任何解释。",
+        temperature=0.3
+    )
+
+    translated_df = pd.DataFrame(eval(result))
+    return {"success": True, "data": translated_df.to_dict(orient="records")}
+```
+
+**技能脚本中使用示例**：
+```python
+def analyze_data(data, **kwargs):
+    """用大模型分析数据"""
+    import pandas as pd
+    df = data if hasattr(data, 'columns') else pd.DataFrame(data)
+
+    # 获取数据摘要
+    summary = df.describe().to_string()
+
+    # 调用平台大模型分析
+    analysis = llm_chat(
+        prompt=f"分析以下数据统计摘要，给出关键洞察和建议：\n{summary}",
+        system_prompt="你是一个数据分析师，请用简洁的中文回答。",
+        temperature=0.5
+    )
+
+    return {"analysis": analysis, "row_count": len(df)}
+```
+
+**安全边界**：
+- `llm_chat` 只能调用平台配置的大模型，不能访问 API Key
+- 技能脚本中的 `llm_chat` 通过子进程调用，与主进程隔离
+- 算子调试中的 `llm_chat` 在线程中执行异步调用，有60秒超时限制
+
+#### 2.3.4 Skills技能库
 ```python
 class SkillLibrary:
     """技能库 - 核心组件"""
@@ -428,6 +624,12 @@ class Skill(Base):
         return eval(config["code"])
 ```
 
+#### 2.3.5 Agent 迭代与并行执行增强
+
+- **最大迭代次数提升至 12 轮**（原5轮），支持更复杂的多步数据处理任务
+- **并行工具调用**：新增 `_execute_tool_calls_parallel()` 函数，当 LLM 返回多个 tool_call 时，使用 `asyncio.gather()` 并行执行，提升执行效率
+- 并行执行结果按 tool_call 顺序汇总后统一返回给 LLM，确保对话上下文完整性
+
 ### 2.4 算子管理模块
 
 #### 2.4.1 算子架构
@@ -549,6 +751,11 @@ parse_python_script() 解析
 ##### 2.4.4.2 AI 生成算子
 用户输入自然语言描述 → LLM 生成 Python 脚本 → 解析验证 → 创建算子 → 自动跳转调试页面
 
+**SYSTEM_PROMPT 增强**：
+- 包含完整 few-shot 示例（如 `filter_expensive_products`），展示参数提取、数据查询、返回格式的完整流程
+- 通过 `_build_datasource_info()` 动态注入用户数据源信息（可用数据源名称、表名、字段结构），让 LLM 生成可立即执行的脚本
+- 注入经验总结（从用户技能 SKILL.md 的 `## 常见问题与经验` 章节收集），避免重复犯错
+
 **API 端点**: `POST /operators/generate`
 **请求体**:
 ```json
@@ -591,6 +798,11 @@ async def generate_operator(request: OperatorGenerateRequest):
 **修改后必验证**：修改算子脚本后，系统必须自动调用调试端点（POST /operators/debug）验证修改未引入错误。如果验证失败，应提示用户并提供修复建议。
 
 **输出默认同源**：算子生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。
+
+**自动验证与 LLM 修复循环**：修改算子脚本后，系统自动执行 `exec()` 验证脚本语法和函数可调用性。如果验证失败，自动调用 LLM 修复脚本（最多2轮），每轮将错误信息反馈给 LLM 重新生成。辅助函数包括：
+- `_validate_operator_script(script_content)`: 编译+exec验证脚本语法、提取函数签名
+- `_llm_fix_operator_script(original_script, error_message, instruction)`: 将原脚本+错误信息+修改指令传给 LLM，生成修复后脚本
+- `_strip_code_fences(raw_code)`: 清理 LLM 输出中的 markdown 代码围栏（```python ... ```）
 
 **API 端点**: `POST /operators/{operator_id}/modify`
 **请求体**:
@@ -665,13 +877,51 @@ async def clone_operator(operator_id, request: OperatorCloneRequest):
 ```
 
 ##### 2.4.4.5 算子调试
-点击调试按钮 → 右侧抽屉打开 → 左侧显示可编辑的 Python 脚本 → 右侧显示调试面板 → 填写入参/可选参数 → 点击执行 → 展示 stdout/返回结果/错误信息
+点击调试按钮 → 弹窗打开 → 双栏布局：左侧上方参数面板 + 下方脚本编辑区，右侧 AI 代码助手聊天面板 → 填写参数并执行 → 展示结果/错误 → 可通过 AI 助手调试和修改代码
 
-**修改后必验证**：在调试面板中修改脚本后，必须自动执行一次验证运行，确保修改后的脚本能正常工作。
+**AI 代码助手**：右侧 ChatGPT 风格对话界面，AI 可分析代码逻辑、修复 bug、优化代码、直接修改脚本（输出 python 围栏包裹的完整脚本后自动更新数据库）。支持推理过程展示（蓝色卡片），自动执行/修改脚本。
 
-**输出默认同源**：算子生成新文件时，如果未指定 output_dir，默认保存到 DataSource（数据源）指定的文件路径下。
+**交互增强**：
+- 所有输入字段支持 ↑↓ 箭头切换历史输入（localStorage 持久化，最多100条）
+- AI 生成/修改对话框也支持 ↑↓ 历史切换
+- 执行结果（标准输出、返回结果）自动展开显示，不再折叠
+- 所有对话框添加 `close-on-press-escape="false"`，防止焦点离开时误关闭
+- placeholder 文本自动换行（CSS `white-space: pre-wrap; word-break: break-all`）
 
-**API 端点**: `POST /operators/debug`
+**API 端点**: 
+- `POST /operators/{id}/debug` - 执行调试
+- `POST /operators/{id}/debug-chat` - AI 代码调试助手（SSE流式，含推理过程）
+
+**调试界面布局**:
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  调试: 算子名称                                        [关闭 X]  │
+├────────────────────────────────┬─────────────────────────────────┤
+│  ┌──────────────────────────┐  │  AI 代码助手                    │
+│  │ 参数面板                 │  │  ┌───────────────────────────┐  │
+│  │ func_name(param1, ...)   │  │  │  推理过程（蓝色卡片）       │  │
+│  │ 入参: data [DataFrame]   │  │  │  🔄 分析脚本逻辑...        │  │
+│  │ 可选参数: limit=100      │  │  ├───────────────────────────┤  │
+│  │ [执行调试]               │  │  │  AI 回复                  │  │
+│  ├──────────────────────────┤  │  │  建议修改第23行...         │  │
+│  │ 脚本编辑区               │  │  │  [代码已更新]              │  │
+│  │ def filter_data(df, ...):│  │  ├───────────────────────────┤  │
+│  │     ...                  │  │  │  [输入调试指令...]  [发送] │  │
+│  └──────────────────────────┘  │  └───────────────────────────┘  │
+│  ┌──────────────────────────┐  │                                 │
+│  │ 执行结果（自动展开）      │  │                                 │
+│  │ ✅ 成功 120ms            │  │                                 │
+│  │ 标准输出: ...            │  │                                 │
+│  │ 返回结果: ...            │  │                                 │
+│  └──────────────────────────┘  │                                 │
+└────────────────────────────────┴─────────────────────────────────┘
+```
+
+**debug-chat 上下文传递**：
+- 前端自动将左侧面板的输入参数值、执行结果（成功/失败/错误信息）作为 context 传入后端
+- 后端将上下文附加到用户消息中，让 AI 了解当前调试状态
+- AI 输出含 ```python 围栏的完整脚本时，后端自动解析并更新算子的 script_content
+
 **调试执行流程**:
 ```
 用户点击"执行调试"
@@ -850,6 +1100,7 @@ tags: [filter, transform]
 | POST | /api/v1/skills/generate | AI 生成完整 Skill 包 |
 | POST | /api/v1/skills/{id}/clone | 克隆技能 |
 | POST | /api/v1/skills/search | 搜索技能 |
+| POST | /api/v1/skills/{id}/summarize-errors | AI 分析错误日志，生成经验总结并写入 SKILL.md |
 
 #### 2.5.5 核心服务
 
@@ -871,12 +1122,15 @@ tags: [filter, transform]
 - 结果捕获：通过 __RESULT__ 标记解析返回值
 
 ##### skill_creator.py - AI 生成器
-- generate_skill(): 根据自然语言描述生成完整 Skill 包
+- generate_skill() / generate_skill_stream(): 根据自然语言描述生成完整 Skill 包
+  - 新增 `datasource_info` 参数：动态查询用户数据源信息（名称、表名、字段结构），替代硬编码数据源名称
+  - 新增 `lessons` 参数：注入同类技能经验总结（通过 `_collect_all_lessons()` 收集），让 LLM 参考历史经验避免重复犯错
 - Skill Creator 系统提示词包含：
   - SKILL.md 编写规范
   - 脚本编写规范（pandas 处理、类型注解、边界处理）
   - 内置工具函数说明
-  - 数据源参考信息
+  - 完整 few-shot 示例（filter-by-dynasty skill package），展示从描述到 SKILL.md + 脚本的完整生成流程
+  - 数据源参考信息（通过 datasource_info 参数动态注入，移除硬编码数据源名称）
 - create_skill_on_disk(): 在磁盘创建 Skill 文件夹结构
 
 ##### skill_library.py - 技能库
@@ -913,6 +1167,9 @@ SkillView.vue 提供完整的技能管理界面：
   - 右侧 AI 调试面板：ChatGPT 风格对话，AI 可自动执行脚本或修改脚本
   - AI 回复展示推理过程（蓝色推理卡片），含旋转图标和思考内容
   - SSE 流式响应，实时展示推理和回复内容
+- 技能执行支持停止/暂停（前端 AbortController + 后端 asyncio.create_subprocess_exec）
+- 技能自我进化：错误日志自动记录到 error_log.json，技能详情页"总结经验"按钮调用 summarize-errors 端点，经验总结写入 SKILL.md
+- 详情 Drawer 和生成对话框添加 `close-on-press-escape="false"`，防止焦点离开时误关闭
 - 技能下载（导出为 .zip）和删除功能
 
 #### 2.5.7 技能执行与调试流程
@@ -975,7 +1232,49 @@ POST /api/v1/skills/{id}/debug-chat
 └────────────────────────────────┴─────────────────────────────────┘
 ```
 
-#### 2.5.8 内置技能列表
+#### 2.5.8 技能自我进化机制
+
+技能具备自我进化能力：执行失败时自动记录错误日志，积累经验后由 LLM 总结规律并写入 SKILL.md，新技能生成和调试时自动注入历史经验。
+
+##### 错误日志自动记录
+
+每次技能执行失败，系统自动将错误信息追加到技能目录下的 `error_log.json` 文件（最多保留200条，FIFO）：
+
+```json
+[
+  {
+    "timestamp": "2026-06-27T10:30:00Z",
+    "script_name": "main.py",
+    "error_type": "KeyError",
+    "error_message": "'column_name' not in index",
+    "parameters": {"datasource_id": "xxx", "table_name": "sales"},
+    "stdout_preview": "Processing data...\nError at line 23:",
+    "source": "run"
+  }
+]
+```
+
+- `source` 字段标识错误来源：`run`（直接执行）、`debug`（调试执行）、`nl`（自然语言执行）
+- 日志文件路径：`{skill_path}/error_log.json`
+
+##### LLM 总结经验
+
+`POST /api/v1/skills/{id}/summarize-errors` 端点：
+1. 读取技能的 `error_log.json`
+2. 调用 LLM 分析错误规律（高频错误类型、常见原因、修复建议）
+3. 将总结写入 SKILL.md 的 `## 常见问题与经验` 章节（如已有则更新）
+4. 返回总结内容给前端
+
+##### 经验注入
+
+- **生成新技能时**：`_collect_all_lessons()` 函数收集当前用户所有技能 SKILL.md 中的 `## 常见问题与经验` 章节内容，作为 `lessons` 参数注入 skill_creator 提示词，让 LLM 参考历史经验避免重复犯错
+- **调试助手**：调试助手的系统提示词中注入 `read_lessons()` 读取当前技能的经验总结，让 AI 参考历史经验指导调试
+
+##### 前端"总结经验"按钮
+
+技能详情页增加"总结经验"按钮，点击后调用 `POST /api/v1/skills/{id}/summarize-errors` 端点，展示 LLM 生成的经验总结，并自动写入 SKILL.md。
+
+#### 2.5.9 内置技能列表
 
 SkillLibrary 预置了以下数据处理技能：
 
@@ -1460,9 +1759,796 @@ Pipeline ──1:1──▶ Schedule
 - ~~节点类型枚举（skill/condition/parallel 等）~~
 - ~~参数映射表达式（$upstream.$input）~~
 
-### 2.7 智能代码生成模块
+### 2.7 多智能体协作框架
 
-### 2.7.1 模块架构
+#### 2.7.1 设计理念
+
+DataCrab 从单智能体架构演进为**多智能体协作框架**。每个智能体是独立的职责单元，拥有专属的 LLM 指令、工具集和知识上下文，通过消息总线进行协作。
+
+**核心设计原则**：
+- **职责单一**：每个智能体只负责一个领域（数据处理、质量检查、安全审计……），指令精准不模糊
+- **Handoff 交接**：智能体通过结构化消息交接工作，交接时携带完整上下文（数据、问题、溯源信息）
+- **可插拔扩展**：新增智能体只需实现 Agent 接口、注册到 AgentRegistry，无需修改已有智能体
+- **人机协同**：关键决策点（如数据修复方案）可暂停等待人工确认
+
+**参考框架**：
+- **OpenAI Swarm / Agents SDK**：Agent + Handoff 原语，轻量级，函数返回 Agent 即触发交接
+- **CrewAI**：Crew（团队）+ Task + Sequential/Hierarchical 流程，强调角色分工和流程编排
+- **AutoGen**：RoutedAgent + Topic/Subscription 消息路由，支持分布式运行时
+
+DataCrab 借鉴 Swarm 的 Handoff 简洁性 + CrewAI 的角色分工思想 + AutoGen 的消息路由机制，形成适合数据处理场景的多智能体架构。
+
+#### 2.7.2 智能体列表
+
+| 智能体 | 代号 | 职责 | 核心工具 | 接收来自 | 可交接给 |
+|--------|------|------|----------|----------|----------|
+| **数据处理智能体** | `DataProcessor` | 理解用户意图、生成/修改算子和技能、调度执行、溯源修复 | `query_table_data`、`get_table_schema`、`write_table_data`、`generate_operator`、`generate_skill`、`run_pipeline` | 用户对话、`DataInspector` | `DataInspector` |
+| **数据检查智能体** | `DataInspector` | 对加工后的数据进行标准检查、质量检查、安全检查，发现错误后记录并反馈 | `check_data_standards`、`check_data_quality`、`check_data_security`、`profile_data` | `DataProcessor` | `DataProcessor` |
+| *(未来扩展)* | | | | | |
+| 数据治理智能体 | `DataGovernor` | 数据血缘追踪、元数据补全、数据目录管理 | `trace_lineage`、`enrich_metadata` | 任意智能体 | 任意智能体 |
+| 数据安全智能体 | `DataSentinel` | 敏感数据识别、脱敏建议、合规审查 | `detect_pii`、`suggest_masking`、`audit_compliance` | `DataInspector`、用户 | `DataProcessor` |
+
+#### 2.7.3 架构设计
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        Agent Runtime（智能体运行时）                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────────┐   Message Bus   ┌──────────────────┐                  │
+│  │  DataProcessor   │ ◄──────────────►│  DataInspector   │                  │
+│  │  数据处理智能体   │                 │  数据检查智能体   │                  │
+│  │                  │                 │                  │                  │
+│  │  指令: 数据处理   │  Handoff消息    │  指令: 质量检查   │                  │
+│  │  工具: 查询/生成  │ ──────────────► │  工具: 检查/分析  │                  │
+│  │  知识: 数据源     │  检查结果+问题  │  知识: 标准规范   │                  │
+│  │                  │ ◄────────────── │                  │                  │
+│  └──────────────────┘                 └──────────────────┘                  │
+│         ▲                                    │                               │
+│         │              ┌──────────────────┐  │                               │
+│         └──────────────│  AgentRegistry   │◄─┘                               │
+│                        │  智能体注册中心   │                                  │
+│                        │  - 发现智能体     │                                  │
+│                        │  - 路由消息       │                                  │
+│                        │  - 生命周期管理   │                                  │
+│                        └──────────────────┘                                   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐        │
+│  │  Shared Context（共享上下文）                                      │        │
+│  │  - datasource_context: 数据源信息                                 │        │
+│  │  - session_id: 会话标识                                           │        │
+│  │  - user_id: 用户标识                                              │        │
+│  │  - execution_history: 执行历史（哪条SQL/脚本产生了什么数据）       │        │
+│  │  - inspection_results: 检查结果（问题列表、严重等级、修复建议）   │        │
+│  └──────────────────────────────────────────────────────────────────┘        │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐        │
+│  │  Event Store（事件存储）                                           │        │
+│  │  - agent_handoff_events: 智能体交接事件                           │        │
+│  │  - data_lineage_events: 数据血缘事件                              │        │
+│  │  - inspection_events: 检查事件（问题发现、修复确认）               │        │
+│  └──────────────────────────────────────────────────────────────────┘        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 2.7.4 核心抽象
+
+```python
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List, Optional, AsyncGenerator
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class HandoffReason(str, Enum):
+    """智能体交接原因"""
+    INSPECT_RESULT = "inspect_result"           # 处理完成，需检查
+    FIX_REQUIRED = "fix_required"               # 检查发现问题，需修复
+    FIX_COMPLETED = "fix_completed"             # 修复完成，需再检查
+    ESCALATE = "escalate"                       # 上报人工
+    DELEGATE = "delegate"                       # 委派给其他智能体
+
+
+@dataclass
+class AgentMessage:
+    """智能体间传递的消息"""
+    from_agent: str                             # 发送方智能体代号
+    to_agent: str                               # 接收方智能体代号
+    reason: HandoffReason                       # 交接原因
+    payload: Dict[str, Any]                     # 消息内容
+    context: Dict[str, Any] = field(default_factory=dict)  # 共享上下文
+    trace_id: str = ""                          # 链路追踪ID
+    parent_trace_id: str = ""                   # 父链路ID（溯源用）
+
+
+@dataclass
+class InspectionResult:
+    """数据检查结果"""
+    passed: bool                                # 是否通过
+    issues: List[Dict[str, Any]] = field(default_factory=list)  # 问题列表
+    summary: str = ""                           # 检查摘要
+    severity: str = "info"                      # 最高严重等级: info/warning/error/critical
+
+
+class BaseAgent(ABC):
+    """智能体基类 - 所有智能体必须实现此接口"""
+
+    name: str                                   # 智能体代号
+    display_name: str                           # 显示名称
+    description: str                            # 职责描述
+    instructions: str                           # LLM 系统提示词
+    tools: List[Dict]                           # 可用工具定义
+
+    @abstractmethod
+    async def run(
+        self,
+        message: AgentMessage,
+        context: Dict[str, Any],
+    ) -> AsyncGenerator[Dict, None]:
+        """
+        执行智能体任务，以 SSE 流式返回中间过程和最终结果。
+
+        Yields:
+            {"type": "thinking", "content": "..."}    # 推理过程
+            {"type": "content", "content": "..."}     # 回复内容
+            {"type": "tool_call", ...}                # 工具调用
+            {"type": "tool_result", ...}              # 工具结果
+            {"type": "handoff", "to": "...", "reason": "...", "payload": {...}}  # 交接
+            {"type": "done", "result": {...}}         # 完成
+        """
+        pass
+
+    def build_system_prompt(self, context: Dict[str, Any]) -> str:
+        """构建系统提示词，子类可覆盖以注入动态上下文"""
+        return self.instructions
+```
+
+#### 2.7.5 AgentRegistry 智能体注册中心
+
+```python
+class AgentRegistry:
+    """智能体注册中心 - 管理所有智能体的发现、路由和生命周期"""
+
+    def __init__(self):
+        self._agents: Dict[str, BaseAgent] = {}
+
+    def register(self, agent: BaseAgent):
+        """注册智能体"""
+        self._agents[agent.name] = agent
+
+    def get(self, name: str) -> BaseAgent:
+        """获取智能体实例"""
+        return self._agents.get(name)
+
+    def list_agents(self) -> List[Dict]:
+        """列出所有已注册智能体"""
+        return [
+            {"name": a.name, "display_name": a.display_name, "description": a.description}
+            for a in self._agents.values()
+        ]
+
+    def find_by_capability(self, capability: str) -> List[BaseAgent]:
+        """按能力查找智能体（如 'data_quality'、'pii_detection'）"""
+        return [a for a in self._agents.values() if capability in getattr(a, 'capabilities', [])]
+
+
+# 全局注册中心
+agent_registry = AgentRegistry()
+```
+
+#### 2.7.6 AgentRuntime 智能体运行时
+
+```python
+class AgentRuntime:
+    """智能体运行时 - 管理智能体间的消息传递、交接和执行流程"""
+
+    def __init__(self, registry: AgentRegistry, llm_manager):
+        self.registry = registry
+        self.llm_manager = llm_manager
+        self._event_store = EventStore()
+
+    async def run(
+        self,
+        agent_name: str,
+        message: AgentMessage,
+        context: Dict[str, Any],
+        max_handoffs: int = 10,
+    ) -> AsyncGenerator[Dict, None]:
+        """
+        运行智能体，自动处理交接，流式返回所有事件。
+
+        流程：
+        1. 获取目标智能体
+        2. 调用 agent.run() 获取流式输出
+        3. 如果输出包含 handoff 事件，自动切换到目标智能体继续执行
+        4. 重复直到无交接或达到最大交接次数
+        5. 记录所有事件到 EventStore（溯源用）
+        """
+        handoff_count = 0
+        current_agent = self.registry.get(agent_name)
+        current_message = message
+
+        while current_agent and handoff_count < max_handoffs:
+            async for event in current_agent.run(current_message, context):
+                if event.get("type") == "handoff":
+                    # 记录交接事件
+                    self._event_store.record_handoff(
+                        from_agent=current_agent.name,
+                        to_agent=event["to"],
+                        reason=event["reason"],
+                        trace_id=current_message.trace_id,
+                    )
+
+                    # 切换到目标智能体
+                    target_name = event["to"]
+                    current_agent = self.registry.get(target_name)
+                    current_message = AgentMessage(
+                        from_agent=event.get("from", current_agent.name),
+                        to_agent=target_name,
+                        reason=HandoffReason(event["reason"]),
+                        payload=event.get("payload", {}),
+                        context=context,
+                        trace_id=current_message.trace_id,
+                        parent_trace_id=current_message.trace_id,
+                    )
+                    handoff_count += 1
+                    yield {"type": "agent_switch", "agent": target_name, "reason": event["reason"]}
+                    break
+                else:
+                    yield event
+            else:
+                # agent.run() 正常结束，无交接
+                break
+```
+
+#### 2.7.7 DataProcessor 数据处理智能体
+
+**职责**：理解用户意图，生成/修改算子和技能，调度执行，接收检查结果并溯源修复。
+
+**系统提示词核心要素**：
+- 数据处理专家，擅长 SQL、pandas、数据清洗和转换
+- 安全红线：DataCrab 不能修改平台自身
+- 输出默认同源
+- 修改后必验证
+- 当收到 DataInspector 的检查结果时，应定位问题根源并修复
+
+**工具集**：
+```python
+DATA_PROCESSOR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_table_data",
+            "description": "查询数据源中某个表的数据",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_table_schema",
+            "description": "获取表结构信息",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_operator",
+            "description": "根据自然语言描述生成算子脚本",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_skill",
+            "description": "根据自然语言描述生成完整技能包",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_script",
+            "description": "修改算子或技能脚本",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_script",
+            "description": "执行算子或技能脚本",
+            "parameters": { ... }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "handoff_to_inspector",
+            "description": "将处理结果交接给数据检查智能体进行质量检查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string", "description": "数据源ID"},
+                    "table_name": {"type": "string", "description": "检查的表名"},
+                    "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
+                    "result_summary": {"type": "string", "description": "处理结果摘要"}
+                },
+                "required": ["datasource_id", "table_name"]
+            }
+        }
+    },
+]
+```
+
+**交接触发**：
+- 数据处理完成后，自动或用户触发交接给 `DataInspector`
+- 收到 `fix_required` 交接时，根据检查结果定位问题、修改脚本、重新执行
+
+#### 2.7.8 DataInspector 数据检查智能体
+
+**职责**：对加工后的数据执行三维度检查——标准合规、质量评估、安全审计。
+
+**检查维度**：
+
+| 维度 | 检查项 | 示例规则 |
+|------|--------|----------|
+| **标准检查** | 字段命名规范、类型一致性、编码规范 | 列名应为 snake_case，日期列应为 datetime 类型 |
+| **质量检查** | 完整性、唯一性、范围合理性、业务逻辑一致性 | 主键不重复，数值列无异常极值，关联字段逻辑一致 |
+| **安全检查** | PII 识别、敏感数据暴露、脱敏完整性 | 手机号/身份证号是否明文存储，敏感字段是否有脱敏 |
+
+**系统提示词核心要素**：
+- 数据质量专家，擅长数据标准、质量规则和安全审计
+- 检查时优先使用 `profile_data` 获取数据概览，再针对性检查
+- 发现问题必须给出：问题描述、严重等级、影响范围、修复建议
+- 对修复后的数据必须再次检查确认
+
+**工具集**：
+```python
+DATA_INSPECTOR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "profile_data",
+            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string"},
+                    "table_name": {"type": "string"}
+                },
+                "required": ["datasource_id", "table_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_data_standards",
+            "description": "检查数据是否符合命名规范、类型标准、编码规范",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string"},
+                    "table_name": {"type": "string"},
+                    "standard_rules": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "检查规则列表，如 ['naming_convention', 'type_consistency']"
+                    }
+                },
+                "required": ["datasource_id", "table_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_data_quality",
+            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string"},
+                    "table_name": {"type": "string"},
+                    "quality_dimensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "质量维度，如 ['completeness', 'uniqueness', 'validity', 'consistency']"
+                    }
+                },
+                "required": ["datasource_id", "table_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_data_security",
+            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string"},
+                    "table_name": {"type": "string"}
+                },
+                "required": ["datasource_id", "table_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "handoff_to_processor",
+            "description": "将检查发现的问题交接给数据处理智能体进行修复",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "issues": {
+                        "type": "array",
+                        "description": "问题列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string", "description": "问题描述"},
+                                "severity": {"type": "string", "enum": ["warning", "error", "critical"]},
+                                "column": {"type": "string", "description": "涉及列名"},
+                                "suggestion": {"type": "string", "description": "修复建议"}
+                            }
+                        }
+                    },
+                    "summary": {"type": "string", "description": "检查摘要"}
+                },
+                "required": ["issues", "summary"]
+            }
+        }
+    },
+]
+```
+
+#### 2.7.9 典型协作流程
+
+##### 流程一：数据处理 + 自动检查
+
+```
+用户: "帮我清洗文物数据，去除重复和空值"
+     │
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataProcessor                                                │
+│ 1. 理解意图：去重 + 填充/删除空值                             │
+│ 2. query_table_data() 读取数据                               │
+│ 3. 生成/选择清洗算子脚本                                      │
+│ 4. run_script() 执行清洗                                     │
+│ 5. 处理完成 → handoff_to_inspector()                         │
+│    payload: {datasource_id, table_name, "去重和空值处理完成"} │
+└──────────────────────────────────────────────────────────────┘
+     │ Handoff(inspect_result)
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataInspector                                                │
+│ 1. profile_data() 获取数据概览                                │
+│ 2. check_data_standards() 检查命名和类型规范                  │
+│ 3. check_data_quality() 检查完整性、唯一性                    │
+│ 4. check_data_security() 检查敏感数据                         │
+│ 5. 发现问题：                                                 │
+│    - "时代"列有3个非标准值（warning）                          │
+│    - "编号"列存在2条重复（error）                              │
+│ 6. handoff_to_processor(issues=[...], summary="2个问题")     │
+└──────────────────────────────────────────────────────────────┘
+     │ Handoff(fix_required)
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataProcessor                                                │
+│ 1. 分析检查结果，定位问题根源                                  │
+│ 2. modify_script() 修改清洗逻辑：                             │
+│    - 时代列：增加标准值映射                                    │
+│    - 编号列：去重逻辑遗漏了某个字段组合                        │
+│ 3. run_script() 重新执行                                      │
+│ 4. 修复完成 → handoff_to_inspector() 再检查                   │
+└──────────────────────────────────────────────────────────────┘
+     │ Handoff(inspect_result)
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataInspector                                                │
+│ 1. 对修复后的数据再次检查                                     │
+│ 2. 所有检查通过                                               │
+│ 3. 返回 InspectionResult(passed=True)                         │
+└──────────────────────────────────────────────────────────────┘
+     │
+     ▼
+用户: 收到检查报告 + 处理结果
+```
+
+##### 流程二：用户主动触发检查
+
+```
+用户: "帮我检查一下全国文物这张表的数据质量"
+     │
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataProcessor（路由层）                                       │
+│ 1. 识别意图：数据质量检查                                     │
+│ 2. 直接交接给 DataInspector                                  │
+│    handoff_to_inspector(reason=delegate)                     │
+└──────────────────────────────────────────────────────────────┘
+     │ Handoff(delegate)
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│ DataInspector                                                │
+│ 1. profile_data() → 数据概览                                 │
+│ 2. check_data_quality(dimensions=['completeness', ...])      │
+│ 3. 生成检查报告                                               │
+│ 4. 如有问题 → handoff_to_processor(reason=fix_required)      │
+│    无问题 → 返回检查报告给用户                                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 2.7.10 检查工具实现
+
+检查工具在 `app/services/data_inspector.py` 中实现，基于 pandas 对 ConnectorManager 查询的数据进行分析：
+
+```python
+class DataInspectorTools:
+    """数据检查工具集 - 注入到 DataInspector 智能体的执行沙箱"""
+
+    async def profile_data(self, datasource_id: str, table_name: str) -> dict:
+        """
+        数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据
+        """
+        connector = get_connector(ds.type, ds.connection_config)
+        df = await connector.get_table_data(table_name, page=1, page_size=1000)
+        profile = {
+            "row_count": len(df),
+            "column_count": len(df.columns),
+            "columns": {
+                col: {
+                    "dtype": str(df[col].dtype),
+                    "null_count": int(df[col].isna().sum()),
+                    "null_rate": round(float(df[col].isna().mean()), 4),
+                    "unique_count": int(df[col].nunique()),
+                    "sample_values": df[col].dropna().head(5).tolist(),
+                }
+                for col in df.columns
+            }
+        }
+        return profile
+
+    async def check_data_standards(self, datasource_id: str, table_name: str, standard_rules: list = None) -> dict:
+        """
+        标准检查：
+        - naming_convention: 列名是否符合 snake_case 规范
+        - type_consistency: 同名列在不同行中类型是否一致
+        - encoding_check: 是否存在乱码字符
+        """
+        issues = []
+        df = await self._load_data(datasource_id, table_name)
+
+        if not standard_rules or 'naming_convention' in standard_rules:
+            import re
+            for col in df.columns:
+                if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
+                    issues.append({
+                        "dimension": "naming_convention",
+                        "column": col,
+                        "severity": "warning",
+                        "description": f"列名 '{col}' 不符合 snake_case 命名规范",
+                        "suggestion": f"建议重命名为 '{re.sub(r'([A-Z])', r'_\\1', col).lower()}'"
+                    })
+
+        if not standard_rules or 'type_consistency' in standard_rules:
+            for col in df.columns:
+                non_null = df[col].dropna()
+                if len(non_null) > 0:
+                    types = non_null.apply(type).nunique()
+                    if types > 1:
+                        issues.append({
+                            "dimension": "type_consistency",
+                            "column": col,
+                            "severity": "warning",
+                            "description": f"列 '{col}' 存在混合类型（{types}种）",
+                            "suggestion": "建议统一数据类型"
+                        })
+
+        return {"dimension": "standards", "passed": len(issues) == 0, "issues": issues}
+
+    async def check_data_quality(self, datasource_id: str, table_name: str, quality_dimensions: list = None) -> dict:
+        """
+        质量检查：
+        - completeness: 完整性（空值率）
+        - uniqueness: 唯一性（重复率）
+        - validity: 有效性（数值范围、日期合理性）
+        - consistency: 一致性（业务逻辑校验）
+        """
+        issues = []
+        df = await self._load_data(datasource_id, table_name)
+        total = len(df)
+
+        if not quality_dimensions or 'completeness' in quality_dimensions:
+            for col in df.columns:
+                null_rate = df[col].isna().mean()
+                if null_rate > 0.1:
+                    issues.append({
+                        "dimension": "completeness",
+                        "column": col,
+                        "severity": "error" if null_rate > 0.3 else "warning",
+                        "description": f"列 '{col}' 空值率 {null_rate:.1%}",
+                        "suggestion": "建议填充默认值或删除空值行"
+                    })
+
+        if not quality_dimensions or 'uniqueness' in quality_dimensions:
+            dupe_count = total - len(df.drop_duplicates())
+            if dupe_count > 0:
+                issues.append({
+                    "dimension": "uniqueness",
+                    "severity": "error",
+                    "description": f"存在 {dupe_count} 条完全重复的行（{dupe_count/total:.1%}）",
+                    "suggestion": "建议执行去重操作"
+                })
+
+        return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
+
+    async def check_data_security(self, datasource_id: str, table_name: str) -> dict:
+        """
+        安全检查：
+        - PII 识别（手机号、身份证号、邮箱、银行卡号）
+        - 敏感数据暴露检测
+        """
+        issues = []
+        df = await self._load_data(datasource_id, table_name)
+
+        PII_PATTERNS = {
+            "手机号": r'1[3-9]\d{9}',
+            "身份证号": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]',
+            "邮箱": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        }
+
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                sample = df[col].dropna().head(100).astype(str)
+                for pii_type, pattern in PII_PATTERNS.items():
+                    match_count = sample.str.contains(pattern, regex=True, na=False).sum()
+                    if match_count > 0:
+                        issues.append({
+                            "dimension": "security",
+                            "column": col,
+                            "severity": "critical",
+                            "description": f"列 '{col}' 疑似包含明文 {pii_type}（{match_count}/{len(sample)} 条样本命中）",
+                            "suggestion": f"建议对 {pii_type} 进行脱敏处理"
+                        })
+
+        return {"dimension": "security", "passed": len(issues) == 0, "issues": issues}
+```
+
+#### 2.7.11 事件存储与数据溯源
+
+每次智能体交接和数据处理操作都记录到 EventStore，支持数据溯源：
+
+```python
+@dataclass
+class AgentEvent:
+    """智能体事件"""
+    id: str
+    trace_id: str                               # 链路追踪ID
+    parent_trace_id: str                        # 父事件ID
+    agent_name: str                             # 智能体代号
+    event_type: str                             # handoff / tool_call / inspection / fix
+    timestamp: datetime
+    payload: Dict[str, Any]                     # 事件内容
+
+
+class EventStore:
+    """事件存储 - 记录所有智能体操作，支持溯源"""
+
+    async def record(self, event: AgentEvent):
+        """记录事件"""
+        pass
+
+    async def get_trace(self, trace_id: str) -> List[AgentEvent]:
+        """获取完整链路"""
+        pass
+
+    async def get_lineage(self, datasource_id: str, table_name: str) -> List[AgentEvent]:
+        """获取数据血缘：哪些操作影响了这张表"""
+        pass
+```
+
+**溯源场景**：当 DataInspector 发现"编号列存在重复"时，DataProcessor 可以通过 `trace_id` 查询 EventStore，找到产生重复数据的具体操作（哪条 SQL、哪个脚本的哪次执行），从而精准定位问题根源。
+
+#### 2.7.12 与现有模块的集成
+
+| 现有模块 | 集成方式 |
+|----------|----------|
+| `agent.py` (AgentService) | 重构为 `DataProcessor` 智能体，保留现有工具和执行逻辑 |
+| `chat.py` | 对话入口增加路由层：识别用户意图后分派到对应智能体 |
+| `operator.py` | DataProcessor 的 `generate_operator`/`modify_script`/`run_script` 工具调用现有端点 |
+| `skill.py` | DataProcessor 的 `generate_skill`/`modify_script`/`run_script` 工具调用现有端点 |
+| `connectors.py` | 两个智能体都通过 `get_connector` 读写数据 |
+| `skill_parser.py` | DataInspector 的经验总结注入 DataProcessor 的提示词 |
+| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现 |
+
+#### 2.7.13 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/v1/agents | 获取已注册智能体列表 |
+| POST | /api/v1/agents/{agent_name}/run | 运行指定智能体（SSE 流式） |
+| POST | /api/v1/agents/inspect | 对指定数据源/表执行数据检查 |
+| GET | /api/v1/agents/events/{trace_id} | 获取智能体执行链路 |
+| GET | /api/v1/agents/lineage/{datasource_id}/{table_name} | 获取数据血缘 |
+
+#### 2.7.14 前端界面
+
+##### 智能体状态指示
+
+在对话界面中显示当前活跃的智能体：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  🤖 DataProcessor 正在处理...                                │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ 用户：帮我清洗文物数据                                   │  │
+│  │                                                         │  │
+│  │ [DataProcessor] 正在读取数据源...                        │  │
+│  │ [DataProcessor] 生成清洗脚本...                          │  │
+│  │ [DataProcessor] 执行完成，交接检查 ▶                     │  │
+│  │                                                         │  │
+│  │ [DataInspector] 正在检查数据质量...                      │  │
+│  │ [DataInspector] ⚠ 发现2个问题                           │  │
+│  │   - 时代列: 3个非标准值 (warning)                        │  │
+│  │   - 编号列: 2条重复 (error)                              │  │
+│  │ [DataInspector] 交接修复 ▶                               │  │
+│  │                                                         │  │
+│  │ [DataProcessor] 正在修复问题...                          │  │
+│  │ [DataProcessor] 修复完成，交接再检查 ▶                   │  │
+│  │                                                         │  │
+│  │ [DataInspector] ✅ 所有检查通过                          │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+##### 数据检查报告页
+
+新增"数据检查"页面，用户可主动选择数据源和表触发检查：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  数据检查                                                     │
+├──────────────┬───────────────────────────────────────────────┤
+│ 数据源: [▼]  │  检查结果: 全国文物                           │
+│ 表: [▼]      │                                               │
+│              │  📋 标准检查  ✅ 通过                          │
+│ [开始检查]   │  📊 质量检查  ⚠ 2个警告                       │
+│              │  🔒 安全检查  🚨 1个严重                       │
+│              │                                               │
+│              │  ┌─ 严重问题 ──────────────────────────────┐  │
+│              │  │ 🚨 "电话"列包含明文手机号 (38/100条)    │  │
+│              │  │    建议：脱敏处理                        │  │
+│              │  │    [一键修复]                            │  │
+│              │  └────────────────────────────────────────┘  │
+│              │  ┌─ 警告 ──────────────────────────────────┐  │
+│              │  │ ⚠ "时代"列3个非标准值                    │  │
+│              │  │ ⚠ "保护级别"空值率 15.3%                 │  │
+│              │  └────────────────────────────────────────┘  │
+└──────────────┴───────────────────────────────────────────────┘
+```
+
+#### 2.7.15 实现路线
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Phase 1** | 基础框架：BaseAgent + AgentRegistry + AgentRuntime + Handoff 机制 | ⬜ 待实现 |
+| **Phase 2** | DataProcessor 智能体：将现有 agent.py 重构为 DataProcessor | ⬜ 待实现 |
+| **Phase 3** | DataInspector 智能体：实现检查工具 + 系统提示词 | ⬜ 待实现 |
+| **Phase 4** | 前端：智能体状态指示 + 检查报告页 | ⬜ 待实现 |
+| **Phase 5** | 事件存储与溯源 | ⬜ 待实现 |
+| **Phase 6** | 扩展：DataGovernor / DataSentinel 等新智能体 | ⬜ 待实现 |
+
+### 2.8 智能代码生成模块
+
+### 2.8.1 模块架构
 ```
 ┌─────────────────────────────────────────�?�?     Intelligent Code Generator         �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  NL Code Parser                �?  �?�? �?  - 自然语言解析                 �?  �?�? �?  - 意图识别                     �?  �?�? �?  - 实体提取                     �?  �?�? �?  - 代码结构生成                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Skill Composition Engine      �?  �?�? �?  - 技能匹�?                    �?  �?�? �?  - 技能组�?                    �?  �?�? �?  - 参数推理                     �?  �?�? �?  - 代码优化                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────��   �?�? �?  Code Validator                �?  �?�? �?  - 代码验证                     �?  �?�? �?  - 语法检�?                    �?  �?�? �?  - 参数校验                     �?  �?�? �?  - 可执行性分�?                �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Code Executor                 �?  �?�? �?  - 动态算子加�?                �?  �?�? �?  - 代码执行                     �?  �?�? �?  - 结果收集                     �?  �?�? �?  - 错误处理                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
@@ -1731,7 +2817,9 @@ class SkillCompositionEngine:
         return optimized
 ```
 
-#### 2.9.4 动态代码执�?```python
+#### 2.8.4 动态代码执行
+
+```python�?```python
 class DynamicCodeExecutor:
     """动态流程执行器"""
     
@@ -1862,13 +2950,13 @@ class ComposedCode(Base):
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
 ```
 
-### 2.8 调度系统模块
+### 2.9 调度系统模块
 
-#### 2.8.1 调度架构
+#### 2.9.1 调度架构
 ```
 ┌─────────────────────────────────────────�?�?        Scheduler Service               �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Schedule Manager              �?  �?�? �?  - 调度配置管理                 �?  �?�? �?  - 调度策略配置                 �?  �?�? �?  - 调度历史记录                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Cron Scheduler                �?  �?�? �?  - Cron表达式解�?              �?  �?�? �?  - 定时任务触发                 �?  �?�? �?  - 任务队列管理                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Event Scheduler               �?  �?�? �?  - 事件监听                     �?  �?�? �?  - 事件触发                     �?  �?�? �?  - 实时调度                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Task Executor                 �?  �?�? �?  - 任务执行                     �?  �?�? �?  - 状态监�?                    �?  �?�? �?  - 失败重试                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.8.2 调度配置模型
+#### 2.9.2 调度配置模型
 ```python
 class Schedule(Base):
     __tablename__ = "schedules"
@@ -1914,7 +3002,7 @@ class Schedule(Base):
     executions = relationship("TaskExecution", back_populates="schedule", lazy="selectin")
 ```
 
-#### 2.8.3 任务执行模型
+#### 2.9.3 任务执行模型
 ```python
 class TaskExecution(Base):
     __tablename__ = "task_executions"
@@ -1956,16 +3044,16 @@ class TaskExecution(Base):
     # 关系
     schedule = relationship("Schedule", back_populates="executions")
 ```
-### 2.9 元数据管理模块
+### 2.10 元数据管理模块
 
-#### 2.9.1 设计目标
+#### 2.10.1 设计目标
 
 对平台中所有数据集（数据源中的表/文件）建立统一的元数据中心，分为**技术元数据**和**业务元数据**两大类，支持：
 - 技术元数据在配置数据源时一键自动同步
 - 业务元数据通过大模型分析数据样本自动补充，也支持人工编辑
 - 元数据全生命周期管理：采集 → 存储 → 补充 → 查询 → 血缘追踪
 
-#### 2.9.2 元数据架构
+#### 2.10.2 元数据架构
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -1989,7 +3077,7 @@ class TaskExecution(Base):
 └──────────────────┴──────────────────┴───────────────────────────┘
 ```
 
-#### 2.9.3 元数据数据模型
+#### 2.10.3 元数据数据模型
 
 ```python
 class TableMetadata(Base):
@@ -2059,7 +3147,7 @@ class TableMetadata(Base):
     data_source = relationship("DataSource", back_populates="table_metadata")
 ```
 
-#### 2.9.4 技术元数据自动同步
+#### 2.10.4 技术元数据自动同步
 
 在数据源创建/编辑时，用户可选择"同步技术元数据"，系统通过 Connector 自动提取所有表的技术元数据。
 
@@ -2161,7 +3249,7 @@ async def sync_technical_metadata(datasource: DataSource, db: AsyncSession):
 - 数据源编辑时：用户手动触发"重新同步"
 - 定时任务：可选配置定时同步（如每天凌晨）
 
-#### 2.9.5 业务元数据 AI 补充
+#### 2.10.5 业务元数据 AI 补充
 
 通过大模型分析样本数据和已有技术元数据，自动生成业务元数据建议。
 
@@ -2218,7 +3306,7 @@ async def enrich_business_metadata(meta: TableMetadata, db: AsyncSession):
     await db.flush()
 ```
 
-#### 2.9.6 API 设计
+#### 2.10.6 API 设计
 
 ```
 # 技术元数据同步
@@ -2240,7 +3328,7 @@ GET    /api/v1/metadata/search?q=文物&tag=文化遗产      # 按名称/描述
 GET    /api/v1/metadata/stats                          # 元数据统计概览
 ```
 
-#### 2.9.7 前端页面设计
+#### 2.10.7 前端页面设计
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -2280,7 +3368,7 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 2.9.8 元数据在平台中的应用
+#### 2.10.8 元数据在平台中的应用
 
 | 应用场景 | 说明 |
 |---------|------|
@@ -2291,7 +3379,7 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 | **数据质量监控** | 基于质量规则自动检测数据质量问题，计算质量评分 |
 | **数据安全** | 按安全等级控制数据访问权限 |
 
-#### 2.9.9 与数据源模块的集成
+#### 2.10.9 与数据源模块的集成
 
 数据源创建/编辑流程中增加"同步技术元数据"选项：
 
@@ -2310,9 +3398,9 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 
 数据源编辑流程中增加"重新同步"按钮，点击后重新提取技术元数据（保留已有业务元数据不覆盖）。
 
-### 2.10 权限管理模块
+### 2.11 权限管理模块
 
-#### 2.10.1 RBAC权限模型
+#### 2.11.1 RBAC权限模型
 ```python
 class User(Base):
     __tablename__ = "users"
@@ -2360,7 +3448,7 @@ class Permission(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 ```
 
-#### 2.10.2 权限检查逻辑
+#### 2.11.2 权限检查逻辑
 ```python
 class PermissionChecker:
     """权限检查器"""
@@ -2394,9 +3482,9 @@ class PermissionChecker:
         return False
 ```
 
-### 2.11 代码生成模块
+### 2.12 代码生成模块
 
-#### 2.11.1 代码生成流程
+#### 2.12.1 代码生成流程
 ```
 Code Definition (JSON)
     �?AST解析与转�?    �?代码模板渲染
@@ -2405,7 +3493,7 @@ Code Definition (JSON)
     �?可执行Python脚本
 ```
 
-#### 2.13.2 代码生成�?```python
+#### 2.12.2 代码生成器�?```python
 class CodeGenerator:
     """代码生成�?""
     
@@ -2447,7 +3535,7 @@ if __name__ == "__main__":
         return formatted_code
 ```
 
-#### 2.11.3 代码模板示例
+#### 2.12.3 代码模板示例
 ```python
 # 数据源连接模�?DATASOURCE_TEMPLATE = """
 def connect_{name}():
@@ -2477,13 +3565,13 @@ def {operator_name}({inputs}):
 """
 ```
 
-### 2.12 环境管理模块
+### 2.13 环境管理模块
 
-#### 2.12.1 环境隔离架构
+#### 2.13.1 环境隔离架构
 ```
 ┌─────────────────────────────────────────�?�?        Environment Manager             �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Development Environment       �?  �?�? �?  - 开发测�?                    �?  �?�? �?  - 沙箱数据                     �?  �?�? �?  - 调试模式                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Testing Environment           �?  �?�? �?  - 集成测试                     �?  �?�? �?  - 测试数据                     �?  �?�? �?  - 性能测试                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Production Environment        �?  �?�? �?  - 生产运行                     �?  �?�? �?  - 真实数据                     �?  �?�? �?  - 高可用部�?                  �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
 
-#### 2.12.2 环境迁移机制
+#### 2.13.2 环境迁移机制
 ```python
 class EnvironmentMigrator:
     """环境迁移�?""

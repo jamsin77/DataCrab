@@ -24,6 +24,12 @@ class TokenRefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ResetPasswordRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    old_password: str = Field(..., min_length=6, max_length=100)
+    new_password: str = Field(..., min_length=6, max_length=100)
+
+
 # ===== 响应Schema =====
 
 class TokenResponse(BaseModel):

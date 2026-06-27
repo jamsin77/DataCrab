@@ -9,7 +9,7 @@ from app.core.config import settings
 # SQLite不支持pool_size参数，需要条件配置
 _is_sqlite = "sqlite" in settings.DATABASE_URL
 
-engine_kwargs = {"echo": settings.DEBUG}
+engine_kwargs = {"echo": False}
 if not _is_sqlite:
     engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
     engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW

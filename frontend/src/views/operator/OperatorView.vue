@@ -74,28 +74,24 @@
 
     <el-empty v-if="filteredOperators.length === 0" description="暂无算子，请上传Python脚本" />
 
-    <el-drawer
+    <el-dialog
       v-model="debugDrawer"
-      :title="debugOperator?.display_name || debugOperator?.name || '调试算子'"
-      size="75%"
+      :title="'调试: ' + (debugOperator?.display_name || debugOperator?.name || '')"
+      width="95%"
+      top="2vh"
       destroy-on-close
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      @closed="resetDebug"
     >
-      <div class="debug-layout">
+      <div v-if="debugOperator" class="debug-layout">
         <div class="debug-left">
-          <div class="section-title">
-            <span>Python 脚本</span>
-            <el-button size="small" text type="primary" @click="saveScript" :loading="saving">
-              <el-icon><Check /></el-icon> 保存修改
+          <div class="debug-section-title">
+            <span>算子参数</span>
+            <el-button size="small" text type="primary" @click="refreshOpScript" :loading="saving">
+              <el-icon><Refresh /></el-icon> 刷新脚本
             </el-button>
           </div>
-          <textarea
-            v-model="editScript"
-            class="code-editor"
-            spellcheck="false"
-          ></textarea>
-        </div>
-        <div class="debug-right">
-          <div class="section-title">调试面板</div>
 
           <div class="func-signature">
             <code>{{ debugOperator?.function_name }}({{ signatureParams }})</code>
@@ -147,7 +143,7 @@
             </div>
           </div>
 
-          <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%">
+          <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%; margin-top: 8px">
             <el-icon><CaretRight /></el-icon> 执行调试
           </el-button>
 
@@ -164,31 +160,126 @@
               <pre>{{ debugResult.error }}</pre>
             </div>
             <div v-if="debugResult.stdout" class="stdout-block">
-              <div class="label">标准输出:</div>
+              <div class="block-label">标准输出</div>
               <pre>{{ debugResult.stdout }}</pre>
             </div>
             <div v-if="debugResult.result !== undefined && debugResult.result !== null" class="result-block">
-              <div class="label">返回结果:</div>
+              <div class="block-label">返回结果</div>
               <pre>{{ JSON.stringify(debugResult.result, null, 2) }}</pre>
             </div>
           </div>
         </div>
-      </div>
-    </el-drawer>
 
-    <el-dialog v-model="showGenerateDialog" title="AI 生成算子" width="550px" @closed="generatePrompt = ''">
+        <div class="debug-right">
+          <div class="debug-chat-header">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>AI 代码助手</span>
+          </div>
+          <div class="debug-message-list" ref="opMsgListRef">
+            <div v-if="opMessages.length === 0" class="debug-empty">
+              <p>输入消息调试算子代码，例如"帮我修一下这个报错"、"优化这段代码"</p>
+            </div>
+            <div
+              v-for="(msg, idx) in opMessages"
+              :key="idx"
+              class="debug-message"
+              :class="msg.role"
+            >
+              <div class="debug-msg-avatar">
+                <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+              </div>
+              <div class="debug-msg-body">
+                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-else class="debug-msg-assistant">
+                  <div v-if="msg.thinking" class="debug-msg-thinking">
+                    <div class="thinking-header">
+                      <el-icon class="thinking-spin"><Loading /></el-icon>
+                      <span>推理过程</span>
+                    </div>
+                    <div class="thinking-body">{{ msg.thinking }}</div>
+                  </div>
+                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
+                    <el-tag type="warning" size="small">代码已更新: {{ msg.scriptUpdated }}</el-tag>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="opStreaming && !opMessages.length" class="debug-message assistant">
+              <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">AI</el-avatar></div>
+              <div class="debug-msg-body">
+                <div class="typing-indicator"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="debug-input-area">
+            <el-input
+              v-model="opInput"
+              type="textarea"
+              :rows="2"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              placeholder="输入调试指令... (Enter发送，↑↓切换历史)"
+              @keydown="handleOpKeyDown"
+              :disabled="opStreaming"
+            />
+            <el-button
+              v-if="opStreaming"
+              type="danger"
+              circle
+              @click="stopOpGeneration"
+            >
+              <el-icon><VideoPause /></el-icon>
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              circle
+              :disabled="!opInput.trim()"
+              @click="handleOpSend"
+            >
+              <el-icon><Promotion /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="showGenerateDialog" title="AI 生成算子" width="650px" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-form label-width="80px">
         <el-form-item label="需求描述">
           <el-input
             v-model="generatePrompt"
             type="textarea"
             :rows="4"
-            placeholder="用自然语言描述你需要什么算子，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条"
+            placeholder="用自然语言描述你需要什么算子，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条（↑↓ 切换历史输入）"
+            @keydown="onGenerateHistoryKey"
           />
         </el-form-item>
       </el-form>
+      <div v-if="generateThinking || generateContent || generatePhase" class="ai-process-box">
+        <div v-if="generatePhase" class="ai-phase">
+          <el-icon class="phase-spin"><Loading /></el-icon>
+          <span>{{ generatePhase }}</span>
+        </div>
+        <div v-if="generateThinking" class="ai-thinking">
+          <div class="thinking-header">
+            <el-icon><Cpu /></el-icon>
+            <span>推理过程</span>
+          </div>
+          <div class="thinking-body">{{ generateThinking }}</div>
+        </div>
+        <div v-if="generateContent" class="ai-code-preview">
+          <div class="code-preview-header">
+            <el-icon><Document /></el-icon>
+            <span>生成的代码</span>
+          </div>
+          <pre class="code-preview-body">{{ generateContent }}</pre>
+        </div>
+      </div>
       <template #footer>
-        <el-button @click="showGenerateDialog = false">取消</el-button>
+        <el-button @click="showGenerateDialog = false" :disabled="generating">取消</el-button>
         <el-button
           v-if="generating"
           type="danger"
@@ -202,7 +293,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showModifyDialog" title="AI 修改算子" width="550px" @closed="modifyInstruction = ''; modifyTarget = null">
+    <el-dialog v-model="showModifyDialog" title="AI 修改算子" width="650px" :close-on-press-escape="false" @closed="onModifyDialogClosed">
       <div v-if="modifyTarget" class="modify-target-info">
         <el-tag>{{ modifyTarget.display_name || modifyTarget.name }}</el-tag>
         <span class="modify-desc">{{ modifyTarget.description || '暂无描述' }}</span>
@@ -213,12 +304,33 @@
             v-model="modifyInstruction"
             type="textarea"
             :rows="4"
-            placeholder="你希望如何修改这个算子？例如：增加数量限制参数，默认返回50条"
+            placeholder="你希望如何修改这个算子？例如：增加数量限制参数，默认返回50条（↑↓ 切换历史输入）"
+            @keydown="onModifyHistoryKey"
           />
         </el-form-item>
       </el-form>
+      <div v-if="modifyThinking || modifyContent || modifyPhase" class="ai-process-box">
+        <div v-if="modifyPhase" class="ai-phase">
+          <el-icon class="phase-spin"><Loading /></el-icon>
+          <span>{{ modifyPhase }}</span>
+        </div>
+        <div v-if="modifyThinking" class="ai-thinking">
+          <div class="thinking-header">
+            <el-icon><Cpu /></el-icon>
+            <span>推理过程</span>
+          </div>
+          <div class="thinking-body">{{ modifyThinking }}</div>
+        </div>
+        <div v-if="modifyContent" class="ai-code-preview">
+          <div class="code-preview-header">
+            <el-icon><Document /></el-icon>
+            <span>修改后的代码</span>
+          </div>
+          <pre class="code-preview-body">{{ modifyContent }}</pre>
+        </div>
+      </div>
       <template #footer>
-        <el-button @click="showModifyDialog = false">取消</el-button>
+        <el-button @click="showModifyDialog = false" :disabled="modifying">取消</el-button>
         <el-button
           v-if="modifying"
           type="danger"
@@ -257,10 +369,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause } from '@element-plus/icons-vue'
+import { ref, reactive, computed, onMounted, nextTick, type Ref } from 'vue'
+import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import markdownIt from 'markdown-it'
+
+const md = markdownIt({ html: false, breaks: true, linkify: true })
+function renderMarkdown(text: string) {
+  return md.render(text || '')
+}
 
 const operators = ref<any[]>([])
 const categories = ref<string[]>([])
@@ -355,12 +473,23 @@ async function confirmDelete(op: any) {
 
 const debugDrawer = ref(false)
 const debugOperator = ref<any>(null)
-const editScript = ref('')
 const debugInputValues = reactive<Record<string, string>>({})
 const debugParamValues = reactive<Record<string, string>>({})
 const debugRunning = ref(false)
 const debugResult = ref<any>(null)
 const saving = ref(false)
+
+interface OpChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  thinking?: string
+  scriptUpdated?: string
+}
+const opMessages = ref<OpChatMessage[]>([])
+const opInput = ref('')
+const opStreaming = ref(false)
+let opAbortController: AbortController | null = null
+const opMsgListRef = ref<HTMLElement | null>(null)
 
 const debugInputs = computed(() => {
   return (debugOperator.value?.inputs || []) as any[]
@@ -385,16 +514,16 @@ const signatureParams = computed(() => {
 })
 
 function getInputPlaceholder(input: any) {
+  const hint = '（↑↓ 切换历史输入）'
   const t = input.type || 'any'
-  if (t === 'DataFrame' || t === 'list') return '输入 JSON 数组，如 [{"col": 1}]'
-  if (t === 'str') return '输入字符串'
-  if (t === 'int' || t === 'float') return '输入数值'
-  return '输入 JSON 数据'
+  if (t === 'DataFrame' || t === 'list') return `输入 JSON 数组，如 [{"col": 1}] ${hint}`
+  if (t === 'str') return `输入字符串 ${hint}`
+  if (t === 'int' || t === 'float') return `输入数值 ${hint}`
+  return `输入 JSON 数据 ${hint}`
 }
 
 function openDebug(op: any) {
   debugOperator.value = op
-  editScript.value = op.script_content || ''
 
   for (const key of Object.keys(debugInputValues)) {
     delete debugInputValues[key]
@@ -419,21 +548,32 @@ function openDebug(op: any) {
   }
 
   debugResult.value = null
+  opMessages.value = []
+  opInput.value = ''
+  opStreaming.value = false
   debugDrawer.value = true
 }
 
-async function saveScript() {
+function resetDebug() {
+  opMessages.value = []
+  opInput.value = ''
+  opStreaming.value = false
+  if (opAbortController) {
+    opAbortController.abort()
+    opAbortController = null
+  }
+}
+
+async function refreshOpScript() {
   if (!debugOperator.value) return
   saving.value = true
   try {
-    const res = await api.put(`/operators/${debugOperator.value.id}/script`, {
-      script_content: editScript.value,
-    })
-    debugOperator.value = res
-    ElMessage.success('脚本已保存，入参出参已重新解析')
+    const fresh = await api.get(`/operators/${debugOperator.value.id}`)
+    debugOperator.value = fresh
+    ElMessage.success('算子数据已刷新')
     await loadOperators()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || '刷新失败')
   } finally {
     saving.value = false
   }
@@ -461,6 +601,15 @@ async function runDebug() {
 
   const inputs = debugInputs.value
   const optParams = debugOptionalParams.value
+
+  for (const input of inputs) {
+    const raw = debugInputValues[input.name] || ''
+    pushOpHistory('input-' + input.name, raw)
+  }
+  for (const param of optParams) {
+    const raw = debugParamValues[param.name] || ''
+    pushOpHistory('param-' + param.name, raw)
+  }
 
   let testData: any = null
   const parameters: Record<string, any> = {}
@@ -517,13 +666,34 @@ function categoryColor(cat: string) {
 const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
+const generateThinking = ref('')
+const generateContent = ref('')
+const generatePhase = ref('')
 let generateAbortController: AbortController | null = null
 
 const showModifyDialog = ref(false)
 const modifyTarget = ref<any>(null)
 const modifyInstruction = ref('')
 const modifying = ref(false)
+const modifyThinking = ref('')
+const modifyContent = ref('')
+const modifyPhase = ref('')
 let modifyAbortController: AbortController | null = null
+
+function onGenerateDialogClosed() {
+  generatePrompt.value = ''
+  generateThinking.value = ''
+  generateContent.value = ''
+  generatePhase.value = ''
+}
+
+function onModifyDialogClosed() {
+  modifyInstruction.value = ''
+  modifyTarget.value = null
+  modifyThinking.value = ''
+  modifyContent.value = ''
+  modifyPhase.value = ''
+}
 
 async function handleGenerate() {
   if (!generatePrompt.value.trim()) {
@@ -531,22 +701,68 @@ async function handleGenerate() {
     return
   }
   generating.value = true
+  generateThinking.value = ''
+  generateContent.value = ''
+  generatePhase.value = ''
   generateAbortController = new AbortController()
+  pushGenericHistory(generateHistory, generateHistoryIdx, generatePrompt.value, 'generate')
+
   try {
-    const res = await api.post('/operators/generate', { prompt: generatePrompt.value.trim() }, {
-      timeout: 120000,
+    const token = localStorage.getItem('access_token')
+    const response = await fetch('/api/v1/operators/generate-stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ prompt: generatePrompt.value.trim() }),
       signal: generateAbortController.signal,
     })
-    ElMessage.success(`算子 "${res.display_name || res.name}" 已生成`)
-    showGenerateDialog.value = false
-    generatePrompt.value = ''
-    await loadOperators()
-    setTimeout(() => openDebug(res), 300)
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          if (data.type === 'thinking') {
+            generateThinking.value += data.content
+          } else if (data.type === 'content') {
+            generateContent.value += data.content
+          } else if (data.type === 'phase') {
+            generatePhase.value = data.message
+          } else if (data.type === 'done') {
+            const op = data.operator
+            ElMessage.success(`算子 "${op.display_name || op.name}" 已生成`)
+            showGenerateDialog.value = false
+            await loadOperators()
+            setTimeout(() => openDebug(op), 300)
+          } else if (data.type === 'error') {
+            ElMessage.error(data.content || '生成失败')
+          }
+        } catch { /* skip */ }
+      }
+    }
   } catch (e: any) {
-    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
+    if (e.name === 'AbortError') {
       ElMessage.info('已取消生成')
     } else {
-      ElMessage.error(e.response?.data?.detail || '生成失败')
+      ElMessage.error(e.message || '生成失败')
     }
   } finally {
     generating.value = false
@@ -573,25 +789,69 @@ async function handleModify() {
   }
   if (!modifyTarget.value) return
   modifying.value = true
+  modifyThinking.value = ''
+  modifyContent.value = ''
+  modifyPhase.value = ''
   modifyAbortController = new AbortController()
+  pushGenericHistory(modifyHistory, modifyHistoryIdx, modifyInstruction.value, 'modify')
+
   try {
-    const res = await api.post(`/operators/${modifyTarget.value.id}/modify`, {
-      instruction: modifyInstruction.value.trim(),
-    }, {
-      timeout: 120000,
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(`/api/v1/operators/${modifyTarget.value.id}/modify-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ instruction: modifyInstruction.value.trim() }),
       signal: modifyAbortController.signal,
     })
-    ElMessage.success(`算子 "${res.display_name || res.name}" 已修改`)
-    showModifyDialog.value = false
-    modifyInstruction.value = ''
-    modifyTarget.value = null
-    await loadOperators()
-    setTimeout(() => openDebug(res), 300)
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          if (data.type === 'thinking') {
+            modifyThinking.value += data.content
+          } else if (data.type === 'content') {
+            modifyContent.value += data.content
+          } else if (data.type === 'phase') {
+            modifyPhase.value = data.message
+          } else if (data.type === 'done') {
+            const op = data.operator
+            ElMessage.success(`算子 "${op.display_name || op.name}" 已修改`)
+            showModifyDialog.value = false
+            modifyTarget.value = null
+            await loadOperators()
+            setTimeout(() => openDebug(op), 300)
+          } else if (data.type === 'error') {
+            ElMessage.error(data.content || '修改失败')
+          }
+        } catch { /* skip */ }
+      }
+    }
   } catch (e: any) {
-    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError') {
+    if (e.name === 'AbortError') {
       ElMessage.info('已取消修改')
     } else {
-      ElMessage.error(e.response?.data?.detail || '修改失败')
+      ElMessage.error(e.message || '修改失败')
     }
   } finally {
     modifying.value = false
@@ -637,6 +897,282 @@ async function handleClone() {
     ElMessage.error(e.response?.data?.detail || '复制失败')
   } finally {
     cloning.value = false
+  }
+}
+
+// ==================== 输入历史记录（localStorage 持久化） ====================
+const HISTORY_MAX = 100
+
+function loadOpHistory(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(`dc_op_history_${key}`)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveOpHistory(key: string, list: string[]) {
+  try {
+    localStorage.setItem(`dc_op_history_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
+  } catch {}
+}
+
+const inputHistories = reactive<Record<string, string[]>>({})
+const inputHistoryIdxs = reactive<Record<string, number>>({})
+const inputDrafts = reactive<Record<string, string>>({})
+
+function getOrCreateHistory(fieldKey: string): string[] {
+  if (!inputHistories[fieldKey]) {
+    inputHistories[fieldKey] = loadOpHistory(fieldKey)
+    inputHistoryIdxs[fieldKey] = -1
+    inputDrafts[fieldKey] = ''
+  }
+  return inputHistories[fieldKey]
+}
+
+function pushOpHistory(fieldKey: string, value: string) {
+  const v = value.trim()
+  if (!v) return
+  const list = getOrCreateHistory(fieldKey)
+  if (list[list.length - 1] !== v) {
+    list.push(v)
+    if (list.length > HISTORY_MAX) {
+      inputHistories[fieldKey] = list.slice(-HISTORY_MAX)
+    }
+    saveOpHistory(fieldKey, inputHistories[fieldKey])
+  }
+  inputHistoryIdxs[fieldKey] = -1
+}
+
+function onOpHistoryKey(e: KeyboardEvent, fieldKey: string, modelGetter: () => string, modelSetter: (v: string) => void) {
+  const list = getOrCreateHistory(fieldKey)
+  const idx = inputHistoryIdxs[fieldKey]
+  if (e.key === 'ArrowUp') {
+    if (list.length === 0) return
+    e.preventDefault()
+    if (idx === -1) {
+      inputDrafts[fieldKey] = modelGetter()
+      inputHistoryIdxs[fieldKey] = list.length - 1
+    } else if (idx > 0) {
+      inputHistoryIdxs[fieldKey] = idx - 1
+    }
+    modelSetter(list[inputHistoryIdxs[fieldKey]])
+  } else if (e.key === 'ArrowDown') {
+    if (idx === -1) return
+    e.preventDefault()
+    if (idx < list.length - 1) {
+      inputHistoryIdxs[fieldKey] = idx + 1
+      modelSetter(list[inputHistoryIdxs[fieldKey]])
+    } else {
+      inputHistoryIdxs[fieldKey] = -1
+      modelSetter(inputDrafts[fieldKey])
+    }
+  }
+}
+
+function handleInputHistoryKey(e: KeyboardEvent, fieldKey: string, inputName: string) {
+  onOpHistoryKey(e, fieldKey, () => debugInputValues[inputName], (v) => { debugInputValues[inputName] = v })
+}
+
+function handleParamHistoryKey(e: KeyboardEvent, fieldKey: string, paramName: string) {
+  onOpHistoryKey(e, fieldKey, () => debugParamValues[paramName], (v) => { debugParamValues[paramName] = v })
+}
+
+const generateHistory = ref<string[]>(loadOpHistory('generate'))
+const generateHistoryIdx = ref(-1)
+const generateDraft = ref('')
+
+const modifyHistory = ref<string[]>(loadOpHistory('modify'))
+const modifyHistoryIdx = ref(-1)
+const modifyDraft = ref('')
+
+const opChatHistory = ref<string[]>(loadOpHistory('op_chat'))
+const opChatHistoryIdx = ref(-1)
+const opChatDraft = ref('')
+
+function onGenerateHistoryKey(e: KeyboardEvent) {
+  onHistoryKeyGeneric(e, generateHistory, generateHistoryIdx, generatePrompt, generateDraft)
+}
+
+function onModifyHistoryKey(e: KeyboardEvent) {
+  onHistoryKeyGeneric(e, modifyHistory, modifyHistoryIdx, modifyInstruction, modifyDraft)
+}
+
+function onHistoryKeyGeneric(e: KeyboardEvent, list: Ref<string[]>, idx: Ref<number>, model: Ref<string>, savedDraft: Ref<string>) {
+  if (e.key === 'ArrowUp') {
+    if (list.value.length === 0) return
+    e.preventDefault()
+    if (idx.value === -1) {
+      savedDraft.value = model.value
+      idx.value = list.value.length - 1
+    } else if (idx.value > 0) {
+      idx.value--
+    }
+    model.value = list.value[idx.value]
+  } else if (e.key === 'ArrowDown') {
+    if (idx.value === -1) return
+    e.preventDefault()
+    if (idx.value < list.value.length - 1) {
+      idx.value++
+      model.value = list.value[idx.value]
+    } else {
+      idx.value = -1
+      model.value = savedDraft.value
+    }
+  }
+}
+
+function pushGenericHistory(list: Ref<string[]>, idx: Ref<number>, value: string, storageKey: string) {
+  const v = value.trim()
+  if (!v) return
+  if (list.value[list.value.length - 1] !== v) {
+    list.value.push(v)
+    if (list.value.length > HISTORY_MAX) {
+      list.value = list.value.slice(-HISTORY_MAX)
+    }
+    saveOpHistory(storageKey, list.value)
+  }
+  idx.value = -1
+}
+
+function handleOpKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleOpSend()
+    return
+  }
+  onHistoryKeyGeneric(e, opChatHistory, opChatHistoryIdx, opInput, opChatDraft)
+}
+
+function stopOpGeneration() {
+  if (opAbortController) {
+    opAbortController.abort()
+  }
+}
+
+async function handleOpSend() {
+  if (!debugOperator.value || !opInput.value.trim() || opStreaming.value) return
+
+  const userMsg = opInput.value.trim()
+  opMessages.value.push({ role: 'user', content: userMsg })
+  pushGenericHistory(opChatHistory, opChatHistoryIdx, userMsg, 'op_chat')
+  opInput.value = ''
+  opStreaming.value = true
+  opAbortController = new AbortController()
+
+  const assistantIdx = opMessages.value.length
+  opMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+
+  try {
+    const token = localStorage.getItem('access_token')
+    const history = opMessages.value.slice(0, assistantIdx).map(m => ({
+      role: m.role,
+      content: m.content + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
+    }))
+
+    const contextData: Record<string, string> = {}
+    const inputs = debugInputs.value
+    for (const input of inputs) {
+      const raw = debugInputValues[input.name] || ''
+      if (raw.trim()) contextData[`input_${input.name}`] = raw
+    }
+    const optParams = debugOptionalParams.value
+    for (const param of optParams) {
+      const raw = debugParamValues[param.name] || ''
+      if (raw.trim()) contextData[`param_${param.name}`] = raw
+    }
+    if (debugResult.value) {
+      contextData['last_result'] = debugResult.value.success ? '成功' : '失败'
+      if (debugResult.value.error) contextData['last_error'] = debugResult.value.error
+    }
+
+    const response = await fetch(`/api/v1/operators/${debugOperator.value.id}/debug-chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        message: userMsg,
+        history,
+        context: contextData,
+      }),
+      signal: opAbortController.signal,
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let thinkingDone = false
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          const msg = opMessages.value[assistantIdx]
+
+          if (data.type === 'thinking') {
+            msg.thinking = (msg.thinking || '') + data.content
+          } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) {
+              thinkingDone = true
+            }
+            msg.content += data.content
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+            try {
+              const fresh = await api.get(`/operators/${debugOperator.value.id}`)
+              debugOperator.value = fresh
+            } catch { /* skip */ }
+          } else if (data.type === 'error') {
+            msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          }
+        } catch {
+          // skip
+        }
+      }
+    }
+
+    const finalMsg = opMessages.value[assistantIdx]
+    if (finalMsg.thinking && !thinkingDone) {
+      finalMsg.thinking = ''
+    }
+
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      const msg = opMessages.value[assistantIdx]
+      if (msg.content) {
+        msg.content += '\n\n*[已停止生成]*'
+      } else {
+        msg.content = '*[已停止生成]*'
+      }
+    } else {
+      opMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+    }
+  } finally {
+    opStreaming.value = false
+    opAbortController = null
+    await nextTick(() => {
+      if (opMsgListRef.value) {
+        opMsgListRef.value.scrollTop = opMsgListRef.value.scrollHeight
+      }
+    })
   }
 }
 
@@ -735,33 +1271,37 @@ onMounted(loadOperators)
 .debug-layout {
   display: flex;
   gap: 16px;
-  height: calc(100vh - 80px);
+  height: calc(85vh - 60px);
 }
 
 .debug-left {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.debug-right {
   width: 380px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
   overflow-y: auto;
+  gap: 8px;
 }
 
-.section-title {
+.debug-section-title {
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-weight: 600;
   font-size: 14px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   color: #303133;
+}
+
+.debug-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f9fafb;
 }
 
 .func-signature {
@@ -798,32 +1338,12 @@ onMounted(loadOperators)
   padding: 8px 0;
 }
 
-.code-editor {
-  flex: 1;
-  width: 100%;
-  min-height: 300px;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  border: 1px solid #333;
-  border-radius: 6px;
-  padding: 12px;
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  resize: none;
-  outline: none;
-  tab-size: 4;
-
-  &:focus {
-    border-color: #409eff;
-  }
-}
-
 .param-section {
   .label {
     font-size: 13px;
     color: #606266;
     margin-bottom: 4px;
+    word-break: break-all;
   }
 }
 
@@ -867,6 +1387,12 @@ onMounted(loadOperators)
     border-radius: 4px;
     padding: 8px;
     margin-top: 8px;
+    .block-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #67c23a;
+      margin-bottom: 4px;
+    }
     pre {
       color: #67c23a;
       font-size: 12px;
@@ -881,20 +1407,227 @@ onMounted(loadOperators)
     border-radius: 4px;
     padding: 8px;
     margin-top: 8px;
+    .block-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #409eff;
+      margin-bottom: 4px;
+    }
     pre {
       color: #409eff;
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-all;
       margin: 0;
-      max-height: 300px;
-      overflow-y: auto;
     }
   }
+}
+
+.debug-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #ebeef5;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  background: #fff;
+}
+
+.debug-message-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: #c0c4cc;
+
+  p {
+    font-size: 14px;
+    text-align: center;
+    line-height: 1.6;
+    padding: 0 12px;
+  }
+}
+
+.debug-message {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+
+  &.user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+
+    .debug-msg-user {
+      background: #409eff;
+      color: #fff;
+      border-radius: 10px 10px 2px 10px;
+      padding: 6px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-width: 85%;
+    }
+  }
+
+  &.assistant {
+    align-self: flex-start;
+    max-width: 100%;
+
+    .debug-msg-assistant {
+      background: #fff;
+      border: 1px solid #e4e7ed;
+      border-radius: 10px 10px 10px 2px;
+      padding: 8px 12px;
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+  }
+}
+
+.debug-msg-avatar {
+  flex-shrink: 0;
+}
+
+.debug-msg-body {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.debug-msg-thinking {
+  margin-bottom: 8px;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ecf5ff;
+
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #409eff;
+    font-weight: 500;
+    border-bottom: 1px solid #d9ecff;
+
+    .thinking-spin { animation: op-rotate 1.2s linear infinite; }
+  }
+
+  .thinking-body {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #606266;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+}
+
+@keyframes op-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.debug-msg-content {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+
+  :deep(pre) {
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  :deep(table) {
+    width: 100%;
+    table-layout: fixed;
+    word-break: break-all;
+  }
+
+  :deep(code) {
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+}
+
+.debug-msg-script-updated {
+  margin-top: 6px;
+}
+
+.debug-input-area {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid #ebeef5;
+  background: #fff;
+
+  .el-textarea {
+    flex: 1;
+    font-size: 14px;
+  }
+  .el-button { margin-bottom: 4px; }
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+
+  span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #c0c4cc;
+    animation: typing 1.4s infinite ease-in-out both;
+
+    &:nth-child(1) { animation-delay: 0s; }
+    &:nth-child(2) { animation-delay: 0.2s; }
+    &:nth-child(3) { animation-delay: 0.4s; }
+  }
+}
+
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
 }
 </style>
 
 <style lang="scss">
+.debug-layout {
+  .el-textarea__inner,
+  .el-input__inner {
+    &::placeholder {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  }
+}
+
 .modify-target-info {
   display: flex;
   align-items: flex-start;
@@ -911,5 +1644,124 @@ onMounted(loadOperators)
     max-height: 120px;
     overflow-y: auto;
   }
+}
+
+.ai-process-box {
+  margin-top: 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ai-phase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #ecf5ff;
+  font-size: 13px;
+  color: #409eff;
+  font-weight: 500;
+  .phase-spin {
+    animation: rotating 1.5s linear infinite;
+  }
+}
+
+@keyframes rotating {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ai-thinking {
+  border-top: 1px solid #ebeef5;
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: #f0f5ff;
+    font-size: 12px;
+    color: #7c8db5;
+    font-weight: 600;
+  }
+  .thinking-body {
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #606266;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.6;
+    background: #fafbfc;
+  }
+}
+
+.ai-code-preview {
+  border-top: 1px solid #ebeef5;
+  .code-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: #f0f9eb;
+    font-size: 12px;
+    color: #67c23a;
+    font-weight: 600;
+  }
+  .code-preview-body {
+    margin: 0;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 250px;
+    overflow-y: auto;
+    line-height: 1.5;
+    background: #1e1e1e;
+    color: #d4d4d4;
+  }
+}
+</style>
+
+<style lang="scss">
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #303133;
+  padding: 16px 20px;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+
+  h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; color: #1d1d1f; }
+  h1 { font-size: 22px; border-bottom: 2px solid #409eff; padding-bottom: 6px; }
+  h2 { font-size: 19px; border-bottom: 1px solid #e4e7ed; padding-bottom: 4px; }
+  h3 { font-size: 16px; }
+  p { margin: 8px 0; }
+  ul, ol { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  code {
+    background: #f0f2f5; padding: 2px 6px; border-radius: 4px;
+    font-family: 'Consolas', monospace; font-size: 13px; color: #d63384;
+  }
+  pre {
+    background: #1e1e1e; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
+    code { background: none; color: #d4d4d4; padding: 0; }
+  }
+  blockquote {
+    border-left: 4px solid #409eff; padding: 8px 16px; margin: 12px 0;
+    background: #f0f5ff; color: #606266; border-radius: 0 6px 6px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0;
+    th, td { border: 1px solid #dcdfe6; padding: 8px 12px; text-align: left; }
+    th { background: #f5f7fa; font-weight: 600; }
+  }
+  a { color: #409eff; }
+  hr { border: none; border-top: 1px solid #e4e7ed; margin: 20px 0; }
+  strong { font-weight: 600; color: #1d1d1f; }
 }
 </style>

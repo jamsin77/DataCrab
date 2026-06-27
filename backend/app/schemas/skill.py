@@ -16,6 +16,7 @@ class SkillCreate(BaseModel):
 
 
 class SkillUpdate(BaseModel):
+    name: Optional[str] = None
     display_name: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -105,6 +106,7 @@ class SkillDebugChatRequest(BaseModel):
     script_name: str = Field(default="main.py", description="脚本名称")
     datasource_id: Optional[str] = Field(None, description="数据源ID")
     table_name: Optional[str] = Field(None, description="表名")
+    context: Optional[dict] = Field(None, description="左侧执行面板上下文")
 
 
 class SkillScriptInfo(BaseModel):

@@ -48,4 +48,8 @@ export const authApi = {
   logout(): Promise<void> {
     return api.post('/auth/logout')
   },
+
+  resetPassword(username: string, old_password: string, new_password: string): Promise<{ message: string }> {
+    return api.post('/auth/reset-password', { username, old_password, new_password })
+  },
 }

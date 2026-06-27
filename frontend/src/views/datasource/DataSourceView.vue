@@ -207,7 +207,7 @@
         <div class="browse-content">
           <div v-if="selectedTable" class="browse-content-header">
             <span class="browse-table-name">{{ selectedTable }}</span>
-            <span class="browse-row-count">前 {{ browseRows.length }} 行</span>
+            <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
           </div>
           <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="420" style="width: 100%;">
             <el-table-column
@@ -256,6 +256,7 @@ const browsingSource = ref<any>(null)
 const browseTree = ref<any[]>([])
 const browseColumns = ref<any[]>([])
 const browseRows = ref<any[]>([])
+const browseTotal = ref(0)
 const selectedTable = ref('')
 const browseLoading = ref(false)
 const typeFilter = ref('')
@@ -568,6 +569,7 @@ async function selectBrowseTable(tableName: string) {
     })
     browseColumns.value = data.columns || []
     browseRows.value = data.rows || []
+    browseTotal.value = data.total || 0
   } catch (e: any) {
     ElMessage.error(extractError(e))
     browseRows.value = []

@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from loguru import logger
 
 from app.core.config import settings
@@ -46,12 +46,42 @@ from app.services.skill_parser import (
     read_skill_script,
     write_skill_script,
     list_skill_scripts,
+    append_error_log,
+    read_error_log,
+    read_lessons,
+    write_lessons,
 )
-from app.services.skill_runner import run_skill_script
-from app.services.skill_creator import generate_skill, create_skill_on_disk
 from app.api.deps import get_current_user
+from app.models.datasource import DataSource
 
 router = APIRouter()
+
+
+async def _build_datasource_info(db: AsyncSession, user_id) -> str:
+    """构建当前用户的数据源信息文本，用于注入到 Skill Creator 提示词"""
+    from app.services.connectors import get_connector
+    try:
+        result = await db.execute(
+            select(DataSource).where(DataSource.created_by == user_id, DataSource.is_active == True)
+        )
+        sources = result.scalars().all()
+        if not sources:
+            return "（用户暂无数据源）"
+        lines = []
+        for ds in sources:
+            tables = []
+            try:
+                connector = get_connector(ds.type, ds.connection_config or {})
+                tables = await connector.get_tables()
+                await connector.close()
+            except Exception:
+                pass
+            tables_str = ", ".join(tables) if tables else "（无表）"
+            lines.append(f"- \"{ds.name}\" ({ds.type}) 表: {tables_str}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"构建数据源信息失败: {e}")
+        return "（无法获取数据源信息）"
 
 
 def _sanitize_nans(obj):
@@ -80,7 +110,7 @@ async def _sync_scripts_to_operators(
     db: AsyncSession,
     current_user: User,
 ):
-    from app.services.operator_parser import parse_python_script, extract_script_name
+    from app.services.operator_parser import parse_python_script_multi, extract_script_name
 
     scripts_dir = folder / "scripts"
     if not scripts_dir.is_dir():
@@ -88,48 +118,63 @@ async def _sync_scripts_to_operators(
 
     for script_file in sorted(scripts_dir.glob("*.py")):
         script_content = script_file.read_text(encoding="utf-8")
+        script_content = script_content.strip()
+        if script_content.startswith("```python"):
+            lines = script_content.split("\n")
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            script_content = "\n".join(lines).strip()
+        elif script_content.startswith("```"):
+            lines = script_content.split("\n")
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            script_content = "\n".join(lines).strip()
         if not script_content.strip():
             continue
 
         try:
-            parsed = parse_python_script(script_content)
+            parsed_list = parse_python_script_multi(script_content)
         except Exception:
             continue
 
-        func_name = parsed.get("function_name")
-        if not func_name:
-            continue
-
         script_name = extract_script_name(script_file.name)
-        operator_name = f"{skill.name}-{script_name}"
 
-        existing = await db.execute(
-            select(Operator).where(Operator.name == operator_name)
-        )
-        existing_op = existing.scalar_one_or_none()
+        for parsed in parsed_list:
+            func_name = parsed.get("function_name")
+            if not func_name:
+                continue
 
-        op_data = dict(
-            display_name=f"{skill.display_name or skill.name} - {func_name}",
-            description=parsed.get("description") or skill.description or "",
-            category=skill.category or "skill",
-            inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
-            outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
-            parameters=parsed.get("parameters", []),
-            execution_config={"type": "python_script", "source": "skill", "skill_id": str(skill.id)},
-            script_content=script_content,
-            script_filename=script_file.name,
-            function_name=func_name,
-            tags=(skill.tags or []) + ["from_skill"],
-            visibility=skill.visibility or "public",
-            author=current_user.id,
-        )
+            operator_name = f"{skill.name}-{script_name}-{func_name}"
 
-        if existing_op:
-            for k, v in op_data.items():
-                setattr(existing_op, k, v)
-        else:
-            operator = Operator(name=operator_name, **op_data)
-            db.add(operator)
+            existing = await db.execute(
+                select(Operator).where(Operator.name == operator_name)
+            )
+            existing_op = existing.scalar_one_or_none()
+
+            op_data = dict(
+                display_name=f"{skill.display_name or skill.name} - {func_name}",
+                description=parsed.get("description") or skill.description or "",
+                category=skill.category or "skill",
+                inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
+                outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
+                parameters=parsed.get("parameters", []),
+                execution_config={"type": "python_script", "source": "skill", "skill_id": str(skill.id)},
+                script_content=script_content,
+                script_filename=script_file.name,
+                function_name=func_name,
+                tags=(skill.tags or []) + ["from_skill"],
+                visibility=skill.visibility or "public",
+                author=current_user.id,
+            )
+
+            if existing_op:
+                for k, v in op_data.items():
+                    setattr(existing_op, k, v)
+            else:
+                operator = Operator(name=operator_name, **op_data)
+                db.add(operator)
 
     await db.flush()
 
@@ -173,7 +218,15 @@ async def list_skills(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = select(Skill)
+    from app.services.permission_service import get_accessible_resource_ids
+    shared_ids = await get_accessible_resource_ids(db, current_user.id, "skill")
+    query = select(Skill).where(
+        or_(
+            Skill.author == current_user.id,
+            Skill.visibility == "public",
+            Skill.id.in_(shared_ids) if shared_ids else False,
+        )
+    )
     if category:
         query = query.where(Skill.category == category)
     query = query.order_by(Skill.updated_at.desc())
@@ -218,14 +271,15 @@ async def create_skill(
     (folder / "scripts").mkdir(exist_ok=True)
     (folder / "references").mkdir(exist_ok=True)
     (folder / "assets").mkdir(exist_ok=True)
+    safe_name = request.name.replace("_", "-")
     (folder / "SKILL.md").write_text(
-        f"---\nname: {request.name}\ndescription: {request.description or ''}\n---\n\n# {request.display_name or request.name}\n\n{request.description or ''}\n",
+        f"---\nname: {safe_name}\ndescription: {request.description or ''}\n---\n\n# {request.display_name or safe_name}\n\n{request.description or ''}\n",
         encoding="utf-8",
     )
 
     skill = Skill(
         id=skill_id,
-        name=request.name,
+        name=safe_name,
         display_name=request.display_name or request.name,
         description=request.description,
         skill_path=str(folder),
@@ -237,6 +291,7 @@ async def create_skill(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
+    await _sync_scripts_to_operators(skill, _get_skill_folder(skill_id), db, current_user)
     logger.info(f"技能已创建: {skill.name} ({skill.id})")
     return _build_detail(skill)
 
@@ -254,6 +309,10 @@ async def update_skill(
         raise HTTPException(status_code=404, detail="技能不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        update_data["name"] = update_data["name"].replace("_", "-")
+        if "display_name" not in update_data and skill.display_name == skill.name:
+            update_data["display_name"] = update_data["name"]
     for key, value in update_data.items():
         setattr(skill, key, value)
 
@@ -484,6 +543,7 @@ async def update_skill_script(
     folder = _get_skill_folder(skill_id)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_script(folder, script_name, request.content)
+    await _sync_scripts_to_operators(skill, folder, db, current_user)
     return {"name": script_name, "ok": True}
 
 
@@ -513,6 +573,7 @@ async def run_skill(
     current_user: User = Depends(get_current_user),
 ):
     """执行 Skill 脚本"""
+    from app.services.skill_runner import run_skill_script
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
@@ -551,6 +612,7 @@ async def run_skill_stream(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.services.skill_runner import run_skill_script_async
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
@@ -573,7 +635,7 @@ async def run_skill_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            exec_result = run_skill_script(
+            exec_result = await run_skill_script_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=request.parameters,
@@ -585,6 +647,16 @@ async def run_skill_stream(
 
             skill.usage_count = (skill.usage_count or 0) + 1
             await db.flush()
+
+            if not exec_result.get("success"):
+                append_error_log(
+                    folder, request.script_name,
+                    error_type="execution_error",
+                    error_message=exec_result.get("error", "未知错误"),
+                    parameters=request.parameters,
+                    stdout=exec_result.get("stdout", ""),
+                    source="run-stream",
+                )
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
@@ -657,6 +729,7 @@ async def run_skill_nl(
     current_user: User = Depends(get_current_user),
 ):
     """自然语言调用技能 - LLM 从自然语言推断执行参数"""
+    from app.services.skill_runner import run_skill_script
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
@@ -768,6 +841,7 @@ async def run_skill_nl_stream(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.services.skill_runner import run_skill_script_async
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
@@ -864,7 +938,7 @@ async def run_skill_nl_stream(
             yield f"data: {json_mod.dumps({'type': 'inferred_params', 'parameters': parameters, 'table_name': inferred_table}, ensure_ascii=False)}\n\n"
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '参数推断完成，正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            exec_result = run_skill_script(
+            exec_result = await run_skill_script_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=parameters,
@@ -875,14 +949,29 @@ async def run_skill_nl_stream(
             )
 
             skill.usage_count = (skill.usage_count or 0) + 1
-            await db.flush()
+            try:
+                await db.flush()
+            except Exception as db_err:
+                logger.warning(f"NL stream: db.flush failed: {db_err}")
 
+            if not exec_result.get("success"):
+                append_error_log(
+                    folder, request.script_name,
+                    error_type="execution_error",
+                    error_message=exec_result.get("error", "未知错误"),
+                    parameters=parameters,
+                    stdout=exec_result.get("stdout", ""),
+                    source="run-nl-stream",
+                )
+
+            logger.info(f"NL stream: exec_result success={exec_result.get('success')}, error={str(exec_result.get('error',''))[:100]}")
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
         except asyncio.CancelledError:
             yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            logger.error(f"流式NL执行技能失败: {e}")
+            import traceback as _tb
+            logger.error(f"流式NL执行技能失败: {e}\n{_tb.format_exc()}")
             yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -899,6 +988,7 @@ async def debug_skill_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.services.skill_runner import run_skill_script_async
     result_row = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result_row.scalar_one_or_none()
     if not skill:
@@ -923,6 +1013,7 @@ async def debug_skill_chat(
         if ds_obj:
             ds_name = ds_obj.name
 
+    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     system_prompt = (
         "你是 DataCrab 平台的技能调试助手。你正在帮助用户调试和优化一个技能（Skill）。\n\n"
         "## 你的能力\n"
@@ -944,16 +1035,7 @@ async def debug_skill_chat(
         f"- 表名：{request.table_name or '未选择'}\n\n"
         f"## SKILL.md\n```\n{skill_md[:3000]}\n```\n\n"
         f"## 当前脚本（{request.script_name}）\n```python\n{script_content}\n```\n\n"
-        "## 脚本运行环境（必须了解）\n"
-        "脚本在沙箱中执行，系统会自动注入以下内置函数到全局作用域，脚本中**直接使用即可，无需 import**：\n"
-        "- `query_table_data(datasource_id, table_name, limit=1000)` → 返回 {\"success\": bool, \"data\": [行dict], \"columns\": [列名], \"row_count\": int}\n"
-        "- `get_table_data(datasource_id, table_name, limit=1000)` → 同 query_table_data\n"
-        "- `get_table_schema(datasource_id, table_name)` → 返回表结构\n"
-        "- `get_datasource_id_by_name(name)` → 按名称查找数据源ID\n"
-        "- `write_table_data(datasource_id, table_name, records=...)` → 写入数据\n\n"
-        "⚠️ **绝对禁止**在脚本中 `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！\n"
-        "⚠️ **绝对禁止**在脚本中 `pip install datacrab`，datacrab 不是可安装的包！\n"
-        "⚠️ `if __name__ == '__main__':` 块会被系统自动去掉，argparse 脚本的 main() 由系统调用\n\n"
+        f"{SANDBOX_TOOLS_DOC}\n\n"
         "## Action 输出格式\n"
         "- **run action**：单独一行 JSON，如 `{\"action\": \"run\", \"parameters\": {\"split_column\": \"批次\"}}`\n"
         "- **modify_script action**：先用 JSON 声明 action，紧接着用 ```python 代码块提供完整脚本\n"
@@ -961,21 +1043,38 @@ async def debug_skill_chat(
         "- 可以在同一回复中先 modify_script 再 run，系统会按顺序执行\n"
         "- modify_script 的代码块中必须是完整的脚本，不能只写修改的部分\n"
         "- 如果只是回答问题或分析，不需要输出任何 action\n\n"
-        "## 🚫 安全红线\n"
-        "- 技能只能处理用户的业务数据，绝不能修改 DataCrab 平台自身\n"
-        "- 修改脚本时，确保脚本不会访问或修改平台的系统表和配置\n"
-        "- 脚本中只能操作用户数据源的业务数据，不能操作平台系统数据\n\n"
-        "## ✅ 技能属于用户内容，可以自由修改\n"
-        "- 用户可以自由创建、修改、调试、删除自己的技能\n"
-        "- 技能脚本可以使用内置工具函数访问用户数据\n\n"
-        "## ✅ 修改后必验证\n"
-        "- 输出 modify_script 后，必须紧接着在同一回复中输出 run action 来验证\n"
-        "- 如果验证失败，分析错误并再次 modify_script + run\n"
-        "- 只有验证通过才算修改完成\n\n"
-        "## 📂 输出默认同源\n"
-        "- 数据处理生成新文件时，如果用户未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下\n"
-        "- 如果 DataSource 来自数据库，需要询问用户输出路径"
+        f"{SAFETY_RULES_DOC}\n\n"
+        "## 调试交互示例\n\n"
+        "用户：运行一下试试\n"
+        '助手：好的，我来执行一下这个技能。\n\n{"action": "run", "parameters": {}}\n\n'
+        "（如果执行成功，分析结果给用户；如果失败，进入修改流程）\n\n"
+        "用户：报错了，列名不对\n"
+        '助手：我看到错误了，数据源中的列名和脚本中使用的不一致。我来修改脚本适配实际的列名。\n\n'
+        '{"action": "modify_script", "script_name": "main.py"}\n```python\n'
+        "# 完整的修改后脚本\n```\n"
+        '{"action": "run", "parameters": {}}\n\n'
+        "（修改后立即运行验证）"
     )
+
+    lessons = read_lessons(folder)
+    if lessons:
+        system_prompt += (
+            "\n\n## 📖 历史经验总结（从过往错误中学习的经验，修改脚本时务必参考）\n"
+            f"{lessons}"
+        )
+
+    ctx = request.context or {}
+    if ctx:
+        ctx_parts = []
+        exec_tab = ctx.get("exec_tab", "")
+        if exec_tab == "nl" and ctx.get("nl_query"):
+            ctx_parts.append(f"- 用户在自然语言输入框中填入：{ctx['nl_query']}")
+        elif exec_tab == "cmd" and ctx.get("cmd_str"):
+            ctx_parts.append(f"- 用户在命令行输入框中填入：{ctx['cmd_str']}")
+        elif exec_tab == "json" and ctx.get("json_params"):
+            ctx_parts.append(f"- 用户在JSON参数输入框中填入：{ctx['json_params']}")
+        if ctx_parts:
+            system_prompt += "\n\n## 用户当前调试输入（左侧执行面板）\n" + "\n".join(ctx_parts) + "\n请根据用户的调试输入来执行或调试技能，如果用户没有明确要求其他参数，优先使用这些输入作为执行参数。"
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in request.history[-20:]:
@@ -1023,7 +1122,7 @@ async def debug_skill_chat(
 
                     yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
 
-                    exec_result = run_skill_script(
+                    exec_result = await run_skill_script_async(
                         skill_path=folder,
                         script_name=request.script_name,
                         parameters=parameters,
@@ -1035,6 +1134,16 @@ async def debug_skill_chat(
 
                     exec_result = _sanitize_nans(exec_result)
                     yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+
+                    if not exec_result.get("success"):
+                        append_error_log(
+                            folder, request.script_name,
+                            error_type="execution_error",
+                            error_message=exec_result.get("error", "未知错误"),
+                            parameters=parameters,
+                            stdout=exec_result.get("stdout", ""),
+                            source="debug-chat",
+                        )
 
                     skill.usage_count = (skill.usage_count or 0) + 1
                     await db.flush()
@@ -1054,6 +1163,105 @@ async def debug_skill_chat(
     )
 
 
+@router.post("/{skill_id}/summarize-errors")
+async def summarize_skill_errors(
+    skill_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """分析技能的错误日志，用 LLM 总结经验并写入 SKILL.md"""
+    result_row = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result_row.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _get_skill_folder(skill_id)
+    errors = read_error_log(folder)
+
+    if not errors:
+        return {"success": True, "message": "暂无错误记录", "error_count": 0, "lessons": ""}
+
+    from app.services.llm import llm_manager
+    await llm_manager.initialize()
+
+    import json as json_mod
+
+    error_summary_lines = []
+    for i, e in enumerate(errors[-30:], 1):
+        error_summary_lines.append(
+            f"{i}. [{e.get('timestamp','')[:10]}] {e.get('error_type','')}: "
+            f"{e.get('error_message','')[:150]}"
+        )
+        if e.get("stdout_preview"):
+            error_summary_lines.append(f"   输出预览: {e['stdout_preview'][:100]}")
+        if e.get("parameters"):
+            error_summary_lines.append(f"   参数: {json_mod.dumps(e['parameters'], ensure_ascii=False)[:100]}")
+
+    existing_lessons = read_lessons(folder)
+    lessons_context = f"\n\n已有的经验总结（在此基础上补充更新）：\n{existing_lessons}" if existing_lessons else ""
+
+    prompt_messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个技能错误分析专家。分析技能执行中出现的错误日志，总结出规律性的问题和解决方案，"
+                "生成简洁的经验总结。要求：\n"
+                "1. 按错误类型分类总结\n"
+                "2. 每类给出：问题描述、根因分析、修复建议\n"
+                "3. 如果已有经验总结，在此基础上补充更新（保留仍然有效的条目，更新已有条目，添加新发现）\n"
+                "4. 使用 Markdown 格式，用 ### 分类别\n"
+                "5. 只输出经验总结内容，不要输出前言和结尾\n"
+                "6. 简洁精炼，每个条目不超过3行"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"技能名称：{skill.display_name or skill.name}\n"
+                f"技能描述：{skill.description or '无'}\n"
+                f"错误记录（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
+                + "\n".join(error_summary_lines)
+                + lessons_context
+            ),
+        },
+    ]
+
+    try:
+        lessons_text = await llm_manager.chat_with_messages(
+            prompt_messages, temperature=0.3, max_tokens=1500
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM总结失败: {str(e)}")
+
+    write_lessons(folder, lessons_text.strip())
+
+    return {
+        "success": True,
+        "message": f"已总结 {len(errors)} 条错误记录并更新 SKILL.md",
+        "error_count": len(errors),
+        "lessons": lessons_text.strip(),
+    }
+
+
+async def _collect_all_lessons(db: AsyncSession, user_id) -> str:
+    """收集用户所有技能的经验总结，用于注入新技能生成"""
+    try:
+        result = await db.execute(select(Skill).where(Skill.author == user_id))
+        skills = result.scalars().all()
+        lessons_parts = []
+        for s in skills:
+            folder = _get_skill_folder(s.id)
+            lessons = read_lessons(folder)
+            if lessons:
+                lessons_parts.append(f"### {s.display_name or s.name}\n{lessons[:500]}")
+        if not lessons_parts:
+            return ""
+        return "\n\n".join(lessons_parts)
+    except Exception as e:
+        logger.warning(f"收集经验总结失败: {e}")
+        return ""
+
+
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
 async def generate_skill_endpoint(
     request: SkillGenerateRequest,
@@ -1061,8 +1269,11 @@ async def generate_skill_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """Skill Creator：根据自然语言描述生成完整 Skill 包"""
+    from app.services.skill_creator import generate_skill, create_skill_on_disk
     try:
-        generated = await generate_skill(request.prompt)
+        ds_info = await _build_datasource_info(db, current_user.id)
+        all_lessons = await _collect_all_lessons(db, current_user.id)
+        generated = await generate_skill(request.prompt, datasource_info=ds_info, lessons=all_lessons)
     except Exception as e:
         logger.error(f"Skill Creator 生成失败: {e}")
         raise HTTPException(status_code=500, detail=f"Skill 生成失败: {str(e)}")
@@ -1084,7 +1295,12 @@ async def generate_skill_endpoint(
             shutil.rmtree(folder)
         raise HTTPException(status_code=500, detail=f"Skill 文件夹创建失败: {e}")
 
-    name = front_matter.get("name", "generated-skill")
+    name = front_matter.get("name", "")
+    if not name or name in ("generate-skill", "generated-skill", "new-skill", "custom-skill", "skill-name"):
+        words = re.sub(r'[^\w\u4e00-\u9fff]', ' ', request.prompt).split()
+        keywords = [w.lower() for w in words[:4] if len(w) > 1]
+        name = "-".join(keywords) if keywords else f"skill-{str(skill_id)[:8]}"
+    name = name.replace("_", "-")
     skill = Skill(
         id=skill_id,
         name=name,
@@ -1099,6 +1315,7 @@ async def generate_skill_endpoint(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
+    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"Skill Creator 已生成技能: {name} ({skill.id})")
     return _build_detail(skill)
 
@@ -1114,9 +1331,12 @@ async def generate_skill_stream_endpoint(
     from app.services.skill_creator import generate_skill_stream, create_skill_on_disk
     import json
 
+    ds_info = await _build_datasource_info(db, current_user.id)
+    all_lessons = await _collect_all_lessons(db, current_user.id)
+
     async def event_stream():
         parsed_data = None
-        async for event in generate_skill_stream(request.prompt):
+        async for event in generate_skill_stream(request.prompt, datasource_info=ds_info, lessons=all_lessons):
             if event["type"] == "done":
                 parsed_data = event["data"]
                 yield f"data: {json.dumps({'type': 'done', 'message': '解析完成，正在创建技能...'}, ensure_ascii=False)}\n\n"
@@ -1150,7 +1370,12 @@ async def generate_skill_stream_endpoint(
             yield f"data: {json.dumps({'type': 'error', 'message': f'文件夹创建失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        name = front_matter.get("name", "generated-skill")
+        name = front_matter.get("name", "")
+        if not name or name in ("generate-skill", "generated-skill", "new-skill", "custom-skill", "skill-name"):
+            words = re.sub(r'[^\w\u4e00-\u9fff]', ' ', request.prompt).split()
+            keywords = [w.lower() for w in words[:4] if len(w) > 1]
+            name = "-".join(keywords) if keywords else f"skill-{str(skill_id)[:8]}"
+        name = name.replace("_", "-")
         skill = Skill(
             id=skill_id,
             name=name,
@@ -1165,6 +1390,7 @@ async def generate_skill_stream_endpoint(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
+        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill Creator 流式生成技能: {name} ({skill.id})")
 
         from app.schemas.skill import SkillDetailResponse
@@ -1208,6 +1434,7 @@ async def clone_skill(
     db.add(clone)
     await db.flush()
     await db.refresh(clone)
+    await _sync_scripts_to_operators(clone, clone_folder, db, current_user)
     return _build_detail(clone)
 
 
@@ -1282,6 +1509,7 @@ async def modify_skill(
 
     await db.flush()
     await db.refresh(skill)
+    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"技能已通过AI修改: {skill.name} ({skill.id})")
     return _build_detail(skill)
 
@@ -1363,6 +1591,7 @@ async def modify_skill_stream(
 
             await db.flush()
             await db.refresh(skill)
+            await _sync_scripts_to_operators(skill, folder, db, current_user)
             logger.info(f"技能已通过AI流式修改: {skill.name} ({skill.id})")
 
             detail = _build_detail(skill)
@@ -1453,59 +1682,92 @@ def _extract_argparse_params(script_content: str, tree) -> list[SkillParamDef]:
     return params
 
 
+_BUILTIN_SKILL_FUNCTIONS = frozenset({
+    "query_table_data", "get_table_data", "get_table_schema",
+    "get_datasource_id_by_name", "write_table_data",
+})
+
+
 def _extract_function_params(tree) -> list[SkillParamDef]:
     import ast as _ast
-    params = []
+
+    def _calls_builtin(func_node: _ast.FunctionDef) -> bool:
+        for child in _ast.walk(func_node):
+            if isinstance(child, _ast.Call) and isinstance(child.func, _ast.Name):
+                if child.func.id in _BUILTIN_SKILL_FUNCTIONS:
+                    return True
+        return False
+
+    def _count_params(func_node: _ast.FunctionDef) -> int:
+        return sum(
+            1 for a in func_node.args.args
+            if a.arg not in ("self", "cls", "df", "input_data", "data")
+        )
+
+    candidates: list[tuple[_ast.FunctionDef, bool, int]] = []
     for node in _ast.walk(tree):
         if not isinstance(node, _ast.FunctionDef):
             continue
         if node.name.startswith("_"):
             continue
-        for arg in node.args.args:
-            if arg.arg in ("self", "cls", "df", "input_data", "data"):
-                continue
-            pname = arg.arg
-            ptype = "str"
-            if arg.annotation:
-                ann_str = ""
-                if isinstance(arg.annotation, _ast.Name):
-                    ann_str = arg.annotation.id
-                elif isinstance(arg.annotation, _ast.Constant):
-                    ann_str = str(arg.annotation.value)
-                elif isinstance(arg.annotation, _ast.Subscript):
-                    if isinstance(arg.annotation.value, _ast.Name):
-                        ann_str = arg.annotation.value.id
-                type_map = {"int": "int", "float": "float", "bool": "bool",
-                            "List": "list", "Optional": "str", "Dict": "dict",
-                            "str": "str"}
-                ptype = type_map.get(ann_str, "str")
+        candidates.append((node, _calls_builtin(node), _count_params(node)))
 
-            is_datasource = "datasource" in pname and "id" not in pname
-            is_table = "table" in pname and "id" not in pname
-            is_list = ptype == "list"
+    if not candidates:
+        return []
 
-            has_default = False
-            default_val = None
-            defaults_start = len(node.args.args) - len(node.args.defaults)
-            arg_idx = node.args.args.index(arg)
-            if arg_idx >= defaults_start:
-                has_default = True
-                dv = node.args.defaults[arg_idx - defaults_start]
-                if isinstance(dv, _ast.Constant):
-                    default_val = dv.value
-                elif isinstance(dv, _ast.NoneType):
-                    default_val = None
+    builtin = [c for c in candidates if c[1]]
+    if builtin:
+        best_node = max(builtin, key=lambda c: c[2])[0]
+    else:
+        best_node = max(candidates, key=lambda c: c[2])[0]
 
-            params.append(SkillParamDef(
-                name=pname,
-                type=ptype,
-                required=not has_default,
-                default=default_val,
-                is_datasource=is_datasource,
-                is_table=is_table,
-                is_list=is_list,
-            ))
-        break
+    params = []
+    for arg in best_node.args.args:
+        if arg.arg in ("self", "cls", "df", "input_data", "data"):
+            continue
+        pname = arg.arg
+        ptype = "str"
+        if arg.annotation:
+            ann_str = ""
+            if isinstance(arg.annotation, _ast.Name):
+                ann_str = arg.annotation.id
+            elif isinstance(arg.annotation, _ast.Constant):
+                ann_str = str(arg.annotation.value)
+            elif isinstance(arg.annotation, _ast.Subscript):
+                if isinstance(arg.annotation.value, _ast.Name):
+                    ann_str = arg.annotation.value.id
+                elif isinstance(arg.annotation.value, _ast.Attribute):
+                    ann_str = arg.annotation.value.attr
+            type_map = {"int": "int", "float": "float", "bool": "bool",
+                        "List": "list", "Optional": "str", "Dict": "dict",
+                        "str": "str"}
+            ptype = type_map.get(ann_str, "str")
+
+        is_datasource = "datasource" in pname and "id" not in pname
+        is_table = "table" in pname and "id" not in pname
+        is_list = ptype == "list"
+
+        has_default = False
+        default_val = None
+        defaults_start = len(best_node.args.args) - len(best_node.args.defaults)
+        arg_idx = best_node.args.args.index(arg)
+        if arg_idx >= defaults_start:
+            has_default = True
+            dv = best_node.args.defaults[arg_idx - defaults_start]
+            if isinstance(dv, _ast.Constant):
+                default_val = dv.value
+            elif isinstance(dv, _ast.NoneType):
+                default_val = None
+
+        params.append(SkillParamDef(
+            name=pname,
+            type=ptype,
+            required=not has_default,
+            default=default_val,
+            is_datasource=is_datasource,
+            is_table=is_table,
+            is_list=is_list,
+        ))
     return params
 
 

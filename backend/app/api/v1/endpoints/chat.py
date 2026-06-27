@@ -34,9 +34,6 @@ from app.api.deps import get_current_user
 from app.services.llm import llm_manager
 from app.services.nl_service import NLService
 from app.services.skill_library import skill_library
-from app.services.connectors import get_connector
-from app.services.agent import agent_service, AgentContext
-from app.services.agent_config import agent_config
 
 router = APIRouter()
 
@@ -56,10 +53,12 @@ except FileNotFoundError:
 @router.get("/agent/config")
 async def get_agent_config():
     """获取Agent配置信息"""
+    from app.services.agent_config import agent_config
     return agent_config.to_dict()
 
 
 def _build_system_prompt(datasource_context: str) -> str:
+    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     persona_block = f"{ASSISTANT_PERSONA}\n\n---\n\n" if ASSISTANT_PERSONA else ""
     return f"""{persona_block}## 数据源知识库
 {datasource_context}
@@ -69,38 +68,9 @@ def _build_system_prompt(datasource_context: str) -> str:
 请基于这些真实数据直接告诉用户数据的内容，比如列出表中有哪些字段、前几行数据是什么。
 如果数据较多，请概括总结数据的特征（如总行数、列名、数据类型等）。
 
-## 操作边界（安全红线）
-你是数据处理助手，只能处理用户的数据。你**绝对不能**修改 DataCrab 平台自身，包括：
-- 不得删除、修改平台的用户、角色、权限等系统数据
-- 不得修改平台源代码、配置文件、数据库结构
-- 不得生成针对平台自身数据库的查询或操作脚本
-- 不得通过文件链接向 DataCrab 项目目录写入任何文件
-但你**可以**帮用户创建和修改用户自己的内容：
-- ✅ 创建/修改/删除用户的对话、会话
-- ✅ 创建/修改/调试/删除用户的算子和技能
-- ✅ 查询/处理/分析用户数据源中的业务数据
-关键区分：算子和技能中的脚本只能操作用户的业务数据，不能操作平台系统数据。
-如果用户要求修改平台本身，请明确拒绝："DataCrab 是数据处理助手，我只能帮你处理业务数据和创建/修改你自己的对话、算子、技能，不能修改 DataCrab 平台自身。"
+{SANDBOX_TOOLS_DOC}
 
-## 脚本内置工具函数
-如果需要帮用户编写算子或技能脚本，请注意以下内置函数（由运行环境自动注入，脚本中直接使用，无需 import）：
-- `query_table_data(datasource_id, table_name, limit=1000)` → 查询数据，返回 dict 或 DataFrame
-- `get_table_schema(datasource_id, table_name)` → 获取表结构
-- `get_datasource_id_by_name(name)` → 按名称查找数据源ID
-⚠️ 脚本中**绝对禁止** `import datacrab` 或 `pip install datacrab`，datacrab 包不存在！
-⚠️ 上述函数由运行环境注入，直接调用即可
-
-## 修改后必验证
-当你通过对话帮助用户修改了任何数据处理逻辑、脚本或配置后，你必须：
-1. 主动建议用户测试修改结果，或尝试执行验证
-2. 如果修改涉及数据处理脚本，建议用户使用算子调试或技能调试功能验证
-3. 如果验证发现问题，立即提供修复方案
-
-## 输出默认同源
-数据处理生成新文件时，如果用户未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。
-- 如果知道 DataSource 的文件路径（如 D:\\wenwu\\全国文物.xlsx），输出文件默认保存到 D:\\wenwu\\ 下
-- 如果 DataSource 来自数据库，主动询问用户输出路径
-- 始终告知用户输出文件的默认位置，让用户确认或修改"""
+{SAFETY_RULES_DOC}"""
 
 
 async def build_datasource_context(
@@ -363,6 +333,7 @@ def _parse_complex_query(user_message: str) -> dict:
 
 async def _query_datasource_previews(sources, user_message: str) -> str:
     """查询用户消息中提到的数据源的实际数据预览"""
+    from app.services.connectors import get_connector
     if not user_message:
         return ""
 
@@ -831,6 +802,8 @@ async def stream_response(
                 messages.append({"role": msg.role, "content": msg.content})
 
             messages.append({"role": "user", "content": request.content})
+
+            from app.services.agent import agent_service, AgentContext
 
             agent_ctx = AgentContext(
                 db=db,

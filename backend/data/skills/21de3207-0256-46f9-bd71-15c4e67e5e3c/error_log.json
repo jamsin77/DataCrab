@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-06-26T10:07:59.011685",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpqzcy3xay.py\", line 757, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpqzcy3xay.py\", line 498, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '全国重点文物'",
+    "parameters": {
+      "source_datasource_name": "全国重点文物",
+      "source_table_name": "文物列表",
+      "target_datasource_name": "文物库",
+      "target_table_name": "文物列表"
+    },
+    "stdout_preview": "████████████████████████████████████████████████████████████\n█  自测验证\n████████████████████████████████████████████████████████████\n\n============================================================\n🧪 自测：列转换",
+    "source": "run-nl-stream"
+  }
+]
