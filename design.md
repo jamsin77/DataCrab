@@ -1,46 +1,107 @@
-﻿# DataCrab 技术架构设计文�?
+﻿# DataCrab 技术架构设计文档
 ## 1. 系统架构概览
 
 ### 1.1 整体架构
-采用分层微服务架�?支持本地单机部署和分布式部署两种模式。核心是ChatGPT风格的人机聊天交互界�?用户通过自然语言对话与系统交互处理数据�?
+采用分层微服务架构，支持本地单机部署和分布式部署两种模式。核心是ChatGPT风格的人机聊天交互界面，用户通过自然语言对话与系统交互处理数据。
 ```
-┌─────────────────────────────────────────────────────────────�?�?             人机交互界面�?(HMI Interface)                 �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?  ChatGPT风格对话界面                               �?  �?�? �?  - 简洁的聊天消息�?                               �?  �?�? �?  - 自然语言对话输入                                �?  �?�? �?  - 智能意图识别和建�?                             �?  �?�? �?  - 对话历史管理                                    �?  �?�? �?  - 多会话切�?                                     �?  �?�? �?  - 流式响应展示                                    �?  �?�? �?  - 代码块高亮和复制                                �?  �?�? �?  - Markdown渲染                                    �?  �?�? └─────────────────────────────────────────────────────�?  �?└─────────────────────────────────────────────────────────────�?                              �?WebSocket/HTTP
-┌─────────────────────────────────────────────────────────────�?�?                     前端应用�?(Frontend)                      �?�?             Vue 3 + Element Plus + TypeScript               �?└─────────────────────────────────────────────────────────────�?                              �?HTTPS
-┌─────────────────────────────────────────────────────────────�?�?                     API网关�?(Gateway)                      �?�?         认证鉴权 | 限流熔断 | 路由转发 | 日志审计              �?└─────────────────────────────────────────────────────────────�?                              �?┌─────────────────────────────────────────────────────────────�?�?                     业务服务�?(Services)                    �?├──────────────┬──────────────┬──────────────┬────────────────�?�?NL处理服务   �?代码生成服务  �?执行服务      �?数据源服�?     �?�?NL Service   �?CodeGen      �?Executor      �?DataSource     �?├──────────────┼──────────────┼──────────────┼────────────────�?�?技能管理服�? �?调度服务      �?权限服务      �?元数据服�?     �?�?Skill Manager�?Scheduler     �?Auth          �?Metadata       �?└──────────────┴──────────────┴──────────────┴────────────────�?                              �?┌─────────────────────────────────────────────────────────────�?�?                     核心引擎�?(Engine)                      �?├──────────────┬──────────────┬──────────────┬────────────────�?�?NL理解引擎    �?代码生成引擎  �?执行引擎      �?调度引擎        �?�?NL Engine    �?Code Engine   �?Exec Engine   �?Sched Engine   �?└──────────────┴──────────────┴──────────────┴────────────────�?                              �?┌─────────────────────────────────────────────────────────────�?�?                     数据存储�?(Storage)                     �?├──────────────┬──────────────┬──────────────┬────────────────�?�?PostgreSQL   �?Redis        �?MinIO        �?Elasticsearch  �?�?业务数据      �?缓存/队列     �?文件存储      �?日志/检�?      �?└──────────────┴──────────────┴──────────────┴────────────────�?```
+┌───────────────────────────────────────────────────────────────┐
+│                 人机交互界面 (HMI Interface)                  │
+├───────────────────────────────────────────────────────────────┤
+│ChatGPT风格对话界面                                            │
+│- 简洁的聊天消息流                                             │
+│- 自然语言对话输入                                             │
+│- 智能意图识别和建议                                           │
+│- 对话历史管理                                                 │
+│- 多会话切换                                                   │
+│- 流式响应展示                                                 │
+│- 代码块高亮和复制                                             │
+│- Markdown渲染                                                 │
+└───────────────────────────────────────────────────────────────┘
+                               │                               
+                        WebSocket/HTTP                         
+                               ▼                               
+┌───────────────────────────────────────────────────────────────┐
+│                      前端应用 (Frontend)                      │
+├───────────────────────────────────────────────────────────────┤
+│               Vue 3 + Element Plus + TypeScript               │
+└───────────────────────────────────────────────────────────────┘
+                               │                               
+                             HTTPS                             
+                               ▼                               
+┌───────────────────────────────────────────────────────────────┐
+│                       API网关 (Gateway)                       │
+├───────────────────────────────────────────────────────────────┤
+│           认证鉴权 | 限流熔断 | 路由转发 | 日志审计           │
+└───────────────────────────────────────────────────────────────┘
+                               │                               
+                                                               
+                               ▼                               
+┌───────────────────────────────────────────────────────────────┐
+│                      业务服务 (Services)                      │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│ NL处理服务   │ 代码生成服务 │ 执行服务     │ 数据源服务     │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│ NL Service   │ CodeGen      │ Executor     │ DataSource     │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│ 技能管理服务 │ 调度服务     │ 权限服务     │ 元数据服务     │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│ Skill Manager│ Scheduler    │ Auth         │ Metadata       │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+                               │                               
+                                                               
+                               ▼                               
+┌───────────────────────────────────────────────────────────────┐
+│                       核心引擎 (Engine)                       │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│ NL理解引擎   │ 代码生成引擎 │ 执行引擎     │ 调度引擎       │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│ NL Engine    │ Code Engine  │ Exec Engine  │ Sched Engine   │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+                               │                               
+                                                               
+                               ▼                               
+┌───────────────────────────────────────────────────────────────┐
+│                      数据存储 (Storage)                       │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│ PostgreSQL   │ Redis        │ MinIO        │ Elasticsearch  │
+├──────────────┼──────────────┼──────────────┼────────────────┤
+│ 业务数据     │ 缓存/队列    │ 文件存储     │ 日志/检索      │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+```
 
 ### 1.2 技术栈选型
 
 #### 人机交互界面技术栈
 - **框架**: Vue 3 + Composition API
 - **UI组件**: Element Plus
-- **状态管�?*: Pinia
+- **状态管理**: Pinia
 - **路由**: Vue Router 4
-- **HTTP客户�?*: Axios
-- **WebSocket**: 原生WebSocket + Socket.io
+- **HTTP客户端**: Axios
+- **WebSocket**: 原生 EventSource（流式响应）
 - **Markdown渲染**: markdown-it + highlight.js
-- **代码高亮**: highlight.js + Prism.js
-- **实时通信**: WebSocket + EventSource (流式响应)
-- **数据可视�?*: ECharts + D3.js
-- **代码编辑**: Monaco Editor (代码块编�?
-- **动画效果**: animate.css (消息动画)
+- **代码高亮**: highlight.js
+- **实时通信**: EventSource (SSE流式响应)
+- **数据可视化**: ECharts
+- **代码编辑**: Monaco Editor (代码块编辑)
+- **流程可视化**: @vue-flow/core (流程图展示)
 
 #### 后端技术栈
-- **语言**: Python 3.9+
+- **语言**: Python 3.11+
 - **Web框架**: FastAPI
 - **ORM**: SQLAlchemy 2.0
-- **任务队列**: Celery + Redis
+- **任务队列**: Celery + Redis（可选，生产环境启用）
 - **异步支持**: asyncio + uvicorn
-- **大模型集�?*: LangChain / LlamaIndex
-- **代码生成**: AST + Jinja2
+- **大模型集成**: 智谱GLM / OpenAI兼容接口
+- **代码生成**: AST解析 + LLM工具调用
 
 #### 数据存储
-- **关系数据�?*: PostgreSQL 14+ (主数据库)
-- **缓存**: Redis 7+ (缓存、会话、消息队�?
+- **关系数据库**: SQLite（开发/单机部署）/ PostgreSQL 14+（生产/分布式部署）
+- **缓存**: Redis 7+ (缓存、会话、消息队列)
 - **对象存储**: MinIO (文件、代码包)
-- **搜索引擎**: Elasticsearch 8+ (日志、全文检�?
+- **搜索引擎**: Elasticsearch 8+ (日志、全文检索，可选)
 
 #### 基础设施
-- **容器�?*: Docker + Docker Compose
+- **容器化**: Docker + Docker Compose
 - **反向代理**: Nginx
 - **监控**: Prometheus + Grafana
 - **日志**: ELK Stack
@@ -51,11 +112,44 @@
 
 #### 2.1.1 界面架构设计
 ```
-┌─────────────────────────────────────────────────────────────�?�?             ChatGPT风格对话界面 (Chat Interface)            �?├─────────────────────────────────────────────────────────────�?�? ┌─────────────────────────────────────────────────────�?  �?�? �?  主界面布局 (简洁单页面)                           �?  �?�? �?  - 左侧边栏 (会话历史列表、新建会话、设�?         �?  �?�? �?  - 中间聊天区域 (消息流、输入框)                   �?  �?�? �?  - 顶部工具�?(模型选择、清空会话、导�?           �?  �?�? └─────────────────────────────────────────────────────�?  �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?  聊天消息�?                                       �?  �?�? �?  - 用户消息 (右侧显示)                             �?  �?�? �?  - AI助手消息 (左侧显示，支持Markdown)             �?  �?�? �?  - 代码�?(语法高亮、复制按钮、执行按�?           �?  �?�? �?  - 数据表格 (可排序、筛选、导�?                   �?  �?�? �?  - 图表可视�?(ECharts交互图表)                    �?  �?�? �?  - 流式响应 (打字机效�?                           �?  �?�? └─────────────────────────────────────────────────────�?  �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?  输入区域                                          �?  �?�? �?  - 多行文本输入�?(支持Shift+Enter换行)            �?  �?�? �?  - 发送按�?(Enter发�?                            �?  �?�? �?  - 停止生成按钮 (流式响应中断)                     �?  �?�? �?  - 附件上传 (支持文件、数据源)                     �?  �?�? └─────────────────────────────────────────────────────�?  �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?  会话管理                                          �?  �?�? �?  - 会话列表 (按时间分组：今天、昨天、更�?         �?  �?�? �?  - 会话搜索和筛�?                                 �?  �?�? �?  - 会话重命名和删除                                �?  �?�? �?  - 会话导出和分�?                                 �?  �?�? └─────────────────────────────────────────────────────�?  �?└─────────────────────────────────────────────────────────────�?```
+┌─────────────────────────────────────────────────────┐
+│        ChatGPT风格对话界面 (Chat Interface)         │
+├─────────────────────────────────────────────────────┤
+│   ┌─────────────────────────────────────────────┐   │
+│   │  主界面布局 (简洁单页面)                    │   │
+│   │  - 左侧边栏 (会话历史列表、新建会话、设置)  │   │
+│   │  - 中间聊天区域 (消息流、输入框)            │   │
+│   │  - 顶部工具栏 (模型选择、清空会话、导出)    │   │
+│   └─────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────┐   │
+│   │  聊天消息区                                 │   │
+│   │  - 用户消息 (右侧显示)                      │   │
+│   │  - AI助手消息 (左侧显示，支持Markdown)      │   │
+│   │  - 代码块 (语法高亮、复制按钮、执行按钮)    │   │
+│   │  - 数据表格 (可排序、筛选、导出)            │   │
+│   │  - 图表可视化 (ECharts交互图表)             │   │
+│   │  - 流式响应 (打字机效果)                    │   │
+│   └─────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────┐   │
+│   │  输入区域                                   │   │
+│   │  - 多行文本输入框 (支持Shift+Enter换行)     │   │
+│   │  - 发送按钮 (Enter发送)                     │   │
+│   │  - 停止生成按钮 (流式响应中断)              │   │
+│   │  - 附件上传 (支持文件、数据源)              │   │
+│   └─────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────┐   │
+│   │  会话管理                                   │   │
+│   │  - 会话列表 (按时间分组：今天、昨天、更早)  │   │
+│   │  - 会话搜索和筛选                           │   │
+│   │  - 会话重命名和删除                         │   │
+│   │  - 会话导出和分享                           │   │
+│   └─────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
 
 #### 2.1.2 ChatGPT风格对话界面设计
 
-界面设计原则�?*简洁、以自然语言交互为核�?*�?
+界面设计原则：**简洁、以自然语言交互为核心**
 ##### 核心交互流程
 ```
 用户输入自然语言 ─────────────────────────────────────────>
@@ -77,11 +171,11 @@ AI回复：- 文本解释
 
 ##### 主要交互场景
 
-**场景1：数据处�?*
+**场景1：数据处理**
 ```
 用户：帮我分析销售数据，统计每个地区的总销售额
 
-AI：我理解您需要按地区统计销售额，正在处�?..
+AI：我理解您需要按地区统计销售额，正在处理...
 
     [执行代码] df.groupby('region')['sales'].sum()
 
@@ -91,50 +185,92 @@ AI：我理解您需要按地区统计销售额，正在处�?..
     北京      | 125000
     上海      | 98000
 
-    [可视化图表] 显示柱状�?..
+    [可视化图表] 显示柱状图...
 ```
 
-**场景2：创建算�?*
+**场景2：创建算子**
 ```
-用户：创建一个算子，计算移动平均�?
-AI：正在为您创建算�?..
+用户：创建一个算子，计算移动平均值
+AI：正在为您创建算子...
 
     算子名称：moving_average
-    参数：column（列名）、window（窗口大小，默认7�?    已生成代码并测试通过，算子已注册�?```
+    参数：column（列名）、window（窗口大小，默认7）    已生成代码并测试通过，算子已注册。```
 
-**场景3：创�?Skill Pipeline**
+**场景3：创建Skill Pipeline**
 ```
-用户：帮我创建一个数据分析流程：先清洗数据，再过滤异常值，最后统�?
-AI：正在创�?Pipeline...
+用户：帮我创建一个数据分析流程：先清洗数据，再过滤异常值，最后统计
+AI：正在创建Pipeline...
 
     Pipeline 名称：data_analysis_flow
-    步骤：数据清�?�?异常值过�?�?统计分析
+    步骤：数据清洗 → 异常值过滤 → 统计分析
 
-    Pipeline 已创建，可直接运行或保存�?Skill�?```
+    Pipeline 已创建，可直接运行或保存为Skill。```
 
-##### 界面布局（极简�?```
-┌─────────────────────────────────────────────────────────────�?�? [新建会话]                                                  �?├─────────────────────────────────────────────────────────────�?�? 会话列表                                                    �?�? �?今天                                                     �?�? �?�?销售数据分�?                                          �?�? �?�?创建算子会话                                           �?├─────────────────────────────────────────────────────────────�?�?                                                            �?�? [消息流]                                                    �?�?                                                            �?�? 用户：帮我分析销售数�?..                                   �?�?                                                            �?�? AI：正在处�?..                                             �?�?     [代码块] [复制] [执行]                                  �?�?     [结果表格] [导出]                                       �?�?     [图表]                                                  �?�?                                                            �?├─────────────────────────────────────────────────────────────�?�? [输入框] 输入消息...                        [发送]          �?└─────────────────────────────────────────────────────────────�?```
+##### 界面布局（极简版）```
+┌─────────────────────────────────────────────────────────────┐
+│[新建会话]                                                   │
+├─────────────────────────────────────────────────────────────┤
+│会话列表                                                     │
+│  • 今天                                                     │
+│    • 销售数据分析                                           │
+│    • 创建算子会话                                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│[消息流]                                                     │
+│                                                             │
+│用户：帮我分析销售数据...                                    │
+│                                                             │
+│AI：正在处理...                                              │
+│    [代码块] [复制] [执行]                                   │
+│    [结果表格] [导出]                                        │
+│    [图表]                                                   │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│[输入框] 输入消息...                                   [发送]│
+└─────────────────────────────────────────────────────────────┘
+```
 
 ##### 输入区域功能
-- 多行文本输入（Shift+Enter换行�?- 支持附件上传（数据文件）
+- 多行文本输入（Shift+Enter换行）- 支持附件上传（数据文件）
 - 快捷命令：`/create-operator`、`/create-pipeline`、`/run`
 
 ##### 消息展示功能
 - Markdown渲染
-- 代码块语法高�?+ 一键复�?执行
+- 代码块语法高亮 + 一键复制/执行
 - 数据表格预览 + 导出
-- 图表可视�?- 流式响应（打字机效果�?
+- 图表可视化 - 流式响应（打字机效果）
 #### 2.1.3 Notebook数据分析环境设计
 
-Notebook 界面为用户提供代码编辑和执行环境，作为对话交互的补充�?
+Notebook 界面为用户提供代码编辑和执行环境，作为对话交互的补充。
 ##### 核心功能
 - 代码单元格（可单独执行）
-- Markdown单元格（文档说明�?- 执行结果展示
-- 内核管理（Python/SQL�?- 保存/分享/导出
+- Markdown单元格（文档说明）- 执行结果展示
+- 内核管理（Python/SQL）- 保存/分享/导出
 
 ##### 界面布局
 ```
-┌─────────────────────────────────────────────────────────────�?�? 工具栏：[添加代码] [添加MD] | [运行全部] [重启] [保存] [分享] �?├─────────────────────────────────────────────────────────────�?�?                                                            �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?Cell 1: 代码单元�?                                  �?  �?�? �?import pandas as pd                                  �?  �?�? �?df = pd.read_csv('data.csv')                        �?  �?�? �?[运行]                                               �?  �?�? ├─────────────────────────────────────────────────────�?  �?�? �?输出:                                                �?  �?�? �?DataFrame loaded, shape: (1000, 5)                  �?  �?�? └─────────────────────────────────────────────────────�?  �?�?                                                            �?�? ┌─────────────────────────────────────────────────────�?  �?�? �?Cell 2: Markdown单元�?                              �?  �?�? �?## 数据分析                                          �?  �?�? �?对销售数据进行统计分�?                              �?  �?�? └─────────────────────────────────────────────────────�?  �?�?                                                            �?└─────────────────────────────────────────────────────────────�?```
+┌───────────────────────────────────────────────────────────────────┐
+│工具栏：[添加代码] [添加MD] | [运行全部] [重启] [保存] [分享]      │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│ ┌───────────────────────────────────────────────────────────────┐ │
+│ │Cell 1: 代码单元格                                             │ │
+│ │import pandas as pd                                            │ │
+│ │df = pd.read_csv('data.csv')                                   │ │
+│ │[运行]                                                         │ │
+│ ├───────────────────────────────────────────────────────────────┤ │
+│ │输出:                                                          │ │
+│ │DataFrame loaded, shape: (1000, 5)                             │ │
+│ └───────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+│ ┌───────────────────────────────────────────────────────────────┐ │
+│ │Cell 2: Markdown单元格                                         │ │
+│ │## 数据分析                                                    │ │
+│ │对销售数据进行统计分析                                         │ │
+│ └───────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
 
 #### 2.1.4 数据探索面板设计
 
@@ -161,13 +297,35 @@ Notebook 界面为用户提供代码编辑和执行环境，作为对话交互�
 └─────────────┴────────┴─────────────────────────────────────┘
 ```
 
-### 2.2 数据源管理模�?
+### 2.2 数据源管理模块
 #### 2.2.1 架构设计
 ```
-┌─────────────────────────────────────────�?�?        DataSource Manager              �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Connection Pool Manager       �?  �?�? �?  - 连接池管�?                  �?  �?�? �?  - 连接健康检�?                �?  �?�? �?  - 连接复用                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Connector Registry            �?  �?�? �?  - 内置连接器注�?              �?  �?�? �?  - 自定义连接器注册             �?  �?�? �?  - 连接器生命周期管�?          �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Metadata Extractor            �?  �?�? �?  - 技术元数据提取               �?  �?�? �?  - 样本数据采集                 �?  �?�? �?  - 数据质量分析                 �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+┌───────────────────────────────────────────────┐
+│              DataSource Manager               │
+├───────────────────────────────────────────────┤
+│   ┌───────────────────────────────────────┐   │
+│   │  Connection Pool Manager              │   │
+│   │  - 连接池管理                         │   │
+│   │  - 连接健康检查                       │   │
+│   │  - 连接复用                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Connector Registry                   │   │
+│   │  - 内置连接器注册                     │   │
+│   │  - 自定义连接器注册                   │   │
+│   │  - 连接器生命周期管理                 │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Metadata Extractor                   │   │
+│   │  - 技术元数据提取                     │   │
+│   │  - 样本数据采集                       │   │
+│   │  - 数据质量分析                       │   │
+│   └───────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+```
 
-#### 2.2.2 连接器插件机�?```python
-# 基础连接器接�?class BaseConnector(ABC):
+#### 2.2.2 连接器插件机制```python
+# 基础连接器接口class BaseConnector(ABC):
     @abstractmethod
     async def connect(self, config: dict) -> Connection:
         """建立连接"""
@@ -180,7 +338,7 @@ Notebook 界面为用户提供代码编辑和执行环境，作为对话交互�
     
     @abstractmethod
     async def get_schema(self) -> List[TableSchema]:
-        """获取数据源结�?""
+        """获取数据源结构"""
         pass
     
     @abstractmethod
@@ -193,14 +351,14 @@ Notebook 界面为用户提供代码编辑和执行环境，作为对话交互�
         """关闭连接"""
         pass
 
-# 内置连接�?- DatabaseConnector (MySQL, PostgreSQL, Oracle, SQL Server)
+# 内置连接器- DatabaseConnector (MySQL, PostgreSQL, Oracle, SQL Server)
 - FileConnector (CSV, Excel, JSON, Parquet)
 - APIConnector (REST API, GraphQL)
 - BigDataConnector (Hive, Spark, Kafka)
 - CloudConnector (S3, OSS, Azure Blob)
 ```
 
-#### 2.2.3 数据源配置模�?```python
+#### 2.2.3 数据源配置模型```python
 class DataSource(Base):
     __tablename__ = "data_sources"
     
@@ -209,7 +367,7 @@ class DataSource(Base):
     type = Column(String(50), nullable=False)  # mysql, postgres, api, file
     connection_config = Column(JSON, nullable=False)  # 加密存储
     metadata = Column(JSON)  # 技术元数据
-    business_metadata = Column(JSON)  # 业务元数�?    security_level = Column(String(20))  # 安全等级
+    business_metadata = Column(JSON)  # 业务元数据    security_level = Column(String
     created_by = Column(UUID, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
@@ -221,15 +379,15 @@ class DataSource(Base):
 #### 2.3.1 NL处理流程
 ```
 用户输入(自然语言)
-    �?意图识别(Intent Recognition)
-    �?实体提取(Entity Extraction)
-    �?技能匹�?Skill Matching)
-    �?代码生成(Code Generation)
-    �?参数推理(Parameter Inference)
-    �?执行计划(Execution Plan)
+    → 意图识别(Intent Recognition)
+    → 实体提取(Entity Extraction)
+    → 技能匹配(Skill Matching)
+    → 代码生成(Code Generation)
+    → 参数推理(Parameter Inference)
+    → 执行计划(Execution Plan)
 ```
 
-#### 2.3.2 大模型集成架�?```python
+#### 2.3.2 大模型集成架构```python
 class LLMManager:
     """大模型管理器"""
     
@@ -477,11 +635,11 @@ class SkillLibrary:
     
     def __init__(self, embedding_service):
         self.skills = {}  # 技能注册表
-        self.embeddings = {}  # 技能向量索�?        self.embedding_service = embedding_service
+        self.embeddings = {}  # 技能向量索引        self.embedding_service = embeddin
     
     async def register_skill(self, skill: Skill):
-        """注册技�?""
-        # 生成技能描述向�?        embedding = await self.embedding_service.embed(
+        """注册技能"""
+        # 生成技能描述向量        embedding = await self.embedding_service.embed(
             skill.description + " " + skill.get_usage_example()
         )
         self.skills[skill.id] = skill
@@ -493,18 +651,18 @@ class SkillLibrary:
         top_k: int = 5,
         filters: dict = None
     ) -> List[Skill]:
-        """搜索相似技�?""
+        """搜索相似技能"""
         # 生成查询向量
         query_embedding = await self.embedding_service.embed(query)
         
-        # 向量相似度搜�?        similarities = self.cosine_similarity(query_embedding, self.embeddings)
+        # 向量相似度搜索        similarities = self.cosine_similarity(query_embedding,
         
-        # 过滤和排�?        filtered_skills = self.filter_skills(similarities, filters)
+        # 过滤和排序        filtered_skills = self.filter_skills(similarities, filte
         
         return filtered_skills[:top_k]
     
     async def get_skill(self, skill_id: str) -> Skill:
-        """获取技�?""
+        """获取技能"""
         return self.skills.get(skill_id)
     
     async def get_skill_executor(self, skill_id: str):
@@ -513,7 +671,7 @@ class SkillLibrary:
         return skill.get_executor()
 ```
 
-#### 2.3.4 技能定义模�?```python
+#### 2.3.4 技能定义模型```python
 class Skill(Base):
     __tablename__ = "skills"
     
@@ -522,7 +680,7 @@ class Skill(Base):
     display_name = Column(String(200))
     description = Column(Text, nullable=False)
     
-    # 技能类�?    skill_type = Column(String(50))  # operator, function, workflow
+    # 技能类型    skill_type = Column(String(50))  # operator, function, workflow
     
     # 输入输出定义
     inputs = Column(JSON)
@@ -569,28 +727,28 @@ class Skill(Base):
     }
     """
     
-    # 使用示例(用于向量�?
+    # 使用示例(用于向量检索)
     usage_examples = Column(JSON)
     """
     [
-        "选择用户表中的姓名和年龄�?,
+        "选择用户表中的姓名和年龄",
         "从订单数据中提取订单号和金额",
-        "筛选出销售数据中的商品名称和销�?
+        "筛选出销售数据中的商品名称和销售额"
     ]
     """
     
-    # 技能标�?用于分类和搜�?
+    # 技能标签，用于分类和搜索
     tags = Column(JSON)
     """
-    ["数据选择", "列操�?, "基础算子"]
+    ["数据选择", "列操作", "基础算子"]
     """
     
-    # 技能分�?    category = Column(String(50))
+    # 技能分类    category = Column(String(50))
     """
     transform, aggregate, filter, join, analyze
     """
     
-    # 元数�?    version = Column(String(20), default="1.0.0")
+    # 元数据    version = Column(String(20), default="1.0.0")
     author = Column(UUID, ForeignKey("users.id"))
     
     # 权限
@@ -615,12 +773,12 @@ class Skill(Base):
             raise ValueError(f"Unsupported executor type: {config['type']}")
     
     def _get_python_executor(self, config):
-        """获取Python函数执行�?""
+        """获取Python函数执行器"""
         module = importlib.import_module(config["module"])
         return getattr(module, config["function"])
     
     def _get_lambda_executor(self, config):
-        """获取Lambda执行�?""
+        """获取Lambda执行器"""
         return eval(config["code"])
 ```
 
@@ -2467,7 +2625,7 @@ class EventStore:
 | `skill.py` | DataProcessor 的 `generate_skill`/`modify_script`/`run_script` 工具调用现有端点 |
 | `connectors.py` | 两个智能体都通过 `get_connector` 读写数据 |
 | `skill_parser.py` | DataInspector 的经验总结注入 DataProcessor 的提示词 |
-| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现 |
+| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现（实际文件为 `inspector_tools.py`） |
 
 #### 2.7.13 API 端点
 
@@ -2539,22 +2697,56 @@ class EventStore:
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **Phase 1** | 基础框架：BaseAgent + AgentRegistry + AgentRuntime + Handoff 机制 | ⬜ 待实现 |
-| **Phase 2** | DataProcessor 智能体：将现有 agent.py 重构为 DataProcessor | ⬜ 待实现 |
-| **Phase 3** | DataInspector 智能体：实现检查工具 + 系统提示词 | ⬜ 待实现 |
-| **Phase 4** | 前端：智能体状态指示 + 检查报告页 | ⬜ 待实现 |
-| **Phase 5** | 事件存储与溯源 | ⬜ 待实现 |
+| **Phase 1** | 基础框架：BaseAgent + AgentRegistry + AgentRuntime + Handoff 机制 | ✅ 已完成 |
+| **Phase 2** | DataProcessor 智能体：将现有 agent.py 重构为 DataProcessor | ✅ 已完成 |
+| **Phase 3** | DataInspector 智能体：实现检查工具 + 系统提示词 | ✅ 已完成 |
+| **Phase 4** | 前端：chat.py 路由层智能体分派 + Inspector API | ✅ 已完成 |
+| **Phase 5** | 事件存储与溯源（EventStore + /events + /lineage 端点） | ✅ 已完成 |
 | **Phase 6** | 扩展：DataGovernor / DataSentinel 等新智能体 | ⬜ 待实现 |
 
-### 2.8 智能代码生成模块
+### 2.8 智能代码生成模块（已废弃）
+
+> **注意**：本节为早期设计，实际未按此实现。代码生成能力已由多智能体框架（§2.7）中的 DataProcessor 智能体承担，通过 LLM 工具调用直接生成算子/技能脚本，无需独立的代码生成引擎。
 
 ### 2.8.1 模块架构
 ```
-┌─────────────────────────────────────────�?�?     Intelligent Code Generator         �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  NL Code Parser                �?  �?�? �?  - 自然语言解析                 �?  �?�? �?  - 意图识别                     �?  �?�? �?  - 实体提取                     �?  �?�? �?  - 代码结构生成                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Skill Composition Engine      �?  �?�? �?  - 技能匹�?                    �?  �?�? �?  - 技能组�?                    �?  �?�? �?  - 参数推理                     �?  �?�? �?  - 代码优化                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────��   �?�? �?  Code Validator                �?  �?�? �?  - 代码验证                     �?  �?�? �?  - 语法检�?                    �?  �?�? �?  - 参数校验                     �?  �?�? �?  - 可执行性分�?                �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Code Executor                 �?  �?�? �?  - 动态算子加�?                �?  �?�? �?  - 代码执行                     �?  �?�? �?  - 结果收集                     �?  �?�? �?  - 错误处理                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+┌───────────────────────────────────────────────┐
+│          Intelligent Code Generator           │
+├───────────────────────────────────────────────┤
+│   ┌───────────────────────────────────────┐   │
+│   │  NL Code Parser                       │   │
+│   │  - 自然语言解析                       │   │
+│   │  - 意图识别                           │   │
+│   │  - 实体提取                           │   │
+│   │  - 代码结构生成                       │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Skill Composition Engine             │   │
+│   │  - 技能匹配                           │   │
+│   │  - 技能组合                           │   │
+│   │  - 参数推理                           │   │
+│   │  - 代码优化                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Code Validator                       │   │
+│   │  - 代码验证                           │   │
+│   │  - 语法检测                           │   │
+│   │  - 参数校验                           │   │
+│   │  - 可执行性分析                       │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Code Executor                        │   │
+│   │  - 动态算子加载                       │   │
+│   │  - 代码执行                           │   │
+│   │  - 结果收集                           │   │
+│   │  - 错误处理                           │   │
+│   └───────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+```
 
 ```python
 class NLCodeGenerator:
-    """自然语言代码生成�?""
+    """自然语言代码生成器"""
     
     def __init__(self, llm_manager, skill_library):
         self.llm_manager = llm_manager
@@ -2570,10 +2762,10 @@ class NLCodeGenerator:
         
         Args:
             nl_description: 自然语言描述
-            context: 上下文信�?数据源、历史等)
+            context: 上下文信息（数据源、历史等）
             
         Returns:
-            生成的流程对�?        """
+            生成的流程对象        """
         
         # 1. 解析自然语言描述
         parsed = await self.parse_nl_description(nl_description)
@@ -2581,11 +2773,11 @@ class NLCodeGenerator:
         # 2. 识别数据处理意图
         intent = await self.recognize_intent(parsed, context)
         
-        # 3. 匹配相关技�?        skills = await self.match_skills(intent)
+        # 3. 匹配相关技能        skills = await self.match_skills(intent)
         
-        # 4. 组合技能形成流�?        code = await self.compose_skills(skills, intent)
+        # 4. 组合技能形成流程        code = await self.compose_skills(skills, intent)
         
-        # 5. 推理和填充参�?        await self.infer_parameters(code, context)
+        # 5. 推理和填充参数        await self.infer_parameters(code, context)
         
         # 6. 验证流程
         validation = await self.validate_code(code)
@@ -2605,16 +2797,16 @@ class NLCodeGenerator:
         """解析自然语言描述"""
         
         prompt = f"""
-        解析以下数据处理需�?提取关键信息:
+        解析以下数据处理需求，提取关键信息:
         
-        需求描�? {text}
+        需求描述: {text}
         
-        请提�?
-        1. 数据源信�?        2. 数据处理步骤
+        请提供：
+        1. 数据源信息        2. 数据处理步骤
         3. 预期输出
         4. 特殊要求
         
-        以JSON格式返回结果�?        """
+        以JSON格式返回结果。        """
         
         response = await self.llm_manager.chat(prompt)
         return NLParseResult.parse(response)
@@ -2625,11 +2817,11 @@ class NLCodeGenerator:
         context: dict
     ) -> ProcessingIntent:
         """识别处理意图"""
-        # 使用大模型识别用户意�?        prompt = f"""
+        # 使用大模型识别用户意图        prompt = f"""
         基于以下解析结果,识别数据处理意图:
         
         解析结果: {parsed.json()}
-        上下�? {context}
+        上下文: {context}
         
         意图类型:
         - 数据清洗
@@ -2647,14 +2839,14 @@ class NLCodeGenerator:
         self,
         intent: ProcessingIntent
     ) -> List[Skill]:
-        """匹配相关技�?""
+        """匹配相关技能"""
         
-        # 1. 从技能库中查找相似技�?        similar_skills = await self.skill_library.search_similar(
+        # 1. 从技能库中查找相似技能        similar_skills = await self.skill_library.searc
             query=intent.description,
             top_k=10
         )
         
-        # 2. 使用大模型选择最合适的技�?        selected_skills = await self.select_skills(
+        # 2. 使用大模型选择最合适的技能        selected_skills = await self.select_skills(
             intent=intent,
             candidates=similar_skills
         )
@@ -2666,22 +2858,22 @@ class NLCodeGenerator:
         skills: List[Skill],
         intent: ProcessingIntent
     ) -> ComposedCode:
-        """组合技能形成流�?""
+        """组合技能形成流程"""
         
         prompt = f"""
-        将以下技能组合成完整的数据处理流�?
+        将以下技能组合成完整的数据处理流程
         
-        可用技�?
+        可用技能：
         {self.format_skills(skills)}
         
         处理意图: {intent.description}
         
-        �?
+        要求：
         1. 确定技能的执行顺序
         2. 定义技能之间的数据流转
         3. 生成流程的DAG结构
         
-        返回JSON格式的流程定义�?        """
+        返回JSON格式的流程定义。        """
         
         response = await self.llm_manager.chat(prompt)
         return ComposedCode.parse(response)
@@ -2691,12 +2883,12 @@ class NLCodeGenerator:
         code: ComposedCode,
         context: dict
     ):
-        """推理和填充参�?""
+        """推理和填充参数"""
         
         for step in code.steps:
             skill = step.skill
             
-            # 如果参数未指�?尝试从上下文推理
+        # 如果参数未指定，尝试从上下文推理
             if not step.parameters:
                 inferred = await self.infer_step_parameters(
                     skill=skill,
@@ -2711,9 +2903,9 @@ class NLCodeGenerator:
     ) -> ValidationResult:
         """验证流程"""
         
-        # 1. 验证技能依�?        dependency_validation = await self.validate_dependencies(code)
+        # 1. 验证技能依赖        dependency_validation = await self.validate_dependen
         
-        # 2. 验证参数完整�?        parameter_validation = await self.validate_parameters(code)
+        # 2. 验证参数完整性        parameter_validation = await self.validate_paramete
         
         # 3. 验证数据流转
         data_flow_validation = await self.validate_data_flow(code)
@@ -2731,7 +2923,7 @@ class NLCodeGenerator:
 ```
 
 class SkillCompositionEngine:
-    """技能组合引�?""
+    """技能组合引擎"""
     
     def __init__(self, skill_library, llm_manager):
         self.skill_library = skill_library
@@ -2743,14 +2935,14 @@ class SkillCompositionEngine:
         available_skills: List[Skill]
     ) -> ComposedCode:
         """
-        组合技能形成处理流�?        
+        组合技能形成处理流程        
         Args:
-            requirements: 处理需�?            available_skills: 可用技能列�?            
+            requirements: 处理需求            available_skills: 可用技能列表            
         Returns:
             组合后的流程
         """
         
-        # 1. 分析需�?        analysis = await self.analyze_requirements(requirements)
+        # 1. 分析需求        analysis = await self.analyze_requirements(requirement
         
         # 2. 技能选择
         selected_skills = await self.select_skills(
@@ -2758,7 +2950,7 @@ class SkillCompositionEngine:
             available=available_skills
         )
         
-        # 3. 技能排�?        ordered_skills = await self.order_skills(
+        # 3. 技能排序        ordered_skills = await self.order_skills(
             skills=selected_skills,
             analysis=analysis
         )
@@ -2782,18 +2974,18 @@ class SkillCompositionEngine:
         analysis: dict,
         available: List[Skill]
     ) -> List[Skill]:
-        """选择合适的技�?""
+        """选择合适的技能"""
         
         # 使用大模型进行技能选择
         prompt = f"""
-        根据以下需�?从可用技能中选择最合适的技�?
+        根据以下需求，从可用技能中选择最合适的技能
         
-        需求分�? {analysis}
+        需求分析: {analysis}
         
-        可用技�?
+        可用技能：
         {self.format_skills(available)}
         
-        请选择能够完成需求的技能组�?并说明选择理由�?        """
+        请选择能够完成需求的技能组合，并说明选择理由。        """
         
         response = await self.llm_manager.chat(prompt)
         return self.parse_skill_selection(response, available)
@@ -2803,7 +2995,7 @@ class SkillCompositionEngine:
         skills: List[Skill],
         analysis: dict
     ) -> List[Skill]:
-        """确定技能执行顺�?""
+        """确定技能执行顺序"""
         
         # 构建技能依赖图
         dependency_graph = self.build_dependency_graph(skills)
@@ -2819,7 +3011,7 @@ class SkillCompositionEngine:
 
 #### 2.8.4 动态代码执行
 
-```python�?```python
+#### 2.8.4 动态代码执行```python
 class DynamicCodeExecutor:
     """动态流程执行器"""
     
@@ -2833,21 +3025,21 @@ class DynamicCodeExecutor:
         
         Args:
             code: 组合代码
-            context: 执行上下�?            
+            context: 执行上下文            
         Returns:
             执行结果
         """
         
-        # 1. 初始化执行环�?        env = await self.init_environment(context)
+        # 1. 初始化执行环境        env = await self.init_environment(context)
         
-        # 2. 按顺序执行技�?        results = {}
+        # 2. 按顺序执行技能        results = {}
         for step in code.steps:
-            # 动态加载技�?            skill = await self.load_skill(step.skill_id)
+            # 动态加载技能            skill = await self.load_skill(step.skill_id)
             
             # 准备输入数据
             inputs = await self.prepare_inputs(step, results, env)
             
-            # 执行技�?            result = await self.execute_skill(
+            # 执行技能            result = await self.execute_skill(
                 skill=skill,
                 inputs=inputs,
                 parameters=step.parameters
@@ -2859,7 +3051,7 @@ class DynamicCodeExecutor:
             # 记录执行日志
             await self.log_execution(step, result)
         
-        # 3. 返回最终结�?        final_result = await self.collect_results(results, code)
+        # 3. 返回最终结果        final_result = await self.collect_results(results, c
         
         return ExecutionResult(
             code_id=code.id,
@@ -2869,8 +3061,8 @@ class DynamicCodeExecutor:
         )
     
     async def load_skill(self, skill_id: str) -> Skill:
-        """动态加载技�?""
-        # 从技能库加载技�?        return await self.skill_library.get_skill(skill_id)
+        """动态加载技能"""
+        # 从技能库加载技能        return await self.skill_library.get_skill(skill_id)
     
     async def execute_skill(
         self,
@@ -2878,11 +3070,11 @@ class DynamicCodeExecutor:
         inputs: dict,
         parameters: dict
     ) -> Any:
-        """执行单个技�?""
+        """执行单个技能"""
         
-        # 每个技能都是一个可执行的函�?        skill_function = skill.get_executor()
+        # 每个技能都是一个可执行的函数        skill_function = skill.get_executor()
         
-        # 执行技�?        result = await skill_function(
+        # 执行技能        result = await skill_function(
             inputs=inputs,
             parameters=parameters
         )
@@ -2926,7 +3118,7 @@ class ComposedCode(Base):
     ]
     """
     
-    # 流程元数�?    input_schema = Column(JSON)  # 输入数据结构
+    # 流程元数据    input_schema = Column(JSON)  # 输入数据结构
     output_schema = Column(JSON)  # 输出数据结构
     
     # 验证结果
@@ -2943,7 +3135,7 @@ class ComposedCode(Base):
     created_by = Column(UUID, ForeignKey("users.id"))
     visibility = Column(String(20))  # private, public, shared
     
-    # 元数�?    tags = Column(JSON)
+    # 元数据    tags = Column(JSON)
     category = Column(String(50))
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -2954,7 +3146,35 @@ class ComposedCode(Base):
 
 #### 2.9.1 调度架构
 ```
-┌─────────────────────────────────────────�?�?        Scheduler Service               �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Schedule Manager              �?  �?�? �?  - 调度配置管理                 �?  �?�? �?  - 调度策略配置                 �?  �?�? �?  - 调度历史记录                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Cron Scheduler                �?  �?�? �?  - Cron表达式解�?              �?  �?�? �?  - 定时任务触发                 �?  �?�? �?  - 任务队列管理                 �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Event Scheduler               �?  �?�? �?  - 事件监听                     �?  �?�? �?  - 事件触发                     �?  �?�? �?  - 实时调度                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Task Executor                 �?  �?�? �?  - 任务执行                     �?  �?�? �?  - 状态监�?                    �?  �?�? �?  - 失败重试                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+┌───────────────────────────────────────────────┐
+│               Scheduler Service               │
+├───────────────────────────────────────────────┤
+│   ┌───────────────────────────────────────┐   │
+│   │  Schedule Manager                     │   │
+│   │  - 调度配置管理                       │   │
+│   │  - 调度策略配置                       │   │
+│   │  - 调度历史记录                       │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Cron Scheduler                       │   │
+│   │  - Cron表达式解析                     │   │
+│   │  - 定时任务触发                       │   │
+│   │  - 任务队列管理                       │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Event Scheduler                      │   │
+│   │  - 事件监听                           │   │
+│   │  - 事件触发                           │   │
+│   │  - 实时调度                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Task Executor                        │   │
+│   │  - 任务执行                           │   │
+│   │  - 状态监控                           │   │
+│   │  - 失败重试                           │   │
+│   └───────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+```
 
 #### 2.9.2 调度配置模型
 ```python
@@ -3414,7 +3634,7 @@ class User(Base):
     display_name = Column(String(100))
     avatar = Column(String(500))
     
-    # 状�?    is_active = Column(Boolean, default=True)
+    # 状态    is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -3460,9 +3680,9 @@ class PermissionChecker:
         resource_id: UUID,
         required_level: str  # view, use, manage
     ) -> bool:
-        """检查权�?""
+        """检查权限"""
         
-        # 超级用户拥有所有权�?        if user.is_superuser:
+        # 超级用户拥有所有权限        if user.is_superuser:
             return True
         
         # 查询用户权限
@@ -3475,27 +3695,29 @@ class PermissionChecker:
         # 权限级别映射
         level_map = {"view": 1, "use": 2, "manage": 3}
         
-        # 检查权�?        for perm in permissions:
+        # 检查权限        for perm in permissions:
             if level_map[perm.permission_level] >= level_map[required_level]:
                 return True
         
         return False
 ```
 
-### 2.12 代码生成模块
+### 2.12 代码生成模块（已废弃）
+
+> **注意**：本节为早期设计，实际未按此实现。代码生成能力已由多智能体框架和算子/技能的 AI 生成功能覆盖。
 
 #### 2.12.1 代码生成流程
 ```
 Code Definition (JSON)
-    �?AST解析与转�?    �?代码模板渲染
-    �?Python代码生成
-    �?代码优化与格式化
-    �?可执行Python脚本
+    → AST解析与转换    → 代码模板渲染
+    → Python代码生成
+    → 代码优化与格式化
+    → 可执行Python脚本
 ```
 
-#### 2.12.2 代码生成器�?```python
+#### 2.12.2 代码生成器```python
 class CodeGenerator:
-    """代码生成�?""
+    """代码生成器"""
     
     def generate_python_code(
         self, 
@@ -3509,12 +3731,12 @@ class CodeGenerator:
         # 2. 生成导入语句
         imports = self.generate_imports(dag)
         
-        # 3. 生成数据源连接代�?        connections = self.generate_connections(dag)
+        # 3. 生成数据源连接代码        connections = self.generate_connections(dag)
         
         # 4. 生成算子执行代码
         operations = self.generate_operations(dag)
         
-        # 5. 生成主函�?        main_function = self.generate_main_function(dag)
+        # 5. 生成主函数        main_function = self.generate_main_function(dag)
         
         # 6. 组装完整代码
         code = f"""
@@ -3530,16 +3752,16 @@ if __name__ == "__main__":
     main()
 """
         
-        # 7. 代码格式�?        formatted_code = self.format_code(code)
+        # 7. 代码格式化        formatted_code = self.format_code(code)
         
         return formatted_code
 ```
 
 #### 2.12.3 代码模板示例
 ```python
-# 数据源连接模�?DATASOURCE_TEMPLATE = """
+# 数据源连接模板DATASOURCE_TEMPLATE = """
 def connect_{name}():
-    \"\"\"连接数据�? {display_name}\"\"\"
+    """连接数据源 {display_name}"""
     import {driver}
     
     connection = {driver}.connect(
@@ -3565,16 +3787,40 @@ def {operator_name}({inputs}):
 """
 ```
 
-### 2.13 环境管理模块
+### 2.13 环境管理模块（已废弃）
+
+> **注意**：本节为早期设计，实际未按此实现。当前项目采用本地单机部署 + SQLite，无需环境隔离机制。
 
 #### 2.13.1 环境隔离架构
 ```
-┌─────────────────────────────────────────�?�?        Environment Manager             �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Development Environment       �?  �?�? �?  - 开发测�?                    �?  �?�? �?  - 沙箱数据                     �?  �?�? �?  - 调试模式                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Testing Environment           �?  �?�? �?  - 集成测试                     �?  �?�? �?  - 测试数据                     �?  �?�? �?  - 性能测试                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Production Environment        �?  �?�? �?  - 生产运行                     �?  �?�? �?  - 真实数据                     �?  �?�? �?  - 高可用部�?                  �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+┌───────────────────────────────────────────────┐
+│              Environment Manager              │
+├───────────────────────────────────────────────┤
+│   ┌───────────────────────────────────────┐   │
+│   │  Development Environment              │   │
+│   │  - 开发测试                           │   │
+│   │  - 沙箱数据                           │   │
+│   │  - 调试模式                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Testing Environment                  │   │
+│   │  - 集成测试                           │   │
+│   │  - 测试数据                           │   │
+│   │  - 性能测试                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Production Environment               │   │
+│   │  - 生产运行                           │   │
+│   │  - 真实数据                           │   │
+│   │  - 高可用部署                         │   │
+│   └───────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+```
 
 #### 2.13.2 环境迁移机制
 ```python
 class EnvironmentMigrator:
-    """环境迁移�?""
+    """环境迁移机制"""
     
     async def migrate_code(
         self,
@@ -3584,11 +3830,11 @@ class EnvironmentMigrator:
     ) -> MigrationResult:
         """迁移流程"""
         
-        # 1. 验证源环境流�?        code = await self.validate_code(code_id, source_env)
+        # 1. 验证源环境流程        code = await self.validate_code(code_id, source_env
         
-        # 2. 检查依�?        dependencies = await self.check_dependencies(code)
+        # 2. 检查依赖        dependencies = await self.check_dependencies(code)
         
-        # 3. 迁移数据源配�?        await self.migrate_datasources(dependencies.datasources, target_env)
+        # 3. 迁移数据源配置        await self.migrate_datasources(dependencies.datasou
         
         # 4. 迁移算子
         await self.migrate_operators(dependencies.operators, target_env)
@@ -3605,11 +3851,11 @@ class EnvironmentMigrator:
         )
 ```
 
-## 3. 数据库设�?
-### 3.1 核心表结�?
+## 3. 数据库设计
+### 3.1 核心表结构
 #### 用户与权限表
 ```sql
--- 用户�?CREATE TABLE users (
+-- 用户表CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
@@ -3622,7 +3868,7 @@ class EnvironmentMigrator:
     last_login_at TIMESTAMP
 );
 
--- 角色�?CREATE TABLE roles (
+-- 角色表CREATE TABLE roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(50) UNIQUE NOT NULL,
     display_name VARCHAR(100),
@@ -3631,13 +3877,13 @@ class EnvironmentMigrator:
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 用户角色关联�?CREATE TABLE user_roles (
+-- 用户角色关联表CREATE TABLE user_roles (
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     role_id UUID REFERENCES roles(id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, role_id)
 );
 
--- 权限�?CREATE TABLE permissions (
+-- 权限表CREATE TABLE permissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     resource_type VARCHAR(50) NOT NULL,
     resource_id UUID NOT NULL,
@@ -3665,7 +3911,7 @@ CREATE TABLE data_sources (
     is_active BOOLEAN DEFAULT TRUE
 );
 
--- 表元数据�?CREATE TABLE table_metadata (
+-- 表元数据CREATE TABLE table_metadata (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     data_source_id UUID REFERENCES data_sources(id) ON DELETE CASCADE,
     table_name VARCHAR(200) NOT NULL,
@@ -3688,7 +3934,7 @@ CREATE TABLE data_sources (
 
 #### 算子与流程表
 ```sql
--- 算子�?CREATE TABLE operators (
+-- 算子表CREATE TABLE operators (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     display_name VARCHAR(200),
@@ -3708,7 +3954,8 @@ CREATE TABLE data_sources (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 流程�?CREATE TABLE composed_codes (
+-- 流程表（已废弃 composed_codes，参见 §2.6.3 Pipeline 数据模型）
+CREATE TABLE composed_codes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
     description TEXT,
@@ -3727,7 +3974,7 @@ CREATE TABLE data_sources (
 );
 ```
 
-#### 技能表（Skills�?```sql
+#### 技能表（Skills）```sql
 -- 技能表
 CREATE TABLE skills (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3776,13 +4023,13 @@ CREATE TABLE skills (
     usage_examples JSONB,
     """
     [
-        "选择用户表中的姓名和年龄�?,
+        "选择用户表中的姓名和年龄",
         "从订单数据中提取订单号和金额"
     ]
     """
     tags JSONB,
     """
-    ["数据选择", "列操�?, "基础技�?]
+    ["数据选择", "列操作", "基础技能"]
     """
     category VARCHAR(50),
     """
@@ -3907,8 +4154,8 @@ CREATE TABLE task_executions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
-POST   /api/v1/datasources              # 创建数据�?GET    /api/v1/datasources              # 获取数据源列�?GET    /api/v1/datasources/{id}         # 获取数据源详�?PUT    /api/v1/datasources/{id}         # 更新数据�?DELETE /api/v1/datasources/{id}         # 删除数据�?POST   /api/v1/datasources/{id}/test    # 测试连接
-GET    /api/v1/datasources/{id}/schema  # 获取数据源结�?```
+POST   /api/v1/datasources              # 创建数据源GET    /api/v1/datasources              # 获取数据源列表GET    /api/v1/datasources/{id}         # 获取数据源详情PUT    /api/v1/datasources/{id}         # 更新数据源DELETE /api/v1/datasources/{id}         # 删除数据源POST   /api/v1/datasources/{id}/test    # 测试连接
+GET    /api/v1/datasources/{id}/schema  # 获取数据源结构```
 
 #### 算子管理API
 ```
@@ -3922,15 +4169,17 @@ GET    /api/v1/operators/categories     # 获取算子分类
 
 #### 流程管理API
 ```
-POST   /api/v1/codes                # 创建代码
-GET    /api/v1/codes                # 获取代码列表
-GET    /api/v1/codes/{id}           # 获取代码详情
-PUT    /api/v1/codes/{id}           # 更新代码
-DELETE /api/v1/codes/{id}           # 删除代码
-POST   /api/v1/codes/{id}/execute   # 执行代码
-POST   /api/v1/codes/{id}/generate  # 生成代码
-GET    /api/v1/codes/{id}/versions  # 获取版本历史
-POST   /api/v1/codes/{id}/rollback  # 回退版本
+# 已实现：参见 §2.6.6 Pipeline API 端点
+# 以下为早期设计，已废弃
+POST   /api/v1/codes                # 创建代码（已废弃）
+GET    /api/v1/codes                # 获取代码列表（已废弃）
+GET    /api/v1/codes/{id}           # 获取代码详情（已废弃）
+PUT    /api/v1/codes/{id}           # 更新代码（已废弃）
+DELETE /api/v1/codes/{id}           # 删除代码（已废弃）
+POST   /api/v1/codes/{id}/execute   # 执行代码（已废弃）
+POST   /api/v1/codes/{id}/generate  # 生成代码（已废弃）
+GET    /api/v1/codes/{id}/versions  # 获取版本历史（已废弃）
+POST   /api/v1/codes/{id}/rollback  # 回退版本（已废弃）
 ```
 
 #### 调度管理API
@@ -3945,59 +4194,81 @@ POST   /api/v1/schedules/{id}/resume    # 恢复调度
 GET    /api/v1/schedules/{id}/executions # 获取执行历史
 ```
 
-#### 自然语言处理API
+#### 自然语言处理API（已废弃）
 ```
-POST   /api/v1/nl/process               # 处理自然语言
-POST   /api/v1/nl/skills/search         # 搜索相似技�?POST   /api/v1/nl/skills/register       # 注册技�?```
+# 已由多智能体框架（§2.7）中的 DataProcessor 智能体替代
+POST   /api/v1/nl/process               # 处理自然语言（已废弃）
+POST   /api/v1/nl/skills/search         # 搜索相似技能（已废弃）
+POST   /api/v1/nl/skills/register       # 注册技能（已废弃）
+```
 
 #### 技能管理API
 ```
-# 技�?CRUD
-POST   /api/v1/skills                    # 创建技�?GET    /api/v1/skills                    # 获取技能列�?GET    /api/v1/skills/{id}               # 获取技能详�?PUT    /api/v1/skills/{id}               # 更新技�?DELETE /api/v1/skills/{id}               # 删除技�?
-# 技能操�?POST   /api/v1/skills/{id}/execute       # 执行单个技�?POST   /api/v1/skills/{id}/test          # 测试技能执�?GET    /api/v1/skills/{id}/versions      # 获取技能版本历�?POST   /api/v1/skills/{id}/rollback      # 回退技能版�?POST   /api/v1/skills/{id}/validate      # 验证技能定�?
-# 技能发�?GET    /api/v1/skills/categories         # 获取技能分�?GET    /api/v1/skills/search             # 搜索技�?POST   /api/v1/skills/recommend          # 推荐相关技�?
-# 技能转�?POST   /api/v1/skills/from-operator      # 从算子创建技�?POST   /api/v1/skills/from-code          # 从代码创建技�?POST   /api/v1/skills/from-nl            # 自然语言创建技�?
-# 技能模�?GET    /api/v1/skills/templates          # 获取技能模板列�?POST   /api/v1/skills/templates/{id}/apply # 应用技能模�?```
-
-#### Skill Pipeline API
+# 已实现的 API 参见 §2.5.4
+# 以下为早期设计，部分已废弃
+POST   /api/v1/skills                    # 创建技能
+GET    /api/v1/skills                    # 获取技能列表
+GET    /api/v1/skills/{id}               # 获取技能详情
+PUT    /api/v1/skills/{id}               # 更新技能
+DELETE /api/v1/skills/{id}               # 删除技能
+# 技能操作
+POST   /api/v1/skills/{id}/execute       # 执行单个技能（已废弃，用 /run 替代）
+POST   /api/v1/skills/{id}/test          # 测试技能执行（已废弃，用 /debug-chat 替代）
+GET    /api/v1/skills/{id}/versions      # 获取技能版本历史（已废弃）
+POST   /api/v1/skills/{id}/rollback      # 回退技能版本（已废弃）
+POST   /api/v1/skills/{id}/validate      # 验证技能定义（已废弃）
+# 技能发布
+GET    /api/v1/skills/categories         # 获取技能分类
+GET    /api/v1/skills/search             # 搜索技能
+POST   /api/v1/skills/recommend          # 推荐相关技能（已废弃）
+# 技能转换
+POST   /api/v1/skills/from-operator      # 从算子创建技能（已废弃）
+POST   /api/v1/skills/from-code          # 从代码创建技能（已废弃）
+POST   /api/v1/skills/from-nl            # 自然语言创建技能（已废弃，用 /generate 替代）
+# 技能模板
+GET    /api/v1/skills/templates          # 获取技能模板列表（已废弃）
+POST   /api/v1/skills/templates/{id}/apply # 应用技能模板（已废弃）
 ```
-# Pipeline CRUD
-POST   /api/v1/skill-pipelines           # 创建 Pipeline
-GET    /api/v1/skill-pipelines           # 获取 Pipeline 列表
-GET    /api/v1/skill-pipelines/{id}      # 获取 Pipeline 详情
-PUT    /api/v1/skill-pipelines/{id}      # 更新 Pipeline
-DELETE /api/v1/skill-pipelines/{id}      # 删除 Pipeline
+
+#### Skill Pipeline API（已废弃）
+```
+# 已由 §2.6 Pipeline 模块替代，以下为早期 DAG 模式设计
+POST   /api/v1/skill-pipelines           # 创建 Pipeline（已废弃）
+GET    /api/v1/skill-pipelines           # 获取 Pipeline 列表（已废弃）
+GET    /api/v1/skill-pipelines/{id}      # 获取 Pipeline 详情（已废弃）
+PUT    /api/v1/skill-pipelines/{id}      # 更新 Pipeline（已废弃）
+DELETE /api/v1/skill-pipelines/{id}      # 删除 Pipeline（已废弃）
 
 # Pipeline 执行
-POST   /api/v1/skill-pipelines/{id}/run  # 执行 Pipeline
-GET    /api/v1/skill-pipelines/{id}/run/streaming  # 流式执行 Pipeline (SSE)
-POST   /api/v1/skill-pipelines/{id}/test # 测试 Pipeline
-POST   /api/v1/skill-pipelines/{id}/validate # 验证 Pipeline 定义
+POST   /api/v1/skill-pipelines/{id}/run  # 执行 Pipeline（已废弃）
+GET    /api/v1/skill-pipelines/{id}/run/streaming  # 流式执行 Pipeline (SSE)（已废弃）
+POST   /api/v1/skill-pipelines/{id}/test # 测试 Pipeline（已废弃）
+POST   /api/v1/skill-pipelines/{id}/validate # 验证 Pipeline 定义（已废弃）
 
 # Pipeline 执行历史
-GET    /api/v1/skill-pipelines/{id}/executions      # 获取执行历史
-GET    /api/v1/skill-pipelines/executions/{eid}     # 获取执行详情
-GET    /api/v1/skill-pipelines/executions/{eid}/logs # 获取执行日志
+GET    /api/v1/skill-pipelines/{id}/executions      # 获取执行历史（已废弃）
+GET    /api/v1/skill-pipelines/executions/{eid}     # 获取执行详情（已废弃）
+GET    /api/v1/skill-pipelines/executions/{eid}/logs # 获取执行日志（已废弃）
 
 # Pipeline 版本管理
-GET    /api/v1/skill-pipelines/{id}/versions        # 获取版本历史
-POST   /api/v1/skill-pipelines/{id}/rollback        # 回退版本
-POST   /api/v1/skill-pipelines/{id}/fork            # 复制 Pipeline
+GET    /api/v1/skill-pipelines/{id}/versions        # 获取版本历史（已废弃）
+POST   /api/v1/skill-pipelines/{id}/rollback        # 回退版本（已废弃）
+POST   /api/v1/skill-pipelines/{id}/fork            # 复制 Pipeline（已废弃）
 
 # Pipeline 导入导出
-GET    /api/v1/skill-pipelines/{id}/export          # 导出 Pipeline 定义
-POST   /api/v1/skill-pipelines/import               # 导入 Pipeline
+GET    /api/v1/skill-pipelines/{id}/export          # 导出 Pipeline 定义（已废弃）
+POST   /api/v1/skill-pipelines/import               # 导入 Pipeline（已废弃）
 ```
 
-#### Skill �?Pipeline API 详细说明
+#### Skill 与 Pipeline API 详细说明
 
-##### 创建技�?```json
+##### 创建技能```json
 POST /api/v1/skills
 Request:
 {
     "name": "filter_rows",
     "display_name": "数据过滤",
-    "description": "根据条件过滤数据�?,
+    "description": "根据条件过滤数据",
     "skill_type": "operator",
     "inputs": {
         "data": {
@@ -4015,7 +4286,7 @@ Request:
     "parameters": {
         "condition": {
             "type": "str",
-            "description": "过滤条件表达�?,
+            "description": "过滤条件表达式",
             "required": true
         }
     },
@@ -4025,8 +4296,8 @@ Request:
         "function": "filter_operator"
     },
     "usage_examples": [
-        "过滤年龄大于18的用�?,
-        "筛选销售额超过1000的订�?
+        "过滤年龄大于18的用户",
+        "筛选销售额超过1000的订单"
     ],
     "tags": ["过滤", "数据清洗"],
     "category": "filter",
@@ -4045,11 +4316,11 @@ Response:
 }
 ```
 
-##### 自然语言创建技�?```json
+##### 自然语言创建技能```json
 POST /api/v1/skills/from-nl
 Request:
 {
-    "description": "创建一个技能，用于计算数据的平均值、最大值、最小值和标准�?,
+    "description": "创建一个技能，用于计算数据的平均值、最大值、最小值和标准差",
     "user_id": "uuid"
 }
 
@@ -4059,7 +4330,7 @@ Response:
         "id": "uuid",
         "name": "calculate_statistics",
         "display_name": "统计分析",
-        "description": "计算数据的统计指�?,
+        "description": "计算数据的统计指标",
         "skill_type": "operator",
         "inputs": {...},
         "outputs": {...},
@@ -4077,7 +4348,7 @@ Request:
 {
     "name": "sales_analysis_pipeline",
     "display_name": "销售数据分析流水线",
-    "description": "清洗、过滤、聚合销售数�?,
+    "description": "清洗、过滤、聚合销售数据",
     "skill_steps": [
         {
             "step_id": "step_1",
@@ -4110,7 +4381,7 @@ Request:
     "input_schema": {
         "raw_data": {
             "type": "DataFrame",
-            "description": "原始销售数�?,
+            "description": "原始销售数据",
             "required": true
         }
     },
@@ -4191,7 +4462,41 @@ WebSocket: /ws/executions/{execution_id}
 
 ### 5.1 单机部署架构
 ```
-┌─────────────────────────────────────────�?�?           Docker Compose               �?├─────────────────────────────────────────�?�? ┌─────────────────────────────────�?  �?�? �?  Nginx (Port 80/443)          �?  �?�? �?  - 反向代理                     �?  �?�? �?  - SSL终止                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Frontend Container            �?  �?�? �?  - Vue 3 应用                   �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Backend Container             �?  �?�? �?  - FastAPI 应用                 �?  �?�? �?  - Uvicorn Server               �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Celery Worker Container       �?  �?�? �?  - 任务执行                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  PostgreSQL Container          �?  �?�? �?  - 数据存储                     �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  Redis Container               �?  �?�? �?  - 缓存/队列                    �?  �?�? └─────────────────────────────────�?  �?�? ┌─────────────────────────────────�?  �?�? �?  MinIO Container               �?  �?�? �?  - 文件存储                     �?  �?�? └─────────────────────────────────�?  �?└─────────────────────────────────────────�?```
+┌───────────────────────────────────────────────┐
+│                Docker Compose                 │
+├───────────────────────────────────────────────┤
+│   ┌───────────────────────────────────────┐   │
+│   │  Nginx (Port 80/443)                  │   │
+│   │  - 反向代理                           │   │
+│   │  - SSL终止                            │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Frontend Container                   │   │
+│   │  - Vue 3 应用                         │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Backend Container                    │   │
+│   │  - FastAPI 应用                       │   │
+│   │  - Uvicorn Server                     │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Celery Worker Container              │   │
+│   │  - 任务执行                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  PostgreSQL Container                 │   │
+│   │  - 数据存储                           │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  Redis Container                      │   │
+│   │  - 缓存/队列                          │   │
+│   └───────────────────────────────────────┘   │
+│   ┌───────────────────────────────────────┐   │
+│   │  MinIO Container                      │   │
+│   │  - 文件存储                           │   │
+│   └───────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
+```
 
 ### 5.2 Docker Compose配置
 ```yaml
@@ -4307,13 +4612,13 @@ volumes:
 - **安全分级**: 数据安全等级分类
 
 ### 6.3 安全防护
-- **SQL注入防护**: 参数化查�?- **XSS防护**: 输入输出转义
+- **SQL注入防护**: 参数化查询- **XSS防护**: 输入输出转义
 - **CSRF防护**: CSRF Token验证
 - **限流防护**: API访问限流
 
-## 7. 监控与运�?
+## 7. 监控与运维
 ### 7.1 监控指标
-- **系统指标**: CPU、内存、磁盘、网�?- **应用指标**: 请求量、响应时间、错误率
+- **系统指标**: CPU、内存、磁盘、网络- **应用指标**: 请求量、响应时间、错误率
 - **业务指标**: 流程执行数、成功率、失败率
 
 ### 7.2 日志管理
@@ -4323,25 +4628,26 @@ volumes:
 - **执行日志**: 流程执行日志
 
 ### 7.3 告警机制
-- **系统告警**: 资源使用率告�?- **应用告警**: 服务异常告警
+- **系统告警**: 资源使用率告警- **应用告警**: 服务异常告警
 - **业务告警**: 任务失败告警
 
-## 8. 扩展性设�?
+## 8. 扩展性设计
 ### 8.1 插件机制
-- **数据源插�?*: 支持自定义数据源连接�?- **算子插件**: 支持自定义算子开�?- **认证插件**: 支持自定义认证方�?- **存储插件**: 支持自定义存储后�?
+- **数据源插件**: 支持自定义数据源连接器- **算子插件**: 支持自定义算子开发- **认证插件**: 支持自定义认证方式- **存储插件**: 支持自定义存储后端
 ### 8.2 水平扩展
-- **无状态服�?*: API服务无状态设�?- **负载均衡**: 支持多实例负载均�?- **分布式任�?*: Celery分布式任务执�?- **数据库分�?*: 支持数据库分片扩�?
-## 9. 开发规�?
+- **无状态服务**: API服务无状态设计- **负载均衡**: 支持多实例负载均衡- **分布式任务**: Celery分布式任务执行- **数据库分片**: 支持数据库分片扩展
+## 9. 开发规范
 ### 9.1 代码规范
-- **Python**: PEP 8 + Black格式�?- **TypeScript**: ESLint + Prettier
-- **Git提交**: Conventional Commits
+- **Python**: PEP 8 + Black格式化
+- **TypeScript**: ESLint + Prettier
+- **Git提交**: Conventional Commits（中文描述，feat:/fix: 前缀）
 - **代码审查**: Pull Request审查机制
 
 ### 9.2 测试规范
 - **单元测试**: pytest + unittest
 - **集成测试**: pytest-asyncio
 - **E2E测试**: Playwright
-- **覆盖�?*: > 80%
+- **覆盖率**: > 80%
 
 ### 9.3 文档规范
 - **API文档**: OpenAPI/Swagger
@@ -4353,10 +4659,10 @@ volumes:
 
 ### 10.1 性能风险
 - **风险**: 大数据量处理性能问题
-- **应对**: 分批处理、流式处理、异步执�?
-### 10.2 可靠性风�?- **风险**: 任务执行失败
-- **应对**: 重试机制、事务回滚、状态恢�?
+- **应对**: 分批处理、流式处理、异步执行
+### 10.2 可靠性风险- **风险**: 任务执行失败
+- **应对**: 重试机制、事务回滚、状态恢复
 ### 10.3 安全风险
-- **风险**: 数据泄露、恶意攻�?- **应对**: 加密存储、访问控制、安全审�?
-### 10.4 扩展性风�?- **风险**: 系统扩展困难
+- **风险**: 数据泄露、恶意攻击- **应对**: 加密存储、访问控制、安全审计
+### 10.4 扩展性风险- **风险**: 系统扩展困难
 - **应对**: 模块化设计、插件机制、微服务架构

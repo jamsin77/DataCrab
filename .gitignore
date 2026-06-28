@@ -84,9 +84,30 @@ check_*.py
 cultural_relics_expert_package/
 cultural_relics_expert_skill/
 
-# Documentation
+# CODEARTS / DevOps artifacts
+gates/
+teams/
+.pipeline/
+.codeartsdoer/
+
+# Documentation (obsolete dev notes)
 MESSAGE_TO_TRAE.md
 FIX_TASK_CHAT_BUGS.md
 SKILLS_TEST_FIX.md
 TEST_REPORT_*.md
 CULTURAL_RELICS_EXPERT_GUIDE.md
+BUTTON_LAYOUT_*.md
+CHAT_IMPROVEMENTS.md
+SCHEDULE_*.md
+SKILL_DEBUG_UPDATE.md
+SKILL_TEST_REPORT.md
+CONTEXT.md
+GLM_CONFIG_GUIDE.md
+
+# Obsolete scripts
+nl_data_cli.py
+openclaw_*.py
+openclaw_*.html
+start_hermes*.py
+package_skill*.py
+scrape_*.py
