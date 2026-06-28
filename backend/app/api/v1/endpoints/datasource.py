@@ -26,9 +26,13 @@ from app.schemas.datasource import (
     _SENSITIVE_KEYS,
 )
 from app.api.deps import get_current_user
-from app.services.connectors import get_connector
 
 router = APIRouter()
+
+
+def _get_connector(*args, **kwargs):
+    from app.services.connectors import get_connector as _gc
+    return _gc(*args, **kwargs)
 
 
 @router.post("", response_model=DataSourceResponse, status_code=status.HTTP_201_CREATED)
