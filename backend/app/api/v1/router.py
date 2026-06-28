@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, workflow, llm, permission
+from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, workflow, llm, permission, agents
 
 api_router = APIRouter()
 
@@ -46,3 +46,5 @@ api_router.include_router(workflow.router, prefix="/workflows", tags=["工作流
 api_router.include_router(llm.router, prefix="/llm", tags=["大模型"])
 
 api_router.include_router(permission.router, prefix="/permissions", tags=["权限管理"])
+
+api_router.include_router(agents.router, prefix="/agents", tags=["智能体"])

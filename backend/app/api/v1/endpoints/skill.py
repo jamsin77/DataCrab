@@ -1723,7 +1723,7 @@ def _extract_function_params(tree) -> list[SkillParamDef]:
 
     params = []
     for arg in best_node.args.args:
-        if arg.arg in ("self", "cls", "df", "input_data", "data"):
+        if arg.arg in ("self", "cls", "df", "input_data", "data", "inputs", "parameters", "context"):
             continue
         pname = arg.arg
         ptype = "str"
@@ -1759,11 +1759,65 @@ def _extract_function_params(tree) -> list[SkillParamDef]:
             elif isinstance(dv, _ast.NoneType):
                 default_val = None
 
+        example_val = None
+        if not is_datasource and not is_table:
+            if is_list or ptype == "list":
+                _NAME_LIST_EXAMPLES = {
+                    "columns": '["列名1", "列名2"]',
+                    "on": '["连接键"]',
+                    "table_names": '["表1", "表2"]',
+                    "subset": '["列名1"]',
+                }
+                example_val = _NAME_LIST_EXAMPLES.get(pname, '["值1"]')
+            elif ptype == "bool":
+                example_val = "true"
+            elif ptype == "int":
+                example_val = "10"
+            elif ptype == "float":
+                example_val = "0.5"
+            elif ptype == "dict":
+                _NAME_DICT_EXAMPLES = {
+                    "mapping": '{"旧名": "新名"}',
+                    "functions": '{"列名": "sum"}',
+                    "column_mapping": '{"源列": "目标列"}',
+                    "column_transforms": '{"列名": {"type": "trim"}}',
+                    "cleaning_options": '{"remove_empty": true, "deduplicate": true}',
+                }
+                example_val = _NAME_DICT_EXAMPLES.get(pname, '{"key": "value"}')
+            else:
+                _NAME_EXAMPLES = {
+                    "column": '"列名"',
+                    "condition": '"年龄 > 18"',
+                    "query": '"搜索关键词"',
+                    "name": '"名称"',
+                    "value": '"值"',
+                    "method": '"ffill"',
+                    "how": '"inner"',
+                    "group_column": '"分组列"',
+                    "agg_column": '"聚合列"',
+                    "agg_func": '"sum"',
+                    "action": '"search"',
+                    "sort_column": '"排序列"',
+                    "filter_column": '"筛选列"',
+                    "split_column": '"分割列"',
+                    "primary_key": '"id"',
+                    "output_dir": '"./output"',
+                    "output_filename": '"result.xlsx"',
+                    "era": '"唐"',
+                    "location": '"北京"',
+                    "level": '"一级"',
+                    "relic_type": '"瓷器"',
+                    "sources": '"wikipedia,baidu"',
+                    "update_mode": '"append"',
+                }
+                example_val = _NAME_EXAMPLES.get(pname)
+
         params.append(SkillParamDef(
             name=pname,
             type=ptype,
             required=not has_default,
             default=default_val,
+            example=example_val,
             is_datasource=is_datasource,
             is_table=is_table,
             is_list=is_list,

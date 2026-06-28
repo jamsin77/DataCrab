@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import pandas as pd
 from uuid import UUID, uuid4
 from typing import Optional, List
 
@@ -32,13 +31,23 @@ from app.schemas.chat import (
 )
 from app.api.deps import get_current_user
 from app.services.llm import llm_manager
-from app.services.nl_service import NLService
-from app.services.skill_library import skill_library
+from app.services.agent_config import agent_config
 
 router = APIRouter()
 
-# 初始化NL服务
-nl_service = NLService(llm_manager, skill_library)
+# 延迟导入：只在需要时才加载重型模块
+_nl_service = None
+_skill_library = None
+
+
+def _get_nl_service():
+    global _nl_service, _skill_library
+    if _nl_service is None:
+        from app.services.nl_service import NLService
+        from app.services.skill_library import SkillLibrary
+        _skill_library = SkillLibrary()
+        _nl_service = NLService(llm_manager, _skill_library)
+    return _nl_service
 
 # 加载助理人格文件
 _persona_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -684,13 +693,14 @@ async def send_message(
 
     try:
         # 初始化技能库
-        await skill_library.initialize()
+        nl_svc = _get_nl_service()
+        await nl_svc.skill_library.initialize()
 
         # 初始化LLM
         await llm_manager.initialize()
 
         # 调用NL处理服务进行意图识别和技能匹配
-        nl_result = await nl_service.process(
+        nl_result = await _get_nl_service().process(
             text=request.content,
             context={"user_id": str(current_user.id)}
         )
@@ -748,13 +758,26 @@ async def send_message(
     return ai_message
 
 
+def _route_to_agent(user_message: str) -> str:
+    msg_lower = user_message.lower()
+    inspect_keywords = [
+        "检查", "质量", "审查", "合规", "安全检查", "数据质量",
+        "质量检查", "标准检查", "安全审计", "pii", "脱敏",
+        "inspect", "quality", "audit",
+    ]
+    for kw in inspect_keywords:
+        if kw in msg_lower:
+            return "data_inspector"
+    return "data_processor"
+
+
 @router.post("/stream")
 async def stream_response(
     request: ChatMessageCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """流式响应"""
+    """流式响应 - 支持多智能体路由"""
 
     async def generate():
         session_id = str(request.session_id)
@@ -770,13 +793,7 @@ async def stream_response(
             db.add(user_message)
             await db.flush()
 
-            await skill_library.initialize()
             await llm_manager.initialize()
-
-            nl_result = await nl_service.process(
-                text=request.content,
-                context={"user_id": str(current_user.id)}
-            )
 
             history_result = await db.execute(
                 select(ChatMessage)
@@ -794,47 +811,105 @@ async def stream_response(
                 db, current_user.id, request.content
             )
 
-            system_content = _build_system_prompt(datasource_context)
+            use_multi_agent = _route_to_agent(request.content) == "data_inspector"
 
-            messages = [{"role": "system", "content": system_content}]
+            if use_multi_agent:
+                from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+                from app.services.data_processor_agent import DataProcessorAgent
+                from app.services.data_inspector_agent import DataInspectorAgent
 
-            for msg in history_messages:
-                messages.append({"role": msg.role, "content": msg.content})
+                if not agent_registry.get("data_processor"):
+                    agent_registry.register(DataProcessorAgent())
+                if not agent_registry.get("data_inspector"):
+                    agent_registry.register(DataInspectorAgent())
 
-            messages.append({"role": "user", "content": request.content})
+                runtime = AgentRuntime(agent_registry, llm_manager)
 
-            from app.services.agent import agent_service, AgentContext
+                trace_id = str(uuid4())
+                context = {
+                    "db": db,
+                    "user_id": current_user.id,
+                    "datasource_context": datasource_context,
+                    "persona": ASSISTANT_PERSONA,
+                    "session_id": session_id,
+                }
 
-            agent_ctx = AgentContext(
-                db=db,
-                user_id=current_user.id,
-                datasource_context=datasource_context,
-                persona=ASSISTANT_PERSONA,
-            )
+                message = AgentMessage(
+                    from_agent="user",
+                    to_agent="data_inspector",
+                    reason=HandoffReason.DELEGATE,
+                    payload={"user_message": request.content, "content": request.content},
+                    context=context,
+                    trace_id=trace_id,
+                )
 
-            full_response = ""
-            async for sse_chunk in agent_service.run_stream(messages, agent_ctx):
-                if cancel_event.is_set():
-                    yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                    return
-                yield sse_chunk
+                full_response = ""
+                async for event in runtime.run("data_inspector", message, context):
+                    if cancel_event.is_set():
+                        yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                        return
 
-                try:
-                    data = json.loads(sse_chunk.removeprefix("data: ").strip())
-                    if data.get("type") == "content":
-                        full_response += data.get("content", "")
-                except (json.JSONDecodeError, AttributeError):
-                    pass
+                    if event.get("type") == "agent_switch":
+                        yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'reason': event['reason']}, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "content":
+                        content = event.get("content", "")
+                        full_response += content
+                        yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "tool_result":
+                        yield f"data: {json.dumps({'type': 'tool_result', 'content': event.get('content', '')[:200]}, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "done":
+                        pass
+                    else:
+                        yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
-            ai_message = ChatMessage(
-                session_id=request.session_id,
-                role="assistant",
-                content=full_response,
-            )
-            db.add(ai_message)
-            await db.flush()
+                ai_message = ChatMessage(
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=full_response,
+                )
+                db.add(ai_message)
+                await db.flush()
 
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            else:
+                system_content = _build_system_prompt(datasource_context)
+                messages = [{"role": "system", "content": system_content}]
+                for msg in history_messages:
+                    messages.append({"role": msg.role, "content": msg.content})
+                messages.append({"role": "user", "content": request.content})
+
+                from app.services.agent import agent_service, AgentContext
+
+                agent_ctx = AgentContext(
+                    db=db,
+                    user_id=current_user.id,
+                    datasource_context=datasource_context,
+                    persona=ASSISTANT_PERSONA,
+                )
+
+                full_response = ""
+                async for sse_chunk in agent_service.run_stream(messages, agent_ctx):
+                    if cancel_event.is_set():
+                        yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                        return
+                    yield sse_chunk
+
+                    try:
+                        data = json.loads(sse_chunk.removeprefix("data: ").strip())
+                        if data.get("type") == "content":
+                            full_response += data.get("content", "")
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+
+                ai_message = ChatMessage(
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=full_response,
+                )
+                db.add(ai_message)
+                await db.flush()
+
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"

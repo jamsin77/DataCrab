@@ -111,6 +111,7 @@ class SkillLibrary:
                         "required": True,
                     }
                 },
+                "json_example": '{"columns": ["姓名", "年龄"]}',
             },
             {
                 "id": "skill_filter",
@@ -131,6 +132,7 @@ class SkillLibrary:
                         "required": True,
                     }
                 },
+                "json_example": '{"condition": "年龄 > 18"}',
             },
             {
                 "id": "skill_groupby",
@@ -162,6 +164,7 @@ class SkillLibrary:
                         "default": "sum",
                     }
                 },
+                "json_example": '{"group_column": "地区", "agg_column": "销售额", "agg_func": "sum"}',
             },
             {
                 "id": "skill_sort",
@@ -188,6 +191,7 @@ class SkillLibrary:
                         "default": True,
                     }
                 },
+                "json_example": '{"column": "销售额", "ascending": false}',
             },
             {
                 "id": "skill_dropna",
@@ -208,6 +212,7 @@ class SkillLibrary:
                         "required": False,
                     }
                 },
+                "json_example": '{"columns": ["姓名", "年龄"]}',
             },
             {
                 "id": "skill_fillna",
@@ -233,6 +238,87 @@ class SkillLibrary:
                         "required": False,
                     }
                 },
+                "json_example": '{"value": 0}',
+            },
+            {
+                "id": "skill_aggregate",
+                "name": "aggregate",
+                "display_name": "聚合统计",
+                "description": "对列进行聚合计算，如求和、均值、最大值等",
+                "category": "aggregate",
+                "tags": ["数据聚合", "统计", "基础算子"],
+                "usage_examples": [
+                    "计算每列的平均值",
+                    "求销售额总和和订单数量",
+                ],
+                "parameters": {
+                    "functions": {
+                        "type": "dict",
+                        "description": "列到聚合函数的映射，如 {\"销售额\": \"sum\", \"数量\": \"mean\"}",
+                        "required": True,
+                    }
+                },
+                "json_example": '{"functions": {"销售额": "sum", "数量": "mean"}}',
+            },
+            {
+                "id": "skill_join",
+                "name": "join",
+                "display_name": "数据连接",
+                "description": "将两个数据表按指定键连接",
+                "category": "transform",
+                "tags": ["数据连接", "合并", "基础算子"],
+                "usage_examples": [
+                    "按用户ID连接订单表和用户表",
+                    "内连接两个数据源",
+                ],
+                "parameters": {
+                    "on": {
+                        "type": "list",
+                        "description": "连接键列名列表",
+                        "required": True,
+                    },
+                    "how": {
+                        "type": "str",
+                        "description": "连接方式: inner, left, right, outer",
+                        "required": False,
+                        "default": "inner",
+                    }
+                },
+                "json_example": '{"on": ["用户ID"], "how": "inner"}',
+            },
+            {
+                "id": "skill_rename",
+                "name": "rename",
+                "display_name": "列重命名",
+                "description": "重命名数据列",
+                "category": "transform",
+                "tags": ["列操作", "重命名", "基础算子"],
+                "usage_examples": [
+                    "把name列改名为姓名",
+                    "重命名多个列",
+                ],
+                "parameters": {
+                    "mapping": {
+                        "type": "dict",
+                        "description": "旧列名到新列名的映射",
+                        "required": True,
+                    }
+                },
+                "json_example": '{"mapping": {"name": "姓名", "age": "年龄"}}',
+            },
+            {
+                "id": "skill_statistics",
+                "name": "statistics",
+                "display_name": "统计描述",
+                "description": "生成数据的统计描述信息（均值、标准差、最值等）",
+                "category": "analysis",
+                "tags": ["数据分析", "统计", "基础算子"],
+                "usage_examples": [
+                    "查看数据的统计信息",
+                    "生成描述性统计报告",
+                ],
+                "parameters": {},
+                "json_example": '{}',
             },
         ]
 

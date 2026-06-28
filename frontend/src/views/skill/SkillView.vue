@@ -347,12 +347,20 @@
                 v-model="execParamsStr"
                 type="textarea"
                 :rows="6"
-                placeholder='{"key": "value"}'
+                :placeholder="execParamsPlaceholder"
               />
+              <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+                <el-button size="small" @click="fillJsonExample" :disabled="!execParamsPlaceholder || execParamsPlaceholder === '{&quot;key&quot;: &quot;value&quot;}'">
+                  填入样例
+                </el-button>
+                <span v-if="execParamsPlaceholder && execParamsPlaceholder !== '{&quot;key&quot;: &quot;value&quot;}'" style="font-size:12px; color:#909399;">
+                  样例: {{ execParamsPlaceholder }}
+                </span>
+              </div>
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkill">
+              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkill" :disabled="!execParamsStr.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -979,6 +987,7 @@ function stopExec() {
 const execNLQuery = ref('')
 const execCmdStr = ref('')
 const execParamsStr = ref('')
+const execParamsPlaceholder = ref('{"key": "value"}')
 const skillParams = ref<any[]>([])
 const cmdParamValues = reactive<Record<string, any>>({})
 const cmdExampleDsName = ref('')
@@ -1278,6 +1287,40 @@ const cmdExamples = computed(() => {
 })
 
 
+function generateJsonExample(params: any[]): string | null {
+  if (!params || params.length === 0) return null
+  const obj: Record<string, any> = {}
+  for (const p of params) {
+    if (p.is_datasource || p.is_table) continue
+    if (p.default !== null && p.default !== undefined) {
+      obj[p.name] = p.default
+    } else if (p.required) {
+      if (p.example) {
+        try { obj[p.name] = JSON.parse(p.example) } catch { obj[p.name] = p.example }
+      } else if (p.is_list || p.type === 'list') {
+        obj[p.name] = [""]
+      } else if (p.type === 'bool') {
+        obj[p.name] = false
+      } else if (p.type === 'int' || p.type === 'float') {
+        obj[p.name] = 0
+      } else if (p.type === 'dict') {
+        obj[p.name] = {}
+      } else {
+        obj[p.name] = ""
+      }
+    }
+  }
+  if (Object.keys(obj).length === 0) return null
+  return JSON.stringify(obj, null, 2)
+}
+
+function fillJsonExample() {
+  if (execParamsPlaceholder.value && execParamsPlaceholder.value !== '{"key": "value"}') {
+    execParamsStr.value = execParamsPlaceholder.value
+  }
+}
+
+
 function resetDebug() {
   debugSkill.value = null
   execRunning.value = false
@@ -1287,6 +1330,7 @@ function resetDebug() {
   execNLQuery.value = ''
   execCmdStr.value = ''
   execParamsStr.value = ''
+  execParamsPlaceholder.value = '{"key": "value"}'
   execTab.value = 'nl'
   skillParams.value = []
   cmdExampleDsName.value = ''
@@ -1315,6 +1359,7 @@ async function openDebug(skill: any, scriptName?: string) {
   execNLQuery.value = ''
   execCmdStr.value = `/${freshSkill.name || 'skill'} `
   execParamsStr.value = ''
+  execParamsPlaceholder.value = '{"key": "value"}'
   execTab.value = 'nl'
   skillParams.value = []
   debugMessages.value = []
@@ -1325,6 +1370,8 @@ async function openDebug(skill: any, scriptName?: string) {
   try {
     const params = await api.get(`/skills/${freshSkill.id}/params`)
     skillParams.value = params || []
+    const example = generateJsonExample(params || [])
+    if (example) execParamsPlaceholder.value = example
     for (const p of params) {
       if (p.default !== null && p.default !== undefined) {
         cmdParamValues[p.name] = p.default
