@@ -419,11 +419,11 @@
                 <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
-                    <div class="thinking-header">
-                      <el-icon class="thinking-spin"><Loading /></el-icon>
+                    <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                      <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
                       <span>推理过程</span>
                     </div>
-                    <div class="thinking-body">{{ msg.thinking }}</div>
+                    <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
@@ -1055,6 +1055,7 @@ interface DebugMessage {
   role: 'user' | 'assistant'
   content: string
   thinking?: string
+  thinkingOpen?: boolean
   runResult?: any
   scriptUpdated?: string
 }
@@ -1081,7 +1082,7 @@ function onSkillListScroll() {
 // 执行流式：在消息列表中开一条 live 助手消息，返回其索引
 function startExecMessage(userText: string): number {
   debugMessages.value.push({ role: 'user', content: userText })
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
   nextTick(() => scrollSkillDebugToBottom(true))
   return debugMessages.value.length - 1
 }
@@ -1897,7 +1898,7 @@ async function handleDebugSend() {
   debugAbortController = new AbortController()
 
   const assistantIdx = debugMessages.value.length
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
   skillPinnedToBottom.value = true
   nextTick(() => scrollSkillDebugToBottom(true))
 
@@ -2665,8 +2666,12 @@ onMounted(() => {
     color: #409eff;
     font-weight: 500;
     border-bottom: 1px solid #d9ecff;
+    cursor: pointer;
+    user-select: none;
 
     .thinking-spin { animation: rotate 1.2s linear infinite; }
+    .thinking-toggle { transition: transform 0.2s; }
+    .thinking-toggle.open { transform: rotate(90deg); }
   }
 
   .thinking-body {

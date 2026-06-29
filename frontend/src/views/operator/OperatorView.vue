@@ -197,11 +197,11 @@
                 <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
-                    <div class="thinking-header">
-                      <el-icon class="thinking-spin"><Loading /></el-icon>
+                    <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                      <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
                       <span>推理过程</span>
                     </div>
-                    <div class="thinking-body">{{ msg.thinking }}</div>
+                    <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
@@ -487,6 +487,7 @@ interface OpChatMessage {
   role: 'user' | 'assistant'
   content: string
   thinking?: string
+  thinkingOpen?: boolean
   scriptUpdated?: string
 }
 const opMessages = ref<OpChatMessage[]>([])
@@ -579,7 +580,7 @@ function openDebug(op: any, restore?: Partial<OpDebugSession>) {
   }
 
   debugResult.value = restore?.result ?? null
-  opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m })) : []
+  opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m, thinkingOpen: false })) : []
   opInput.value = ''
   opStreaming.value = false
   debugDrawer.value = true
@@ -634,15 +635,11 @@ watch(
 )
 
 function resetDebug() {
-  debugOperator.value = null
-  opMessages.value = []
-  opInput.value = ''
-  opStreaming.value = false
   if (opAbortController) {
     opAbortController.abort()
     opAbortController = null
   }
-  clearOpSession()
+  opStreaming.value = false
 }
 
 async function refreshOpScript() {
@@ -1143,7 +1140,7 @@ async function handleOpSend() {
   opAbortController = new AbortController()
 
   const assistantIdx = opMessages.value.length
-  opMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  opMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
   opPinnedToBottom.value = true
   await nextTick()
   scrollOpToBottom(true)
@@ -1231,7 +1228,7 @@ async function handleOpSend() {
           // skip
         }
       }
-      scrollOpToBottom()
+      nextTick(() => scrollOpToBottom())
     }
 
     const finalMsg = opMessages.value[assistantIdx]
@@ -1258,9 +1255,9 @@ async function handleOpSend() {
   }
 }
 
-onMounted(async () => {
-  await loadOperators()
-  await restoreOpSession()
+onMounted(() => {
+  loadOperators()
+  restoreOpSession()
 })
 </script>
 
@@ -1618,8 +1615,12 @@ onMounted(async () => {
     color: #409eff;
     font-weight: 500;
     border-bottom: 1px solid #d9ecff;
+    cursor: pointer;
+    user-select: none;
 
     .thinking-spin { animation: op-rotate 1.2s linear infinite; }
+    .thinking-toggle { transition: transform 0.2s; }
+    .thinking-toggle.open { transform: rotate(90deg); }
   }
 
   .thinking-body {

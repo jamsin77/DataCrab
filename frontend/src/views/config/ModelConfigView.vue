@@ -12,11 +12,10 @@
 
       <el-form :model="form" label-width="120px" v-loading="loading">
         <el-form-item label="服务提供商">
-          <el-select v-model="form.provider" placeholder="选择提供商">
-            <el-option label="OpenAI" value="openai" />
-            <el-option label="Azure OpenAI" value="azure" />
-            <el-option label="通义千问 (阿里云)" value="qwen" />
+          <el-select v-model="form.provider" placeholder="选择提供商" @change="onProviderChange">
+            <el-option label="阿里百炼" value="qwen" />
             <el-option label="智谱AI (GLM)" value="glm" />
+            <el-option label="硅基流动" value="siliconflow" />
             <el-option label="自定义服务" value="custom" />
           </el-select>
         </el-form-item>
@@ -42,42 +41,23 @@
         <el-form-item label="API 地址">
           <el-input
             v-model="form.api_base"
-            placeholder="可选，默认使用官方地址"
+            :placeholder="apiBasePlaceholder"
           />
           <div class="form-tip">
             <el-text size="small" type="info">
-              可填写自定义API地址，如 http://localhost:8000/v1
+              {{ form.provider === 'custom' ? '可填写自定义API地址，如 http://localhost:8000/v1' : '已自动填入官方地址，如需代理可修改' }}
             </el-text>
           </div>
         </el-form-item>
 
         <el-form-item label="对话模型">
-          <el-select v-model="form.model" placeholder="选择模型" filterable allow-create>
-            <el-option-group label="OpenAI">
-              <el-option label="GPT-4" value="gpt-4" />
-              <el-option label="GPT-4 Turbo" value="gpt-4-turbo" />
-              <el-option label="GPT-4o" value="gpt-4o" />
-              <el-option label="GPT-3.5 Turbo" value="gpt-3.5-turbo" />
-            </el-option-group>
-            <el-option-group label="通义千问">
-              <el-option label="通义千问 Max" value="qwen-max" />
-              <el-option label="通义千问 Plus" value="qwen-plus" />
-              <el-option label="通义千问 Turbo" value="qwen-turbo" />
-              <el-option label="通义千问 Long" value="qwen-long" />
-            </el-option-group>
-            <el-option-group label="智谱AI">
-              <el-option label="GLM-5.2" value="glm-5.2" />
-              <el-option label="GLM-5.1" value="glm-5.1" />
-              <el-option label="GLM-5" value="glm-5" />
-              <el-option label="GLM-4" value="glm-4" />
-              <el-option label="GLM-4 Plus" value="glm-4-plus" />
-              <el-option label="GLM-3 Turbo" value="glm-3-turbo" />
-            </el-option-group>
-            <el-option-group label="Claude">
-              <el-option label="Claude 3 Opus" value="claude-3-opus" />
-              <el-option label="Claude 3 Sonnet" value="claude-3-sonnet" />
-              <el-option label="Claude 3 Haiku" value="claude-3-haiku" />
-            </el-option-group>
+          <el-select v-model="form.model" placeholder="选择模型" filterable :allow-create="form.provider === 'custom'">
+            <el-option
+              v-for="m in availableModels"
+              :key="m.value"
+              :label="m.label"
+              :value="m.value"
+            />
           </el-select>
         </el-form-item>
 
@@ -157,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
 
@@ -165,20 +145,67 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 
+const providerModels: Record<string, { label: string; value: string }[]> = {
+  qwen: [
+    { label: 'Qwen3.7-Max', value: 'qwen3.7-max' },
+    { label: 'Qwen3.7-Plus', value: 'qwen3.7-plus' },
+    { label: 'Qwen3.6-Flash', value: 'qwen3.6-flash' },
+    { label: 'DeepSeek-V4-Pro', value: 'deepseek-v4-pro' },
+    { label: 'DeepSeek-V4-Flash', value: 'deepseek-v4-flash' },
+  ],
+  glm: [
+    { label: 'GLM-5.2', value: 'glm-5.2' },
+    { label: 'GLM-5.1', value: 'glm-5.1' },
+    { label: 'GLM-5', value: 'glm-5' },
+    { label: 'GLM-4 Plus', value: 'glm-4-plus' },
+    { label: 'GLM-4', value: 'glm-4' },
+    { label: 'GLM-3 Turbo', value: 'glm-3-turbo' },
+  ],
+  siliconflow: [
+    { label: 'DeepSeek-V3', value: 'deepseek-ai/DeepSeek-V3' },
+    { label: 'Qwen2.5-72B', value: 'Qwen/Qwen2.5-72B-Instruct' },
+    { label: 'Qwen2.5-Coder-32B', value: 'Qwen/Qwen2.5-Coder-32B-Instruct' },
+    { label: 'DeepSeek-V2.5', value: 'deepseek-ai/DeepSeek-V2.5' },
+  ],
+  custom: [],
+}
+
+const providerBaseUrls: Record<string, string> = {
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  glm: 'https://open.bigmodel.cn/api/paas/v4',
+  siliconflow: 'https://api.siliconflow.cn/v1',
+  custom: '',
+}
+
+const availableModels = computed(() => providerModels[form.value.provider] || [])
+
+const apiBasePlaceholder = computed(() => {
+  const url = providerBaseUrls[form.value.provider]
+  return url || '请填写自定义API地址，如 http://localhost:8000/v1'
+})
+
+function onProviderChange() {
+  const models = providerModels[form.value.provider] || []
+  if (models.length > 0 && !models.find(m => m.value === form.value.model)) {
+    form.value.model = models[0].value
+  }
+  form.value.api_base = providerBaseUrls[form.value.provider] || ''
+}
+
 const config = ref({
-  provider: 'openai',
+  provider: 'glm',
   api_key_set: false,
   api_base: '',
-  model: 'gpt-4',
+  model: 'glm-5.2',
   embedding_model: 'text-embedding-ada-002',
   is_configured: false
 })
 
 const form = ref({
-  provider: 'openai',
+  provider: 'glm',
   api_key: '',
   api_base: '',
-  model: 'gpt-4',
+  model: 'glm-5.2',
   embedding_model: 'text-embedding-ada-002'
 })
 
@@ -186,10 +213,9 @@ const testResult = ref<any>(null)
 const saveResult = ref<any>(null)
 
 const modelProviders = ref([
-  { name: 'OpenAI', models: 'gpt-4, gpt-4o, gpt-3.5-turbo', note: '官方API: api.openai.com' },
-  { name: 'Azure OpenAI', models: 'gpt-4, gpt-35-turbo', note: '需设置API地址' },
-  { name: '通义千问', models: 'qwen-max, qwen-plus, qwen-turbo', note: 'API: dashscope.aliyuncs.com' },
-  { name: '智谱AI', models: 'glm-5.2, glm-5.1, glm-5, glm-4, glm-3-turbo', note: 'API: open.bigmodel.cn' },
+  { name: '阿里百炼', models: 'qwen3.7-max, qwen3.7-plus, qwen3.6-flash, deepseek-v4-pro', note: 'API: dashscope.aliyuncs.com/compatible-mode/v1' },
+  { name: '智谱AI', models: 'glm-5.2, glm-5.1, glm-5, glm-4, glm-3-turbo', note: 'API: open.bigmodel.cn/api/paas/v4' },
+  { name: '硅基流动', models: 'DeepSeek-V3, Qwen2.5-72B, Qwen2.5-Coder-32B', note: 'API: api.siliconflow.cn/v1' },
   { name: '本地部署', models: '自定义', note: '如vLLM、Ollama' },
 ])
 

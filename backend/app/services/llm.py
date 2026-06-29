@@ -12,6 +12,7 @@ PROVIDER_BASE_URLS = {
     "azure": None,  # 需要用户设置
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "siliconflow": "https://api.siliconflow.cn/v1",
     "custom": None,  # 用户自定义
 }
 

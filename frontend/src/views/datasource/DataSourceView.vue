@@ -188,7 +188,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="900px" @opened="onBrowseOpened">
+    <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="95%" top="2vh" @opened="onBrowseOpened">
       <div class="browse-layout">
         <div class="browse-sidebar">
           <div class="browse-sidebar-title">数据表</div>
@@ -209,7 +209,7 @@
             <span class="browse-table-name">{{ selectedTable }}</span>
             <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
           </div>
-          <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="420" style="width: 100%;">
+          <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="74vh" style="width: 100%;">
             <el-table-column
               v-for="col in browseColumns"
               :key="col.name"
@@ -651,16 +651,16 @@ function onFsSelect(path: string) {
 .browse-layout {
   display: flex;
   gap: 12px;
-  min-height: 350px;
+  min-height: 74vh;
 }
 
 .browse-sidebar {
-  width: 180px;
+  width: 220px;
   flex-shrink: 0;
   border: 1px solid #e6e6e6;
   border-radius: 6px;
   overflow-y: auto;
-  max-height: 440px;
+  max-height: 76vh;
 }
 
 .browse-sidebar-title {
@@ -720,7 +720,7 @@ function onFsSelect(path: string) {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 300px;
+  min-height: 70vh;
 }
 
 .table-actions {
