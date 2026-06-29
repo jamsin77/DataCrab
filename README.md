@@ -16,20 +16,20 @@ DataCrab 是一款基于大语言模型（LLM）的数据智能应用平台，�
 - 会话管理：创建、列表、重命名、删除、搜索
 - 多轮对话：保留最近 20 条消息作为上下文
 - 数据源上下文注入：用户提及数据源时，系统自动查询真实数据并注入到 LLM 提示词中
-- 复杂查询解析：排序、过滤、分页、聚合，支持中国朝代排序（文物数据领域特色）
 - 支持停止生成
 
-### 2. Agent 系统（工具调用）
+### 2. 多智能体协作框架
 
-LLM 可自主调用工具完成数据操作，支持最多 5 轮迭代的 Agent 循环：
+DataCrab 采用多智能体协作架构，各智能体分工明确、通过 Handoff 机制交接工作：
 
-| 工具 | 功能 |
-|------|------|
-| `query_table_data` | 查询数据源中的表数据（支持过滤、排序、分页） |
-| `get_table_schema` | 查看表结构 |
-| `list_user_datasources` | 列出已连接的数据源 |
-| `list_user_file_links` | 列出已挂载的文件目录 |
-| `save_file_to_link` | 保存文件到用户目录 |
+| 智能体 | 职责 |
+|--------|------|
+| **DataProcessor** | 理解用户意图、生成/修改算子和技能、调度执行、溯源修复 |
+| **DataInspector** | 对加工后的数据进行标准检查、质量检查、安全检查 |
+
+- 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
+- Agent 迭代最多 12 轮，支持并行工具调用
+- SSE 流式输出推理过程和执行结果
 
 ### 3. 数据源管理
 
@@ -47,22 +47,26 @@ LLM 可自主调用工具完成数据操作，支持最多 5 轮迭代的 Agent 
 - 连接测试、Schema 发现、表数据分页浏览
 - 数据质量分析（完整性、缺失值、异常值检测）
 - 表统计信息（行数、列数、大小）
-- 元数据管理（技术元数据 + 业务元数据）
 
-### 4. 算子管理
+### 4. 元数据管理
+
+- **技术元数据**：数据源配置时一键自动同步（表结构、行数、字段统计、样本数据）
+- **业务元数据**：通过 LLM 分析样本数据自动补充（业务名称、描述、标签、数据域、安全等级）
+- 支持人工编辑业务元数据
+- 元数据搜索和统计概览
+
+### 5. 算子管理
 
 算子是存储在数据库中的 Python 脚本，支持：
 
 - **上传**：上传 `.py` 文件，AST 解析器自动提取函数名、参数和文档
 - **AI 生成**：自然语言描述 → LLM 生成 Python 脚本 → 自动解析创建
-- **AI 修改**：自然语言指令修改已有算子脚本
+- **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
-- **调试/执行**：在沙盒命名空间中运行算子，注入工具函数
+- **调试/执行**：在沙盒命名空间中运行算子，注入工具函数（query_table_data、llm_chat 等）
 - **下载**：导出为 `.py` 文件
 
-内置分类：transform、aggregate、filter、join、cleaning、analysis、ai_generated
-
-### 5. 技能管理
+### 6. 技能管理
 
 技能遵循 Agent Skills 开放标准，每个技能是一个结构化文件夹：
 
@@ -75,79 +79,73 @@ assets/           # 静态资源
 
 - **完整生命周期**：创建、读取、更新、删除
 - **上传/下载**：`.zip` 包上传自动解压解析，导出为 `.zip`
-- **AI 生成（技能创建器）**：自然语言描述 → LLM 生成完整技能包
+- **AI 生成**：自然语言描述 → LLM 生成完整技能包
 - **AI 修改**：自然语言指令修改 SKILL.md 内容（SSE 流式，展示思考过程）
 - **执行**：在子进程沙盒中执行脚本，支持超时控制、SSE 流式状态推送
 - **自然语言执行**：LLM 推断执行参数（含推理过程展示），然后运行技能
-- **AI 调试助手**：Chat 风格交互式调试界面
-  - 左侧执行面板：自然语言/命令行/JSON 三种输入方式
-  - 右侧 AI 调试面板：多轮对话，AI 可自动执行或修改脚本
-  - 推理过程可视化：蓝色推理卡片实时展示 AI 思考过程
-- 技能脚本自动同步到算子表
+- **AI 调试助手**：Chat 风格交互式调试，AI 可自动执行或修改脚本
+- **技能自我进化**：错误日志自动记录，LLM 总结经验写入 SKILL.md
+- **技能 JSON 参数样例**：参数定义支持 example 字段，前端自动填入示例值
 
-### 6. 技能库与语义搜索
+### 7. 流程（Pipeline）
 
-- 基于 OpenAI Embeddings 的向量语义搜索
-- 关键词匹配作为降级方案
-- 10 个预置内置技能：select、filter、sort、groupby、aggregate、join、fillna、dropna、rename、stats
+流程是 DataCrab 的核心编排概念——**每个流程就是一个 Python 主函数**：
 
-### 7. 自然语言处理流水线
+- 一个流程 = 一个 Python 主函数 + 它调用的 Skill 脚本
+- 从 Skill 一键转换为可独立运行的 Python 主函数
+- 代码可视化：展示主函数源码 + 调用关系图
+- 直接执行：无需 DAG 引擎，直接运行主函数
+- SSE 流式生成和执行
 
-- **意图识别**：基于关键词的 8 类意图分类（数据清洗、数据转换、数据聚合、数据分析、数据融合、数据导出、创建算子、创建技能）
-- **实体提取**：预留 LLM 基础提取接口
-- **技能匹配**：向量搜索 + 关键词匹配组合策略
+### 8. 工作流（Workflow）
 
-### 8. 流水线编排
-
-- 定义多步骤数据处理流水线
-- 步骤引用技能/算子，支持参数定义和依赖关系（DAG 结构）
-- 意图识别 → 技能匹配 → 技能组合 → 参数推断 → 验证的完整流水线
+- 基于 DAG 的工作流编排（Vue Flow 画布）
+- 节点类型：Skill、Condition、Parallel 等
+- 拓扑排序执行引擎
+- 工作流克隆和删除
 
 ### 9. 调度系统
 
-- 支持算子、技能和工作流的定时执行
+- 支持算子、技能、工作流和流程的定时执行
 - **调度类型**：Cron 表达式、固定间隔（秒）、手动触发
 - Cron 表达式校验及下次执行时间预览
 - 暂停/恢复调度
 - 任务执行追踪：状态、耗时、日志、重试次数
-- 执行统计仪表盘
 
-### 10. Notebook 环境
+### 10. 大模型公开 API
 
-- 类 Jupyter 的代码笔记本
-- 代码单元格与 Markdown 单元格
-- 内核管理（Python/SQL）
-- 版本历史
-- 保存/分享/导出
+平台将底层大模型能力以 RESTful API 形式开放：
 
-### 11. 数据探索面板
+| 端点 | 说明 |
+|------|------|
+| `POST /llm/chat` | 大模型对话（非流式） |
+| `POST /llm/chat-stream` | 大模型对话（SSE 流式） |
+| `POST /llm/chat-stream-thinking` | 大模型多轮对话（SSE 流式，含推理过程） |
+| `POST /llm/embeddings` | 生成文本嵌入向量 |
 
-- 浏览数据源树形结构
-- 查看表 Schema 和样本数据
-- 元数据搜索
+- 算子和技能脚本中可直接调用 `llm_chat()` 函数
+- 前端配置页面支持三种调用模式切换
 
-### 12. 文件链接管理
+### 11. 文件链接管理
 
 - 挂载本地文件/目录路径
 - 访问控制（公开/私有，允许的文件扩展名）
-- 文件元数据追踪
 - Agent 可写入文件到已链接目录
 
-### 13. 认证与授权
+### 12. 认证与授权
 
 - JWT 认证（Access Token + Refresh Token）
 - RBAC 角色权限控制：用户 → 角色 → 权限
-- 权限级别：view、use、manage
-- 资源级权限控制（算子、技能、数据源、调度）
+- 资源级权限控制
 
-### 14. LLM 多模型支持
+### 13. LLM 多模型支持
 
 | 提供商 | 说明 |
 |--------|------|
+| 智谱 GLM | 智谱 AI（默认） |
 | OpenAI | GPT 系列 |
 | Azure OpenAI | Azure 托管的 OpenAI 服务 |
 | 通义千问 | 阿里云 DashScope |
-| 智谱 GLM | 智谱 AI |
 | 自定义端点 | 兼容 OpenAI API 的任意端点 |
 
 - 运行时动态切换模型提供商/密钥/模型
@@ -160,15 +158,11 @@ assets/           # 静态资源
 
 ### 后端
 
-- **语言**：Python 3.9+
+- **语言**：Python 3.11+
 - **Web 框架**：FastAPI + Uvicorn
 - **ORM**：SQLAlchemy 2.0（异步，支持 SQLite / PostgreSQL）
-- **任务队列**：Celery + Redis
+- **LLM 集成**：智谱 GLM（glm-4-flash / glm-4-plus / glm-5.2）
 - **数据处理**：pandas, numpy
-- **LLM 集成**：OpenAI API
-- **对象存储**：MinIO
-- **搜索引擎**：Elasticsearch
-- **数据库迁移**：Alembic
 
 ### 前端
 
@@ -180,14 +174,12 @@ assets/           # 静态资源
 - **图表**：ECharts 5
 - **代码编辑器**：Monaco Editor
 - **Markdown 渲染**：markdown-it + highlight.js
+- **流程编辑**：Vue Flow
 
-### 基础设施
+### 数据存储
 
-- **容器化**：Docker + Docker Compose
-- **反向代理**：Nginx
-- **数据库**：SQLite（开发）/ PostgreSQL 14（生产）
-- **缓存**：Redis 7
-- **对象存储**：MinIO
+- **数据库**：SQLite（开发）/ PostgreSQL 14+（生产）
+- **文件存储**：本地文件系统
 
 ---
 
@@ -199,72 +191,72 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（10 个资源组）
+│   │   ├── api/v1/endpoints/  # API 端点（17 个资源组）
 │   │   ├── models/            # ORM 模型（9 个模型）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
 │   │       ├── llm.py         # LLM 管理器（多提供商、流式、工具调用）
 │   │       ├── agent.py       # Agent 服务（工具调用循环）
-│   │       ├── nl_service.py  # 自然语言意图识别
-│   │       ├── skill_library.py # 向量索引 + 语义搜索
-│   │       ├── skill_parser.py  # SKILL.md 解析器
-│   │       ├── skill_runner.py  # 子进程沙盒执行器
-│   │       ├── skill_creator.py # AI 技能包生成器
+│   │       ├── multi_agent.py # 多智能体运行时（Handoff、AgentRegistry）
+│   │       ├── data_processor_agent.py  # DataProcessor 智能体
+│   │       ├── data_inspector_agent.py  # DataInspector 智能体
+│   │       ├── inspector_tools.py       # 数据检查工具集
+│   │       ├── skill_library.py  # 向量索引 + 语义搜索
+│   │       ├── skill_parser.py   # SKILL.md 解析器
+│   │       ├── skill_runner.py   # 子进程沙盒执行器
+│   │       ├── skill_creator.py  # AI 技能包生成器
+│   │       ├── pipeline_builder.py  # 流程生成器
+│   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 6 种数据源连接器
 │   │       └── operator_parser.py # Python AST 脚本解析器
-│   ├── data/skills/           # 技能包磁盘存储
-│   ├── alembic/               # 数据库迁移
-│   └── pyproject.toml         # Poetry 项目定义
+│   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
 │   ├── src/
-│   │   ├── views/             # 11 个页面视图
+│   │   ├── views/             # 14 个页面视图
 │   │   ├── router/            # 路由配置
 │   │   ├── stores/            # Pinia 状态管理
 │   │   ├── api/               # Axios API 客户端
 │   │   └── composables/       # Vue 组合函数
 │   └── package.json
-├── nginx/                      # Nginx 反向代理配置
-├── docker-compose.yml          # 全栈部署配置
-└── skills/                     # 示例技能（文物专家）
+├── package.json               # npm 统一安装/启动脚本
+├── INSTALL.md                 # 安装与运行指南
+└── design.md                  # 技术架构设计文档
 ```
 
 ---
 
 ## 快速开始
 
+详见 [INSTALL.md](INSTALL.md)。
+
 ### 环境要求
 
-- Python 3.9+
+- Python 3.11+
 - Node.js 16+
-- Redis（用于 Celery 任务队列）
 
-### 后端启动
+### 一键启动
 
 ```bash
-cd backend
-pip install -e .
+# 安装依赖
+npm install
 
-# 配置环境变量（复制 .env.example 为 .env）
-# 必须配置：OPENAI_API_KEY
-
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 开发模式（前后端并行启动）
+npm run dev
 ```
 
-### 前端启动
+### 单独启动
 
 ```bash
+# 后端
+cd backend
+pip install -e .
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 前端
 cd frontend
 npm install
 npm run dev    # Vite 开发服务器，默认端口 5173
 ```
-
-### Docker 全栈部署
-
-```bash
-docker-compose up
-```
-
-启动服务：PostgreSQL、Redis、MinIO、后端、Celery Worker、前端、Nginx。
 
 ---
 
@@ -279,24 +271,29 @@ docker-compose up
 | `/datasources` | 数据源 CRUD、连接测试、表数据/统计/质量 |
 | `/skills` | 技能全生命周期、上传/下载、运行、AI 生成/修改 |
 | `/operators` | 算子 CRUD、上传、生成、修改、调试、克隆 |
-| `/codes` | 流水线 CRUD、执行 |
+| `/pipelines` | 流程 CRUD、从 Skill 生成、执行、克隆 |
+| `/workflows` | 工作流 CRUD、运行、克隆 |
 | `/schedules` | 调度 CRUD、暂停/恢复、触发、统计 |
-| `/notebooks` | 笔记本 CRUD、执行单元格 |
+| `/metadata` | 元数据管理、AI 补充业务元数据 |
 | `/filelinks` | 文件链接 CRUD |
+| `/llm` | 大模型对话（流式/非流式）、嵌入向量 |
 | `/config` | LLM 提供商运行时配置 |
+| `/agents` | 智能体列表、运行智能体、数据检查 |
+| `/permissions` | 权限管理 |
+| `/filesystem` | 文件系统浏览 |
+| `/notebooks` | Notebook 基础 CRUD |
 
 ---
 
 ## 架构亮点
 
-1. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
-2. **Agent 工具调用循环**：LLM 自主决策调用工具，实现无显式指令的数据操作
+1. **多智能体协作**：DataProcessor + DataInspector 双智能体，Handoff 机制自动交接，处理+检查闭环
+2. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
 3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析
-4. **双重搜索策略**：向量语义搜索 + 关键词匹配降级，确保搜索可用性
-5. **子进程沙盒**：技能脚本在隔离子进程中执行，支持超时控制
-6. **技能-算子自动同步**：技能脚本变更自动同步到算子表，打通两大执行体系
-7. **LLM 提供商抽象**：统一接口支持多种 LLM 提供商，运行时可动态切换
+4. **流程 = Python 主函数**：抛弃 DAG 模型，每个流程就是一个可独立运行的 Python 函数
+5. **技能自我进化**：错误日志自动记录，LLM 总结经验写入 SKILL.md，生成新技能时自动注入历史经验
+6. **LLM 能力注入**：算子和技能脚本中可直接调用 `llm_chat()` 函数，无需走 HTTP 请求
+7. **元数据管理**：技术元数据一键同步 + 业务元数据 AI 补充，统一数据目录
 8. **流式优先架构**：多处端点支持 SSE 流式响应，提供实时反馈
 9. **AST 脚本自省**：Python AST 解析自动提取函数签名和文档，零配置注册算子
 10. **AI 调试助手**：Chat 风格交互式调试，AI 推理过程可视化，可自动执行/修改脚本
-11. **文物领域特化**：内置中国朝代/年号映射，支持历史数据的智能排序和筛选
