@@ -164,7 +164,7 @@ async def test_connection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     try:
-        connector = get_connector(datasource.type, datasource.connection_config or {})
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
         success = await connector.test_connection()
         await connector.close()
         if success:
@@ -191,7 +191,7 @@ async def get_datasource_tree(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     try:
-        connector = get_connector(datasource.type, datasource.connection_config or {})
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
         schema = await connector.get_schema()
         await connector.close()
 
@@ -231,7 +231,7 @@ async def get_table_data(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     try:
-        connector = get_connector(datasource.type, datasource.connection_config or {})
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
         df = await connector.get_table_data(table_name, page=page, page_size=page_size)
 
         total_count = len(df)
@@ -274,7 +274,7 @@ async def get_table_stats(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     try:
-        connector = get_connector(datasource.type, datasource.connection_config or {})
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
         stats = await connector.get_table_stats(table_name)
         await connector.close()
 
@@ -304,7 +304,7 @@ async def get_table_quality(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
 
     try:
-        connector = get_connector(datasource.type, datasource.connection_config or {})
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
         df = await connector.get_table_data(table_name, page=1, page_size=10000)
         await connector.close()
 

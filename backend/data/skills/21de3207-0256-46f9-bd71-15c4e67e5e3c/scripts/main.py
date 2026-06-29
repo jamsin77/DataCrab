@@ -8,6 +8,8 @@ import sys
 import io
 import inspect
 import re
+import time
+import traceback
 import pandas as pd
 from typing import Dict, List, Optional, Any
 
@@ -19,8 +21,9 @@ else:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
+
 # ============================================================
-# 内置函数兼容层
+# 内置函数延迟加载（不在模块级调用，避免加载时崩溃）
 # ============================================================
 def _get_builtin_func(name: str):
     """自动适配带 _dc_ 前缀和不带前缀的内置函数"""
@@ -30,18 +33,17 @@ def _get_builtin_func(name: str):
     prefixed_name = f"_dc_{name}"
     if prefixed_name in g:
         return g[prefixed_name]
-    raise NameError(f"无法找到内置函数: {name} 或 {prefixed_name}")
-
-get_datasource_id_by_name = _get_builtin_func('get_datasource_id_by_name')
-query_table_data = _get_builtin_func('query_table_data')
-write_table_data = _get_builtin_func('write_table_data')
+    # 如果都找不到，返回一个会报错的占位函数，而不是在加载时崩溃
+    def _not_found(*args, **kwargs):
+        raise NameError(f"内置函数 '{name}' (或 '{prefixed_name}') 不存在，请检查运行环境是否正确注入")
+    _not_found.__name__ = f"_not_found_{name}"
+    return _not_found
 
 
 # ============================================================
 # 常用中文→英文翻译词典（用于自动生成英文列名/表名）
 # ============================================================
 COMMON_CN_EN = {
-    # 通用
     "编号": "code", "序号": "serial_no", "名称": "name", "名字": "name",
     "类型": "type", "类别": "category", "分类": "classification",
     "年代": "era", "时期": "period", "朝代": "dynasty", "时代": "era",
@@ -63,7 +65,6 @@ COMMON_CN_EN = {
     "操作": "operation", "管理": "management", "负责": "responsible",
     "联系": "contact", "电话": "phone", "邮箱": "email",
     "网站": "website", "链接": "link", "网址": "url",
-    # 文物相关
     "文物": "relic", "保护": "protection", "单位": "unit",
     "全国": "national", "重点": "key", "省级": "provincial",
     "市级": "municipal", "县级": "county", "公布": "published",
@@ -73,7 +74,6 @@ COMMON_CN_EN = {
     "发掘": "excavation", "出土": "unearthed", "收藏": "collection",
     "展览": "exhibition", "修复": "restoration", "保存": "preservation",
     "现状": "condition", "建成": "construction",
-    # 复合词组
     "文物名称": "relic_name", "文物编号": "relic_code",
     "文物类型": "relic_type", "文物级别": "relic_level",
     "保护单位": "protection_unit", "公布批次": "published_batch",
@@ -82,27 +82,19 @@ COMMON_CN_EN = {
     "建成年代": "construction_era", "所属朝代": "dynasty",
     "全国重点": "national_key", "文物保护单位": "cultural_relic_protection_unit",
     "全国重点文物保护单位": "national_key_cultural_relic_protection_units",
+    "记录时间戳": "record_timestamp", "时间戳": "timestamp",
 }
 
 
 def _smart_translate(text: str) -> str:
-    """
-    智能翻译中文为英文列名/表名：
-    1. 先查完整词组
-    2. 再逐词翻译（最长匹配）
-    3. 最后回退到拼音
-    """
+    """智能翻译中文为英文列名/表名"""
     text = str(text).strip()
-
-    # 1. 完整匹配
     if text in COMMON_CN_EN:
         return COMMON_CN_EN[text]
 
-    # 2. 尝试最长子串匹配
     result_parts = []
     remaining = text
     has_translation = False
-
     while remaining:
         matched = False
         for length in range(len(remaining), 0, -1):
@@ -114,7 +106,6 @@ def _smart_translate(text: str) -> str:
                 has_translation = True
                 break
         if not matched:
-            # 单个字符，尝试拼音
             char = remaining[0]
             try:
                 from pypinyin import pinyin, Style
@@ -124,11 +115,9 @@ def _smart_translate(text: str) -> str:
             except ImportError:
                 result_parts.append(char)
             remaining = remaining[1:]
-
     if has_translation:
         return '_'.join(result_parts)
 
-    # 3. 全拼音兜底
     try:
         from pypinyin import pinyin, Style
         clean_text = re.sub(r'[^\u4e00-\u9fa5]', '', text)
@@ -141,7 +130,6 @@ def _smart_translate(text: str) -> str:
 
 
 def _is_english_identifier(name: str) -> bool:
-    """检查名称是否为合法的英文标识符（只包含字母、数字、下划线，不以数字开头）"""
     if not name:
         return False
     name = str(name)
@@ -149,38 +137,81 @@ def _is_english_identifier(name: str) -> bool:
 
 
 def _sanitize_identifier(name: str, fallback: str = "col") -> str:
-    """
-    将名称规范化为合法的英文标识符。
-    如果已经是英文标识符则直接返回；否则通过翻译/拼音转换后清理。
-    """
     name = str(name).strip()
     if not name:
         return fallback
-
-    # 已经是合法标识符
     if _is_english_identifier(name):
         return name
-
-    # 尝试智能翻译
     translated = _smart_translate(name)
-
-    # 清理翻译结果，只保留字母、数字、下划线
     translated = re.sub(r'[^a-zA-Z0-9_]', '_', translated)
-    # 合并连续下划线
     translated = re.sub(r'_+', '_', translated).strip('_')
-    # 如果以数字开头，添加下划线前缀
     if translated and translated[0].isdigit():
         translated = f"_{translated}"
-    # 如果为空，使用 fallback
     if not translated:
         translated = fallback
-
     return translated
 
 
 # ============================================================
 # 列转换工具函数
 # ============================================================
+
+def _batch_translate(values: List[str], source_lang: str, target_lang: str) -> List[str]:
+    """批量翻译文本列表，使用 llm_chat 调用大模型。"""
+    if not values:
+        return values
+    try:
+        llm_chat_func = _get_builtin_func('llm_chat')
+    except Exception:
+        print("  ⚠️ llm_chat 函数不可用，跳过翻译")
+        return values
+
+    lang_map = {"zh": "中文", "en": "英文"}
+    src_name = lang_map.get(source_lang, source_lang)
+    tgt_name = lang_map.get(target_lang, target_lang)
+
+    batch_limit = 50
+    results = []
+    for i in range(0, len(values), batch_limit):
+        batch = values[i:i + batch_limit]
+        batch_num = i // batch_limit + 1
+        lines = [f"{idx + 1}. {val}" for idx, val in enumerate(batch)]
+        prompt = f"请将以下{src_name}文本翻译为{tgt_name}，只输出翻译结果，每行一条，保持编号格式。\n\n{chr(10).join(lines)}\n\n要求：\n1. 每行格式为 \"编号. 翻译结果\"\n2. 只输出翻译结果，不要添加任何额外说明\n3. 保持原文的含义，翻译要准确自然"
+        system_prompt = f"你是一个专业的{src_name}到{tgt_name}翻译助手。请准确翻译，保持编号格式。"
+        try:
+            print(f"    🌐 翻译批次 {batch_num} ({len(batch)} 条)...")
+            reply = llm_chat_func(prompt, system_prompt=system_prompt, temperature=0.3)
+            translated_batch = _parse_translation_reply(reply, len(batch))
+            if len(translated_batch) == len(batch):
+                results.extend(translated_batch)
+            else:
+                print(f"    ⚠️ 批量解析失败，回退逐条翻译...")
+                for val in batch:
+                    single_prompt = f"请将以下{src_name}文本翻译为{tgt_name}，只输出翻译结果：\n{val}"
+                    single_reply = llm_chat_func(single_prompt, system_prompt=system_prompt, temperature=0.3)
+                    results.append(single_reply.strip())
+        except Exception as e:
+            print(f"    ⚠️ 翻译批次 {batch_num} 失败: {e}，使用原文")
+            results.extend(batch)
+    return results
+
+
+def _parse_translation_reply(reply: str, expected_count: int) -> List[str]:
+    lines = reply.strip().split('\n')
+    results = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        match = re.match(r'^\d+[\.\、]\s*(.*)$', line)
+        if match:
+            results.append(match.group(1).strip())
+        else:
+            results.append(line)
+    if len(results) != expected_count:
+        return []
+    return results
+
 
 def apply_column_transform(df: pd.DataFrame, column: str, rule: Dict[str, Any]) -> pd.DataFrame:
     """对 DataFrame 中指定列应用转换规则。"""
@@ -193,57 +224,52 @@ def apply_column_transform(df: pd.DataFrame, column: str, rule: Dict[str, Any]) 
     if transform_type == "trim":
         mask = df[column].notna()
         df.loc[mask, column] = df.loc[mask, column].astype(str).str.strip()
-
     elif transform_type == "upper":
         mask = df[column].notna()
         df.loc[mask, column] = df.loc[mask, column].astype(str).str.upper()
-
     elif transform_type == "lower":
         mask = df[column].notna()
         df.loc[mask, column] = df.loc[mask, column].astype(str).str.lower()
-
     elif transform_type == "fill_na":
         fill_value = rule.get("value", "")
         df[column] = df[column].fillna(fill_value)
-
     elif transform_type == "to_int":
         df[column] = pd.to_numeric(df[column], errors="coerce").astype("Int64")
-
     elif transform_type == "to_float":
         df[column] = pd.to_numeric(df[column], errors="coerce")
         if "round" in rule:
-            decimals = int(rule["round"])
-            df[column] = df[column].round(decimals)
-
+            df[column] = df[column].round(int(rule["round"]))
     elif transform_type == "to_str":
         mask = df[column].notna()
         df.loc[mask, column] = df.loc[mask, column].astype(str)
-
     elif transform_type == "to_date":
         date_format = rule.get("format")
         df[column] = pd.to_datetime(df[column], format=date_format, errors="coerce")
-
     elif transform_type == "prefix":
         prefix_value = str(rule.get("value", ""))
         mask = df[column].notna()
         df.loc[mask, column] = prefix_value + df.loc[mask, column].astype(str)
-
     elif transform_type == "suffix":
         suffix_value = str(rule.get("value", ""))
         mask = df[column].notna()
         df.loc[mask, column] = df.loc[mask, column].astype(str) + suffix_value
-
     elif transform_type == "replace":
         old_val = str(rule.get("old", ""))
         new_val = str(rule.get("new", ""))
         mask = df[column].notna()
-        df.loc[mask, column] = df.loc[mask, column].astype(str).str.replace(
-            old_val, new_val, regex=False
-        )
-
+        df.loc[mask, column] = df.loc[mask, column].astype(str).str.replace(old_val, new_val, regex=False)
+    elif transform_type == "translate":
+        source_lang = rule.get("source_lang", "zh")
+        target_lang = rule.get("target_lang", "en")
+        print(f"    🌐 翻译列 '{column}': {source_lang} → {target_lang}")
+        mask = df[column].notna()
+        values_to_translate = df.loc[mask, column].astype(str).tolist()
+        if values_to_translate:
+            print(f"    📝 共 {len(values_to_translate)} 条需要翻译")
+            translated_values = _batch_translate(values_to_translate, source_lang, target_lang)
+            df.loc[mask, column] = translated_values
     else:
         print(f"  ⚠️ 未知的转换类型 '{transform_type}'，跳过")
-
     return df
 
 
@@ -268,26 +294,47 @@ def migrate_data(
     column_remarks: Optional[Dict[str, str]] = None,
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    在不同数据源之间迁移数据，支持列名转换和简单数据处理。
-    当 auto_translate=True 时，自动将中文表名/列名翻译为英文，并设置中文备注。
-    写入前会强制检查表名和列名是否为合法英文标识符，自动翻译中文名称。
-    """
+    """在不同数据源之间迁移数据，支持列名转换和简单数据处理。"""
+
+    # 延迟加载内置函数
+    get_datasource_id_by_name = _get_builtin_func('get_datasource_id_by_name')
+    query_table_data = _get_builtin_func('query_table_data')
+    write_table_data = _get_builtin_func('write_table_data')
+
     # 兼容系统自动注入的参数
     if not source_datasource_name and 'datasource' in kwargs:
         source_datasource_name = kwargs.get('datasource')
+    if not source_datasource_name and 'source_datasource' in kwargs:
+        source_datasource_name = kwargs.get('source_datasource')
     if not source_table_name and 'table_name' in kwargs:
         source_table_name = kwargs.get('table_name')
+    if not target_datasource_name and 'target_datasource' in kwargs:
+        target_datasource_name = kwargs.get('target_datasource')
 
     column_mapping = column_mapping or {}
     column_transforms = column_transforms or {}
     drop_columns = drop_columns or []
-    add_columns = add_columns or {}
+
+    # 修复点：兼容 add_columns 传入列表的情况
+    if isinstance(add_columns, list):
+        temp_add = {}
+        for item in add_columns:
+            if isinstance(item, dict) and 'name' in item:
+                temp_add[item['name']] = item.get('value')
+            elif isinstance(item, str):
+                temp_add[item] = None
+        add_columns = temp_add
+    if add_columns is None:
+        add_columns = {}
+
     column_remarks = column_remarks or {}
 
     if not all([source_datasource_name, source_table_name, target_datasource_name]):
         msg = "缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。"
         print(f"⚠️ {msg}")
+        print(f"   source_datasource_name={source_datasource_name}")
+        print(f"   source_table_name={source_table_name}")
+        print(f"   target_datasource_name={target_datasource_name}")
         return {"success": False, "error": msg, "message": "参数校验失败"}
 
     print("=" * 60)
@@ -329,7 +376,6 @@ def migrate_data(
     data = result.get("data", [])
     columns = result.get("columns", [])
     row_count = result.get("row_count", 0)
-
     print(f"  ✅ 读取到 {row_count} 行, {len(columns)} 列")
     print(f"  📋 原始列名: {columns}")
 
@@ -341,21 +387,15 @@ def migrate_data(
     print(f"\n📈 步骤3: 数据预处理 (共 {len(data)} 行)...")
     df = pd.DataFrame(data, columns=columns)
 
-    # ===== 自动翻译逻辑 =====
+    # 自动翻译逻辑
     if auto_translate:
         print("\n  🌐 [自动翻译] 根据中文含义生成英文表名和列名...")
-
-        # 自动生成目标表名
         if not target_table_name:
             target_table_name = _smart_translate(source_table_name)
             print(f"    📋 表名自动生成: '{source_table_name}' → '{target_table_name}'")
-
-        # 设置表备注为中文原名
         if not table_remark:
             table_remark = source_table_name
             print(f"    📝 表备注: '{table_remark}'")
-
-        # 自动生成列名映射和列备注
         for col in df.columns:
             if col not in column_mapping:
                 en_name = _smart_translate(col)
@@ -363,7 +403,6 @@ def migrate_data(
                 column_remarks[en_name] = col
                 print(f"    📋 列名: '{col}' → '{en_name}'  (备注: {col})")
 
-    # 如果未指定目标表名，默认与源相同
     if not target_table_name:
         target_table_name = source_table_name
 
@@ -389,29 +428,53 @@ def migrate_data(
             df = df.rename(columns=valid_mapping)
             print(f"    ✅ 列名映射完成")
 
-    # 3.4 添加新列
+    # 3.4 添加新列（自动添加"记录时间戳"列）
+    print(f"\n  ➕ [3.4] 添加新列...")
+
+    # === 修复点：自动添加"记录时间戳"列 ===
+    # 检查是否已存在时间戳相关的列（中文名或英文名）
+    _has_timestamp_col = any(
+        "时间戳" in str(c) or "timestamp" in str(c).lower()
+        for c in df.columns
+    )
+    if not _has_timestamp_col:
+        # 如果用户 add_columns 中也没有指定时间戳列，自动添加
+        _user_has_timestamp = any(
+            "时间戳" in str(k) or "timestamp" in str(k).lower()
+            for k in (add_columns or {}).keys()
+        )
+        if not _user_has_timestamp:
+            if add_columns is None:
+                add_columns = {}
+            add_columns["记录时间戳"] = None
+            print(f"    🕐 自动添加「记录时间戳」列")
+
     if add_columns:
-        print(f"\n  ➕ [3.4] 添加新列...")
         for col_name, col_value in add_columns.items():
             if col_name not in df.columns:
+                # 如果列名包含"时间戳"/"timestamp"且值为 None 或空字符串，自动填充当前时间
+                is_timestamp_col = (
+                    "时间戳" in str(col_name) or
+                    "timestamp" in str(col_name).lower()
+                )
+                if is_timestamp_col and (col_value is None or str(col_value).strip() == ""):
+                    col_value = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
                 df[col_name] = col_value
+                print(f"    ✅ 已添加列: {col_name} = {col_value}")
 
-    # ===== 3.5 强制标识符规范化（写入前安全检查）=====
+    # 3.5 强制标识符规范化
     print(f"\n  🔒 [3.5] 标识符合法性检查...")
-
-    # 检查目标表名
     if not _is_english_identifier(target_table_name):
         original_table_name = target_table_name
         target_table_name = _sanitize_identifier(target_table_name, "migrated_table")
         if not table_remark:
             table_remark = original_table_name
-        print(f"    🔄 表名含非ASCII字符，自动翻译: '{original_table_name}' → '{target_table_name}'")
+        print(f"    🔄 表名自动翻译: '{original_table_name}' → '{target_table_name}'")
         if table_remark:
-            print(f"    📝 表备注设置为中文原名: '{table_remark}'")
+            print(f"    📝 表备注: '{table_remark}'")
     else:
         print(f"    ✅ 目标表名 '{target_table_name}' 合法")
 
-    # 检查所有列名
     col_rename_map = {}
     has_chinese_cols = False
     for col in df.columns:
@@ -419,13 +482,11 @@ def migrate_data(
             has_chinese_cols = True
             en_col = _sanitize_identifier(col, "column")
             col_rename_map[col] = en_col
-            # 如果该列还没有备注，设置中文原名为备注
             if en_col not in column_remarks:
                 column_remarks[en_col] = col
-
     if has_chinese_cols:
         df = df.rename(columns=col_rename_map)
-        print(f"    🔄 部分列名含非ASCII字符，已自动翻译:")
+        print(f"    🔄 部分列名已自动翻译:")
         for old, new in col_rename_map.items():
             print(f"       '{old}' → '{new}'  (备注: {old})")
     else:
@@ -437,8 +498,6 @@ def migrate_data(
 
     # 步骤4: 写入目标数据源
     print(f"\n✏️  步骤4: 写入目标表 '{target_table_name}'...")
-
-    # 构建写入参数
     write_extra_kwargs = {}
     if "table_remark" in write_supported_params and table_remark:
         write_extra_kwargs["table_remark"] = table_remark
@@ -447,14 +506,14 @@ def migrate_data(
     if write_extra_kwargs:
         print(f"  📝 附加写入参数: {list(write_extra_kwargs.keys())}")
 
-    def _write_records(records):
+    def _write_records(records, t_name):
         total_written = 0
         for i in range(0, len(records), batch_size):
             batch_num = i // batch_size + 1
             batch = records[i:i + batch_size]
             print(f"  📦 批次 {batch_num}: 写入 {len(batch)} 行...")
             write_result = write_table_data(
-                target_ds_id, target_table_name, records=batch, **write_extra_kwargs
+                target_ds_id, t_name, records=batch, **write_extra_kwargs
             )
             if not write_result.get("success"):
                 error_msg = write_result.get("error") or write_result.get("message", "未知错误")
@@ -463,36 +522,40 @@ def migrate_data(
             total_written += batch_count
         return total_written
 
-    # 准备首次写入的数据（保留原类型，处理 object 和空值）
+    # 准备写入数据
     df_write = df.copy()
     for col in df_write.columns:
         if pd.api.types.is_datetime64_any_dtype(df_write[col]):
             df_write[col] = df_write[col].dt.strftime('%Y-%m-%d %H:%M:%S')
         elif df_write[col].dtype == 'object':
-            # 将 object 类型的列中所有非空值转为字符串，解决混合类型冲突
             mask = df_write[col].notna()
             df_write.loc[mask, col] = df_write.loc[mask, col].astype(str)
     df_write = df_write.where(pd.notna(df_write), None)
-    
     records = df_write.to_dict(orient="records")
-    
+
     try:
-        total_written = _write_records(records)
+        total_written = _write_records(records, target_table_name)
     except Exception as e:
-        print(f"  ⚠️ 首次写入失败: {e}")
-        print(f"  🔄 尝试将所有数据转为字符串后重试...")
-        
-        # 将所有非空数据转为字符串
-        df_str = df.copy()
-        for col in df_str.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_str[col]):
-                df_str[col] = df_str[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-            mask = df_str[col].notna()
-            df_str.loc[mask, col] = df_str.loc[mask, col].astype(str)
-        df_str = df_str.where(pd.notna(df_str), None)
-        
-        records_str = df_str.to_dict(orient="records")
-        total_written = _write_records(records_str)
+        err_str = str(e)
+        # 检测是否为结构不兼容（如字段不存在），如果是则尝试自动创建新表写入
+        if "不存在" in err_str or "does not exist" in err_str.lower() or "no such column" in err_str.lower():
+            print(f"  ⚠️ 写入失败: {e}")
+            print(f"  💡 可能是目标表已存在且结构不兼容。尝试使用新表名自动创建并写入...")
+            target_table_name = f"{target_table_name}_{int(time.time())}"
+            print(f"  🔄 新表名: '{target_table_name}'")
+            total_written = _write_records(records, target_table_name)
+        else:
+            print(f"  ⚠️ 首次写入失败: {e}")
+            print(f"  🔄 尝试将所有数据转为字符串后重试...")
+            df_str = df.copy()
+            for col in df_str.columns:
+                if pd.api.types.is_datetime64_any_dtype(df_str[col]):
+                    df_str[col] = df_str[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+                mask = df_str[col].notna()
+                df_str.loc[mask, col] = df_str.loc[mask, col].astype(str)
+            df_str = df_str.where(pd.notna(df_str), None)
+            records_str = df_str.to_dict(orient="records")
+            total_written = _write_records(records_str, target_table_name)
 
     print(f"\n🎉 迁移完成! 共写入 {total_written} 行")
     return {
@@ -518,9 +581,8 @@ def _test_column_transform():
     test_df = apply_column_transform(test_df, "name", {"type": "trim"})
     assert test_df["name"].iloc[0] == "Alice"
     assert pd.isna(test_df["name"].iloc[1])
-    print("  ✅ 测试通过\n")
+    print("  ✅ trim 测试通过\n")
 
-    # 测试智能翻译
     print("🧪 自测：智能翻译验证")
     tests = [
         ("全国重点文物保护单位", "national_key_cultural_relic_protection_units"),
@@ -528,6 +590,7 @@ def _test_column_transform():
         ("编号", "code"),
         ("文物类型", "relic_type"),
         ("年度", "year"),
+        ("记录时间戳", "record_timestamp"),
     ]
     for cn, expected in tests:
         result = _smart_translate(cn)
@@ -535,7 +598,6 @@ def _test_column_transform():
         print(f"  {status} '{cn}' → '{result}' (期望: '{expected}')")
     print()
 
-    # 测试标识符规范化
     print("🧪 自测：标识符规范化验证")
     id_tests = [
         ("年度", True, "year"),
@@ -551,12 +613,43 @@ def _test_column_transform():
     print()
     return True
 
-def main():
-    print("\n" + "█" * 60)
-    print("█  自测验证")
-    print("█" * 60 + "\n")
-    _test_column_transform()
-    return {"success": True, "message": "自测通过"}
+
+def main(**kwargs):
+    """
+    主入口函数。
+    系统会注入用户参数，直接传递给 migrate_data 执行迁移。
+    如果无参数，则运行自测。
+    """
+    print(f"\n{'=' * 60}")
+    print(f"📥 main() 被调用，收到参数: {kwargs}")
+    print(f"{'=' * 60}\n")
+
+    try:
+        # 如果有业务参数，执行数据迁移
+        has_migration_params = any(
+            kwargs.get(k) for k in [
+                'source_datasource_name', 'source_table_name', 'target_datasource_name',
+                'datasource', 'table_name', 'source_datasource', 'target_datasource'
+            ]
+        )
+
+        if has_migration_params:
+            print("🚀 检测到迁移参数，开始执行数据迁移...")
+            return migrate_data(**kwargs)
+        else:
+            # 无参数时运行自测
+            print("🧪 无迁移参数，运行自测验证...")
+            _test_column_transform()
+            return {"success": True, "message": "自测通过"}
+
+    except Exception as e:
+        print(f"\n❌❌❌ 执行失败 ❌❌❌")
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误信息: {e}")
+        print(f"\n完整堆栈:")
+        print(traceback.format_exc())
+        return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
 
 if __name__ == "__main__":
     main()

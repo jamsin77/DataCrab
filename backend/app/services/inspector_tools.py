@@ -1,10 +1,11 @@
 """DataInspector 数据检查智能体 - 检查工具实现"""
 
+from __future__ import annotations
+
 import re
 import uuid as _uuid
 from typing import Dict, Any, List
 
-import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from loguru import logger
@@ -52,6 +53,7 @@ class DataInspectorTools:
     async def check_data_standards(
         self, datasource_id: str, table_name: str, db: AsyncSession, standard_rules: list = None
     ) -> dict:
+        import pandas as pd
         try:
             issues = []
             df = await self._load_data(datasource_id, table_name, db)
@@ -104,6 +106,7 @@ class DataInspectorTools:
     async def check_data_quality(
         self, datasource_id: str, table_name: str, db: AsyncSession, quality_dimensions: list = None
     ) -> dict:
+        import pandas as pd
         try:
             issues = []
             df = await self._load_data(datasource_id, table_name, db)
@@ -173,6 +176,7 @@ class DataInspectorTools:
             return {"dimension": "quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
     async def check_data_security(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
+        import pandas as pd
         try:
             issues = []
             df = await self._load_data(datasource_id, table_name, db)

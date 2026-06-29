@@ -12,5 +12,163 @@
     },
     "stdout_preview": "████████████████████████████████████████████████████████████\n█  自测验证\n████████████████████████████████████████████████████████████\n\n============================================================\n🧪 自测：列转换",
     "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T10:41:36.785174",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "脚本执行失败（无错误输出）",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate_names": true,
+      "chinese_remarks": true,
+      "datasource": "ee824f38-36da-46a7-9018-9176a4632745",
+      "table_name": "全国重点文物保护单位"
+    },
+    "stdout_preview": "",
+    "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T10:42:52.101469",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "脚本执行失败（无错误输出）",
+    "parameters": {
+      "source_datasource": "文物列表",
+      "source_table": "全国重点文物保护单位",
+      "target_datasource": "文物库",
+      "auto_translate_table_name": true,
+      "auto_translate_columns": true,
+      "use_chinese_remarks": true,
+      "datasource": "ee824f38-36da-46a7-9018-9176a4632745",
+      "table_name": "全国重点文物保护单位"
+    },
+    "stdout_preview": "",
+    "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T10:44:44.020172",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "脚本执行失败（无错误输出）",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate": true
+    },
+    "stdout_preview": "",
+    "source": "debug-chat"
+  },
+  {
+    "timestamp": "2026-06-29T10:46:51.824265",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "脚本执行失败（无错误输出）",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate": true
+    },
+    "stdout_preview": "",
+    "source": "debug-chat"
+  },
+  {
+    "timestamp": "2026-06-29T11:26:54.756431",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmppz9dvaur.py\", line 836, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmppz9dvaur.py\", line 641, in migrate_data\n    for col_name, col_value in add_columns.items():\n                               ^^^^^^^^^^^^",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate_table_name": true,
+      "auto_translate_column_names": true,
+      "use_chinese_remarks": true,
+      "add_columns": [
+        {
+          "name": "record_timestamp",
+          "remark": "记录时间戳",
+          "value": "now"
+        }
+      ],
+      "datasource": "ee824f38-36da-46a7-9018-9176a4632745",
+      "table_name": "全国重点文物保护单位"
+    },
+    "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n=====================================",
+    "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T11:32:54.911409",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwx74818o.py\", line 836, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwx74818o.py\", line 641, in migrate_data\n    for col_name, col_value in add_columns.items():\n                               ^^^^^^^^^^^^",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate": true,
+      "remark_in_chinese": true,
+      "add_columns": [
+        {
+          "name": "record_timestamp",
+          "value": "current_timestamp",
+          "remark": "记录时间戳"
+        }
+      ],
+      "datasource": "ee824f38-36da-46a7-9018-9176a4632745",
+      "table_name": "全国重点文物保护单位"
+    },
+    "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n=====================================",
+    "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T11:54:35.536038",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpb87sgecv.py\", line 734, in migrate_data\n    total_written = _write_records(records)\n                    ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpb87sgecv.py\", line 717, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 关系 \"national_key_cultural_relic_protection_units\" 的 \"record_timestamp\" 字段不存在\n\nDuring handling of the above excepti",
+    "parameters": {
+      "source_datasource": "文物列表",
+      "target_datasource": "文物库",
+      "auto_translate": true,
+      "use_chinese_comment": true,
+      "add_columns": {
+        "记录时间戳": "now()"
+      },
+      "table_name": "全国重点文物保护单位"
+    },
+    "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n=====================================",
+    "source": "run-nl-stream"
+  },
+  {
+    "timestamp": "2026-06-29T11:58:07.580079",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_29a9fdw.py\", line 757, in migrate_data\n    total_written = _write_records(records)\n                    ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_29a9fdw.py\", line 740, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 关系 \"national_key_cultural_relic_protection_units\" 的 \"record_timestamp\" 字段不存在\n\nDuring handling of the above excepti",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate": true
+    },
+    "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n=====================================",
+    "source": "debug-chat"
+  },
+  {
+    "timestamp": "2026-06-29T14:30:44.060702",
+    "script_name": "main.py",
+    "error_type": "execution_error",
+    "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplvfhhox0.py\", line 757, in migrate_data\n    total_written = _write_records(records)\n                    ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplvfhhox0.py\", line 740, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 关系 \"national_key_cultural_relic_protection_units\" 的 \"record_timestamp\" 字段不存在\n\nDuring handling of the above excepti",
+    "parameters": {
+      "source_datasource_name": "文物列表",
+      "source_table_name": "全国重点文物保护单位",
+      "target_datasource_name": "文物库",
+      "auto_translate": true
+    },
+    "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n=====================================",
+    "source": "debug-chat"
   }
 ]

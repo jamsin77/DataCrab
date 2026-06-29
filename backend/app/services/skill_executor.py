@@ -1,8 +1,9 @@
 """技能执行器系统 - 支持多种执行器类型"""
 
+from __future__ import annotations
+
 import asyncio
 import importlib
-import pandas as pd
 from typing import Dict, Any, Callable, Optional, List
 from dataclasses import dataclass, field
 from loguru import logger
@@ -88,6 +89,7 @@ class SkillExecutor:
             raise ValueError("Lambda执行器需要指定code")
 
         try:
+            import pandas as pd
             # 安全执行：只允许pandas操作
             allowed_globals = {"pd": pd, "df": None}
             func = eval(code, {"__builtins__": {}}, allowed_globals)
@@ -147,6 +149,7 @@ class SkillExecutor:
     ) -> ExecutionResult:
         """执行技能"""
         import time
+        import pandas as pd
         start_time = time.time()
 
         try:

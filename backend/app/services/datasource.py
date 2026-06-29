@@ -1,8 +1,9 @@
 """数据源连接器基类"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-import pandas as pd
 
 
 class BaseConnector(ABC):

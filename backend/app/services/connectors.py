@@ -1,5 +1,7 @@
 """数据库连接器实现"""
 
+from __future__ import annotations
+
 import re
 import asyncio
 import glob
@@ -8,7 +10,6 @@ import os
 import io
 from urllib.parse import urljoin
 
-import pandas as pd
 import httpx
 from loguru import logger
 
@@ -66,6 +67,7 @@ class PostgreSQLConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         _validate_identifier(table)
@@ -76,6 +78,7 @@ class PostgreSQLConnector(BaseConnector):
         return pd.DataFrame([dict(r) for r in rows])
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         rows = await self._connection.fetch(query)
@@ -166,6 +169,7 @@ class MySQLConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         if not self._connection:
@@ -179,6 +183,7 @@ class MySQLConnector(BaseConnector):
         return pd.DataFrame(rows, columns=cols)
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         if not self._connection:
@@ -225,20 +230,24 @@ class CSVConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         file_path = self.config.get("file_path", "")
         df = pd.read_csv(file_path)
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         return pd.DataFrame()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
+        import pandas as pd
         file_path = self.config.get("file_path", "")
         df = pd.read_csv(file_path)
         return {"row_count": len(df), "column_count": len(df.columns)}
 
     async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        import pandas as pd
         file_path = self.config.get("file_path", "")
         try:
             df_new = pd.DataFrame(records)
@@ -298,6 +307,7 @@ class ExcelConnector(BaseConnector):
           - 文件的第一个Sheet: 文件名(不含扩展名)
           - 文件的其他Sheet: 文件名_Sheet名
         """
+        import pandas as pd
         files = self._get_excel_files()
         if not files:
             return []
@@ -333,6 +343,7 @@ class ExcelConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         files = self._get_excel_files()
         file_path, sheet_name = self._parse_table_name(table)
 
@@ -364,9 +375,11 @@ class ExcelConnector(BaseConnector):
         return df.iloc[offset:offset + page_size]
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         return pd.DataFrame()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
+        import pandas as pd
         files = self._get_excel_files()
         file_path, sheet_name = self._parse_table_name(table)
 
@@ -389,6 +402,7 @@ class ExcelConnector(BaseConnector):
         return {"row_count": len(df), "column_count": len(df.columns)}
 
     async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        import pandas as pd
         files = self._get_excel_files()
         file_path, sheet_name = self._parse_table_name(table)
 
@@ -509,6 +523,7 @@ class OBSConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         if not self._client:
             await self.connect()
         if not self._client:
@@ -537,6 +552,7 @@ class OBSConnector(BaseConnector):
             return pd.DataFrame()
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         return pd.DataFrame()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
@@ -634,6 +650,7 @@ class HadoopHDFSConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         if not self._client:
             await self.connect()
         if not self._client:
@@ -666,6 +683,7 @@ class HadoopHDFSConnector(BaseConnector):
             return pd.DataFrame()
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         return pd.DataFrame()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
@@ -743,6 +761,7 @@ class ChromaConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         client = self._get_client()
         collection = await asyncio.to_thread(client.get_collection, table)
         offset = (page - 1) * page_size
@@ -764,6 +783,7 @@ class ChromaConnector(BaseConnector):
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         client = self._get_client()
         p = params or {}
         collection_name = p.get("collection")
@@ -873,6 +893,7 @@ class SQLiteConnector(BaseConnector):
         self, table: str, page: int = 1, page_size: int = 20,
         filters: Optional[Dict] = None, sort: Optional[Dict] = None,
     ) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         if not self._connection:
@@ -887,6 +908,7 @@ class SQLiteConnector(BaseConnector):
         return pd.DataFrame([dict(r) for r in rows], columns=columns)
 
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+        import pandas as pd
         if not self._connection:
             await self.connect()
         if not self._connection:

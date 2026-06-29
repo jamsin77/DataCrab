@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Optional, AsyncGenerator
 from dataclasses import dataclass, field
 from uuid import UUID
 
-import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 

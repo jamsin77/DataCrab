@@ -750,11 +750,22 @@ async def run_skill_nl(
             "role": "system",
             "content": (
                 "你是一个技能参数解析器。根据技能的 SKILL.md 描述、脚本代码和用户的自然语言调用指令，"
-                "推断出执行该技能所需的参数。\n"
-                "只输出一个 JSON 对象，包含推断出的 parameters 字段，不要输出任何解释。\n"
-                "如果用户提到了数据源或表名，也一并输出 datasource_name 和 table_name 字段。\n"
-                "输出格式示例：\n"
-                '{"parameters": {"column": "年代", "limit": 100}, "table_name": "文物数据"}'
+                "推断出执行该技能所需的参数。\n\n"
+                "## 严格要求\n"
+                "1. **参数名必须与 SKILL.md 参数规范完全一致**，不得自创参数名或使用近义词\n"
+                "2. **参数类型必须严格匹配**：string→字符串，int→整数，bool→true/false，"
+                "dict→JSON对象(如 {\"key\":\"value\"})，list→JSON数组。dict 类型绝不能输出为数组\n"
+                "3. **只输出 SKILL.md 中定义的参数**，不要添加定义之外的参数\n"
+                "4. **不要输出以下系统自动注入的参数**：datasource_id、datasource_name、datasource、"
+                "table_name、table_names、tables、table —— 这些由系统自动注入，重复传入会导致冲突\n"
+                "5. **仔细区分数据源名和表名**：数据源名(DataSource)是连接名称，表名(Table)是数据源中的表；"
+                "用户说\"从X数据源\"时X是数据源名，说\"把Y这张表\"时Y是表名，切勿混淆\n"
+                "6. 对于 add_columns 等 dict 类型参数，格式为 {\"列名\": 值}，"
+                "不要用 [{\"name\":..., \"value\":...}] 列表格式\n\n"
+                "## 输出格式\n"
+                "只输出一个 JSON 对象，不要输出任何解释。格式：\n"
+                '{"parameters": {"参数名": 值, ...}, "table_name": "表名(如有)"}\n'
+                "注意：table_name 仅在用户明确提到表名时输出，不要把数据源名放到 table_name 中。"
             ),
         },
         {
@@ -765,7 +776,7 @@ async def run_skill_nl(
                 f"SKILL.md 内容：\n{skill_md[:2000]}\n\n"
                 f"脚本代码（{request.script_name}）：\n{script_content[:3000]}\n\n"
                 f"用户的自然语言调用指令：{request.query}\n\n"
-                f"请推断执行参数，只输出 JSON。"
+                f"请严格按 SKILL.md 参数规范推断执行参数，只输出 JSON。"
             ),
         },
     ]
@@ -865,11 +876,22 @@ async def run_skill_nl_stream(
             "role": "system",
             "content": (
                 "你是一个技能参数解析器。根据技能的 SKILL.md 描述、脚本代码和用户的自然语言调用指令，"
-                "推断出执行该技能所需的参数。\n"
-                "只输出一个 JSON 对象，包含推断出的 parameters 字段，不要输出任何解释。\n"
-                "如果用户提到了数据源或表名，也一并输出 datasource_name 和 table_name 字段。\n"
-                "输出格式示例：\n"
-                '{"parameters": {"column": "年代", "limit": 100}, "table_name": "文物数据"}'
+                "推断出执行该技能所需的参数。\n\n"
+                "## 严格要求\n"
+                "1. **参数名必须与 SKILL.md 参数规范完全一致**，不得自创参数名或使用近义词\n"
+                "2. **参数类型必须严格匹配**：string→字符串，int→整数，bool→true/false，"
+                "dict→JSON对象(如 {\"key\":\"value\"})，list→JSON数组。dict 类型绝不能输出为数组\n"
+                "3. **只输出 SKILL.md 中定义的参数**，不要添加定义之外的参数\n"
+                "4. **不要输出以下系统自动注入的参数**：datasource_id、datasource_name、datasource、"
+                "table_name、table_names、tables、table —— 这些由系统自动注入，重复传入会导致冲突\n"
+                "5. **仔细区分数据源名和表名**：数据源名(DataSource)是连接名称，表名(Table)是数据源中的表；"
+                "用户说\"从X数据源\"时X是数据源名，说\"把Y这张表\"时Y是表名，切勿混淆\n"
+                "6. 对于 add_columns 等 dict 类型参数，格式为 {\"列名\": 值}，"
+                "不要用 [{\"name\":..., \"value\":...}] 列表格式\n\n"
+                "## 输出格式\n"
+                "只输出一个 JSON 对象，不要输出任何解释。格式：\n"
+                '{"parameters": {"参数名": 值, ...}, "table_name": "表名(如有)"}\n'
+                "注意：table_name 仅在用户明确提到表名时输出，不要把数据源名放到 table_name 中。"
             ),
         },
         {
@@ -880,7 +902,7 @@ async def run_skill_nl_stream(
                 f"SKILL.md 内容：\n{skill_md[:2000]}\n\n"
                 f"脚本代码（{request.script_name}）：\n{script_content[:3000]}\n\n"
                 f"用户的自然语言调用指令：{request.query}\n\n"
-                f"请推断执行参数，只输出 JSON。"
+                f"请严格按 SKILL.md 参数规范推断执行参数，只输出 JSON。"
             ),
         },
     ]
@@ -1082,71 +1104,100 @@ async def debug_skill_chat(
     messages.append({"role": "user", "content": request.message})
 
     async def generate():
-        full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
-                event = {"type": chunk["type"], "content": chunk["content"]}
-                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if chunk["type"] == "content":
-                    full_content += chunk["content"]
-
-            actions = []
-            import re as _re
-            for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]modify_script["\x27]\s*,\s*["\x27]script_name["\x27]\s*:\s*["\x27]([^"\x27]*)["\x27]\s*\}', full_content):
-                script_name = m.group(1) or request.script_name
-                code_match = _re.search(r'```python\s*\n(.*?)```', full_content[m.end():], _re.DOTALL)
-                if not code_match:
-                    code_match = _re.search(r'```\s*\n(.*?)```', full_content[m.end():m.end()+50000], _re.DOTALL)
-                if code_match:
-                    actions.append({"action": "modify_script", "script_name": script_name, "content": code_match.group(1).strip()})
-
-            for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\})\s*\}', full_content):
-                try:
-                    params = json_mod.loads(m.group(1).replace("'", '"'))
-                    actions.append({"action": "run", "parameters": params})
-                except json_mod.JSONDecodeError:
-                    pass
-
-            for action in actions:
-                if action.get("action") == "modify_script":
-                    script_name = action.get("script_name", request.script_name)
-                    new_content = action.get("content", "")
-                    if new_content:
-                        write_skill_script(folder, script_name, new_content)
-                        yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
-
-                elif action.get("action") == "run":
-                    parameters = action.get("parameters", {})
-                    for key in ["datasource_id", "datasource_name"]:
-                        parameters.pop(key, None)
-
-                    yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
-
-                    exec_result = await run_skill_script_async(
-                        skill_path=folder,
-                        script_name=request.script_name,
-                        parameters=parameters,
-                        input_data=None,
-                        datasource_id=request.datasource_id,
-                        datasource_name=ds_name,
-                        table_name=request.table_name,
+            run_failures = []
+            for round_idx in range(2):
+                if round_idx > 0:
+                    if not run_failures:
+                        break
+                    feedback_parts = []
+                    for i, fail in enumerate(run_failures, 1):
+                        part = (
+                            f"### 执行 #{i} 失败\n"
+                            f"- 参数: {json_mod.dumps(fail['parameters'], ensure_ascii=False, default=str)[:500]}\n"
+                            f"- 错误: {fail['error'][:1000]}"
+                        )
+                        if fail['stdout']:
+                            part += f"\n- 标准输出(含错误堆栈):\n```\n{fail['stdout'][:2500]}\n```"
+                        feedback_parts.append(part)
+                    feedback_msg = (
+                        "技能执行失败,以下是具体的错误信息(含标准输出和错误堆栈)。\n"
+                        "请仔细分析错误原因;如果是脚本问题,请输出修改后的完整脚本。\n\n"
+                        + "\n\n".join(feedback_parts)
                     )
+                    messages.append({"role": "assistant", "content": full_content})
+                    messages.append({"role": "user", "content": feedback_msg})
+                    run_failures = []
 
-                    exec_result = _sanitize_nans(exec_result)
-                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+                full_content = ""
+                async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+                    event = {"type": chunk["type"], "content": chunk["content"]}
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                    if chunk["type"] == "content":
+                        full_content += chunk["content"]
 
-                    if not exec_result.get("success"):
-                        append_error_log(
-                            folder, request.script_name,
-                            error_type="execution_error",
-                            error_message=exec_result.get("error", "未知错误"),
+                actions = []
+                import re as _re
+                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]modify_script["\x27]\s*,\s*["\x27]script_name["\x27]\s*:\s*["\x27]([^"\x27]*)["\x27]\s*\}', full_content):
+                    script_name = m.group(1) or request.script_name
+                    code_match = _re.search(r'```python\s*\n(.*?)```', full_content[m.end():], _re.DOTALL)
+                    if not code_match:
+                        code_match = _re.search(r'```\s*\n(.*?)```', full_content[m.end():m.end()+50000], _re.DOTALL)
+                    if code_match:
+                        actions.append({"action": "modify_script", "script_name": script_name, "content": code_match.group(1).strip()})
+
+                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\})\s*\}', full_content):
+                    try:
+                        params = json_mod.loads(m.group(1).replace("'", '"'))
+                        actions.append({"action": "run", "parameters": params})
+                    except json_mod.JSONDecodeError:
+                        pass
+
+                for action in actions:
+                    if action.get("action") == "modify_script":
+                        script_name = action.get("script_name", request.script_name)
+                        new_content = action.get("content", "")
+                        if new_content:
+                            write_skill_script(folder, script_name, new_content)
+                            yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
+
+                    elif action.get("action") == "run":
+                        parameters = action.get("parameters", {})
+                        for key in ["datasource_id", "datasource_name"]:
+                            parameters.pop(key, None)
+
+                        yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
+
+                        exec_result = await run_skill_script_async(
+                            skill_path=folder,
+                            script_name=request.script_name,
                             parameters=parameters,
-                            stdout=exec_result.get("stdout", ""),
-                            source="debug-chat",
+                            input_data=None,
+                            datasource_id=request.datasource_id,
+                            datasource_name=ds_name,
+                            table_name=request.table_name,
                         )
 
-                    skill.usage_count = (skill.usage_count or 0) + 1
-                    await db.flush()
+                        exec_result = _sanitize_nans(exec_result)
+                        yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
+
+                        if not exec_result.get("success"):
+                            append_error_log(
+                                folder, request.script_name,
+                                error_type="execution_error",
+                                error_message=exec_result.get("error", "未知错误"),
+                                parameters=parameters,
+                                stdout=exec_result.get("stdout", ""),
+                                source="debug-chat",
+                            )
+                            run_failures.append({
+                                "parameters": parameters,
+                                "error": exec_result.get("error", "未知错误"),
+                                "stdout": exec_result.get("stdout", ""),
+                            })
+
+                skill.usage_count = (skill.usage_count or 0) + 1
+                await db.flush()
 
             yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 

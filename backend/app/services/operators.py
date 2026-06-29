@@ -1,8 +1,9 @@
 """算子基类和内置算子"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any
-import pandas as pd
 
 
 class BaseOperator(ABC):
@@ -115,6 +116,7 @@ class AggregateOperator(BaseOperator):
     parameters = {"functions": {"type": "dict", "required": True, "description": "列到聚合函数的映射"}}
 
     def execute(self, inputs: Dict[str, pd.DataFrame], params: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+        import pandas as pd
         df = inputs.get("main")
         functions = params.get("functions", {})
         result = {}
@@ -136,6 +138,7 @@ class JoinOperator(BaseOperator):
     }
 
     def execute(self, inputs: Dict[str, pd.DataFrame], params: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+        import pandas as pd
         left = inputs.get("left")
         right = inputs.get("right")
         on = params.get("on", [])

@@ -1,8 +1,9 @@
 """自然语言数据处理服务 - 整合NL理解、技能匹配和执行"""
 
+from __future__ import annotations
+
 import json
 import re
-import pandas as pd
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 from loguru import logger
@@ -67,10 +68,11 @@ class ParameterInferrer:
         """推理技能参数"""
         skill_name = skill.get("name")
         skill_params = skill.get("parameters", {})
+        skill_desc = skill.get("description", "")
 
         # 构建推理提示
         prompt = self._build_inference_prompt(
-            skill_name, skill_params, natural_language, data_columns, data_preview
+            skill_name, skill_params, natural_language, data_columns, data_preview, skill_desc
         )
 
         try:
@@ -99,31 +101,96 @@ class ParameterInferrer:
         skill_params: Dict[str, Any],
         natural_language: str,
         data_columns: List[str],
-        data_preview: Optional[pd.DataFrame]
+        data_preview: Optional[pd.DataFrame],
+        skill_desc: str = ""
     ) -> str:
         """构建推理提示"""
-        # 预先转换为JSON字符串，避免f-string嵌套问题
         params_json = json.dumps(skill_params, ensure_ascii=False, indent=2)
         columns_json = json.dumps(data_columns, ensure_ascii=False)
+        param_constraints = self._build_param_constraints(skill_params)
+        preview_str = ""
+        if data_preview is not None and not data_preview.empty:
+            preview_str = f"\n数据预览(前5行):\n{data_preview.to_string()}\n"
 
-        prompt = f"""
-你是一个数据处理参数推理器。请根据用户的自然语言描述和当前数据信息，推理出技能执行所需的参数。
+        prompt = f"""你是一个数据处理参数推理器。请根据用户的自然语言描述和当前数据信息，严格遵循技能参数定义，推理出执行所需的参数。
 
 技能名称: {skill_name}
-技能参数定义: {params_json}
+技能描述: {skill_desc or '(无)'}
 
-数据列名: {columns_json}
+技能参数定义:
+{params_json}
+
+{param_constraints}
+
+数据列名: {columns_json}{preview_str}
 
 用户描述: {natural_language}
 
-请分析用户意图，推理出以下信息：
-1. 各参数的具体值
-2. 推理依据
+## 严格要求
+1. **参数名必须与参数定义完全一致**，不得自创参数名或使用近义词替换
+2. **参数类型必须严格匹配定义**：
+   - string/str → 字符串
+   - int/integer → 整数
+   - bool/boolean → true/false
+   - dict/object → JSON 对象（如 {{"key": "value"}}），绝不能输出为数组
+   - list/array → JSON 数组
+3. **只输出参数定义中存在的参数**，不要添加定义之外的参数
+4. **不要输出以下系统自动注入的参数**：datasource_id、datasource_name、datasource、table_name、table_names、tables、table —— 这些由系统自动注入，重复传入会导致冲突
+5. **仔细区分语义角色**：数据源名（DataSource）是数据源连接的名称，表名（Table）是数据源中的表；不要将表名当作数据源名，也不要将数据源名当作表名
+6. 对于 required 为 true 的参数必须提供值；对于 required 为 false 或有默认值的参数，如果用户未提及可以不输出
+7. 对于 dict 类型参数（如 add_columns），格式为 {{"列名": 值}}，不要用 [{{"name":..., "value":...}}] 列表格式
+
+请分析用户意图，推理出各参数的具体值和推理依据。
 
 输出格式要求：
-返回JSON格式，包含parameters和reasoning字段。
+返回严格的 JSON 格式：
+```json
+{{
+    "parameters": {{
+        // 只包含参数定义中存在的参数，类型严格匹配
+    }},
+    "reasoning": "推理依据说明"
+}}
+```
 """
         return prompt
+
+    def _build_param_constraints(self, skill_params: Any) -> str:
+        """从参数定义构建人类可读的参数约束说明"""
+        if not skill_params:
+            return "（无参数定义）"
+
+        lines = []
+        if isinstance(skill_params, dict):
+            for name, spec in skill_params.items():
+                if isinstance(spec, dict):
+                    ptype = spec.get("type", "未知")
+                    required = spec.get("required", False)
+                    desc = spec.get("description", "")
+                    default = spec.get("default", None)
+                    req_str = "必填" if required else "可选"
+                    line = f"- {name} ({ptype}, {req_str})"
+                    if desc:
+                        line += f": {desc}"
+                    if default is not None:
+                        line += f" [默认: {default}]"
+                    lines.append(line)
+                else:
+                    lines.append(f"- {name}: {spec}")
+        elif isinstance(skill_params, list):
+            for spec in skill_params:
+                if isinstance(spec, dict):
+                    name = spec.get("name", "未知")
+                    ptype = spec.get("type", "未知")
+                    required = spec.get("required", False)
+                    desc = spec.get("description", "")
+                    req_str = "必填" if required else "可选"
+                    line = f"- {name} ({ptype}, {req_str})"
+                    if desc:
+                        line += f": {desc}"
+                    lines.append(line)
+
+        return "参数约束清单:\n" + "\n".join(lines) if lines else "（无参数定义）"
 
     def _parse_llm_response(
         self,

@@ -11,7 +11,6 @@ import threading
 from uuid import UUID
 from typing import Optional
 
-import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +62,7 @@ def _run_async_in_thread(coro):
 
 
 def _build_operator_namespace(current_user_id):
+    import pandas as pd
     from app.services.agent import agent_service, AgentContext
 
     def query_table_data(datasource_id, table_name, **kwargs):
@@ -272,6 +272,7 @@ async def debug_operator(
     current_user: User = Depends(get_current_user),
 ):
     """调试执行算子"""
+    import pandas as pd
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
