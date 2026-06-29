@@ -4,7 +4,14 @@ DataCrab 是一款基于大语言模型（LLM）的数据智能应用平台，�
 
 ## 核心理念
 
-**用对话代替编码** —— 让数据处理像聊天一样简单。系统通过 LLM 理解用户意图，自动匹配技能/算子，生成可执行的 Python 代码，并以表格、图表和文字说明的形式返回结果。
+**通过对话处理数据，沉淀数据处理 Skill，形成数据生态，最终实现 AI 处理数据完全 Loop 化。**
+
+| 阶段 | 理念 | 业界趋势 |
+|------|------|---------|
+| 对话即处理 | 自然语言代替编码，LLM 理解意图、匹配 Skill、生成代码 | Conversational Data Processing、Agentic UI |
+| 沉淀即资产 | 每次处理沉淀为可复用 Skill，越用越聪明 | Skill-based Agent、Compound AI System |
+| 生态即闭环 | Skill 积累形成生态，双智能体协作闭环 | Multi-Agent Collaboration |
+| Loop 化 | AI 理解→执行→检查→自修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
 
 ---
 

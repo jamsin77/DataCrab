@@ -1,4 +1,18 @@
 # DataCrab 技术架构设计文档
+
+## 0. 核心理念
+
+**通过对话处理数据，沉淀数据处理 Skill，形成数据生态，最终实现 AI 处理数据完全 Loop 化。**
+
+| 阶段 | 理念 | 业界趋势 |
+|------|------|---------|
+| 对话即处理 | 自然语言代替编码，LLM 理解意图、匹配 Skill、生成代码 | Conversational Data Processing、Agentic UI |
+| 沉淀即资产 | 每次处理沉淀为可复用 Skill，越用越聪明 | Skill-based Agent、Compound AI System |
+| 生态即闭环 | Skill 积累形成生态，双智能体协作闭环 | Multi-Agent Collaboration |
+| Loop 化 | AI 理解→执行→检查→自修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
+
+Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成。多智能体 Handoff 机制和技能自我进化能力是这一理念的具体实践。
+
 ## 1. 系统架构概览
 
 ### 1.1 整体架构

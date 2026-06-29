@@ -4,7 +4,18 @@ DataCrab 是一款基于大语言模型（LLM）的数据智能应用平台，�
 
 ## 核心理念
 
-**用对话代替编码** —— 让数据处理像聊天一样简单。系统通过 LLM 理解用户意图，自动匹配技能/算子，生成可执行的 Python 代码，并以表格、图表和文字说明的形式返回结果。
+**通过对话处理数据，沉淀数据处理 Skill，形成数据生态，最终实现 AI 处理数据完全 Loop 化。**
+
+这四个阶段构成 DataCrab 的演进路线——从「人用对话驱动数据」走向「AI 自主完成数据闭环」：
+
+| 阶段 | 理念 | 对应业界趋势 |
+|------|------|------------|
+| **对话即处理** | 用自然语言代替编码，LLM 理解意图、匹配 Skill、生成可执行代码，结果以表格/图表返回 | Conversational Data Processing、Agentic UI |
+| **沉淀即资产** | 每次处理过程自动沉淀为可复用 Skill，逐步构建技能库，越用越聪明 | Skill-based Agent、Compound AI System |
+| **生态即闭环** | Skill 积累形成数据生态，DataProcessor 加工 + DataInspector 检查双智能体协作，从接入到输出闭环 | Multi-Agent Collaboration、Human-in-the-loop |
+| **Loop 化** | 最终目标：AI 理解需求 → 匹配 Skill → 执行 → 检查 → 自我修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
+
+> **Loop 化**是 DataCrab 的终极目标。正如业界所倡导的 Loop Engineering——不让 AI 只做单步推理，而是让它在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成。DataCrab 的多智能体 Handoff 机制和技能自我进化能力正是这一理念的具体实践。
 
 ---
 
@@ -281,13 +292,13 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 
 ## 架构亮点
 
-1. **多智能体协作**：DataProcessor + DataInspector 双智能体，Handoff 机制自动交接，处理+检查闭环
+1. **多智能体协作闭环**：DataProcessor + DataInspector 双智能体，Handoff 机制自动交接，处理+检查形成自愈闭环（Multi-Agent Collaboration）
 2. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
-3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析
+3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析，Skill 即资产可沉淀可复用
 4. **流程 = Python 主函数**：抛弃 DAG 模型，每个流程就是一个可独立运行的 Python 函数
-5. **技能自我进化**：错误日志自动记录，LLM 总结经验写入 SKILL.md，生成新技能时自动注入历史经验
+5. **技能自我进化**：错误日志自动记录，LLM 总结经验写入 SKILL.md，生成新技能时自动注入历史经验——Skill 越用越聪明
 6. **LLM 能力注入**：算子和技能脚本中可直接调用 `llm_chat()` 函数，无需走 HTTP 请求
 7. **元数据管理**：技术元数据一键同步 + 业务元数据 AI 补充，统一数据目录
 8. **流式优先架构**：多处端点支持 SSE 流式响应，提供实时反馈
 9. **AST 脚本自省**：Python AST 解析自动提取函数签名和文档，零配置注册算子
-10. **AI 调试助手**：Chat 风格交互式调试，AI 推理过程可视化，可自动执行/修改脚本
+10. **AI 调试助手**：Chat 风格交互式调试，AI 推理过程可视化，执行失败自动反馈错误堆栈给 AI 修复（Loop Engineering 实践）

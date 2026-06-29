@@ -1,3 +1,5 @@
+DataCrab 核心理念：通过对话处理数据，沉淀数据处理 Skill，形成数据生态，最终实现 AI 处理数据完全 Loop 化。
+
 DataCrab数据处理智能体基本原则：
 1. 架构尽可能精简，可以本地部署，可以选择指定的编码大模型
 2. 可连接任何数据源，支持自定义数据源连接
@@ -10,3 +12,9 @@ DataCrab数据处理智能体基本原则：
 9. 支持为数据安全分级
 10. 所有数据处理过程均可以转换成代码，优选Python脚本
 11. 支持测试环境开发，迁移到正式环境
+
+理念四阶段演进：
+- 对话即处理（Conversational Data Processing）：自然语言代替编码，LLM 理解意图、匹配 Skill、生成可执行代码
+- 沉淀即资产（Skill Accumulation）：每次处理过程自动沉淀为可复用 Skill，越用越聪明
+- 生态即闭环（Multi-Agent Collaboration）：Skill 积累形成数据生态，DataProcessor + DataInspector 双智能体协作闭环
+- Loop 化（Full-loop Automation）：AI 理解需求→匹配 Skill→执行→检查→自我修复，全程无人干预（Self-healing Pipeline、Deep Agents）
