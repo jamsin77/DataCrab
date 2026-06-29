@@ -1,4 +1,4 @@
-﻿# DataCrab 技术架构设计文档
+# DataCrab 技术架构设计文档
 ## 1. 系统架构概览
 
 ### 1.1 整体架构
@@ -39,13 +39,13 @@
 ┌───────────────────────────────────────────────────────────────┐
 │                      业务服务 (Services)                      │
 ├──────────────┬──────────────┬──────────────┬────────────────┤
-│ NL处理服务   │ 代码生成服务 │ 执行服务     │ 数据源服务     │
+│ 对话服务     │ 技能管理服务 │ 算子服务     │ 数据源服务     │
 ├──────────────┼──────────────┼──────────────┼────────────────┤
-│ NL Service   │ CodeGen      │ Executor     │ DataSource     │
+│ ChatService  │ SkillManager │ OperatorSvc  │ DataSource     │
 ├──────────────┼──────────────┼──────────────┼────────────────┤
-│ 技能管理服务 │ 调度服务     │ 权限服务     │ 元数据服务     │
+│ 智能体服务   │ 调度服务     │ 权限服务     │ 元数据服务     │
 ├──────────────┼──────────────┼──────────────┼────────────────┤
-│ Skill Manager│ Scheduler    │ Auth         │ Metadata       │
+│ AgentRuntime │ Scheduler    │ Auth         │ Metadata       │
 └──────────────┴──────────────┴──────────────┴────────────────┘
                                │                               
                                                                
@@ -53,20 +53,20 @@
 ┌───────────────────────────────────────────────────────────────┐
 │                       核心引擎 (Engine)                       │
 ├──────────────┬──────────────┬──────────────┬────────────────┤
-│ NL理解引擎   │ 代码生成引擎 │ 执行引擎     │ 调度引擎       │
+│ 智能体引擎   │ 技能执行引擎 │ 流程执行引擎 │ 调度引擎       │
 ├──────────────┼──────────────┼──────────────┼────────────────┤
-│ NL Engine    │ Code Engine  │ Exec Engine  │ Sched Engine   │
+│ AgentEngine  │ SkillRunner  │ PipelineExec │ Sched Engine   │
 └──────────────┴──────────────┴──────────────┴────────────────┘
                                │                               
                                                                
                                ▼                               
 ┌───────────────────────────────────────────────────────────────┐
 │                      数据存储 (Storage)                       │
-├──────────────┬──────────────┬──────────────┬────────────────┤
-│ PostgreSQL   │ Redis        │ MinIO        │ Elasticsearch  │
-├──────────────┼──────────────┼──────────────┼────────────────┤
-│ 业务数据     │ 缓存/队列    │ 文件存储     │ 日志/检索      │
-└──────────────┴──────────────┴──────────────┴────────────────┘
+├──────────────┬──────────────┬────────────────────────────────┤
+│ SQLite/PG    │ 本地文件系统 │ 技能包目录                      │
+├──────────────┼──────────────┼────────────────────────────────┤
+│ 业务数据     │ 数据源文件   │ SKILL.md + scripts/             │
+└──────────────┴──────────────┴────────────────────────────────┘
 ```
 
 ### 1.2 技术栈选型
@@ -77,34 +77,26 @@
 - **状态管理**: Pinia
 - **路由**: Vue Router 4
 - **HTTP客户端**: Axios
-- **WebSocket**: 原生 EventSource（流式响应）
-- **Markdown渲染**: markdown-it + highlight.js
-- **代码高亮**: highlight.js
 - **实时通信**: EventSource (SSE流式响应)
-- **数据可视化**: ECharts
+- **Markdown渲染**: markdown-it + highlight.js
 - **代码编辑**: Monaco Editor (代码块编辑)
-- **流程可视化**: @vue-flow/core (流程图展示)
+- **数据可视化**: ECharts
+- **流程编辑**: Vue Flow (工作流画布)
 
 #### 后端技术栈
 - **语言**: Python 3.11+
 - **Web框架**: FastAPI
 - **ORM**: SQLAlchemy 2.0
-- **任务队列**: Celery + Redis（可选，生产环境启用）
 - **异步支持**: asyncio + uvicorn
-- **大模型集成**: 智谱GLM / OpenAI兼容接口
-- **代码生成**: AST解析 + LLM工具调用
+- **大模型集成**: 智谱GLM（glm-4-flash / glm-4-plus / glm-5.2）
 
 #### 数据存储
-- **关系数据库**: SQLite（开发/单机部署）/ PostgreSQL 14+（生产/分布式部署）
-- **缓存**: Redis 7+ (缓存、会话、消息队列)
-- **对象存储**: MinIO (文件、代码包)
-- **搜索引擎**: Elasticsearch 8+ (日志、全文检索，可选)
+- **关系数据库**: SQLite（开发）/ PostgreSQL 14+（生产）
+- **文件存储**: 本地文件系统
 
 #### 基础设施
-- **容器化**: Docker + Docker Compose
-- **反向代理**: Nginx
-- **监控**: Prometheus + Grafana
-- **日志**: ELK Stack
+- **容器化**: Docker + Docker Compose（可选）
+- **反向代理**: Nginx（生产部署）
 
 ## 2. 核心模块设计
 
@@ -203,7 +195,7 @@ AI：正在创建Pipeline...
 
     Pipeline 名称：data_analysis_flow
     步骤：数据清洗 → 异常值过滤 → 统计分析
-
+    
     Pipeline 已创建，可直接运行或保存为Skill。```
 
 ##### 界面布局（极简版）```
@@ -239,9 +231,11 @@ AI：正在创建Pipeline...
 - 代码块语法高亮 + 一键复制/执行
 - 数据表格预览 + 导出
 - 图表可视化 - 流式响应（打字机效果）
-#### 2.1.3 Notebook数据分析环境设计
+#### 2.1.3 Notebook数据分析环境设计（已废弃）
 
-Notebook 界面为用户提供代码编辑和执行环境，作为对话交互的补充。
+> **已废弃**：Notebook 模块仅保留基础模型和 API 端点，前端已无独立 Notebook 页面。数据分析功能由对话界面（Chat）和算子/技能执行替代。
+
+~~Notebook 界面为用户提供代码编辑和执行环境，作为对话交互的补充。~~
 ##### 核心功能
 - 代码单元格（可单独执行）
 - Markdown单元格（文档说明）- 执行结果展示
@@ -1900,14 +1894,14 @@ Pipeline ──1:1──▶ Schedule
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| Pipeline 数据模型 | ⬜ 待实现 | Pipeline + PipelineExecution |
-| Pipeline Builder（Skill→流程） | ⬜ 待实现 | LLM 生成 Python 主函数 |
-| 流程执行引擎 | ⬜ 待实现 | 动态编译 + exec 运行主函数 |
-| API 端点 | ⬜ 待实现 | CRUD + from-skill + run + run-stream + clone |
-| 前端列表页 | ⬜ 待实现 | 流程卡片网格 |
-| 前端详情页 | ⬜ 待实现 | 代码展示 + 调用关系图 |
-| Skill 页面"转为流程"按钮 | ⬜ 待实现 | 替换旧的"转为工作流"按钮 |
-| SSE 流式生成+执行 | ⬜ 待实现 | LLM 生成过程流式展示 + 执行过程流式推送 |
+| Pipeline 数据模型 | ✅ 已完成 | Pipeline + PipelineExecution |
+| Pipeline Builder（Skill→流程） | ✅ 已完成 | LLM 生成 Python 主函数 |
+| 流程执行引擎 | ✅ 已完成 | 动态编译 + exec 运行主函数 |
+| API 端点 | ✅ 已完成 | CRUD + from-skill + run + run-stream + clone |
+| 前端列表页 | ✅ 已完成 | 流程卡片网格 |
+| 前端详情页 | ✅ 已完成 | 代码展示 + 调用关系图 |
+| Skill 页面"转为流程"按钮 | ✅ 已完成 | 替换旧的"转为工作流"按钮 |
+| SSE 流式生成+执行 | ✅ 已完成 | LLM 生成过程流式展示 + 执行过程流式推送 |
 
 **废弃的旧功能**：
 - ~~DAG 节点/边模型~~
@@ -2625,7 +2619,7 @@ class EventStore:
 | `skill.py` | DataProcessor 的 `generate_skill`/`modify_script`/`run_script` 工具调用现有端点 |
 | `connectors.py` | 两个智能体都通过 `get_connector` 读写数据 |
 | `skill_parser.py` | DataInspector 的经验总结注入 DataProcessor 的提示词 |
-| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现（实际文件为 `inspector_tools.py`） |
+| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现 |
 
 #### 2.7.13 API 端点
 
@@ -2700,15 +2694,15 @@ class EventStore:
 | **Phase 1** | 基础框架：BaseAgent + AgentRegistry + AgentRuntime + Handoff 机制 | ✅ 已完成 |
 | **Phase 2** | DataProcessor 智能体：将现有 agent.py 重构为 DataProcessor | ✅ 已完成 |
 | **Phase 3** | DataInspector 智能体：实现检查工具 + 系统提示词 | ✅ 已完成 |
-| **Phase 4** | 前端：chat.py 路由层智能体分派 + Inspector API | ✅ 已完成 |
-| **Phase 5** | 事件存储与溯源（EventStore + /events + /lineage 端点） | ✅ 已完成 |
+| **Phase 4** | 前端：智能体状态指示 + 检查报告页 | ✅ 已完成 |
+| **Phase 5** | 事件存储与溯源 | ✅ 已完成 |
 | **Phase 6** | 扩展：DataGovernor / DataSentinel 等新智能体 | ⬜ 待实现 |
 
 ### 2.8 智能代码生成模块（已废弃）
 
-> **注意**：本节为早期设计，实际未按此实现。代码生成能力已由多智能体框架（§2.7）中的 DataProcessor 智能体承担，通过 LLM 工具调用直接生成算子/技能脚本，无需独立的代码生成引擎。
+> **已废弃**：此模块基于 DAG 节点/边的 ComposedCode 模型，代码已全部删除（codegen.py, code.py model/schema/endpoint, composed_codes 表）。功能由 §2.6 Pipeline（Python 主函数）和 §2.7 多智能体协作框架替代。以下内容仅作历史参考。
 
-### 2.8.1 模块架构
+### 2.8.1 模块架构（已废弃）
 ```
 ┌───────────────────────────────────────────────┐
 │          Intelligent Code Generator           │
@@ -3704,9 +3698,9 @@ class PermissionChecker:
 
 ### 2.12 代码生成模块（已废弃）
 
-> **注意**：本节为早期设计，实际未按此实现。代码生成能力已由多智能体框架和算子/技能的 AI 生成功能覆盖。
+> **已废弃**：基于 AST + Jinja2 的代码生成模块已被 LLM 直接生成脚本的方式替代（算子生成、技能生成）。以下内容仅作历史参考。
 
-#### 2.12.1 代码生成流程
+#### 2.12.1 代码生成流程（已废弃）
 ```
 Code Definition (JSON)
     → AST解析与转换    → 代码模板渲染
@@ -3789,9 +3783,9 @@ def {operator_name}({inputs}):
 
 ### 2.13 环境管理模块（已废弃）
 
-> **注意**：本节为早期设计，实际未按此实现。当前项目采用本地单机部署 + SQLite，无需环境隔离机制。
+> **已废弃**：环境隔离和迁移功能尚未实现，暂无计划。以下内容仅作历史参考。
 
-#### 2.13.1 环境隔离架构
+#### 2.13.1 环境隔离架构（已废弃）
 ```
 ┌───────────────────────────────────────────────┐
 │              Environment Manager              │
@@ -3954,28 +3948,12 @@ CREATE TABLE data_sources (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 流程表（已废弃 composed_codes，参见 §2.6.3 Pipeline 数据模型）
-CREATE TABLE composed_codes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    definition JSONB NOT NULL,
-    version INTEGER DEFAULT 1,
-    parent_id UUID REFERENCES composed_codes(id),
-    environment VARCHAR(20),
-    created_by UUID REFERENCES users(id),
-    visibility VARCHAR(20),
-    permissions JSONB,
-    tags JSONB,
-    category VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
-);
+-- 流程表（已废弃：composed_codes 表和代码已删除，由 pipelines 表替代）
+-- 此表不再使用，流程数据存储在 pipelines 表中（见下方"流程表"章节）
 ```
 
 #### 技能表（Skills）```sql
--- 技能表
+-- 技能表（注意：实际实现已简化，inputs/outputs/parameters/executor_config/usage_examples 等字段存储在 SKILL.md 文件中，不在数据库）
 CREATE TABLE skills (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) UNIQUE NOT NULL,
@@ -4058,8 +4036,7 @@ CREATE TABLE skill_versions (
 );
 
 #### 流程表
- + "`" + @"
-sql
+```sql
 CREATE TABLE pipelines (
     id UUID PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -4105,7 +4082,7 @@ CREATE TABLE pipeline_executions (
     created_by UUID REFERENCES users(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
- + "`" + @"
+```
 #### 调度与执行表
 ```sql
 CREATE TABLE schedules (
@@ -4154,8 +4131,17 @@ CREATE TABLE task_executions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
-POST   /api/v1/datasources              # 创建数据源GET    /api/v1/datasources              # 获取数据源列表GET    /api/v1/datasources/{id}         # 获取数据源详情PUT    /api/v1/datasources/{id}         # 更新数据源DELETE /api/v1/datasources/{id}         # 删除数据源POST   /api/v1/datasources/{id}/test    # 测试连接
-GET    /api/v1/datasources/{id}/schema  # 获取数据源结构```
+
+#### 数据源管理API
+```
+POST   /api/v1/datasources              # 创建数据源
+GET    /api/v1/datasources              # 获取数据源列表
+GET    /api/v1/datasources/{id}         # 获取数据源详情
+PUT    /api/v1/datasources/{id}         # 更新数据源
+DELETE /api/v1/datasources/{id}         # 删除数据源
+POST   /api/v1/datasources/{id}/test    # 测试连接
+GET    /api/v1/datasources/{id}/schema  # 获取数据源结构
+```
 
 #### 算子管理API
 ```
@@ -4167,19 +4153,13 @@ DELETE /api/v1/operators/{id}           # 删除算子
 GET    /api/v1/operators/categories     # 获取算子分类
 ```
 
-#### 流程管理API
+#### 流程管理API（已废弃）
+> **已废弃**：`/codes` 端点已删除，由 §2.6 的 `/pipelines` 端点替代。
 ```
-# 已实现：参见 §2.6.6 Pipeline API 端点
-# 以下为早期设计，已废弃
-POST   /api/v1/codes                # 创建代码（已废弃）
-GET    /api/v1/codes                # 获取代码列表（已废弃）
-GET    /api/v1/codes/{id}           # 获取代码详情（已废弃）
-PUT    /api/v1/codes/{id}           # 更新代码（已废弃）
-DELETE /api/v1/codes/{id}           # 删除代码（已废弃）
-POST   /api/v1/codes/{id}/execute   # 执行代码（已废弃）
-POST   /api/v1/codes/{id}/generate  # 生成代码（已废弃）
-GET    /api/v1/codes/{id}/versions  # 获取版本历史（已废弃）
-POST   /api/v1/codes/{id}/rollback  # 回退版本（已废弃）
+# 已废弃，不再使用
+# POST   /api/v1/codes                # 创建代码
+# GET    /api/v1/codes                # 获取代码列表
+# ...等
 ```
 
 #### 调度管理API
@@ -4195,69 +4175,29 @@ GET    /api/v1/schedules/{id}/executions # 获取执行历史
 ```
 
 #### 自然语言处理API（已废弃）
+> **已废弃**：`/nl` 端点已删除，自然语言处理由对话服务（`/chat`）和多智能体框架替代。
 ```
-# 已由多智能体框架（§2.7）中的 DataProcessor 智能体替代
-POST   /api/v1/nl/process               # 处理自然语言（已废弃）
-POST   /api/v1/nl/skills/search         # 搜索相似技能（已废弃）
-POST   /api/v1/nl/skills/register       # 注册技能（已废弃）
+# 已废弃，不再使用
+# POST   /api/v1/nl/process               # 处理自然语言
+# POST   /api/v1/nl/skills/search         # 搜索相似技能
+# POST   /api/v1/nl/skills/register       # 注册技能
 ```
 
 #### 技能管理API
 ```
-# 已实现的 API 参见 §2.5.4
-# 以下为早期设计，部分已废弃
-POST   /api/v1/skills                    # 创建技能
-GET    /api/v1/skills                    # 获取技能列表
-GET    /api/v1/skills/{id}               # 获取技能详情
-PUT    /api/v1/skills/{id}               # 更新技能
-DELETE /api/v1/skills/{id}               # 删除技能
-# 技能操作
-POST   /api/v1/skills/{id}/execute       # 执行单个技能（已废弃，用 /run 替代）
-POST   /api/v1/skills/{id}/test          # 测试技能执行（已废弃，用 /debug-chat 替代）
-GET    /api/v1/skills/{id}/versions      # 获取技能版本历史（已废弃）
-POST   /api/v1/skills/{id}/rollback      # 回退技能版本（已废弃）
-POST   /api/v1/skills/{id}/validate      # 验证技能定义（已废弃）
-# 技能发布
-GET    /api/v1/skills/categories         # 获取技能分类
-GET    /api/v1/skills/search             # 搜索技能
-POST   /api/v1/skills/recommend          # 推荐相关技能（已废弃）
-# 技能转换
-POST   /api/v1/skills/from-operator      # 从算子创建技能（已废弃）
-POST   /api/v1/skills/from-code          # 从代码创建技能（已废弃）
-POST   /api/v1/skills/from-nl            # 自然语言创建技能（已废弃，用 /generate 替代）
-# 技能模板
-GET    /api/v1/skills/templates          # 获取技能模板列表（已废弃）
-POST   /api/v1/skills/templates/{id}/apply # 应用技能模板（已废弃）
-```
+# 技能CRUD
+POST   /api/v1/skills                    # 创建技能GET    /api/v1/skills                    # 获取技能列表GET    /api/v1/skills/{id}               # 获取技能详情PUT    /api/v1/skills/{id}               # 更新技能DELETE /api/v1/skills/{id}               # 删除技能
+# 技能操作POST   /api/v1/skills/{id}/execute       # 执行单个技能POST   /api/v1/skills/{id}/test          # 测试技能执行GET    /api/v1/skills/{id}/versions      # 获取技能版本历史POST   /api/v1/skills/{id}/rollback      # 回退技能版本POST   /api/v1/skills/{id}/validate      # 验证技能定义
+# 技能发布GET    /api/v1/skills/categories         # 获取技能分类GET    /api/v1/skills/search             # 搜索技能POST   /api/v1/skills/recommend          # 推荐相关技能
+# 技能转换POST   /api/v1/skills/from-operator      # 从算子创建技能POST   /api/v1/skills/from-code          # 从代码创建技能POST   /api/v1/skills/from-nl            # 自然语言创建技能
+# 技能模板GET    /api/v1/skills/templates          # 获取技能模板列表POST   /api/v1/skills/templates/{id}/apply # 应用技能模板```
 
 #### Skill Pipeline API（已废弃）
+> **已废弃**：`/skill-pipelines` 端点已删除，由 §2.6 的 `/pipelines` 端点替代。
 ```
-# 已由 §2.6 Pipeline 模块替代，以下为早期 DAG 模式设计
-POST   /api/v1/skill-pipelines           # 创建 Pipeline（已废弃）
-GET    /api/v1/skill-pipelines           # 获取 Pipeline 列表（已废弃）
-GET    /api/v1/skill-pipelines/{id}      # 获取 Pipeline 详情（已废弃）
-PUT    /api/v1/skill-pipelines/{id}      # 更新 Pipeline（已废弃）
-DELETE /api/v1/skill-pipelines/{id}      # 删除 Pipeline（已废弃）
-
-# Pipeline 执行
-POST   /api/v1/skill-pipelines/{id}/run  # 执行 Pipeline（已废弃）
-GET    /api/v1/skill-pipelines/{id}/run/streaming  # 流式执行 Pipeline (SSE)（已废弃）
-POST   /api/v1/skill-pipelines/{id}/test # 测试 Pipeline（已废弃）
-POST   /api/v1/skill-pipelines/{id}/validate # 验证 Pipeline 定义（已废弃）
-
-# Pipeline 执行历史
-GET    /api/v1/skill-pipelines/{id}/executions      # 获取执行历史（已废弃）
-GET    /api/v1/skill-pipelines/executions/{eid}     # 获取执行详情（已废弃）
-GET    /api/v1/skill-pipelines/executions/{eid}/logs # 获取执行日志（已废弃）
-
-# Pipeline 版本管理
-GET    /api/v1/skill-pipelines/{id}/versions        # 获取版本历史（已废弃）
-POST   /api/v1/skill-pipelines/{id}/rollback        # 回退版本（已废弃）
-POST   /api/v1/skill-pipelines/{id}/fork            # 复制 Pipeline（已废弃）
-
-# Pipeline 导入导出
-GET    /api/v1/skill-pipelines/{id}/export          # 导出 Pipeline 定义（已废弃）
-POST   /api/v1/skill-pipelines/import               # 导入 Pipeline（已废弃）
+# 已废弃，不再使用
+# POST   /api/v1/skill-pipelines           # 创建 Pipeline
+# ...等
 ```
 
 #### Skill 与 Pipeline API 详细说明
@@ -4442,63 +4382,40 @@ event: pipeline_complete
 data: {"outputs": {...}, "duration": 2.5}
 ```
 
-### 4.2 WebSocket接口
+### 4.2 WebSocket接口（已废弃）
 
-#### 实时执行日志
-```
-WebSocket: /ws/executions/{execution_id}
-
-消息格式:
-{
-    "type": "log",
-    "timestamp": "2026-03-12T10:30:00Z",
-    "level": "info",
-    "message": "执行算子: FilterOperator",
-    "node_id": "node_1"
-}
-```
+> **已废弃**：实时通信改为 SSE（Server-Sent Events）模式，不再使用 WebSocket。
 
 ## 5. 部署架构
 
 ### 5.1 单机部署架构
 ```
 ┌───────────────────────────────────────────────┐
-│                Docker Compose                 │
+│               本地开发 / 生产部署              │
 ├───────────────────────────────────────────────┤
 │   ┌───────────────────────────────────────┐   │
-│   │  Nginx (Port 80/443)                  │   │
-│   │  - 反向代理                           │   │
-│   │  - SSL终止                            │   │
+│   │  Frontend (Vite Dev / Nginx)          │   │
+│   │  - Vue 3 SPA                          │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Frontend Container                   │   │
-│   │  - Vue 3 应用                         │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Backend Container                    │   │
+│   │  Backend (uvicorn)                    │   │
 │   │  - FastAPI 应用                       │   │
-│   │  - Uvicorn Server                     │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Celery Worker Container              │   │
-│   │  - 任务执行                           │   │
+│   │  SQLite / PostgreSQL                  │   │
+│   │  - 业务数据                           │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  PostgreSQL Container                 │   │
-│   │  - 数据存储                           │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Redis Container                      │   │
-│   │  - 缓存/队列                          │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  MinIO Container                      │   │
-│   │  - 文件存储                           │   │
+│   │  本地文件系统                          │   │
+│   │  - 数据源文件 / 技能包                 │   │
 │   └───────────────────────────────────────┘   │
 └───────────────────────────────────────────────┘
 ```
 
-### 5.2 Docker Compose配置
+### 5.2 Docker Compose配置（可选）
+
+> 生产环境可使用 Docker Compose 部署，开发环境使用 `npm run dev` 即可（见 INSTALL.md）。
+
 ```yaml
 version: '3.8'
 
@@ -4510,7 +4427,6 @@ services:
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
-      - ./ssl:/etc/nginx/ssl
     depends_on:
       - frontend
       - backend
@@ -4526,32 +4442,8 @@ services:
     build: ./backend
     environment:
       - DATABASE_URL=postgresql://user:pass@postgres:5432/datacrab
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_URL=http://minio:9000
     depends_on:
       - postgres
-      - redis
-      - minio
-
-  celery_worker:
-    build: ./backend
-    command: celery -A app.celery worker --loglevel=info
-    environment:
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/datacrab
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - postgres
-      - redis
-
-  celery_beat:
-    build: ./backend
-    command: celery -A app.celery beat --loglevel=info
-    environment:
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/datacrab
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - postgres
-      - redis
 
   postgres:
     image: postgres:14-alpine
@@ -4562,24 +4454,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    environment:
-      - MINIO_ROOT_USER=admin
-      - MINIO_ROOT_PASSWORD=password
-    volumes:
-      - minio_data:/data
-
 volumes:
   postgres_data:
-  redis_data:
-  minio_data:
 ```
 
 ## 6. 安全设计
@@ -4598,7 +4474,6 @@ volumes:
 
 此规则已写入：
 - personal.md（最高优先级行为规则）
-- CONTEXT.md（项目上下文）
 - chat.py _build_system_prompt（对话提示词）
 - operator.py SYSTEM_PROMPT（算子提示词）
 - skill.py 调试助手/修改提示词（技能提示词）
@@ -4635,7 +4510,10 @@ volumes:
 ### 8.1 插件机制
 - **数据源插件**: 支持自定义数据源连接器- **算子插件**: 支持自定义算子开发- **认证插件**: 支持自定义认证方式- **存储插件**: 支持自定义存储后端
 ### 8.2 水平扩展
-- **无状态服务**: API服务无状态设计- **负载均衡**: 支持多实例负载均衡- **分布式任务**: Celery分布式任务执行- **数据库分片**: 支持数据库分片扩展
+- **无状态服务**: API服务无状态设计
+- **负载均衡**: 支持多实例负载均衡
+- **异步任务**: asyncio 协程 + subprocess 沙箱执行
+- **数据库分片**: 支持数据库分片扩展
 ## 9. 开发规范
 ### 9.1 代码规范
 - **Python**: PEP 8 + Black格式化
