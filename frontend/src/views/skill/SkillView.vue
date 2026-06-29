@@ -47,26 +47,56 @@
         </div>
 
         <div class="skill-actions">
-          <el-button size="small" type="primary" @click="openDetail(skill)">
-            <el-icon><Edit /></el-icon> 修改
-          </el-button>
-          <el-button size="small" type="success" plain @click="openDebug(skill)">
-            <el-icon><VideoPlay /></el-icon> 调试
-          </el-button>
-          <el-button size="small" @click="downloadSkill(skill)">
-            <el-icon><Download /></el-icon> 下载
-          </el-button>
-          <el-button size="small" type="warning" plain @click="convertToPipeline(skill)">
-            <el-icon><Share /></el-icon> 转为流程
-          </el-button>
-          <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
-            <el-icon><Delete /></el-icon>
-          </el-button>
+          <div class="skill-actions-row">
+            <el-button size="small" type="primary" @click="openDetail(skill)">
+              <el-icon><Edit /></el-icon> 修改
+            </el-button>
+            <el-button size="small" type="success" plain @click="openDebug(skill)">
+              <el-icon><VideoPlay /></el-icon> 调试
+            </el-button>
+            <el-button size="small" @click="openCloneDialog(skill)">
+              <el-icon><CopyDocument /></el-icon> 另存
+            </el-button>
+            <el-button size="small" @click="downloadSkill(skill)">
+              <el-icon><Download /></el-icon> 下载
+            </el-button>
+          </div>
+          <div class="skill-actions-row">
+            <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
+              <el-icon><Delete /></el-icon> 删除
+            </el-button>
+            <el-button size="small" type="warning" plain @click="convertToPipeline(skill)">
+              <el-icon><Share /></el-icon> 转为流程
+            </el-button>
+          </div>
         </div>
       </el-card>
     </div>
 
     <el-empty v-if="filteredSkills.length === 0" description="暂无技能，请上传 Skill 包或使用 AI 生成" />
+
+    <!-- ==================== 另存为对话框 ==================== -->
+    <el-dialog v-model="showCloneDialog" title="另存为" width="450px" @closed="cloneName = ''; cloneTarget = null">
+      <div v-if="cloneTarget" class="modify-target-info">
+        <el-tag>{{ cloneTarget.display_name || cloneTarget.name }}</el-tag>
+        <span class="modify-desc">将复制脚本和全部配置</span>
+      </div>
+      <el-form label-width="80px" style="margin-top: 12px">
+        <el-form-item label="新名称" required>
+          <el-input
+            v-model="cloneName"
+            placeholder="输入新技能的名称"
+            @keyup.enter="handleClone"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showCloneDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleClone" :loading="cloning" :disabled="!cloneName.trim()">
+          {{ cloning ? '复制中...' : '确认复制' }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- ==================== 上传对话框 ==================== -->
     <el-dialog v-model="showUploadDialog" title="上传 Skill 包" width="480px">
@@ -282,7 +312,7 @@
     <!-- ==================== 调试技能 Dialog ==================== -->
     <el-dialog
       v-model="debugDrawer"
-      :title="'调试: ' + (debugSkill?.display_name || debugSkill?.name || '')"
+      :title="'AI调试助手: ' + (debugSkill?.display_name || debugSkill?.name || '')"
       width="95%"
       top="2vh"
       destroy-on-close
@@ -292,6 +322,7 @@
     >
       <div v-if="debugSkill" class="debug-layout">
         <div class="debug-left">
+          <div class="debug-section-title"><span>执行参数</span></div>
           <el-tabs v-model="execTab">
             <el-tab-pane label="自然语言" name="nl">
               <div v-if="nlExamples.length" class="nl-examples">
@@ -314,7 +345,7 @@
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -337,57 +368,32 @@
               <el-button v-if="execRunning" type="danger" size="small" style="margin-top:8px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" size="small" style="margin-top:8px" :loading="false" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
+              <el-button v-else type="primary" size="small" style="margin-top:8px" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
 
             <el-tab-pane label="JSON 参数" name="json">
+              <div v-if="execParamsPlaceholder && execParamsPlaceholder !== '{&quot;key&quot;: &quot;value&quot;}'" class="json-examples">
+                <div class="json-examples-title">示例</div>
+                <div class="json-example-item" @click="fillJsonExample">
+                  <code>{{ execParamsPlaceholder }}</code>
+                </div>
+              </div>
               <el-input
                 v-model="execParamsStr"
                 type="textarea"
                 :rows="6"
                 :placeholder="execParamsPlaceholder"
               />
-              <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
-                <el-button size="small" @click="fillJsonExample" :disabled="!execParamsPlaceholder || execParamsPlaceholder === '{&quot;key&quot;: &quot;value&quot;}'">
-                  填入样例
-                </el-button>
-                <span v-if="execParamsPlaceholder && execParamsPlaceholder !== '{&quot;key&quot;: &quot;value&quot;}'" style="font-size:12px; color:#909399;">
-                  样例: {{ execParamsPlaceholder }}
-                </span>
-              </div>
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" :loading="false" @click="handleRunSkill" :disabled="!execParamsStr.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkill" :disabled="!execParamsStr.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
           </el-tabs>
-
-          <div v-if="execThinking && execPhase !== 'idle'" class="exec-thinking-box">
-            <div class="exec-thinking-header">
-              <el-icon class="thinking-spin"><Loading /></el-icon>
-              <span class="exec-thinking-title">{{ execPhase === 'thinking' ? 'AI 正在思考...' : '正在执行...' }}</span>
-            </div>
-            <div class="exec-thinking-content">{{ execThinking }}</div>
-          </div>
-
-          <div v-if="execResult" class="exec-result" style="margin-top:16px">
-            <div class="exec-result-header">
-              <el-tag :type="execResult.success ? 'success' : 'danger'">
-                {{ execResult.success ? '执行成功' : '执行失败' }}
-              </el-tag>
-              <span v-if="execResult.execution_time_ms" class="exec-time">{{ execResult.execution_time_ms }}ms</span>
-            </div>
-            <div v-if="execResult.error" class="exec-error-block"><pre>{{ execResult.error }}</pre></div>
-            <div v-if="execResult.stdout" class="exec-stdout-block"><pre>{{ execResult.stdout }}</pre></div>
-            <div v-if="execResult.result != null" class="exec-result-block">
-              <div class="exec-label">返回数据</div>
-              <pre>{{ formatResult(execResult.result) }}</pre>
-            </div>
-          </div>
         </div>
 
         <div class="debug-right">
@@ -395,9 +401,9 @@
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 调试助手</span>
           </div>
-          <div class="debug-message-list" ref="debugMsgListRef">
-            <div v-if="debugMessages.length === 0" class="debug-empty">
-              <p>输入消息调试技能，例如"运行一下"、"帮我优化这个脚本"</p>
+          <div class="debug-message-list" ref="debugMsgListRef" @scroll="onSkillListScroll">
+            <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
+              <p>输入消息或使用左侧参数面板开始调试，例如"运行一下"、"帮我优化这个脚本"</p>
             </div>
             <div
               v-for="(msg, idx) in debugMessages"
@@ -449,7 +455,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="debugStreaming && !debugMessages.length" class="debug-message assistant">
+            <div v-if="(debugStreaming || execRunning) && !debugMessages.length" class="debug-message assistant">
               <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">{{ agentName }}</el-avatar></div>
               <div class="debug-msg-body">
                 <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -669,6 +675,41 @@ async function confirmDelete(skill: any) {
     if (e !== 'cancel') {
       ElMessage.error(e.response?.data?.detail || '删除失败')
     }
+  }
+}
+
+// ==================== 另存为 ====================
+const showCloneDialog = ref(false)
+const cloneTarget = ref<any>(null)
+const cloneName = ref('')
+const cloning = ref(false)
+
+function openCloneDialog(skill: any) {
+  cloneTarget.value = skill
+  cloneName.value = (skill.display_name || skill.name) + ' (副本)'
+  showCloneDialog.value = true
+}
+
+async function handleClone() {
+  if (!cloneName.value.trim()) {
+    ElMessage.warning('请输入新名称')
+    return
+  }
+  if (!cloneTarget.value) return
+  cloning.value = true
+  try {
+    const res = await api.post(`/skills/${cloneTarget.value.id}/clone`, {
+      name: cloneName.value.trim(),
+    })
+    ElMessage.success(`技能 "${res.display_name || res.name}" 复制成功`)
+    showCloneDialog.value = false
+    cloneName.value = ''
+    cloneTarget.value = null
+    await loadSkills()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '复制失败')
+  } finally {
+    cloning.value = false
   }
 }
 
@@ -984,6 +1025,22 @@ function stopExec() {
   execRunning.value = false
   execPhase.value = 'idle'
 }
+
+function pushExecResult(result: any, thinking = '') {
+  debugMessages.value.push({
+    role: 'assistant',
+    content: result?.success ? '执行完成' : '执行失败',
+    thinking: thinking || undefined,
+    runResult: result,
+  })
+  execResult.value = null
+  execThinking.value = ''
+  nextTick(() => {
+    if (debugMsgListRef.value) {
+      debugMsgListRef.value.scrollTop = debugMsgListRef.value.scrollHeight
+    }
+  })
+}
 const execNLQuery = ref('')
 const execCmdStr = ref('')
 const execParamsStr = ref('')
@@ -1007,6 +1064,35 @@ const debugInput = ref('')
 const debugStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
 let debugAbortController: AbortController | null = null
+const skillPinnedToBottom = ref(true)
+
+function scrollSkillDebugToBottom(force = false) {
+  const el = debugMsgListRef.value
+  if (!el) return
+  if (!force && !skillPinnedToBottom.value) return
+  el.scrollTop = el.scrollHeight
+}
+function onSkillListScroll() {
+  const el = debugMsgListRef.value
+  if (!el) return
+  skillPinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+// 执行流式：在消息列表中开一条 live 助手消息，返回其索引
+function startExecMessage(userText: string): number {
+  debugMessages.value.push({ role: 'user', content: userText })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  nextTick(() => scrollSkillDebugToBottom(true))
+  return debugMessages.value.length - 1
+}
+function finalizeExecMessage(idx: number, result: any) {
+  const msg = debugMessages.value[idx]
+  if (msg) {
+    msg.runResult = result
+    if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
+  }
+  nextTick(() => scrollSkillDebugToBottom())
+}
 
 // ==================== 输入历史记录（localStorage 持久化） ====================
 const HISTORY_MAX = 100
@@ -1458,10 +1544,6 @@ function buildCmdFromParams() {
 
 async function handleRunSkill() {
   if (!debugSkill.value) return
-  execRunning.value = true
-  execResult.value = null
-  execPhase.value = 'executing'
-  execAbortController = new AbortController()
 
   let parameters: any = {}
   if (execParamsStr.value.trim()) {
@@ -1469,12 +1551,16 @@ async function handleRunSkill() {
       parameters = JSON.parse(execParamsStr.value.trim())
     } catch {
       ElMessage.error('参数格式错误，请输入有效的 JSON')
-      execRunning.value = false
-      execAbortController = null
       return
     }
   }
 
+  execRunning.value = true
+  execPhase.value = 'executing'
+  execAbortController = new AbortController()
+  const assistantIdx = startExecMessage('执行(JSON 参数)')
+
+  let result: any = null
   try {
     const token = localStorage.getItem('access_token')
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
@@ -1513,15 +1599,17 @@ async function handleRunSkill() {
 
         try {
           const data = JSON.parse(trimmed.slice(6))
+          const msg = debugMessages.value[assistantIdx]
 
           if (data.type === 'executing') {
-            execThinking.value = data.message || '正在执行技能脚本...'
+            msg.thinking = data.message || '正在执行技能脚本...'
+            scrollSkillDebugToBottom()
           } else if (data.type === 'done') {
             if (data.result != null) {
-              execResult.value = data.result
+              result = data.result
             }
           } else if (data.type === 'error') {
-            execResult.value = { success: false, error: data.content || '执行失败' }
+            result = { success: false, error: data.content || '执行失败' }
           }
         } catch {
           // skip malformed JSON
@@ -1530,9 +1618,9 @@ async function handleRunSkill() {
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      execResult.value = { success: false, error: '已停止' }
+      result = { success: false, error: '已停止' }
     } else {
-      execResult.value = {
+      result = {
         success: false,
         error: e.response?.data?.detail || e.message || String(e),
       }
@@ -1541,6 +1629,7 @@ async function handleRunSkill() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
+    finalizeExecMessage(assistantIdx, result)
   }
 }
 
@@ -1550,13 +1639,14 @@ async function handleRunSkillNL() {
     ElMessage.warning('请输入调用指令')
     return
   }
-  pushHistory(nlHistory, nlHistoryIdx, execNLQuery.value, 'nl')
+  const userQuery = execNLQuery.value.trim()
+  pushHistory(nlHistory, nlHistoryIdx, userQuery, 'nl')
   execRunning.value = true
-  execResult.value = null
-  execThinking.value = ''
   execPhase.value = 'thinking'
   execAbortController = new AbortController()
+  const assistantIdx = startExecMessage(userQuery)
 
+  let result: any = null
   try {
     const token = localStorage.getItem('access_token')
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-nl-stream`, {
@@ -1566,7 +1656,7 @@ async function handleRunSkillNL() {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        query: execNLQuery.value.trim(),
+        query: userQuery,
         script_name: debugScriptName.value,
       }),
       signal: execAbortController.signal,
@@ -1595,27 +1685,26 @@ async function handleRunSkillNL() {
 
         try {
           const data = JSON.parse(trimmed.slice(6))
+          const msg = debugMessages.value[assistantIdx]
 
           if (data.type === 'thinking') {
-            execThinking.value += data.content
+            msg.thinking = (msg.thinking || '') + data.content
+            scrollSkillDebugToBottom()
           } else if (data.type === 'content') {
             execPhase.value = 'executing'
-            if (!execThinking.value) {
-              execThinking.value = '正在推断参数...'
-            }
+            if (!msg.thinking) msg.thinking = '正在推断参数...'
           } else if (data.type === 'inferred_params') {
             execPhase.value = 'executing'
-            if (!execThinking.value) {
-              execThinking.value = '参数推断完成'
-            }
+            if (!msg.thinking) msg.thinking = '参数推断完成'
           } else if (data.type === 'executing') {
             execPhase.value = 'executing'
+            if (!msg.thinking) msg.thinking = '正在执行技能脚本...'
           } else if (data.type === 'done') {
             if (data.result != null) {
-              execResult.value = data.result
+              result = data.result
             }
           } else if (data.type === 'error') {
-            execResult.value = { success: false, error: data.content || '执行失败' }
+            result = { success: false, error: data.content || '执行失败' }
           }
         } catch {
           // skip malformed JSON
@@ -1624,9 +1713,9 @@ async function handleRunSkillNL() {
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      execResult.value = { success: false, error: '已停止' }
+      result = { success: false, error: '已停止' }
     } else {
-      execResult.value = {
+      result = {
         success: false,
         error: e.response?.data?.detail || e.message || String(e),
       }
@@ -1635,6 +1724,7 @@ async function handleRunSkillNL() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
+    finalizeExecMessage(assistantIdx, result)
   }
 }
 
@@ -1683,11 +1773,11 @@ async function handleRunCmd() {
   }
 
   execRunning.value = true
-  execResult.value = null
-  execThinking.value = ''
   execPhase.value = 'executing'
   execAbortController = new AbortController()
+  const assistantIdx = startExecMessage(cmd)
 
+  let result: any = null
   try {
     const token = localStorage.getItem('access_token')
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
@@ -1728,15 +1818,17 @@ async function handleRunCmd() {
 
         try {
           const data = JSON.parse(trimmed.slice(6))
+          const msg = debugMessages.value[assistantIdx]
 
           if (data.type === 'executing') {
-            execThinking.value = data.message || '正在执行技能脚本...'
+            msg.thinking = data.message || '正在执行技能脚本...'
+            scrollSkillDebugToBottom()
           } else if (data.type === 'done') {
             if (data.result != null) {
-              execResult.value = data.result
+              result = data.result
             }
           } else if (data.type === 'error') {
-            execResult.value = { success: false, error: data.content || '执行失败' }
+            result = { success: false, error: data.content || '执行失败' }
           }
         } catch {
           // skip malformed JSON
@@ -1745,9 +1837,9 @@ async function handleRunCmd() {
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      execResult.value = { success: false, error: '已停止' }
+      result = { success: false, error: '已停止' }
     } else {
-      execResult.value = {
+      result = {
         success: false,
         error: e.response?.data?.detail || e.message || String(e),
       }
@@ -1756,6 +1848,7 @@ async function handleRunCmd() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
+    finalizeExecMessage(assistantIdx, result)
   }
 }
 
@@ -1805,6 +1898,8 @@ async function handleDebugSend() {
 
   const assistantIdx = debugMessages.value.length
   debugMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  skillPinnedToBottom.value = true
+  nextTick(() => scrollSkillDebugToBottom(true))
 
   try {
     const token = localStorage.getItem('access_token')
@@ -1883,6 +1978,7 @@ async function handleDebugSend() {
           // skip
         }
       }
+      scrollSkillDebugToBottom()
     }
 
     const finalMsg = debugMessages.value[assistantIdx]
@@ -1904,11 +2000,8 @@ async function handleDebugSend() {
   } finally {
     debugStreaming.value = false
     debugAbortController = null
-    await nextTick(() => {
-      if (debugMsgListRef.value) {
-        debugMsgListRef.value.scrollTop = debugMsgListRef.value.scrollHeight
-      }
-    })
+    await nextTick()
+    scrollSkillDebugToBottom()
   }
 }
 
@@ -2004,11 +2097,16 @@ onMounted(() => {
   }
   .skill-actions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    flex-direction: column;
+    gap: 4px;
     margin-top: auto;
     padding-top: 12px;
-    align-items: center;
+
+    .skill-actions-row {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
   }
 }
 
@@ -2210,25 +2308,37 @@ onMounted(() => {
 // Debug Layout
 .debug-layout {
   display: flex;
-  height: 75vh;
-  gap: 0;
+  gap: 16px;
+  height: calc(85vh - 60px);
 }
 
 .debug-left {
-  flex: 0 0 45%;
-  min-width: 0;
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
-  padding: 0 16px 16px;
-  border-right: 1px solid #ebeef5;
+  gap: 8px;
+
+  .el-tabs { margin: 0; }
+}
+
+.debug-section-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: #303133;
 }
 
 .debug-right {
-  flex: 0 0 55%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #fafafa;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
   overflow: hidden;
-  min-width: 0;
+  background: #f9fafb;
 }
 
 .debug-chat-header {
@@ -2340,6 +2450,38 @@ onMounted(() => {
   }
 }
 
+
+.json-examples {
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+
+  .json-examples-title {
+    font-size: 11px;
+    color: #909399;
+    margin-bottom: 4px;
+  }
+
+  .json-example-item {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 3px;
+    transition: background 0.2s;
+
+    &:hover { background: #ecf5ff; }
+
+    code {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 12px;
+      color: #409eff;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+  }
+}
 
 .cmd-parse-hint {
   margin-top: 8px;

@@ -53,21 +53,25 @@
             </el-tag>
           </div>
           <div class="op-actions">
-            <el-button size="small" type="primary" plain @click="openDebug(op)">
-              <el-icon><VideoPlay /></el-icon> 调试
-            </el-button>
-            <el-button size="small" @click="downloadOperator(op)">
-              <el-icon><Download /></el-icon> 下载
-            </el-button>
-            <el-button size="small" type="warning" plain @click="openModifyDialog(op)">
-              <el-icon><Edit /></el-icon> 修改
-            </el-button>
-            <el-button size="small" type="info" plain @click="openCloneDialog(op)">
-              <el-icon><CopyDocument /></el-icon> 另存为
-            </el-button>
-            <el-button size="small" type="danger" plain @click="confirmDelete(op)">
-              <el-icon><Delete /></el-icon>
-            </el-button>
+            <div class="op-actions-row">
+              <el-button size="small" type="primary" @click="openModifyDialog(op)">
+                <el-icon><Edit /></el-icon> 修改
+              </el-button>
+              <el-button size="small" type="success" plain @click="openDebug(op)">
+                <el-icon><VideoPlay /></el-icon> 调试
+              </el-button>
+              <el-button size="small" @click="openCloneDialog(op)">
+                <el-icon><CopyDocument /></el-icon> 另存
+              </el-button>
+              <el-button size="small" @click="downloadOperator(op)">
+                <el-icon><Download /></el-icon> 下载
+              </el-button>
+            </div>
+            <div class="op-actions-row">
+              <el-button size="small" type="danger" plain @click="confirmDelete(op)">
+                <el-icon><Delete /></el-icon> 删除
+              </el-button>
+            </div>
           </div>
         </el-card>
     </div>
@@ -175,7 +179,7 @@
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 代码助手</span>
           </div>
-          <div class="debug-message-list" ref="opMsgListRef">
+          <div class="debug-message-list" ref="opMsgListRef" @scroll="onOpListScroll">
             <div v-if="opMessages.length === 0" class="debug-empty">
               <p>输入消息调试算子代码，例如"帮我修一下这个报错"、"优化这段代码"</p>
             </div>
@@ -369,7 +373,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick, type Ref } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, watch, type Ref } from 'vue'
 import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -490,6 +494,20 @@ const opInput = ref('')
 const opStreaming = ref(false)
 let opAbortController: AbortController | null = null
 const opMsgListRef = ref<HTMLElement | null>(null)
+const opPinnedToBottom = ref(true)
+
+function scrollOpToBottom(force = false) {
+  const el = opMsgListRef.value
+  if (!el) return
+  if (!force && !opPinnedToBottom.value) return
+  el.scrollTop = el.scrollHeight
+}
+
+function onOpListScroll() {
+  const el = opMsgListRef.value
+  if (!el) return
+  opPinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
 
 const debugInputs = computed(() => {
   return (debugOperator.value?.inputs || []) as any[]
@@ -522,7 +540,16 @@ function getInputPlaceholder(input: any) {
   return `输入 JSON 数据 ${hint}`
 }
 
-function openDebug(op: any) {
+interface OpDebugSession {
+  operatorId: number | string
+  messages: OpChatMessage[]
+  inputValues: Record<string, string>
+  paramValues: Record<string, string>
+  result: any
+}
+const OP_SESSION_KEY = 'datacrab:op_debug_session'
+
+function openDebug(op: any, restore?: Partial<OpDebugSession>) {
   debugOperator.value = op
 
   for (const key of Object.keys(debugInputValues)) {
@@ -534,27 +561,80 @@ function openDebug(op: any) {
 
   const inputs = (op.inputs || []) as any[]
   for (const input of inputs) {
-    debugInputValues[input.name] = ''
+    debugInputValues[input.name] = restore?.inputValues?.[input.name] ?? ''
   }
 
   const allParams = (op.parameters || []) as any[]
   const inputNames = new Set(inputs.map((i: any) => i.name))
   for (const param of allParams) {
     if (!inputNames.has(param.name)) {
-      debugParamValues[param.name] = param.default !== null && param.default !== undefined
-        ? String(param.default)
-        : ''
+      if (restore?.paramValues && restore.paramValues[param.name] !== undefined) {
+        debugParamValues[param.name] = restore.paramValues[param.name]
+      } else {
+        debugParamValues[param.name] = param.default !== null && param.default !== undefined
+          ? String(param.default)
+          : ''
+      }
     }
   }
 
-  debugResult.value = null
-  opMessages.value = []
+  debugResult.value = restore?.result ?? null
+  opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m })) : []
   opInput.value = ''
   opStreaming.value = false
   debugDrawer.value = true
+  saveOpSession()
 }
 
+let opSaveTimer: ReturnType<typeof setTimeout> | null = null
+function saveOpSession() {
+  if (!debugOperator.value) return
+  const data: OpDebugSession = {
+    operatorId: debugOperator.value.id,
+    messages: opMessages.value,
+    inputValues: { ...debugInputValues },
+    paramValues: { ...debugParamValues },
+    result: debugResult.value,
+  }
+  try {
+    sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify(data))
+  } catch {
+    try {
+      const { result: _omit, ...rest } = data
+      sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify(rest))
+    } catch {
+      // 放弃持久化（可能 sessionStorage 已满）
+    }
+  }
+}
+function scheduleSaveOpSession() {
+  if (opSaveTimer) clearTimeout(opSaveTimer)
+  opSaveTimer = setTimeout(saveOpSession, 300)
+}
+function clearOpSession() {
+  sessionStorage.removeItem(OP_SESSION_KEY)
+}
+async function restoreOpSession() {
+  const raw = sessionStorage.getItem(OP_SESSION_KEY)
+  if (!raw) return
+  try {
+    const data = JSON.parse(raw) as Partial<OpDebugSession>
+    if (!data.operatorId) return
+    const op = await api.get(`/operators/${data.operatorId}`)
+    openDebug(op, data)
+  } catch {
+    clearOpSession()
+  }
+}
+
+watch(
+  [opMessages, () => debugInputValues, () => debugParamValues, debugResult],
+  scheduleSaveOpSession,
+  { deep: true }
+)
+
 function resetDebug() {
+  debugOperator.value = null
   opMessages.value = []
   opInput.value = ''
   opStreaming.value = false
@@ -562,6 +642,7 @@ function resetDebug() {
     opAbortController.abort()
     opAbortController = null
   }
+  clearOpSession()
 }
 
 async function refreshOpScript() {
@@ -1063,6 +1144,9 @@ async function handleOpSend() {
 
   const assistantIdx = opMessages.value.length
   opMessages.value.push({ role: 'assistant', content: '', thinking: '' })
+  opPinnedToBottom.value = true
+  await nextTick()
+  scrollOpToBottom(true)
 
   try {
     const token = localStorage.getItem('access_token')
@@ -1147,6 +1231,7 @@ async function handleOpSend() {
           // skip
         }
       }
+      scrollOpToBottom()
     }
 
     const finalMsg = opMessages.value[assistantIdx]
@@ -1168,15 +1253,15 @@ async function handleOpSend() {
   } finally {
     opStreaming.value = false
     opAbortController = null
-    await nextTick(() => {
-      if (opMsgListRef.value) {
-        opMsgListRef.value.scrollTop = opMsgListRef.value.scrollHeight
-      }
-    })
+    await nextTick()
+    scrollOpToBottom()
   }
 }
 
-onMounted(loadOperators)
+onMounted(async () => {
+  await loadOperators()
+  await restoreOpSession()
+})
 </script>
 
 <style lang="scss" scoped>
@@ -1260,18 +1345,23 @@ onMounted(loadOperators)
   }
   .op-actions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    flex-direction: column;
+    gap: 4px;
     margin-top: auto;
     padding-top: 12px;
-    align-items: center;
+
+    .op-actions-row {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
   }
 }
 
 .debug-layout {
   display: flex;
   gap: 16px;
-  height: calc(85vh - 60px);
+  height: 75vh;
 }
 
 .debug-left {
