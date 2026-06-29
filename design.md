@@ -81,7 +81,6 @@
 - **Markdown渲染**: markdown-it + highlight.js
 - **代码编辑**: Monaco Editor (代码块编辑)
 - **数据可视化**: ECharts
-- **流程编辑**: Vue Flow (工作流画布)
 
 #### 后端技术栈
 - **语言**: Python 3.11+
@@ -674,7 +673,7 @@ class Skill(Base):
     display_name = Column(String(200))
     description = Column(Text, nullable=False)
     
-    # 技能类型    skill_type = Column(String(50))  # operator, function, workflow
+    # 技能类型    skill_type = Column(String(50))  # operator, function, pipeline
     
     # 输入输出定义
     inputs = Column(JSON)
@@ -1449,7 +1448,7 @@ SkillLibrary 预置了以下数据处理技能：
 
 **流程（Pipeline）是 DataCrab 的核心编排概念——每个流程就是一个 Python 主函数。**
 
-抛弃 DAG 节点/边的工作流模型，流程的本质是：**一个 Python 主函数 + 它调用的 Skill 脚本**。用户只需理解一个 Python 函数就能掌握整个数据处理逻辑。
+抛弃旧的 DAG 节点/边模型，流程的本质是：**一个 Python 主函数 + 它调用的 Skill 脚本**。用户只需理解一个 Python 函数就能掌握整个数据处理逻辑。
 
 **核心原则**：
 - **一个流程 = 一个 Python 主函数**：主函数负责编排数据读取、处理、写入的完整逻辑
@@ -1832,7 +1831,7 @@ class PipelineExecutor:
 
 ##### Skill → 流程转换入口
 
-在 Skill 页面，"转为工作流"按钮改为"转为流程"：
+在 Skill 页面，"转为流程"按钮：
 
 ```
 ┌─────────────────────────────────┐
@@ -1900,7 +1899,7 @@ Pipeline ──1:1──▶ Schedule
 | API 端点 | ✅ 已完成 | CRUD + from-skill + run + run-stream + clone |
 | 前端列表页 | ✅ 已完成 | 流程卡片网格 |
 | 前端详情页 | ✅ 已完成 | 代码展示 + 调用关系图 |
-| Skill 页面"转为流程"按钮 | ✅ 已完成 | 替换旧的"转为工作流"按钮 |
+| Skill 页面"转为流程"按钮 | ✅ 已完成 | 从 Skill 生成 Pipeline |
 | SSE 流式生成+执行 | ✅ 已完成 | LLM 生成过程流式展示 + 执行过程流式推送 |
 
 **废弃的旧功能**：
@@ -3959,7 +3958,7 @@ CREATE TABLE skills (
     name VARCHAR(100) UNIQUE NOT NULL,
     display_name VARCHAR(200),
     description TEXT NOT NULL,
-    skill_type VARCHAR(50), -- operator, function, workflow, pipeline
+    skill_type VARCHAR(50), -- operator, function, pipeline
     inputs JSONB,
     """
     {

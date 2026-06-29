@@ -56,7 +56,7 @@
           <el-button size="small" @click="downloadSkill(skill)">
             <el-icon><Download /></el-icon> 下载
           </el-button>
-          <el-button size="small" type="warning" plain @click="convertToWorkflow(skill)">
+          <el-button size="small" type="warning" plain @click="convertToPipeline(skill)">
             <el-icon><Share /></el-icon> 转为流程
           </el-button>
           <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
@@ -639,7 +639,7 @@ function downloadSkill(skill: any) {
 
 // ==================== 删除 ====================
 
-async function convertToWorkflow(skill: any) {
+async function convertToPipeline(skill: any) {
   try {
     const token = localStorage.getItem('access_token')
     const resp = await fetch(`/api/v1/pipelines/from-skill/${skill.id}`, {

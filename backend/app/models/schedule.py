@@ -19,8 +19,8 @@ class Schedule(Base):
     description = Column(Text)
     
     # 任务类型和目标
-    task_type = Column(String(20), nullable=False)  # workflow, operator, skill
-    task_target_id = Column(UUID(as_uuid=True), nullable=False)  # 对应的workflow/operator/skill ID
+    task_type = Column(String(20), nullable=False)  # pipeline, operator, skill
+    task_target_id = Column(UUID(as_uuid=True), nullable=False)  # 对应的pipeline/operator/skill ID
     task_params = Column(JSON)  # 执行参数
 
     # 调度类型
@@ -64,7 +64,7 @@ class TaskExecution(Base):
     schedule_id = Column(UUID(as_uuid=True), ForeignKey("schedules.id", ondelete="CASCADE"), index=True)
     
     # 任务信息
-    task_type = Column(String(20), nullable=False)  # workflow, operator, skill
+    task_type = Column(String(20), nullable=False)  # pipeline, operator, skill
     task_target_id = Column(UUID(as_uuid=True), nullable=False)
 
     # 执行信息

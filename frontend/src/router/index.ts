@@ -58,10 +58,6 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/pipeline/PipelineView.vue'),
       },
       {
-        path: 'workflow',
-        redirect: '/pipeline',
-      },
-      {
         path: 'schedule',
         name: 'Schedule',
         component: () => import('@/views/schedule/ScheduleView.vue'),

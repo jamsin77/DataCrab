@@ -9,7 +9,7 @@ from uuid import UUID
 class ScheduleCreate(BaseModel):
     name: str = Field(..., max_length=100)
     description: Optional[str] = None
-    task_type: str = Field(..., pattern="^(workflow|operator|skill)$")
+    task_type: str = Field(..., pattern="^(pipeline|operator|skill)$")
     task_target_id: UUID
     task_params: Optional[dict] = None
     schedule_type: str = Field(..., pattern="^(cron|interval|manual)$")

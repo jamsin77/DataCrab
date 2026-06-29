@@ -54,7 +54,7 @@
         <el-select v-model="filterTaskType" placeholder="任务类型" clearable style="width: 120px">
           <el-option label="算子" value="operator" />
           <el-option label="技能" value="skill" />
-          <el-option label="流程" value="workflow" />
+          <el-option label="流程" value="pipeline" />
         </el-select>
       </div>
     </div>
@@ -167,7 +167,7 @@
           <el-radio-group v-model="createForm.task_type" @change="onTaskTypeChange">
             <el-radio-button label="operator">算子</el-radio-button>
             <el-radio-button label="skill">技能</el-radio-button>
-            <el-radio-button label="workflow">流程</el-radio-button>
+            <el-radio-button label="pipeline">流程</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="选择任务" prop="task_target_id">
@@ -395,7 +395,7 @@ const schedules = ref<any[]>([])
 const stats = ref<any>({})
 const operators = ref<any[]>([])
 const skills = ref<any[]>([])
-const workflows = ref<any[]>([])
+const pipelines = ref<any[]>([])
 
 const filterStatus = ref('')
 const filterTaskType = ref('')
@@ -472,8 +472,8 @@ const taskOptions = computed(() => {
     return operators.value.map(o => ({ id: o.id, name: o.display_name || o.name }))
   } else if (createForm.value.task_type === 'skill') {
     return skills.value.map(s => ({ id: s.id, name: s.display_name || s.name }))
-  } else if (createForm.value.task_type === 'workflow') {
-    return workflows.value.map(w => ({ id: w.id, name: w.name }))
+  } else if (createForm.value.task_type === 'pipeline') {
+    return pipelines.value.map(w => ({ id: w.id, name: w.name }))
   }
   return []
 })
@@ -484,7 +484,7 @@ onMounted(async () => {
     loadStats(),
     loadOperators(),
     loadSkills(),
-    loadWorkflows(),
+    loadPipelines(),
   ])
 })
 
@@ -525,9 +525,9 @@ async function loadSkills() {
   }
 }
 
-async function loadWorkflows() {
+async function loadPipelines() {
   try {
-    workflows.value = await api.get('/workflows')
+    pipelines.value = await api.get('/pipelines')
   } catch (e: any) {
     // ignore
   }
@@ -762,12 +762,12 @@ async function retryExecution(exec: any) {
 }
 
 function taskTypeLabel(type: string) {
-  const map: any = { operator: '算子', skill: '技能', workflow: '流程' }
+  const map: any = { operator: '算子', skill: '技能', pipeline: '流程' }
   return map[type] || type
 }
 
 function taskTypeColor(type: string) {
-  const map: any = { operator: 'primary', skill: 'success', workflow: 'warning' }
+  const map: any = { operator: 'primary', skill: 'success', pipeline: 'warning' }
   return map[type] || ''
 }
 
