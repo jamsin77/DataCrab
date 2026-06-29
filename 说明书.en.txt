@@ -1,0 +1,304 @@
+# DataCrab - Data Intelligence Application Platform
+
+DataCrab is an LLM-powered data intelligence application platform that delivers a ChatGPT-style conversational data interaction experience. Without writing any code, users can query, clean, transform, analyze, and visualize data through natural-language conversations.
+
+## Core Philosophy
+
+**Process data through conversation, accumulate data-processing Skills, form a data ecosystem, and ultimately achieve a fully closed AI loop for data processing.**
+
+| Stage | Philosophy | Industry Trend |
+|------|------|---------|
+| Conversation as Processing | Replace coding with natural language; the LLM understands intent, matches Skills, generates code | Conversational Data Processing, Agentic UI |
+| Accumulation as Asset | Each processing run accumulates as a reusable Skill, getting smarter with use | Skill-based Agent, Compound AI System |
+| Ecosystem as Loop | Accumulated Skills form an ecosystem; dual-agent collaboration loop | Multi-Agent Collaboration |
+| Loop-ification | AI understands → executes → inspects → self-repairs, no human intervention | Self-healing Pipeline, Full-loop Automation, Deep Agents |
+
+---
+
+## Key Features
+
+### 1. Conversational Data Interaction
+
+- ChatGPT-style chat interface with streaming responses (SSE)
+- Session management: create, list, rename, delete, search
+- Multi-turn dialogue: keeps the latest 20 messages as context
+- Data-source context injection: when a user mentions a data source, the system automatically queries real data and injects it into the LLM prompt
+- Complex query parsing: sort, filter, paginate, aggregate; supports Chinese-dynasty sorting (a cultural-relics data specialty)
+- Supports stopping generation
+
+### 2. Agent System (Tool Calling)
+
+The LLM can autonomously call tools to perform data operations, supporting an Agent loop of up to 5 iterations:
+
+| Tool | Function |
+|------|------|
+| `query_table_data` | Query table data in a data source (supports filter, sort, paginate) |
+| `get_table_schema` | View table structure |
+| `list_user_datasources` | List connected data sources |
+| `list_user_file_links` | List mounted file directories |
+| `save_file_to_link` | Save a file to a user directory |
+
+### 3. Data Source Management
+
+- Pluggable connector architecture supporting 6 data sources:
+
+| Connector | Description |
+|--------|------|
+| PostgreSQL | Async connection based on asyncpg |
+| MySQL | Async connection based on aiomysql |
+| CSV | Local CSV files |
+| Excel | Multi-sheet support |
+| OBS/S3 | Huawei Cloud OBS object storage |
+| HDFS | Hadoop HDFS (WebHDFS REST API) |
+
+- Connection testing, schema discovery, paginated table data browsing
+- Data quality analysis (completeness, missing values, outlier detection)
+- Table statistics (row count, column count, size)
+- Metadata management (technical metadata + business metadata)
+
+### 4. Operator Management
+
+Operators are Python scripts stored in the database, supporting:
+
+- **Upload**: upload a `.py` file; the AST parser auto-extracts function names, parameters, and docs
+- **AI generation**: natural-language description → LLM generates a Python script → auto-parse and create
+- **AI modification**: natural-language instructions modify an existing operator script
+- **Clone**: copy an operator and its script
+- **Debug/Execute**: run the operator in a sandboxed namespace with injected tool functions
+- **Download**: export as a `.py` file
+
+Built-in categories: transform, aggregate, filter, join, cleaning, analysis, ai_generated
+
+### 5. Skill Management
+
+Skills follow the Agent Skills open standard; each skill is a structured folder:
+
+```
+SKILL.md          # YAML front-matter + Markdown documentation
+scripts/          # Executable Python scripts
+references/       # Reference materials
+assets/           # Static assets
+```
+
+- **Full lifecycle**: create, read, update, delete
+- **Upload/Download**: `.zip` upload auto-extracts and parses; export as `.zip`
+- **AI generation (skill creator)**: natural-language description → LLM generates a complete skill package
+- **AI modification**: natural-language instructions modify SKILL.md content
+- **Run**: execute scripts in a subprocess sandbox with timeout control
+- **Natural-language execution**: the LLM infers execution parameters, then runs the skill
+- Skill scripts auto-sync to the operator table
+
+### 6. Skill Library & Semantic Search
+
+- Vector semantic search based on OpenAI Embeddings
+- Keyword matching as a fallback
+- 10 built-in skills: select, filter, sort, groupby, aggregate, join, fillna, dropna, rename, stats
+
+### 7. Natural-Language Processing Pipeline
+
+- **Intent recognition**: keyword-based 8-class classification (data cleaning, data transformation, data aggregation, data analysis, data fusion, data export, create operator, create skill)
+- **Entity extraction**: reserved LLM-based extraction interface
+- **Skill matching**: combined vector search + keyword matching strategy
+
+### 8. Pipeline Orchestration
+
+- Define multi-step data-processing pipelines
+- Steps reference skills/operators, supporting parameter definitions and dependencies (DAG structure)
+- Full pipeline: intent recognition → skill matching → skill composition → parameter inference → validation
+
+### 9. Scheduling System
+
+- Supports scheduled execution of operators, skills, and workflows
+- **Schedule types**: Cron expression, fixed interval (seconds), manual trigger
+- Cron expression validation and next-run preview
+- Pause/resume schedules
+- Task execution tracking: status, duration, logs, retry count
+- Execution statistics dashboard
+
+### 10. Notebook Environment
+
+- Jupyter-like code notebooks
+- Code cells and Markdown cells
+- Kernel management (Python/SQL)
+- Version history
+- Save/share/export
+
+### 11. Data Exploration Panel
+
+- Browse the data-source tree
+- View table schema and sample data
+- Metadata search
+
+### 12. File Link Management
+
+- Mount local file/directory paths
+- Access control (public/private, allowed file extensions)
+- File metadata tracking
+- Agents can write files to linked directories
+
+### 13. Authentication & Authorization
+
+- JWT authentication (Access Token + Refresh Token)
+- RBAC role-based permissions: user → role → permission
+- Permission levels: view, use, manage
+- Resource-level permission control (operators, skills, data sources, schedules)
+
+### 14. Multi-Model LLM Support
+
+| Provider | Description |
+|--------|------|
+| OpenAI | GPT series |
+| Azure OpenAI | Azure-hosted OpenAI service |
+| Tongyi Qianwen | Alibaba Cloud DashScope |
+| Zhipu GLM | Zhipu AI |
+| Custom endpoint | Any OpenAI-API-compatible endpoint |
+
+- Dynamically switch provider/key/model at runtime
+- Streaming output supports chain-of-thought / reasoning content
+- Function Calling support
+
+---
+
+## Tech Stack
+
+### Backend
+
+- **Language**: Python 3.9+
+- **Web framework**: FastAPI + Uvicorn
+- **ORM**: SQLAlchemy 2.0 (async, supports SQLite / PostgreSQL)
+- **Task queue**: Celery + Redis
+- **Data processing**: pandas, numpy
+- **LLM integration**: OpenAI API
+- **Object storage**: MinIO
+- **Search engine**: Elasticsearch
+- **Database migration**: Alembic
+
+### Frontend
+
+- **Framework**: Vue 3 + TypeScript + Composition API
+- **Build tool**: Vite 5
+- **UI library**: Element Plus
+- **State management**: Pinia
+- **Routing**: Vue Router 4
+- **Charts**: ECharts 5
+- **Code editor**: Monaco Editor
+- **Markdown rendering**: markdown-it + highlight.js
+
+### Infrastructure
+
+- **Containerization**: Docker + Docker Compose
+- **Reverse proxy**: Nginx
+- **Database**: SQLite (development) / PostgreSQL 14 (production)
+- **Cache**: Redis 7
+- **Object storage**: MinIO
+
+---
+
+## Project Structure
+
+```
+DataCrab/
+├── backend/                    # Backend service
+│   ├── app/
+│   │   ├── main.py            # FastAPI entry
+│   │   ├── core/              # Core config (database, security, types)
+│   │   ├── api/v1/endpoints/  # API endpoints (10 resource groups)
+│   │   ├── models/            # ORM models (9 models)
+│   │   ├── schemas/           # Pydantic request/response schemas
+│   │   └── services/          # Business-logic services
+│   │       ├── llm.py         # LLM manager (multi-provider, streaming, tool calls)
+│   │       ├── agent.py       # Agent service (tool-call loop)
+│   │       ├── nl_service.py  # Natural-language intent recognition
+│   │       ├── skill_library.py # Vector index + semantic search
+│   │       ├── skill_parser.py  # SKILL.md parser
+│   │       ├── skill_runner.py  # Subprocess sandbox executor
+│   │       ├── skill_creator.py # AI skill-package generator
+│   │       ├── connectors.py    # 6 data-source connectors
+│   │       └── operator_parser.py # Python AST script parser
+│   ├── data/skills/           # Skill package on-disk storage
+│   ├── alembic/               # Database migrations
+│   └── pyproject.toml         # Poetry project definition
+├── frontend/                   # Frontend app
+│   ├── src/
+│   │   ├── views/             # 11 page views
+│   │   ├── router/            # Routing config
+│   │   ├── stores/            # Pinia state management
+│   │   ├── api/               # Axios API client
+│   │   └── composables/       # Vue composables
+│   └── package.json
+├── nginx/                      # Nginx reverse-proxy config
+├── docker-compose.yml          # Full-stack deployment config
+└── skills/                     # Example skills (cultural-relics expert)
+```
+
+---
+
+## Quick Start
+
+### Requirements
+
+- Python 3.9+
+- Node.js 16+
+- Redis (for the Celery task queue)
+
+### Backend Start
+
+```bash
+cd backend
+pip install -e .
+
+# Configure environment variables (copy .env.example to .env)
+# Required: OPENAI_API_KEY
+
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Frontend Start
+
+```bash
+cd frontend
+npm install
+npm run dev    # Vite dev server, default port 5173
+```
+
+### Docker Full-Stack Deployment
+
+```bash
+docker-compose up
+```
+
+Services started: PostgreSQL, Redis, MinIO, backend, Celery worker, frontend, Nginx.
+
+---
+
+## API Overview
+
+All API routes are prefixed with `/api/v1/`:
+
+| Path | Function |
+|------|------|
+| `/auth` | Login, register, token refresh |
+| `/chat` | Session management, messages, streaming chat, natural-language data processing |
+| `/datasources` | Data source CRUD, connection test, table data/stats/quality |
+| `/skills` | Skill full lifecycle, upload/download, run, AI generate/modify |
+| `/operators` | Operator CRUD, upload, generate, modify, debug, clone |
+| `/codes` | Pipeline CRUD, execution |
+| `/schedules` | Schedule CRUD, pause/resume, trigger, stats |
+| `/notebooks` | Notebook CRUD, execute cells |
+| `/filelinks` | File link CRUD |
+| `/config` | LLM provider runtime config |
+
+---
+
+## Architecture Highlights
+
+1. **Pluggable connectors**: `BaseConnector` abstract class + registry pattern for easily extending new data source types
+2. **Agent tool-call loop**: the LLM autonomously decides which tools to call, enabling data operations without explicit instructions
+3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable
+4. **Dual search strategy**: vector semantic search + keyword-matching fallback to ensure search availability
+5. **Subprocess sandbox**: skill scripts execute in an isolated subprocess with timeout control
+6. **Skill-operator auto-sync**: skill script changes auto-sync to the operator table, bridging the two execution systems
+7. **LLM provider abstraction**: a unified interface supports multiple LLM providers with runtime switching
+8. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback
+9. **AST script introspection**: Python AST parsing auto-extracts function signatures and docs, registering operators with zero config
+10. **Cultural-relics domain specialization**: built-in Chinese dynasty/era mapping for intelligent sorting and filtering of historical data
