@@ -1397,13 +1397,20 @@ POST /api/v1/skills/{id}/debug-chat
 └────────────────────────────────┴─────────────────────────────────┘
 ```
 
-#### 2.5.8 技能自我进化机制
+#### 2.5.8 自我进化经验库（算子+技能统一）
 
-技能具备自我进化能力：执行失败时自动记录错误日志，积累经验后由 LLM 总结规律并写入 SKILL.md，新技能生成和调试时自动注入历史经验。
+算子与技能共用统一的自我进化机制（`app/services/experience.py`）：执行失败自动记录**反例**，修错后成功自动采集**正例**，由 LLM 归纳为「常见错误+成功模式」经验，写入统一 `experience.json` 并注入后续生成/修改/调试提示词，形成"执行→记录→归纳→注入"闭环。
 
-##### 错误日志自动记录
+- 技能：`{skill_path}/experience.json`（兼容旧 `error_log.json` 读取，经验镜像写入 SKILL.md `## 常见问题与经验`）
+- 算子：`backend/data/operator_experiences/{operator_id}/experience.json`（算子无文件夹，统一存盘）
+- `experience.json` 结构：`{negative:[...], positive:[...], lessons:""}`
+- 采集规则：失败→`append_negative`；成功且历史有反例（即修错后成功）→`append_positive`
+- 归纳：`POST /operators/{id}/summarize-experience`、`POST /skills/{id}/summarize-errors`，LLM 同时分析反例+正例
+- 注入：`collect_all_lessons(db, user_id)` 收集该用户全部算子+技能经验，注入算子 generate/modify/debug-chat 与技能 skill_creator 提示词
 
-每次技能执行失败，系统自动将错误信息追加到技能目录下的 `error_log.json` 文件（最多保留200条，FIFO）：
+##### 反例（错误日志）自动记录
+
+每次执行失败，系统自动将错误信息追加到经验库的 `negative` 列表（最多保留200条，FIFO）：
 
 ```json
 [

@@ -76,6 +76,7 @@ Operators are Python scripts stored in the database, supporting:
 - **Clone**: copy an operator and its script
 - **Debug/Execute**: run the operator in a sandboxed namespace with injected tool functions (query_table_data, llm_chat, etc.)
 - **Download**: export as a `.py` file
+- **Self-evolving experience library**: failures auto-record negative examples; successes after a fix auto-record positive examples; the LLM distills lessons (common errors + success patterns) injected into subsequent generate/modify/debug prompts — gets smarter with use
 
 ### 6. Skill Management
 
@@ -95,7 +96,7 @@ assets/           # Static assets
 - **Execution**: run scripts in a subprocess sandbox with timeout control and SSE streaming status
 - **Natural-language execution**: the LLM infers execution parameters (with reasoning shown), then runs the skill
 - **AI debug assistant**: chat-style interactive debugging; the AI can auto-execute or modify scripts
-- **Skill self-evolution**: error logs are auto-recorded; the LLM summarizes lessons into SKILL.md
+- **Skill self-evolution**: failures record negative examples, successes after a fix record positive examples; the LLM distills lessons into SKILL.md; shares a unified experience library with operators, auto-injected when generating new skills
 - **Skill JSON parameter examples**: parameter definitions support an `example` field; the frontend auto-fills example values
 
 ### 7. Pipeline
@@ -296,7 +297,7 @@ All API routes are prefixed with `/api/v1/`:
 2. **Pluggable connectors**: `BaseConnector` abstract class + registry pattern for easily extending new data source types
 3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable; Skills are accumulable, reusable assets
 4. **Pipeline = Python main function**: discards the DAG model; each pipeline is a standalone runnable Python function
-5. **Skill self-evolution**: error logs auto-recorded; the LLM summarizes lessons into SKILL.md and auto-injects historical experience when generating new skills—Skills get smarter with use
+5. **Self-evolving experience library**: operators and skills share a unified `experience.json` library — failures record negative examples, successes after a fix record positive examples; the LLM distills them into "common errors + success patterns" injected into generate/modify/debug prompts, closing the "execute → record → distill → inject" loop, getting smarter with use
 6. **LLM capability injection**: the `llm_chat()` function can be called directly inside operator and skill scripts without HTTP requests
 7. **Metadata management**: one-click technical metadata sync + AI-enriched business metadata for a unified data catalog
 8. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback

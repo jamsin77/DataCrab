@@ -1416,13 +1416,20 @@ POST /api/v1/skills/{id}/debug-chat
 └────────────────────────────────┴─────────────────────────────────┘
 ```
 
-#### 2.5.8 Skill Self-Evolution Mechanism
+#### 2.5.8 Self-Evolving Experience Library (operators + skills unified)
 
-Skills have self-evolution capability: on execution failure, error logs are auto-recorded; after accumulating experience, the LLM summarizes patterns and writes them to SKILL.md; new skill generation and debugging auto-inject historical lessons.
+Operators and skills share a unified self-evolution mechanism (`app/services/experience.py`): failures auto-record **negative examples**; successes after a fix auto-record **positive examples**; the LLM distills them into "common errors + success patterns" lessons, written to a unified `experience.json` and injected into subsequent generate/modify/debug prompts, closing the "execute → record → distill → inject" loop.
 
-##### Auto Error Log Recording
+- Skills: `{skill_path}/experience.json` (backward-compatible read of legacy `error_log.json`; lessons mirrored to SKILL.md `## Common Issues & Lessons`)
+- Operators: `backend/data/operator_experiences/{operator_id}/experience.json` (operators have no folder; stored on disk uniformly)
+- `experience.json` structure: `{negative:[...], positive:[...], lessons:""}`
+- Collection rules: failure → `append_negative`; success when prior negatives exist (i.e., fix-then-success) → `append_positive`
+- Distill: `POST /operators/{id}/summarize-experience`, `POST /skills/{id}/summarize-errors`; the LLM analyzes both negative and positive examples
+- Injection: `collect_all_lessons(db, user_id)` gathers all the user's operator + skill lessons and injects them into operator generate/modify/debug-chat and skill skill_creator prompts
 
-On each skill execution failure, the system appends the error info to `error_log.json` under the skill directory (max 200 entries, FIFO):
+##### Auto Negative (Error) Recording
+
+On each execution failure, the system appends the error info to the experience library's `negative` list (max 200 entries, FIFO):
 
 ```json
 [
