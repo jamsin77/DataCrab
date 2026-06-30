@@ -68,6 +68,9 @@
               </el-button>
             </div>
             <div class="op-actions-row">
+              <el-button size="small" type="warning" plain @click="summarizeExperience(op)" :loading="op._summarizing">
+                <el-icon><MagicStick /></el-icon> 归纳经验
+              </el-button>
               <el-button size="small" type="danger" plain @click="confirmDelete(op)">
                 <el-icon><Delete /></el-icon> 删除
               </el-button>
@@ -455,6 +458,26 @@ function downloadOperator(op: any) {
         a.click()
         URL.revokeObjectURL(blobUrl)
       })
+  }
+}
+
+async function summarizeExperience(op: any) {
+  op._summarizing = true
+  try {
+    const res = await api.post(`/operators/${op.id}/summarize-experience`)
+    if (!res.success && res.error_count === 0) {
+      ElMessage.info(res.message || '暂无错误记录')
+    } else {
+      ElMessage.success(res.message || '经验归纳完成')
+      ElMessageBox.alert(res.lessons || '(无)', `${op.display_name || op.name} - 经验总结`, {
+        confirmButtonText: '确定',
+        customClass: 'experience-msgbox',
+      })
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '归纳失败')
+  } finally {
+    op._summarizing = false
   }
 }
 

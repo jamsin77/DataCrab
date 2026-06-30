@@ -657,6 +657,19 @@ async def run_skill_stream(
                     stdout=exec_result.get("stdout", ""),
                     source="run-stream",
                 )
+            else:
+                # 修错后成功 → 采集正例
+                try:
+                    from app.services import experience as _exp
+                    if _exp.read_negative(folder):
+                        _exp.append_positive(
+                            folder, source="run-stream",
+                            parameters=request.parameters,
+                            result_summary=str(exec_result.get("result"))[:200],
+                            script_name=request.script_name,
+                        )
+                except Exception:
+                    pass
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
@@ -985,6 +998,19 @@ async def run_skill_nl_stream(
                     stdout=exec_result.get("stdout", ""),
                     source="run-nl-stream",
                 )
+            else:
+                # 修错后成功 → 采集正例
+                try:
+                    from app.services import experience as _exp
+                    if _exp.read_negative(folder):
+                        _exp.append_positive(
+                            folder, source="run-nl-stream",
+                            parameters=parameters,
+                            result_summary=str(exec_result.get("result"))[:200],
+                            script_name=request.script_name,
+                        )
+                except Exception:
+                    pass
 
             logger.info(f"NL stream: exec_result success={exec_result.get('success')}, error={str(exec_result.get('error',''))[:100]}")
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
@@ -1195,6 +1221,19 @@ async def debug_skill_chat(
                                 "error": exec_result.get("error", "未知错误"),
                                 "stdout": exec_result.get("stdout", ""),
                             })
+                        else:
+                            # 修错后成功 → 采集正例
+                            try:
+                                from app.services import experience as _exp
+                                if _exp.read_negative(folder):
+                                    _exp.append_positive(
+                                        folder, source="debug-chat",
+                                        parameters=parameters,
+                                        result_summary=str(exec_result.get("result"))[:200],
+                                        script_name=request.script_name,
+                                    )
+                            except Exception:
+                                pass
 
                 skill.usage_count = (skill.usage_count or 0) + 1
                 await db.flush()
@@ -1228,9 +1267,11 @@ async def summarize_skill_errors(
 
     folder = _get_skill_folder(skill_id)
     errors = read_error_log(folder)
+    from app.services import experience as _exp
+    positives = _exp.read_positive(folder)
 
-    if not errors:
-        return {"success": True, "message": "暂无错误记录", "error_count": 0, "lessons": ""}
+    if not errors and not positives:
+        return {"success": True, "message": "暂无错误/成功记录", "error_count": 0, "lessons": ""}
 
     from app.services.llm import llm_manager
     await llm_manager.initialize()
@@ -1248,6 +1289,13 @@ async def summarize_skill_errors(
         if e.get("parameters"):
             error_summary_lines.append(f"   参数: {json_mod.dumps(e['parameters'], ensure_ascii=False)[:100]}")
 
+    pos_lines = []
+    for i, p in enumerate(positives[-15:], 1):
+        pos_lines.append(
+            f"{i}. 参数: {json_mod.dumps(p.get('parameters', {}), ensure_ascii=False)[:120]}"
+            f" → 结果摘要: {p.get('result_summary','')[:80]}"
+        )
+
     existing_lessons = read_lessons(folder)
     lessons_context = f"\n\n已有的经验总结（在此基础上补充更新）：\n{existing_lessons}" if existing_lessons else ""
 
@@ -1255,13 +1303,13 @@ async def summarize_skill_errors(
         {
             "role": "system",
             "content": (
-                "你是一个技能错误分析专家。分析技能执行中出现的错误日志，总结出规律性的问题和解决方案，"
-                "生成简洁的经验总结。要求：\n"
-                "1. 按错误类型分类总结\n"
-                "2. 每类给出：问题描述、根因分析、修复建议\n"
-                "3. 如果已有经验总结，在此基础上补充更新（保留仍然有效的条目，更新已有条目，添加新发现）\n"
-                "4. 使用 Markdown 格式，用 ### 分类别\n"
-                "5. 只输出经验总结内容，不要输出前言和结尾\n"
+                "你是一个技能经验分析专家。分析技能执行中的【错误日志（反例）】和【成功记录（正例）】，"
+                "总结出规律性的经验。要求：\n"
+                "1. 反例：按错误类型分类，给出问题描述、根因、修复建议\n"
+                "2. 正例：归纳成功模式与最佳实践（哪些参数组合/写法能稳定成功）\n"
+                "3. 如果已有经验总结，在此基础上补充更新（保留仍有效条目，更新已有条目，添加新发现）\n"
+                "4. 使用 Markdown 格式，用 ### 分类别，分别有「常见错误」和「成功模式」两节\n"
+                "5. 只输出经验总结内容，不要前言结尾\n"
                 "6. 简洁精炼，每个条目不超过3行"
             ),
         },
@@ -1270,8 +1318,9 @@ async def summarize_skill_errors(
             "content": (
                 f"技能名称：{skill.display_name or skill.name}\n"
                 f"技能描述：{skill.description or '无'}\n"
-                f"错误记录（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
+                f"【反例·错误记录】（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
                 + "\n".join(error_summary_lines)
+                + (f"\n\n【正例·成功记录】（最近{len(pos_lines)}条，共{len(positives)}条）：\n\n" + "\n".join(pos_lines) if pos_lines else "")
                 + lessons_context
             ),
         },
@@ -1295,22 +1344,9 @@ async def summarize_skill_errors(
 
 
 async def _collect_all_lessons(db: AsyncSession, user_id) -> str:
-    """收集用户所有技能的经验总结，用于注入新技能生成"""
-    try:
-        result = await db.execute(select(Skill).where(Skill.author == user_id))
-        skills = result.scalars().all()
-        lessons_parts = []
-        for s in skills:
-            folder = _get_skill_folder(s.id)
-            lessons = read_lessons(folder)
-            if lessons:
-                lessons_parts.append(f"### {s.display_name or s.name}\n{lessons[:500]}")
-        if not lessons_parts:
-            return ""
-        return "\n\n".join(lessons_parts)
-    except Exception as e:
-        logger.warning(f"收集经验总结失败: {e}")
-        return ""
+    """收集用户所有算子+技能的经验总结，用于注入新技能/算子生成（统一经验库）"""
+    from app.services import experience
+    return await experience.collect_all_lessons(db, user_id)
 
 
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)

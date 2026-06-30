@@ -328,6 +328,21 @@ async def debug_operator(
 
         elapsed = (time.time() - start_time) * 1000
 
+        # 修错后成功 → 采集正例
+        try:
+            base = experience.operator_experience_dir(operator_id)
+            if experience.read_negative(base):
+                result_preview = str(result_value)[:200] if result_value is not None else ""
+                experience.append_positive(
+                    base,
+                    source="debug",
+                    parameters=request.parameters or {},
+                    result_summary=result_preview,
+                    script_name=operator.function_name or "",
+                )
+        except Exception as log_err:
+            logger.warning(f"记录算子正例失败: {log_err}")
+
         return OperatorDebugResponse(
             success=True,
             result=result_value,
@@ -1251,6 +1266,7 @@ async def get_operator_experience(
     return {
         "stats": experience.experience_stats(base),
         "negative": experience.read_negative(base),
+        "positive": experience.read_positive(base),
         "lessons": experience.read_lessons(base),
     }
 
@@ -1269,8 +1285,9 @@ async def summarize_operator_experience(
 
     base = experience.operator_experience_dir(operator_id)
     errors = experience.read_negative(base)
-    if not errors:
-        return {"success": True, "message": "暂无错误记录", "error_count": 0, "lessons": ""}
+    positives = experience.read_positive(base)
+    if not errors and not positives:
+        return {"success": True, "message": "暂无错误/成功记录", "error_count": 0, "lessons": ""}
 
     await llm_manager.initialize()
 
@@ -1286,6 +1303,13 @@ async def summarize_operator_experience(
         if e.get("parameters"):
             lines.append(f"   参数: {json_mod.dumps(e['parameters'], ensure_ascii=False)[:100]}")
 
+    pos_lines = []
+    for i, p in enumerate(positives[-15:], 1):
+        pos_lines.append(
+            f"{i}. 参数: {json_mod.dumps(p.get('parameters', {}), ensure_ascii=False)[:120]}"
+            f" → 结果摘要: {p.get('result_summary','')[:80]}"
+        )
+
     existing = experience.read_lessons(base)
     lessons_ctx = f"\n\n已有的经验总结（在此基础上补充更新）：\n{existing}" if existing else ""
 
@@ -1293,13 +1317,13 @@ async def summarize_operator_experience(
         {
             "role": "system",
             "content": (
-                "你是一个算子错误分析专家。分析算子执行中出现的错误日志，总结出规律性的问题和解决方案，"
-                "生成简洁的经验总结。要求：\n"
-                "1. 按错误类型分类总结\n"
-                "2. 每类给出：问题描述、根因分析、修复建议\n"
-                "3. 如果已有经验总结，在此基础上补充更新（保留仍然有效的条目，更新已有条目，添加新发现）\n"
-                "4. 使用 Markdown 格式，用 ### 分类别\n"
-                "5. 只输出经验总结内容，不要输出前言和结尾\n"
+                "你是一个算子经验分析专家。分析算子执行中的【错误日志（反例）】和【成功记录（正例）】，"
+                "总结出规律性的经验。要求：\n"
+                "1. 反例：按错误类型分类，给出问题描述、根因、修复建议\n"
+                "2. 正例：归纳成功模式与最佳实践（哪些参数组合/写法能稳定成功）\n"
+                "3. 如果已有经验总结，在此基础上补充更新（保留仍有效条目，更新已有条目，添加新发现）\n"
+                "4. 使用 Markdown 格式，用 ### 分类别，分别有「常见错误」和「成功模式」两节\n"
+                "5. 只输出经验总结内容，不要前言结尾\n"
                 "6. 简洁精炼，每个条目不超过3行"
             ),
         },
@@ -1308,8 +1332,9 @@ async def summarize_operator_experience(
             "content": (
                 f"算子名称：{operator.display_name or operator.name}\n"
                 f"算子描述：{operator.description or '无'}\n"
-                f"错误记录（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
+                f"【反例·错误记录】（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
                 + "\n".join(lines)
+                + (f"\n\n【正例·成功记录】（最近{len(pos_lines)}条，共{len(positives)}条）：\n\n" + "\n".join(pos_lines) if pos_lines else "")
                 + lessons_ctx
             ),
         },

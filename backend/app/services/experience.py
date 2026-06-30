@@ -78,6 +78,33 @@ def read_negative(base: Path) -> List[Dict[str, Any]]:
     return read_experience(base)["negative"]
 
 
+def append_positive(
+    base: Path,
+    *,
+    source: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    result_summary: str = "",
+    script_name: str = "",
+) -> None:
+    """追加一条正例（成功模式，尤其修错后成功的模式）。"""
+    data = read_experience(base)
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "source": source,
+        "script_name": script_name,
+        "parameters": parameters or {},
+        "result_summary": (result_summary or "")[:300],
+    }
+    data["positive"].append(entry)
+    if len(data["positive"]) > MAX_NEGATIVE:
+        data["positive"] = data["positive"][-MAX_NEGATIVE:]
+    _write(base, data)
+
+
+def read_positive(base: Path) -> List[Dict[str, Any]]:
+    return read_experience(base)["positive"]
+
+
 def read_lessons(base: Path) -> str:
     """读取经验总结。优先 experience.json，兜底读 SKILL.md「常见问题与经验」（兼容旧技能）。"""
     ls = read_experience(base).get("lessons", "")
