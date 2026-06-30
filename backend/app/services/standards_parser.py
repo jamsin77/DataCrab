@@ -60,10 +60,25 @@ def parse_standards() -> List[Dict]:
     return standards
 
 
+def _parse_threshold_value(threshold: str) -> Optional[float]:
+    """从阈值文本提取数值：'10%' → 0.1, '5%' → 0.05, '0.01' → 0.01, '0' → 0.0, '95%' → 0.95"""
+    if not threshold:
+        return None
+    m = re.search(r'(\d+(\.\d+)?)\s*%', threshold)
+    if m:
+        return float(m.group(1)) / 100.0
+    m = re.search(r'(\d+(\.\d+)?)', threshold)
+    if m:
+        v = float(m.group(1))
+        # 纯数值若 ≥1 且非百分比，按原值（如 0.01 保持，24 保持 24）
+        return v
+    return None
+
+
 def parse_quality_rules() -> List[Dict]:
     """解析 data_quality_rules.md，返回规则列表。
 
-    每条: {id, dimension, scope, logic, threshold, severity}
+    每条: {id, name, dimension, scope, logic, threshold, threshold_value, severity}
     """
     p = _standards_dir() / "data_quality_rules.md"
     if not p.exists():
@@ -75,18 +90,30 @@ def parse_quality_rules() -> List[Dict]:
         r'^### (DQ-\S+)\s+(.+?)\n((?:(?!^### |^---$).)+)',
         re.MULTILINE | re.DOTALL,
     )
+    # 预扫章节维度（## 一、完整性 Completeness）
+    chapter_dims: Dict[int, str] = {}
+    for m in re.finditer(r'^##\s+(.+?)$', text, re.MULTILINE):
+        chapter_dims[m.start()] = m.group(1).strip()
+
     for m in pattern.finditer(text):
         rid = m.group(1)
         name = m.group(2).strip()
         body = m.group(3)
-        dimension = ""
+        # 找到该规则之前的最近章节作为维度
+        dim = ""
+        starts = [s for s in chapter_dims if s <= m.start()]
+        if starts:
+            dim = chapter_dims[max(starts)]
+        scope = ""
+        logic = ""
         threshold = ""
         severity = "warning"
         for line in body.splitlines():
             ls = line.strip()
-            if ls.startswith("- 维度") or ls.startswith("- 适用范围"):
-                if not dimension and ls.startswith("- 维度"):
-                    dimension = ls.split(":", 1)[1].strip()
+            if ls.startswith("- 适用范围"):
+                scope = ls.split(":", 1)[1].strip()
+            elif ls.startswith("- 检查逻辑"):
+                logic = ls.split(":", 1)[1].strip()
             elif ls.startswith("- 阈值"):
                 threshold = ls.split(":", 1)[1].strip()
             elif ls.startswith("- 严重等级"):
@@ -94,8 +121,11 @@ def parse_quality_rules() -> List[Dict]:
         rules.append({
             "id": rid,
             "name": name,
-            "dimension": dimension,
+            "dimension": dim,
+            "scope": scope,
+            "logic": logic,
             "threshold": threshold,
+            "threshold_value": _parse_threshold_value(threshold),
             "severity": severity,
         })
     return rules

@@ -24,6 +24,14 @@ class InspectRequest(BaseModel):
     check_dimensions: Optional[List[str]] = None
 
 
+class EtlInspectRequest(BaseModel):
+    source_datasource_id: str
+    source_table: str
+    target_datasource_id: str
+    target_table: str
+    amount_column: Optional[str] = None
+
+
 class AgentEventResponse(BaseModel):
     id: str
     trace_id: str
