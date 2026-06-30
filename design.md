@@ -101,7 +101,7 @@ Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中�
 - **Web框架**: FastAPI
 - **ORM**: SQLAlchemy 2.0
 - **异步支持**: asyncio + uvicorn
-- **大模型集成**: 智谱GLM（glm-4-flash / glm-4-plus / glm-5.2）
+- **大模型集成**: 智谱GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
 
 #### 数据存储
 - **关系数据库**: SQLite（开发）/ PostgreSQL 14+（生产）

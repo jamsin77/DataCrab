@@ -147,15 +147,28 @@ assets/           # 静态资源
 
 | 提供商 | 说明 |
 |--------|------|
-| OpenAI | GPT 系列 |
-| Azure OpenAI | Azure 托管的 OpenAI 服务 |
-| 通义千问 | 阿里云 DashScope |
-| 智谱 GLM | 智谱 AI |
-| 自定义端点 | 兼容 OpenAI API 的任意端点 |
+| 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 等 |
+| 阿里百炼 | Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4 等 |
+| 硅基流动 | DeepSeek-V3 / Qwen2.5-72B / Qwen2.5-Coder 等 |
+| 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等） |
 
 - 运行时动态切换模型提供商/密钥/模型
+- 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
+
+### 15. 数据标准 / 质量 / 安全规则库
+
+三份 Markdown 规则库，可在「系统设置」页查看编辑，DataInspector 检查时引用对应编号：
+
+| 规则库 | 内容 | 编号 |
+|--------|------|------|
+| 数据标准库 | 字段级格式与约束（身份证/手机号/邮箱/金额/日期/枚举/行业特化等） | `STD-xxx` |
+| 数据质量库 | DAMA 六维度 + ETL 过程质量（完整性/唯一性/对数/数据量波动等） | `DQ-xxx` |
+| 数据安全规则库 | PII 识别/凭证泄露/敏感业务数据/数据分级/脱敏/合规 | `SEC-xxx` |
+
+- MD 可编辑、可恢复默认；后端 `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
+- DataInspector 提示词注入三份库；检查工具确定性执行正则/聚合，问题标注 `STD/DQ/SEC` 编号；语义类由 LLM 判断
 
 ---
 
@@ -168,7 +181,7 @@ assets/           # 静态资源
 - **ORM**：SQLAlchemy 2.0（异步，支持 SQLite / PostgreSQL）
 - **任务队列**：Celery + Redis
 - **数据处理**：pandas, numpy
-- **LLM 集成**：OpenAI API
+- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
 - **对象存储**：MinIO
 - **搜索引擎**：Elasticsearch
 - **数据库迁移**：Alembic

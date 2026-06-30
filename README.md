@@ -149,13 +149,13 @@ assets/           # 静态资源
 
 | 提供商 | 说明 |
 |--------|------|
-| 智谱 GLM | 智谱 AI（默认） |
-| OpenAI | GPT 系列 |
-| Azure OpenAI | Azure 托管的 OpenAI 服务 |
-| 通义千问 | 阿里云 DashScope |
-| 自定义端点 | 兼容 OpenAI API 的任意端点 |
+| 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 等 |
+| 阿里百炼 | Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4 等 |
+| 硅基流动 | DeepSeek-V3 / Qwen2.5-72B / Qwen2.5-Coder 等 |
+| 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等） |
 
 - 运行时动态切换模型提供商/密钥/模型
+- 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
 
@@ -181,7 +181,7 @@ assets/           # 静态资源
 - **语言**：Python 3.11+
 - **Web 框架**：FastAPI + Uvicorn
 - **ORM**：SQLAlchemy 2.0（异步，支持 SQLite / PostgreSQL）
-- **LLM 集成**：智谱 GLM（glm-4-flash / glm-4-plus / glm-5.2）
+- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
 - **数据处理**：pandas, numpy
 
 ### 前端

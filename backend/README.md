@@ -23,7 +23,7 @@ DataCrab 数据智能应用后端服务
 
 - FastAPI
 - SQLAlchemy
-- OpenAI API
+- 智谱 GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
 - Redis
 - SQLite/PostgreSQL
 
