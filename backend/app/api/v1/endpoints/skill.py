@@ -145,6 +145,8 @@ async def _sync_scripts_to_operators(
             func_name = parsed.get("function_name")
             if not func_name:
                 continue
+            if func_name == "main":
+                continue
 
             operator_name = f"{skill.name}-{script_name}-{func_name}"
 

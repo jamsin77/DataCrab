@@ -153,28 +153,6 @@
           <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%; margin-top: 8px">
             <el-icon><CaretRight /></el-icon> 执行调试
           </el-button>
-
-          <div v-if="debugResult !== null" class="debug-result">
-            <div class="result-header">
-              <el-tag :type="debugResult.success ? 'success' : 'danger'">
-                {{ debugResult.success ? '成功' : '失败' }}
-              </el-tag>
-              <span v-if="debugResult.execution_time_ms" class="exec-time">
-                {{ debugResult.execution_time_ms }}ms
-              </span>
-            </div>
-            <div v-if="debugResult.error" class="error-block">
-              <pre>{{ debugResult.error }}</pre>
-            </div>
-            <div v-if="debugResult.stdout" class="stdout-block">
-              <div class="block-label">标准输出</div>
-              <pre>{{ debugResult.stdout }}</pre>
-            </div>
-            <div v-if="debugResult.result !== undefined && debugResult.result !== null" class="result-block">
-              <div class="block-label">返回结果</div>
-              <pre>{{ JSON.stringify(debugResult.result, null, 2) }}</pre>
-            </div>
-          </div>
         </div>
 
         <div class="debug-right">
@@ -207,13 +185,36 @@
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.runResult" class="debug-msg-runresult">
+                    <div class="runresult-header">
+                      <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
+                        {{ msg.runResult.success ? '执行成功' : '执行失败' }}
+                      </el-tag>
+                      <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
+                    </div>
+                    <div v-if="msg.runResult.error" class="debug-result-error"><pre>{{ msg.runResult.error }}</pre></div>
+                    <div v-if="msg.runResult.stdout" class="debug-result-stdout">
+                      <el-collapse>
+                        <el-collapse-item title="标准输出">
+                          <pre>{{ msg.runResult.stdout }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                    <div v-if="msg.runResult.result != null" class="debug-result-data">
+                      <el-collapse>
+                        <el-collapse-item title="返回结果">
+                          <pre>{{ formatResult(msg.runResult.result) }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                  </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
                     <el-tag type="warning" size="small">代码已更新: {{ msg.scriptUpdated }}</el-tag>
                   </div>
                 </div>
               </div>
             </div>
-            <div v-if="opStreaming && !opMessages.length" class="debug-message assistant">
+            <div v-if="(opStreaming || debugRunning) && !opMessages.length" class="debug-message assistant">
               <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">AI</el-avatar></div>
               <div class="debug-msg-body">
                 <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -503,7 +504,6 @@ const debugOperator = ref<any>(null)
 const debugInputValues = reactive<Record<string, string>>({})
 const debugParamValues = reactive<Record<string, string>>({})
 const debugRunning = ref(false)
-const debugResult = ref<any>(null)
 const saving = ref(false)
 
 interface OpChatMessage {
@@ -512,6 +512,7 @@ interface OpChatMessage {
   thinking?: string
   thinkingOpen?: boolean
   scriptUpdated?: string
+  runResult?: any
 }
 const opMessages = ref<OpChatMessage[]>([])
 const opInput = ref('')
@@ -569,7 +570,6 @@ interface OpDebugSession {
   messages: OpChatMessage[]
   inputValues: Record<string, string>
   paramValues: Record<string, string>
-  result: any
 }
 const OP_SESSION_KEY = 'datacrab:op_debug_session'
 
@@ -602,7 +602,6 @@ function openDebug(op: any, restore?: Partial<OpDebugSession>) {
     }
   }
 
-  debugResult.value = restore?.result ?? null
   opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m, thinkingOpen: false })) : []
   opInput.value = ''
   opStreaming.value = false
@@ -618,14 +617,12 @@ function saveOpSession() {
     messages: opMessages.value,
     inputValues: { ...debugInputValues },
     paramValues: { ...debugParamValues },
-    result: debugResult.value,
   }
   try {
     sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify(data))
   } catch {
     try {
-      const { result: _omit, ...rest } = data
-      sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify(rest))
+      sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify({ ...data, messages: [] }))
     } catch {
       // 放弃持久化（可能 sessionStorage 已满）
     }
@@ -652,7 +649,7 @@ async function restoreOpSession() {
 }
 
 watch(
-  [opMessages, () => debugInputValues, () => debugParamValues, debugResult],
+  [opMessages, () => debugInputValues, () => debugParamValues],
   scheduleSaveOpSession,
   { deep: true }
 )
@@ -698,7 +695,6 @@ function parseJsonValue(raw: string): any {
 async function runDebug() {
   if (!debugOperator.value) return
   debugRunning.value = true
-  debugResult.value = null
 
   const inputs = debugInputs.value
   const optParams = debugOptionalParams.value
@@ -741,14 +737,31 @@ async function runDebug() {
       parameters,
       test_data: testData,
     })
-    debugResult.value = res
+    opMessages.value.push({
+      role: 'assistant',
+      content: res?.success ? '执行完成' : '执行失败',
+      runResult: res,
+    })
   } catch (e: any) {
-    debugResult.value = {
-      success: false,
-      error: e.response?.data?.detail || String(e),
-    }
+    opMessages.value.push({
+      role: 'assistant',
+      content: '执行失败',
+      runResult: {
+        success: false,
+        error: e.response?.data?.detail || String(e),
+      },
+    })
   } finally {
     debugRunning.value = false
+    nextTick(() => scrollOpToBottom(true))
+  }
+}
+
+function formatResult(result: any): string {
+  try {
+    return JSON.stringify(result, null, 2)
+  } catch {
+    return String(result)
   }
 }
 
@@ -1172,7 +1185,7 @@ async function handleOpSend() {
     const token = localStorage.getItem('access_token')
     const history = opMessages.value.slice(0, assistantIdx).map(m => ({
       role: m.role,
-      content: m.content + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
+      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
     }))
 
     const contextData: Record<string, string> = {}
@@ -1186,9 +1199,10 @@ async function handleOpSend() {
       const raw = debugParamValues[param.name] || ''
       if (raw.trim()) contextData[`param_${param.name}`] = raw
     }
-    if (debugResult.value) {
-      contextData['last_result'] = debugResult.value.success ? '成功' : '失败'
-      if (debugResult.value.error) contextData['last_error'] = debugResult.value.error
+    const lastRunMsg = [...opMessages.value].reverse().find(m => m.runResult)
+    if (lastRunMsg?.runResult) {
+      contextData['last_result'] = lastRunMsg.runResult.success ? '成功' : '失败'
+      if (lastRunMsg.runResult.error) contextData['last_error'] = lastRunMsg.runResult.error
     }
 
     const response = await fetch(`/api/v1/operators/${debugOperator.value.id}/debug-chat`, {
@@ -1457,78 +1471,52 @@ onMounted(() => {
   }
 }
 
-.debug-result {
-  margin-top: 8px;
+.debug-msg-runresult {
+  margin-top: 6px;
   border: 1px solid #e4e7ed;
   border-radius: 6px;
-  padding: 12px;
-  background: #fafafa;
+  overflow: hidden;
 
-  .result-header {
+  .runresult-header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 8px;
+    gap: 8px;
+    padding: 4px 10px;
+    background: #f5f7fa;
+    border-bottom: 1px solid #e4e7ed;
   }
 
   .exec-time {
-    font-size: 12px;
+    font-size: 11px;
     color: #909399;
   }
 
-  .error-block {
-    background: #fef0f0;
-    border: 1px solid #fde2e2;
-    border-radius: 4px;
-    padding: 8px;
-    margin-top: 8px;
+  .debug-result-error {
+    padding: 6px 10px;
     pre {
+      margin: 0;
+      font-size: 12px;
       color: #f56c6c;
-      font-size: 12px;
       white-space: pre-wrap;
       word-break: break-all;
-      margin: 0;
     }
   }
 
-  .stdout-block {
-    background: #f0f9eb;
-    border: 1px solid #e1f3d8;
-    border-radius: 4px;
-    padding: 8px;
-    margin-top: 8px;
-    .block-label {
+  .debug-result-stdout,
+  .debug-result-data {
+    :deep(.el-collapse-item__header) {
       font-size: 12px;
-      font-weight: 600;
-      color: #67c23a;
-      margin-bottom: 4px;
+      height: 28px;
+      line-height: 28px;
+      padding-left: 10px;
     }
     pre {
-      color: #67c23a;
-      font-size: 12px;
-      white-space: pre-wrap;
       margin: 0;
-    }
-  }
-
-  .result-block {
-    background: #ecf5ff;
-    border: 1px solid #d9ecff;
-    border-radius: 4px;
-    padding: 8px;
-    margin-top: 8px;
-    .block-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: #409eff;
-      margin-bottom: 4px;
-    }
-    pre {
-      color: #409eff;
-      font-size: 12px;
+      font-size: 11px;
       white-space: pre-wrap;
       word-break: break-all;
-      margin: 0;
+      max-height: 160px;
+      overflow-y: auto;
     }
   }
 }
