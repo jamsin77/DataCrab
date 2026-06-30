@@ -43,10 +43,10 @@ class Settings(BaseSettings):
     ELASTICSEARCH_URL: str = "http://localhost:9200"
 
     # LLM配置
-    LLM_PROVIDER: str = "openai"
+    LLM_PROVIDER: str = "glm"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_API_BASE: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4"
+    OPENAI_MODEL: str = "glm-5.2"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-ada-002"
 
     # CORS配置

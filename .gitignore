@@ -36,6 +36,8 @@ yarn-error.log*
 *.db
 *.sqlite
 *.sqlite3
+!backend/data/operators/
+!backend/data/operators/**
 
 # Environment
 .env

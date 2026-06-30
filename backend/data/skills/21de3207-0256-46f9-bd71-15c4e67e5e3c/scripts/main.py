@@ -10,6 +10,7 @@ import inspect
 import re
 import time
 import traceback
+from datetime import datetime
 import pandas as pd
 from typing import Dict, List, Optional, Any
 
@@ -150,6 +151,17 @@ def _sanitize_identifier(name: str, fallback: str = "col") -> str:
     if not translated:
         translated = fallback
     return translated
+
+
+def _is_timestamp_col(col_name: str) -> bool:
+    """判断列名是否为时间戳类型列"""
+    col_lower = str(col_name).lower()
+    return "时间戳" in str(col_name) or "timestamp" in col_lower
+
+
+def _generate_timestamp() -> str:
+    """生成当前时间戳字符串，确保返回真实时间"""
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
 # ============================================================
@@ -431,18 +443,12 @@ def migrate_data(
     # 3.4 添加新列（自动添加"记录时间戳"列）
     print(f"\n  ➕ [3.4] 添加新列...")
 
-    # === 修复点：自动添加"记录时间戳"列 ===
+    # === 自动添加"记录时间戳"列 ===
     # 检查是否已存在时间戳相关的列（中文名或英文名）
-    _has_timestamp_col = any(
-        "时间戳" in str(c) or "timestamp" in str(c).lower()
-        for c in df.columns
-    )
+    _has_timestamp_col = any(_is_timestamp_col(c) for c in df.columns)
     if not _has_timestamp_col:
         # 如果用户 add_columns 中也没有指定时间戳列，自动添加
-        _user_has_timestamp = any(
-            "时间戳" in str(k) or "timestamp" in str(k).lower()
-            for k in (add_columns or {}).keys()
-        )
+        _user_has_timestamp = any(_is_timestamp_col(k) for k in (add_columns or {}).keys())
         if not _user_has_timestamp:
             if add_columns is None:
                 add_columns = {}
@@ -452,13 +458,12 @@ def migrate_data(
     if add_columns:
         for col_name, col_value in add_columns.items():
             if col_name not in df.columns:
-                # 如果列名包含"时间戳"/"timestamp"且值为 None 或空字符串，自动填充当前时间
-                is_timestamp_col = (
-                    "时间戳" in str(col_name) or
-                    "timestamp" in str(col_name).lower()
-                )
-                if is_timestamp_col and (col_value is None or str(col_value).strip() == ""):
-                    col_value = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                # ===== 修复点：时间戳列始终生成真实时间 =====
+                # 不管传入的值是什么（None、"now"、空字符串等），
+                # 只要识别为时间戳列，就用 datetime.now() 生成真实时间
+                if _is_timestamp_col(col_name):
+                    col_value = _generate_timestamp()
+                    print(f"    🕐 时间戳列 '{col_name}' 生成真实时间: {col_value}")
                 df[col_name] = col_value
                 print(f"    ✅ 已添加列: {col_name} = {col_value}")
 
@@ -610,6 +615,28 @@ def _test_column_transform():
         sanitized = _sanitize_identifier(name)
         status = "✅" if sanitized == expected else "⚠️"
         print(f"  {status} '{name}' → valid={is_valid}, sanitized='{sanitized}' (期望: '{expected}')")
+    print()
+
+    print("🧪 自测：时间戳生成验证")
+    ts = _generate_timestamp()
+    print(f"  生成的时间戳: {ts}")
+    # 验证格式为 YYYY-MM-DD HH:MM:SS
+    assert re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', ts), f"时间戳格式不正确: {ts}"
+    assert ts != "now", "时间戳不能是 'now' 字面量"
+    print("  ✅ 时间戳生成测试通过\n")
+
+    print("🧪 自测：时间戳列识别验证")
+    ts_col_tests = [
+        ("记录时间戳", True),
+        ("record_timestamp", True),
+        ("timestamp", True),
+        ("名称", False),
+        ("name", False),
+    ]
+    for col_name, expected in ts_col_tests:
+        result = _is_timestamp_col(col_name)
+        status = "✅" if result == expected else "⚠️"
+        print(f"  {status} '{col_name}' → is_timestamp={result} (期望: {expected})")
     print()
     return True
 

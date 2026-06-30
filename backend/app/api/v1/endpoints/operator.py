@@ -34,7 +34,20 @@ from app.schemas.operator import (
 )
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager
+from app.services import experience
 from app.api.deps import get_current_user
+
+
+async def _system_prompt_with_lessons(db: AsyncSession, current_user: User) -> str:
+    """构建注入经验库的算子生成系统提示词。"""
+    lessons = await experience.collect_all_lessons(db, current_user.id)
+    if lessons:
+        return (
+            SYSTEM_PROMPT
+            + "\n\n## 📖 历史经验库（从过往失败中归纳的经验，生成脚本时务必参考，避免重蹈覆辙）\n"
+            + lessons
+        )
+    return SYSTEM_PROMPT
 
 
 def _run_async_in_thread(coro):
@@ -323,6 +336,19 @@ async def debug_operator(
         )
     except Exception as e:
         elapsed = (time.time() - start_time) * 1000
+        # 记录反例到经验库
+        try:
+            experience.append_negative(
+                experience.operator_experience_dir(operator_id),
+                source="debug",
+                error_type=type(e).__name__,
+                error_message=str(e),
+                parameters=request.parameters or {},
+                stdout=captured_output.getvalue(),
+                script_name=operator.function_name or "",
+            )
+        except Exception as log_err:
+            logger.warning(f"记录算子经验失败: {log_err}")
         return OperatorDebugResponse(
             success=False,
             error=f"{type(e).__name__}: {str(e)}\n\n{traceback.format_exc()}",
@@ -657,9 +683,10 @@ async def generate_operator(
 ):
     """根据自然语言描述生成算子"""
     await llm_manager.initialize()
+    sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": request.prompt},
     ]
 
@@ -721,7 +748,7 @@ async def generate_operator(
         for fix_round in range(MAX_FIX_ROUNDS):
             try:
                 prompt_messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": request.prompt},
                 ]
                 fixed_content = await _llm_fix_operator_script(prompt_messages, script_content, error_msg)
@@ -760,10 +787,11 @@ async def modify_operator(
         raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
 
     await llm_manager.initialize()
+    sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
     user_msg = f"以下是现有算子的脚本代码：\n\n```python\n{operator.script_content}\n```\n\n请根据以下要求修改这个算子：\n{request.instruction}\n\n请输出修改后的完整脚本代码。"
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_msg},
     ]
 
@@ -855,8 +883,9 @@ async def generate_operator_stream(
     current_user: User = Depends(get_current_user),
 ):
     await llm_manager.initialize()
+    sys_prompt = await _system_prompt_with_lessons(db, current_user)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": request.prompt},
     ]
 
@@ -931,7 +960,7 @@ async def generate_operator_stream(
                 for fix_round in range(MAX_FIX_ROUNDS):
                     try:
                         prompt_messages = [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": sys_prompt},
                             {"role": "user", "content": request.prompt},
                         ]
                         fixed_content = await _llm_fix_operator_script(prompt_messages, script_content, error_msg)
@@ -976,10 +1005,11 @@ async def modify_operator_stream(
         raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
 
     await llm_manager.initialize()
+    sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
     user_msg = f"以下是现有算子的脚本代码：\n\n```python\n{operator.script_content}\n```\n\n请根据以下要求修改这个算子：\n{request.instruction}\n\n请输出修改后的完整脚本代码。"
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_msg},
     ]
 
@@ -1119,6 +1149,12 @@ async def debug_operator_chat(
     last_error = ctx.get("last_error", "")
 
     from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+    # 注入当前算子的历史经验（反例库归纳）
+    op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id))
+    lessons_block = (
+        f"\n\n## 📖 本算子历史经验（从过往失败中归纳，调试时务必参考）\n{op_lessons}"
+        if op_lessons else ""
+    )
     system_prompt = (
         f"你是一个算子代码调试助手。用户正在调试算子 \"{display_name}\"，"
         f"函数名：{func_name}。\n\n"
@@ -1135,6 +1171,7 @@ async def debug_operator_chat(
         f"- 不要删除或改变函数签名\n"
         f"- 保持代码风格一致\n\n"
         f"{SAFETY_RULES_DOC}"
+        f"{lessons_block}"
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -1201,3 +1238,95 @@ def _sanitize_op(obj):
     if isinstance(obj, list):
         return [_sanitize_op(v) for v in obj]
     return obj
+
+
+@router.get("/{operator_id}/experience")
+async def get_operator_experience(
+    operator_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """查看算子经验库（反例列表 + 经验总结 + 统计）"""
+    base = experience.operator_experience_dir(operator_id)
+    return {
+        "stats": experience.experience_stats(base),
+        "negative": experience.read_negative(base),
+        "lessons": experience.read_lessons(base),
+    }
+
+
+@router.post("/{operator_id}/summarize-experience")
+async def summarize_operator_experience(
+    operator_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """分析算子错误日志，用 LLM 归纳经验并写入经验库"""
+    result = await db.execute(select(Operator).where(Operator.id == operator_id))
+    operator = result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=404, detail="算子不存在")
+
+    base = experience.operator_experience_dir(operator_id)
+    errors = experience.read_negative(base)
+    if not errors:
+        return {"success": True, "message": "暂无错误记录", "error_count": 0, "lessons": ""}
+
+    await llm_manager.initialize()
+
+    import json as json_mod
+    lines = []
+    for i, e in enumerate(errors[-30:], 1):
+        lines.append(
+            f"{i}. [{e.get('timestamp','')[:10]}] {e.get('error_type','')}: "
+            f"{e.get('error_message','')[:150]}"
+        )
+        if e.get("stdout_preview"):
+            lines.append(f"   输出预览: {e['stdout_preview'][:100]}")
+        if e.get("parameters"):
+            lines.append(f"   参数: {json_mod.dumps(e['parameters'], ensure_ascii=False)[:100]}")
+
+    existing = experience.read_lessons(base)
+    lessons_ctx = f"\n\n已有的经验总结（在此基础上补充更新）：\n{existing}" if existing else ""
+
+    prompt_messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个算子错误分析专家。分析算子执行中出现的错误日志，总结出规律性的问题和解决方案，"
+                "生成简洁的经验总结。要求：\n"
+                "1. 按错误类型分类总结\n"
+                "2. 每类给出：问题描述、根因分析、修复建议\n"
+                "3. 如果已有经验总结，在此基础上补充更新（保留仍然有效的条目，更新已有条目，添加新发现）\n"
+                "4. 使用 Markdown 格式，用 ### 分类别\n"
+                "5. 只输出经验总结内容，不要输出前言和结尾\n"
+                "6. 简洁精炼，每个条目不超过3行"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"算子名称：{operator.display_name or operator.name}\n"
+                f"算子描述：{operator.description or '无'}\n"
+                f"错误记录（最近{len(errors[-30:])}条，共{len(errors)}条）：\n\n"
+                + "\n".join(lines)
+                + lessons_ctx
+            ),
+        },
+    ]
+
+    try:
+        lessons_text = await llm_manager.chat_with_messages(
+            prompt_messages, temperature=0.3, max_tokens=1500
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM总结失败: {str(e)}")
+
+    experience.write_lessons(base, lessons_text.strip())
+
+    return {
+        "success": True,
+        "message": f"已总结 {len(errors)} 条错误记录并更新经验库",
+        "error_count": len(errors),
+        "lessons": lessons_text.strip(),
+    }

@@ -192,21 +192,29 @@
       <div class="browse-layout">
         <div class="browse-sidebar">
           <div class="browse-sidebar-title">数据表</div>
-          <div
+          <el-tooltip
             v-for="item in browseTree"
             :key="item.id"
-            class="browse-table-item"
-            :class="{ active: selectedTable === item.label }"
-            @click="selectBrowseTable(item.label)"
+            :content="item.label"
+            placement="right"
+            :show-after="300"
           >
-            <el-icon style="margin-right: 6px;"><Grid /></el-icon>
-            {{ item.label }}
-          </div>
+            <div
+              class="browse-table-item"
+              :class="{ active: selectedTable === item.label }"
+              @click="selectBrowseTable(item.label)"
+            >
+              <el-icon style="margin-right: 6px; flex-shrink: 0;"><Grid /></el-icon>
+              <span class="browse-table-label">{{ item.label }}</span>
+            </div>
+          </el-tooltip>
           <el-empty v-if="browseTree.length === 0 && !browseLoading" description="暂无数据表" :image-size="60" />
         </div>
         <div class="browse-content">
           <div v-if="selectedTable" class="browse-content-header">
-            <span class="browse-table-name">{{ selectedTable }}</span>
+            <el-tooltip :content="selectedTable" placement="top" :show-after="300">
+              <span class="browse-table-name">{{ selectedTable }}</span>
+            </el-tooltip>
             <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
           </div>
           <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="74vh" style="width: 100%;">
@@ -681,6 +689,13 @@ function onFsSelect(path: string) {
   align-items: center;
   border-bottom: 1px solid #f5f5f5;
   transition: background 0.15s;
+  overflow: hidden;
+
+  .browse-table-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   &:hover {
     background: #f5f7fa;
@@ -709,6 +724,26 @@ function onFsSelect(path: string) {
   font-weight: 600;
   font-size: 14px;
   color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+  cursor: default;
+}
+
+.table-info-box {
+  .table-info-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: #303133;
+    word-break: break-all;
+    line-height: 1.6;
+  }
+  .table-info-meta {
+    font-size: 12px;
+    color: #909399;
+    margin-top: 4px;
+  }
 }
 
 .browse-row-count {
