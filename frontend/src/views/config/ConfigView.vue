@@ -10,6 +10,9 @@
       <el-tab-pane label="大模型对话" name="llm-chat">
         <LLMChatView />
       </el-tab-pane>
+      <el-tab-pane label="数据标准库" name="standards">
+        <DataStandardsConfig />
+      </el-tab-pane>
       <el-tab-pane label="权限管理" name="permission">
         <PermissionView />
       </el-tab-pane>
@@ -23,6 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AgentConfigView from './AgentConfigView.vue'
 import ModelConfigView from './ModelConfigView.vue'
 import LLMChatView from './LLMChatView.vue'
+import DataStandardsConfig from './DataStandardsConfig.vue'
 import PermissionView from './PermissionView.vue'
 
 const route = useRoute()
@@ -31,7 +35,7 @@ const activeTab = ref('agent')
 
 onMounted(() => {
   const tab = (route.query.tab as string) || 'agent'
-  if (['agent', 'model', 'llm-chat', 'permission'].includes(tab)) {
+  if (['agent', 'model', 'llm-chat', 'standards', 'permission'].includes(tab)) {
     activeTab.value = tab
   }
 })

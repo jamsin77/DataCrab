@@ -3865,6 +3865,29 @@ class EnvironmentMigrator:
         )
 ```
 
+### 2.14 数据标准 / 质量 / 安全规则库
+
+三份 Markdown 规则库，作为 DataInspector 的检查依据，可在系统设置页查看编辑。
+
+**存储**：
+- 默认库（随代码发布，只读）：`backend/app/defaults/data_standards.md`、`data_quality_rules.md`、`data_security_rules.md`
+- 运行时可编辑副本：`backend/data/standards/`（首次 GET 从默认库复制）
+
+**规则库内容**：
+| 规则库 | 编号 | 内容 |
+|--------|------|------|
+| 数据标准库 | STD-xxx | 字段级格式正则与约束：身份证(校验位)/统一社会信用代码/银行卡(Luhn)/手机号/邮箱/地址/邮编/IP/日期/金额/年龄/枚举/文物年代等 |
+| 数据质量库 | DQ-xxx | DAMA 六维度(完整性/唯一性/有效性/一致性/准确性/及时性) + ETL 过程质量(数据量不增减/对数:记录数·金额·分组汇总/检索不超总量/空值率/主键唯一) + 业务规则 |
+| 数据安全规则库 | SEC-xxx | PII 识别/凭证泄露(密码·API Key·私钥·连接串)/敏感业务数据(薪资·医疗·未成年)/数据分级/脱敏规则/合规留存 |
+
+**API**：`GET/PUT /api/v1/config/data-standards|data-quality|data-security`，`POST .../reset`
+
+**解析与执行**（`app/services/standards_parser.py`）：
+- `parse_standards()` / `parse_quality_rules()` / `parse_security_rules()` 将 MD 解析为结构化规则
+- DataInspector `build_system_prompt` 注入三份库全文
+- `inspector_tools` 确定性执行：标准格式用正则(`match_columns` 匹配列名)、安全用正则扫描、质量用聚合；每条问题标注 `standard_id`(STD)/`rule_id`(DQ/SEC) + 严重等级 + 修复建议
+- 语义类检查（业务逻辑、跨表一致性）由 LLM 判断
+
 ## 3. 数据库设计
 ### 3.1 核心表结构
 #### 用户与权限表

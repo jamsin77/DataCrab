@@ -57,19 +57,23 @@ class DataInspectorTools:
         try:
             issues = []
             df = await self._load_data(datasource_id, table_name, db)
+            columns = list(df.columns)
 
+            # 命名规范（DQ-VAL-001 / naming_convention）
             if not standard_rules or "naming_convention" in standard_rules:
                 for col in df.columns:
                     if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
                         suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
                         issues.append({
                             "dimension": "naming_convention",
+                            "rule_id": "DQ-VAL-001",
                             "column": col,
                             "severity": "warning",
                             "description": f"列名 '{col}' 不符合 snake_case 命名规范",
                             "suggestion": f"建议重命名为 '{suggestion}'",
                         })
 
+            # 类型一致性
             if not standard_rules or "type_consistency" in standard_rules:
                 for col in df.columns:
                     non_null = df[col].dropna()
@@ -78,12 +82,14 @@ class DataInspectorTools:
                         if types > 1:
                             issues.append({
                                 "dimension": "type_consistency",
+                                "rule_id": "DQ-CON-003",
                                 "column": col,
                                 "severity": "warning",
                                 "description": f"列 '{col}' 存在混合类型（{types}种）",
                                 "suggestion": "建议统一数据类型",
                             })
 
+            # 编码检查
             if not standard_rules or "encoding_check" in standard_rules:
                 for col in df.columns:
                     if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
@@ -92,11 +98,40 @@ class DataInspectorTools:
                         if garbled.any():
                             issues.append({
                                 "dimension": "encoding_check",
+                                "rule_id": "DQ-VAL-001",
                                 "column": col,
                                 "severity": "warning",
                                 "description": f"列 '{col}' 疑似包含乱码字符（{garbled.sum()}条）",
                                 "suggestion": "建议检查编码格式并转换",
                             })
+
+            # 引用数据标准库做格式正则检查（确定性执行，标注 STD-xxx）
+            if not standard_rules or "standard_format" in standard_rules or standard_rules is None:
+                try:
+                    from app.services.standards_parser import parse_standards, match_columns
+                    for std in parse_standards():
+                        matched = match_columns(columns, std.get("fields", []))
+                        for col in matched:
+                            non_null = df[col].dropna().astype(str)
+                            if len(non_null) == 0:
+                                continue
+                            try:
+                                invalid = ~non_null.str.match(std["regex"])
+                                invalid_count = int(invalid.sum())
+                                if invalid_count > 0:
+                                    issues.append({
+                                        "dimension": "standard_format",
+                                        "standard_id": std["id"],
+                                        "rule_id": "DQ-VAL-001",
+                                        "column": col,
+                                        "severity": std.get("severity", "warning"),
+                                        "description": f"列 '{col}' 有 {invalid_count}/{len(non_null)} 条不符合 {std['id']} {std['name']}",
+                                        "suggestion": f"按 {std['id']} 格式修正",
+                                    })
+                            except re.error:
+                                pass
+                except Exception as e:
+                    logger.warning(f"标准库格式检查失败: {e}")
 
             return {"dimension": "standards", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
@@ -118,6 +153,7 @@ class DataInspectorTools:
                     if null_rate > 0.1:
                         issues.append({
                             "dimension": "completeness",
+                            "rule_id": "DQ-COM-003",
                             "column": col,
                             "severity": "error" if null_rate > 0.3 else "warning",
                             "description": f"列 '{col}' 空值率 {null_rate:.1%}",
@@ -129,6 +165,7 @@ class DataInspectorTools:
                 if dupe_count > 0:
                     issues.append({
                         "dimension": "uniqueness",
+                        "rule_id": "DQ-UNI-003",
                         "severity": "error",
                         "description": f"存在 {dupe_count} 条完全重复的行（{dupe_count/total:.1%}）",
                         "suggestion": "建议执行去重操作",
@@ -149,6 +186,7 @@ class DataInspectorTools:
                                 if outlier_count > 0:
                                     issues.append({
                                         "dimension": "validity",
+                                        "rule_id": "DQ-VAL-004",
                                         "column": col,
                                         "severity": "warning",
                                         "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法检测）",
@@ -164,6 +202,7 @@ class DataInspectorTools:
                             if lengths.max() > lengths.min() * 5 and lengths.min() > 0:
                                 issues.append({
                                     "dimension": "consistency",
+                                    "rule_id": "DQ-CON-003",
                                     "column": col,
                                     "severity": "warning",
                                     "description": f"列 '{col}' 值长度差异较大（最短{lengths.min()}，最长{lengths.max()}）",
@@ -181,24 +220,39 @@ class DataInspectorTools:
             issues = []
             df = await self._load_data(datasource_id, table_name, db)
 
-            PII_PATTERNS = {
-                "手机号": r'1[3-9]\d{9}',
-                "身份证号": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]',
-                "邮箱": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            }
+            # 引用数据安全规则库做正则检测（确定性执行，标注 SEC-xxx）
+            try:
+                from app.services.standards_parser import parse_security_rules
+                sec_rules = parse_security_rules()
+            except Exception:
+                sec_rules = []
+
+            # 兜底：若规则库解析失败，用内置 PII 模式
+            if not sec_rules:
+                sec_rules = [
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
+                    {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
+                    {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
+                ]
 
             for col in df.columns:
                 if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
-                    sample = df[col].dropna().head(100).astype(str)
-                    for pii_type, pattern in PII_PATTERNS.items():
-                        match_count = sample.str.contains(pattern, regex=True, na=False).sum()
+                    sample = df[col].dropna().head(200).astype(str)
+                    if len(sample) == 0:
+                        continue
+                    for sec in sec_rules:
+                        try:
+                            match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
+                        except re.error:
+                            continue
                         if match_count > 0:
                             issues.append({
                                 "dimension": "security",
+                                "rule_id": sec["id"],
                                 "column": col,
-                                "severity": "critical",
-                                "description": f"列 '{col}' 疑似包含明文 {pii_type}（{match_count}/{len(sample)} 条样本命中）",
-                                "suggestion": f"建议对 {pii_type} 进行脱敏处理",
+                                "severity": sec.get("severity", "critical"),
+                                "description": f"列 '{col}' 疑似包含 {sec['name']}（{match_count}/{len(sample)} 条样本命中）",
+                                "suggestion": f"按 {sec['id']} 处置建议脱敏/加密",
                             })
 
             return {"dimension": "security", "passed": len(issues) == 0, "issues": issues}

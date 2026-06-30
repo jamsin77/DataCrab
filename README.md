@@ -159,6 +159,19 @@ assets/           # 静态资源
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
 
+### 13. 数据标准 / 质量 / 安全规则库
+
+三份 Markdown 规则库，可在「系统设置」页查看编辑，DataInspector 检查时引用对应编号：
+
+| 规则库 | 内容 | 编号 |
+|--------|------|------|
+| 数据标准库 | 字段级格式与约束（身份证/手机号/邮箱/金额/日期/枚举/行业特化等） | `STD-xxx` |
+| 数据质量库 | DAMA 六维度 + ETL 过程质量（完整性/唯一性/对数/数据量波动等） | `DQ-xxx` |
+| 数据安全规则库 | PII 识别/凭证泄露/敏感业务数据/数据分级/脱敏/合规 | `SEC-xxx` |
+
+- MD 可编辑、可恢复默认；后端 `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
+- DataInspector 提示词注入三份库；检查工具确定性执行正则/聚合，问题标注 `STD/DQ/SEC` 编号；语义类由 LLM 判断
+
 ---
 
 ## 技术栈

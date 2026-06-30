@@ -3496,6 +3496,29 @@ class EnvironmentMigrator:
         )
 ```
 
+### 2.14 Data Standards / Quality / Security Rule Libraries
+
+Three Markdown rule libraries serve as DataInspector's inspection basis, viewable/editable on the system settings page.
+
+**Storage**:
+- Defaults (shipped read-only): `backend/app/defaults/data_standards.md`, `data_quality_rules.md`, `data_security_rules.md`
+- Runtime editable copies: `backend/data/standards/` (copied from defaults on first GET)
+
+**Libraries**:
+| Library | ID | Content |
+|--------|------|------|
+| Data Standards | STD-xxx | Field-level format regex & constraints: ID card (checksum)/USCC/bank card (Luhn)/phone/email/address/zip/IP/date/amount/age/enum/relics-era, etc. |
+| Data Quality | DQ-xxx | DAMA 6 dimensions (completeness/uniqueness/validity/consistency/accuracy/timeliness) + ETL process quality (no volume growth/reconciliation: row-count·amount·group-sum/search ≤ total/null rate/PK uniqueness) + business rules |
+| Data Security | SEC-xxx | PII detection / credential leak (password·API key·private key·conn string) / sensitive business data (salary·medical·minor) / data classification / masking / compliance retention |
+
+**API**: `GET/PUT /api/v1/config/data-standards|data-quality|data-security`, `POST .../reset`
+
+**Parsing & execution** (`app/services/standards_parser.py`):
+- `parse_standards()` / `parse_quality_rules()` / `parse_security_rules()` parse MD into structured rules
+- DataInspector `build_system_prompt` injects all three libraries
+- `inspector_tools` executes deterministically: standard format via regex (`match_columns`), security via regex scan, quality via aggregation; each issue tagged with `standard_id` (STD) / `rule_id` (DQ/SEC) + severity + fix suggestion
+- Semantic checks (business logic, cross-table consistency) by LLM
+
 ## 3. Database Design
 ### 3.1 Core Table Structure
 #### User & Permission Tables

@@ -39,6 +39,10 @@ yarn-error.log*
 !backend/data/operators/
 !backend/data/operators/**
 
+# Runtime data (regenerable from defaults)
+backend/data/standards/
+backend/data/operator_experiences/
+
 # Environment
 .env
 .env.local

@@ -21,6 +21,8 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（Data
 2. 发现问题必须给出：问题描述、严重等级、影响范围、修复建议
 3. 对修复后的数据必须再次检查确认
 4. 严重等级：info < warning < error < critical
+5. 检查依据下方「数据标准库」和「数据质量库」，命中后在问题中标注对应 STD-xxx / DQ-xxx 编号
+6. 格式类标准（正则/校验位）用确定性逻辑执行；跨表/ETL 对数用 SQL 聚合；语义类用 LLM 判断
 
 ## 检查维度
 - **标准检查**：字段命名规范、类型一致性、编码规范
@@ -142,6 +144,25 @@ class DataInspectorAgent(BaseAgent):
     instructions = DATA_INSPECTOR_INSTRUCTIONS
     tools = DATA_INSPECTOR_TOOLS
     capabilities = ["data_quality", "data_standards", "data_security", "inspection"]
+
+    def build_system_prompt(self, context: Dict[str, Any]) -> str:
+        """注入数据标准库 + 数据质量库，检查时引用 STD-xxx / DQ-xxx 编号"""
+        base = self.instructions
+        try:
+            from pathlib import Path
+            from app.core.config import settings
+            std_dir = Path(settings.SKILL_STORAGE_PATH).parent / "standards"
+            for name, title in [
+                ("data_standards.md", "数据标准库（字段格式/约束，检查时引用 STD-xxx）"),
+                ("data_quality_rules.md", "数据质量库（质量检查规则，检查时引用 DQ-xxx）"),
+                ("data_security_rules.md", "数据安全规则库（安全检查规则，检查时引用 SEC-xxx）"),
+            ]:
+                p = std_dir / name
+                if p.exists():
+                    base += f"\n\n## {title}\n{p.read_text(encoding='utf-8')}"
+        except Exception:
+            pass
+        return base
 
     async def run(
         self,

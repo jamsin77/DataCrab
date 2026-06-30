@@ -159,6 +159,19 @@ The platform exposes underlying LLM capabilities as a RESTful API:
 - Streaming output supports chain-of-thought / reasoning content
 - Function Calling support
 
+### 13. Data Standards / Quality / Security Rule Libraries
+
+Three Markdown rule libraries, viewable/editable on the "System Settings" page; DataInspector references the corresponding IDs when inspecting:
+
+| Library | Content | ID |
+|--------|------|------|
+| Data Standards | field-level format/constraints (ID card/phone/email/amount/date/enum/industry-specific) | `STD-xxx` |
+| Data Quality | DAMA 6 dimensions + ETL process quality (completeness/uniqueness/reconciliation/volume drift) | `DQ-xxx` |
+| Data Security | PII detection / credential leak / sensitive business data / classification / masking / compliance | `SEC-xxx` |
+
+- MD editable with "restore defaults"; backend `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
+- DataInspector injects all three libraries into its prompt; check tools deterministically execute regex/aggregation, tagging issues with `STD/DQ/SEC` IDs; semantic checks by LLM
+
 ---
 
 ## Tech Stack

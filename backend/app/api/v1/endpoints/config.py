@@ -278,6 +278,149 @@ async def update_personal_md(
         return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
 
 
+def _standards_paths(name: str):
+    """返回 (运行时可编辑路径, 默认路径)"""
+    from pathlib import Path
+    runtime = str(Path(settings.SKILL_STORAGE_PATH).parent / "standards" / name)
+    default = str(Path(__file__).resolve().parents[3] / "defaults" / name)
+    return runtime, default
+
+
+def _read_md(name: str) -> str:
+    runtime, default = _standards_paths(name)
+    if not os.path.exists(runtime) and os.path.exists(default):
+        os.makedirs(os.path.dirname(runtime), exist_ok=True)
+        with open(default, "r", encoding="utf-8") as f:
+            content = f.read()
+        with open(runtime, "w", encoding="utf-8") as f:
+            f.write(content)
+    if not os.path.exists(runtime):
+        return ""
+    with open(runtime, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _write_md(name: str, content: str) -> None:
+    runtime, _ = _standards_paths(name)
+    os.makedirs(os.path.dirname(runtime), exist_ok=True)
+    with open(runtime, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _reset_md(name: str) -> str:
+    runtime, default = _standards_paths(name)
+    if not os.path.exists(default):
+        raise HTTPException(status_code=500, detail="默认模板不存在")
+    os.makedirs(os.path.dirname(runtime), exist_ok=True)
+    with open(default, "r", encoding="utf-8") as f:
+        content = f.read()
+    with open(runtime, "w", encoding="utf-8") as f:
+        f.write(content)
+    return content
+
+
+@router.get("/data-standards")
+async def get_data_standards():
+    """获取数据标准库 MD 内容"""
+    try:
+        return {"content": _read_md("data_standards.md")}
+    except Exception as e:
+        logger.error(f"读取数据标准库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/data-standards", response_model=ConfigUpdateResult)
+async def update_data_standards(
+    req: AgentConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """编辑数据标准库 MD"""
+    try:
+        _write_md("data_standards.md", req.content)
+        logger.info(f"数据标准库已更新 by {current_user.username}")
+        return ConfigUpdateResult(success=True, message="数据标准库已保存")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+
+
+@router.post("/data-standards/reset", response_model=ConfigUpdateResult)
+async def reset_data_standards(current_user: User = Depends(get_current_user)):
+    """恢复数据标准库默认值"""
+    try:
+        _reset_md("data_standards.md")
+        return ConfigUpdateResult(success=True, message="已恢复默认数据标准库")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=str(e))
+
+
+@router.get("/data-quality")
+async def get_data_quality():
+    """获取数据质量库 MD 内容"""
+    try:
+        return {"content": _read_md("data_quality_rules.md")}
+    except Exception as e:
+        logger.error(f"读取数据质量库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/data-quality", response_model=ConfigUpdateResult)
+async def update_data_quality(
+    req: AgentConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """编辑数据质量库 MD"""
+    try:
+        _write_md("data_quality_rules.md", req.content)
+        logger.info(f"数据质量库已更新 by {current_user.username}")
+        return ConfigUpdateResult(success=True, message="数据质量库已保存")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+
+
+@router.post("/data-quality/reset", response_model=ConfigUpdateResult)
+async def reset_data_quality(current_user: User = Depends(get_current_user)):
+    """恢复数据质量库默认值"""
+    try:
+        _reset_md("data_quality_rules.md")
+        return ConfigUpdateResult(success=True, message="已恢复默认数据质量库")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=str(e))
+
+
+@router.get("/data-security")
+async def get_data_security():
+    """获取数据安全规则库 MD 内容"""
+    try:
+        return {"content": _read_md("data_security_rules.md")}
+    except Exception as e:
+        logger.error(f"读取数据安全规则库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/data-security", response_model=ConfigUpdateResult)
+async def update_data_security(
+    req: AgentConfigRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """编辑数据安全规则库 MD"""
+    try:
+        _write_md("data_security_rules.md", req.content)
+        logger.info(f"数据安全规则库已更新 by {current_user.username}")
+        return ConfigUpdateResult(success=True, message="数据安全规则库已保存")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+
+
+@router.post("/data-security/reset", response_model=ConfigUpdateResult)
+async def reset_data_security(current_user: User = Depends(get_current_user)):
+    """恢复数据安全规则库默认值"""
+    try:
+        _reset_md("data_security_rules.md")
+        return ConfigUpdateResult(success=True, message="已恢复默认数据安全规则库")
+    except Exception as e:
+        return ConfigUpdateResult(success=False, message=str(e))
+
+
 @router.get("/models/list")
 async def list_available_models(
     db: AsyncSession = Depends(get_db),
