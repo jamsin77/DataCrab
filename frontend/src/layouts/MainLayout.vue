@@ -26,14 +26,11 @@
           <el-icon><DataAnalysis /></el-icon>
           <template #title>数据探索</template>
         </el-menu-item> -->
-        <el-menu-item index="/datasource">
+        <!-- 数据源管理已移至「系统配置」 -->
+        <!-- <el-menu-item index="/datasource">
           <el-icon><Connection /></el-icon>
           <template #title>数据源</template>
-        </el-menu-item>
-        <el-menu-item index="/metadata">
-          <el-icon><Files /></el-icon>
-          <template #title>元数据</template>
-        </el-menu-item>
+        </el-menu-item> -->
         <el-menu-item index="/operator">
           <el-icon><Operation /></el-icon>
           <template #title>算子</template>
@@ -55,6 +52,14 @@
           <el-icon><FolderOpened /></el-icon>
           <template #title>文件链接</template>
         </el-menu-item> -->
+        <el-menu-item index="/knowledge">
+          <el-icon><Collection /></el-icon>
+          <template #title>知识库</template>
+        </el-menu-item>
+        <el-menu-item index="/metadata">
+          <el-icon><Files /></el-icon>
+          <template #title>元数据</template>
+        </el-menu-item>
         <el-menu-item index="/config">
           <el-icon><Setting /></el-icon>
           <template #title>系统配置</template>
@@ -117,6 +122,8 @@ const pageTitle = computed(() => {
     '/notebook': 'Notebook',
     '/explore': '数据探索',
     '/datasource': '数据源管理',
+    '/metadata': '元数据',
+    '/knowledge': '知识库',
     '/skill': '技能',
     '/operator': '算子管理',
     '/pipeline': '流程管理',
@@ -128,6 +135,7 @@ const pageTitle = computed(() => {
     const tab = route.query.tab as string
     if (tab === 'model') return '系统配置 - 模型设置'
     if (tab === 'agent') return '系统配置 - 智能体设置'
+    if (tab === 'datasource') return '系统配置 - 数据源管理'
   }
   return titles[route.path] || 'DataCrab'
 })

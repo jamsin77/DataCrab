@@ -1,13 +1,16 @@
-"""技能库服务 - 向量搜索和技能匹配"""
+"""技能库服务 - 向量搜索和技能匹配（含磁盘持久化）"""
 
+import os
+import json
 import numpy as np
 from typing import List, Dict, Any, Optional
+from pathlib import Path
 from loguru import logger
 from app.services.llm import llm_manager
 
 
 class VectorIndex:
-    """向量索引 - 用于快速相似度搜索"""
+    """向量索引 - 用于快速相似度搜索（支持磁盘持久化）"""
 
     def __init__(self, dimension: int = 1536):
         self.dimension = dimension
@@ -22,6 +25,10 @@ class VectorIndex:
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec = vec / norm
+
+        # 如果 id 已存在，先移除旧条目
+        if id in self.ids:
+            self.remove(id)
 
         self.vectors.append(vec)
         self.ids.append(id)
@@ -68,23 +75,102 @@ class VectorIndex:
         self.ids.clear()
         self.metadata.clear()
 
+    def save_to_disk(self, dir_path: str):
+        """将向量索引持久化到磁盘。
+
+        向量保存为 .npy，ids 和 metadata 保存为 JSON。
+        """
+        dir_path = Path(dir_path)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        if not self.vectors:
+            # 空索引也写入，表示已初始化
+            (dir_path / "skill_vectors.npy").unlink(missing_ok=True)
+            (dir_path / "skill_index.json").write_text(
+                json.dumps({"ids": [], "metadata": [], "dimension": self.dimension}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return
+
+        # 向量矩阵 (N x D)
+        vec_matrix = np.stack(self.vectors)
+        np.save(dir_path / "skill_vectors.npy", vec_matrix)
+
+        # ids 和 metadata
+        (dir_path / "skill_index.json").write_text(
+            json.dumps({
+                "ids": self.ids,
+                "metadata": self.metadata,
+                "dimension": self.dimension,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def load_from_disk(self, dir_path: str) -> bool:
+        """从磁盘加载向量索引。成功返回 True。"""
+        dir_path = Path(dir_path)
+        vec_file = dir_path / "skill_vectors.npy"
+        json_file = dir_path / "skill_index.json"
+
+        if not json_file.exists():
+            return False
+
+        try:
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            self.ids = data.get("ids", [])
+            self.metadata = data.get("metadata", [])
+            self.dimension = data.get("dimension", self.dimension)
+
+            if vec_file.exists() and self.ids:
+                vec_matrix = np.load(vec_file, allow_pickle=False)
+                self.vectors = [vec_matrix[i] for i in range(len(self.ids))]
+            else:
+                self.vectors = []
+
+            logger.info(f"从磁盘加载技能向量索引: {len(self.vectors)} 条")
+            return True
+        except Exception as e:
+            logger.warning(f"加载技能向量索引失败: {e}")
+            return False
+
 
 class SkillLibrary:
-    """技能库 - 管理技能和向量搜索"""
+    """技能库 - 管理技能和向量搜索（含磁盘持久化）"""
 
     def __init__(self):
         self.vector_index = VectorIndex()
         self.skills: Dict[str, Dict[str, Any]] = {}
         self._initialized = False
 
+    def _index_dir(self) -> str:
+        """获取向量索引持久化目录"""
+        try:
+            from app.core.config import settings
+            return str(Path(settings.SKILL_STORAGE_PATH).parent / "skill_index")
+        except Exception:
+            return str(Path.cwd() / "data" / "skill_index")
+
     async def initialize(self):
-        """初始化技能库"""
+        """初始化技能库（优先从磁盘加载向量索引）"""
         if self._initialized:
             return
 
-        # TODO: 从数据库加载所有技能并构建向量索引
-        # 这里先创建一些内置技能示例
-        await self._load_builtin_skills()
+        # 优先从磁盘加载已有向量索引
+        index_dir = self._index_dir()
+        loaded = self.vector_index.load_from_disk(index_dir)
+
+        if loaded:
+            # 磁盘有索引，重建 skills 字典（从 metadata 恢复基本信息）
+            for meta in self.vector_index.metadata:
+                sid = meta.get("name", "")
+                if sid:
+                    self.skills[sid] = meta
+            logger.info(f"技能库从磁盘恢复: {len(self.skills)} 个技能")
+        else:
+            # 磁盘无索引，从内置技能构建
+            await self._load_builtin_skills()
+            # 构建后持久化到磁盘
+            self.vector_index.save_to_disk(index_dir)
 
         self._initialized = True
         logger.info(f"技能库初始化完成,共{len(self.skills)}个技能")
@@ -360,11 +446,19 @@ class SkillLibrary:
             )
 
             logger.debug(f"技能注册成功: {skill_id}")
+            self._persist()
 
         except Exception as e:
             # 向量化失败时，仍然保留技能，使用关键词匹配
             logger.warning(f"技能向量化失败 {skill_id}，将使用关键词匹配: {e}")
             self.skills[skill_id] = skill  # 确保技能已存储
+
+    def _persist(self):
+        """将当前向量索引持久化到磁盘"""
+        try:
+            self.vector_index.save_to_disk(self._index_dir())
+        except Exception as e:
+            logger.warning(f"技能索引持久化失败: {e}")
 
     async def search_similar(
         self,

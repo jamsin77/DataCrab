@@ -442,84 +442,15 @@ class LLMManager:
 
 #### 2.3.3 大模型公开API
 
-DataCrab 将底层大模型能力以 RESTful API 形式开放，用户可直接通过 HTTP 请求调用平台配置的大模型，支持多种调用模式。
+DataCrab 将底层大模型能力以 RESTful API 形式开放，提供文本嵌入向量等能力。
 
 ##### API 端点列表
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
-| POST | /api/v1/llm/chat | 大模型对话（非流式） | 需认证 |
-| POST | /api/v1/llm/chat-messages | 大模型多轮对话（非流式） | 需认证 |
-| POST | /api/v1/llm/chat-stream | 大模型对话（SSE流式） | 需认证 |
-| POST | /api/v1/llm/chat-stream-messages | 大模型多轮对话（SSE流式） | 需认证 |
-| POST | /api/v1/llm/chat-stream-thinking | 大模型多轮对话（SSE流式，含推理过程） | 需认证 |
 | POST | /api/v1/llm/embeddings | 生成文本嵌入向量 | 需认证 |
 
 ##### 请求/响应格式
-
-**非流式对话** `POST /api/v1/llm/chat`
-```json
-// 请求
-{
-    "message": "帮我分析这组数据",
-    "model": null,           // 可选，不传则用系统默认模型
-    "temperature": 0.7,      // 0.0-2.0
-    "max_tokens": 2000       // 1-32000
-}
-
-// 响应
-{
-    "content": "分析结果...",
-    "model": "glm-5.2"
-}
-```
-
-**多轮对话（非流式）** `POST /api/v1/llm/chat-messages`
-```json
-// 请求
-{
-    "messages": [
-        {"role": "system", "content": "你是一个数据分析助手"},
-        {"role": "user", "content": "帮我分析数据"},
-        {"role": "assistant", "content": "好的，请提供数据"},
-        {"role": "user", "content": "数据如下..."}
-    ],
-    "model": null,
-    "temperature": 0.7,
-    "max_tokens": 2000
-}
-
-// 响应
-{
-    "content": "根据数据分析...",
-    "model": "glm-5.2"
-}
-```
-
-**SSE流式对话** `POST /api/v1/llm/chat-stream`
-```
-// 请求（JSON）
-{"message": "帮我分析数据", "temperature": 0.7}
-
-// 响应（SSE事件流）
-data: {"type": "content", "content": "根据"}
-data: {"type": "content", "content": "数据分析"}
-data: {"type": "done"}
-```
-
-**SSE流式+推理过程** `POST /api/v1/llm/chat-stream-thinking`
-```
-// 请求（JSON，支持多轮messages）
-{
-    "messages": [{"role": "user", "content": "帮我分析数据"}],
-    "temperature": 0.7
-}
-
-// 响应（SSE事件流）
-data: {"type": "thinking", "content": "用户需要分析数据，我应该..."}
-data: {"type": "content", "content": "根据数据分析"}
-data: {"type": "done"}
-```
 
 **嵌入向量** `POST /api/v1/llm/embeddings`
 ```json
@@ -533,31 +464,9 @@ data: {"type": "done"}
 }
 ```
 
-##### 前端界面
-
-在「配置 → 大模型对话」页面，用户可以直接与平台配置的大模型对话：
-- ChatGPT风格对话界面，支持多轮对话
-- 三种调用模式切换：流式+推理 / 流式输出 / 非流式
-- 温度参数滑块调节
-- 推理过程蓝色卡片展示（流式+推理模式）
-- Markdown渲染回复内容
-- 支持停止生成和清空对话
-
 ##### 调用示例（curl）
 
 ```bash
-# 非流式对话
-curl -X POST http://localhost:8000/api/v1/llm/chat \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello", "temperature": 0.7}'
-
-# 流式+推理对话
-curl -X POST http://localhost:8000/api/v1/llm/chat-stream-thinking \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello"}], "temperature": 0.7}'
-
 # 嵌入向量
 curl -X POST http://localhost:8000/api/v1/llm/embeddings \
   -H "Authorization: Bearer <token>" \
@@ -791,9 +700,13 @@ class Skill(Base):
 
 #### 2.3.5 Agent 迭代与并行执行增强
 
-- **最大迭代次数提升至 12 轮**（原5轮），支持更复杂的多步数据处理任务
+- **动态轮次预算**：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40），替代固定上限
 - **并行工具调用**：新增 `_execute_tool_calls_parallel()` 函数，当 LLM 返回多个 tool_call 时，使用 `asyncio.gather()` 并行执行，提升执行效率
 - 并行执行结果按 tool_call 顺序汇总后统一返回给 LLM，确保对话上下文完整性
+- **输出长度升级**：`finish_reason=length` 时自动提升 max_tokens（3000→6000→12000）
+- **上下文压力告警**：token 超 50% 注入 Level-1 提示，超 60% 注入 Level-2 紧急提示
+- **三级反幻觉注入**：basic/standard/strict 按 Agent 角色自动选级（Inspector=strict, Processor=standard）
+- **工具结果 LRU 缓存**：只读工具会话内去重（30 分钟 TTL，50 条上限，100 用户 LRU）
 
 ### 2.4 算子管理模块
 
@@ -1103,24 +1016,29 @@ exec() 执行脚本 + 调用入口函数
 **Debug Executor 核心实现**:
 ```python
 # 工具函数注入 - 在算子执行环境中提供数据查询能力
-def _build_operator_namespace(datasource_id=None):
-    def query_table_data_sync(datasource_id, table_name, limit=1000, **kwargs):
-        # 在独立线程中执行异步数据库查询，避免事件循环冲突
-        data = _run_async_in_thread(
-            agent_service.query_table(datasource_id, table_name, limit)
-        )
-        return pd.DataFrame(data["rows"], columns=data["columns"])
-    
-    def get_datasource_id_by_name(name):
-        result = _run_async_in_thread(
-            db.execute(select(DataSource).where(DataSource.name == name))
-        )
-        return str(result.id)
-    
+def _build_operator_namespace(current_user_id):
+    def query_table_data(datasource_id, table_name, **kwargs):
+        args = {"datasource_id": str(datasource_id), "table_name": table_name, **kwargs}
+        # 在独立线程中通过 execute_shared_tool 执行异步数据库查询
+        async def _run():
+            async with async_session() as db:
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("query_table_data", args, db, current_user_id)
+        result = json.loads(_run_async_in_thread(_run()))
+        return pd.DataFrame(result["rows"], columns=result["columns"])
+
+    def get_table_schema(datasource_id, table_name):
+        args = {"datasource_id": str(datasource_id), "table_name": table_name}
+        async def _run():
+            async with async_session() as db:
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
+        return json.loads(_run_async_in_thread(_run()))
+
     return {
         "pd": pd,
-        "query_table_data": query_table_data_sync,
-        "get_table_schema": get_table_schema_sync,
+        "query_table_data": query_table_data,
+        "get_table_schema": get_table_schema,
         "get_datasource_id_by_name": get_datasource_id_by_name,
     }
 ```
@@ -4587,3 +4505,103 @@ volumes:
 - **风险**: 数据泄露、恶意攻击- **应对**: 加密存储、访问控制、安全审计
 ### 10.4 扩展性风险- **风险**: 系统扩展困难
 - **应对**: 模块化设计、插件机制、微服务架构
+
+## 11. 工程改进记录（借鉴 DeepAnalyze）
+
+本章节记录借鉴 DeepAnalyze 通用 Agent 平台设计思想后，对 DataCrab 做的工程改进。每项改进标注了对应的文件和设计理念来源。
+
+### 11.1 工具系统改进
+
+#### 工具去重（shared_tools.py）
+- **问题**：`agent.py` 和 `data_processor_agent.py` 有 5 个工具的 schema 和实现完全 copy-paste
+- **改进**：提取 `shared_tools.py`，统一定义 6 个公共工具的 schema + 实现，两个 Agent 各自 import
+- **理念**：借鉴 DeepAnalyze 的 ToolRegistry 统一管理思想
+
+#### 工具结果截断（agent_utils.py → truncate_tool_result）
+- **问题**：`query_table_data` 默认返回 100 行全量 JSON，多轮查询撑爆上下文
+- **改进**：工具返回 JSON 超 8000 字符时自动截断为前 5 行 + 列名 + 总行数 + 截断提示
+- **理念**：借鉴 DeepAnalyze 的 Micro-Compact 策略
+
+#### 工具诚实能力表（tool_guidance.py）
+- **问题**：工具描述只说能做什么，不说不能做什么，模型误用工具
+- **改进**：给每个工具标注覆盖率/精确度/已知局限，作为能力表注入 system prompt
+- **理念**：借鉴 DeepAnalyze 的"工具诚实"原则——把工具弱点如实写出来，模型才能正确组合工具
+
+### 11.2 Agent Loop 改进
+
+#### 卡死检测（agent_utils.py → StuckDetector）
+- **问题**：Agent loop 只有 `MAX_AGENT_ITERATIONS=12` 硬上限，不检测原地打转
+- **改进**：检测重复调用（连续 2 轮相同工具+参数）和空转（连续 3 轮无工具调用），注入策略切换提示
+- **理念**：借鉴 DeepAnalyze 的 StuckDetector（四种卡死模式，DataCrab 取两种）
+
+#### 反幻觉检查（agent_utils.py → is_planning_only / should_warn_ungrounded_claim）
+- **问题**：Agent 可能"只规划不执行"或输出无工具支撑的数据声明（曾出过"AI虚构数据"bug）
+- **改进**：
+  - finish 前检查输出是否只是规划文本（"我将...然后..."），如果是则拒绝结束
+  - 工具结果携带 `_source` 来源标记（datasource:xxx/table:yyy）
+- **理念**：借鉴 DeepAnalyze 的"防只规划不执行"和零幻觉六层防御
+
+#### Handoff 收敛检测（multi_agent.py）
+- **问题**：processor↔inspector 可能对同一问题来回踢皮球，白耗 10×12=120 次 API 调用
+- **改进**：记录 handoff 签名（to_agent, datasource_id, table_name），连续 4 次在同一张表上来回则终止
+- **理念**：借鉴 DeepAnalyze 的收敛检测思想
+
+### 11.3 上下文管理改进
+
+#### CJK 感知 Token 估算（agent_utils.py → estimate_tokens）
+- **问题**：`_compress_history` 用字符数（`len()`）做触发判断，中文场景误差大
+- **改进**：CJK 字符 ×1.5、非 ASCII ×0.5、ASCII ×0.25 估算 token 数
+- **理念**：借鉴 DeepAnalyze 的 CJK 感知 Token 估算
+
+#### 压缩标识符保护（agent_utils.py → extract_identifiers / build_identifier_hint）
+- **问题**：历史摘要后 Agent 忘了之前查过什么表/数据源，又重复搜索
+- **改进**：压缩时机械抽取 UUID/表名/数据源 ID，在摘要 prompt 中要求保留这些标识符
+- **理念**：借鉴 DeepAnalyze 的标识符保护原则
+
+### 11.4 LLM 调用改进
+
+#### 瞬态重试（llm.py → _acreate_with_retry）
+- **问题**：429 限流/网络超时直接换模型，不重试同一模型；tenacity 声明了但没用
+- **改进**：对 RateLimitError/APITimeoutError/APIConnectionError/InternalServerError 做最多 2 次指数退避重试（2s→4s），重试耗尽再走 model-chain fallback
+- **理念**：借鉴 DeepAnalyze 的四级错误恢复链第一层
+
+### 11.5 路由改进
+
+#### 统一路由 + Agent 自主 handoff（chat.py）
+- **问题**：`_route_to_agent` 用关键词匹配预判路由（"检查/质量"→inspector），边界场景误判
+- **改进**：始终从 DataProcessorAgent 开始，Agent 自主决定是否 handoff 给 inspector；`_route_to_agent` 函数已删除
+- **理念**：借鉴 DeepAnalyze 的"Agent 自主性"原则——系统给信号不给约束
+
+### 11.6 经验库改进
+
+#### 跨算子经验聚合（experience.py → distill_cross_patterns）
+- **问题**：经验按算子/skill 独立积累，缺少跨算子的通用模式发现
+- **改进**：`distill_cross_patterns()` 收集所有算子/技能的 lessons，用 LLM 提炼通用数据处理模式，存到 `global_lessons.md`
+- **理念**：借鉴 DeepAnalyze 的 AutoDream 跨会话经验整合思想
+
+### 11.7 工程卫生
+
+#### 测试覆盖（tests/）
+- **问题**：`backend/tests/` 完全为空，零测试覆盖
+- **改进**：为 `agent_utils.py`、`experience.py`、`shared_tools.py` 的纯函数写单元测试（64 个测试用例）
+- **覆盖**：token 估算、结果截断、卡死检测、标识符抽取、反幻觉检查、动态轮次预算、上下文压力告警、三级反幻觉、搜索饱和检测、工具结果缓存、经验读写、工具 schema 验证
+
+#### 清理未使用依赖（pyproject.toml）
+- **问题**：`redis`、`celery`、`minio`、`elasticsearch` 声明了但代码里没用
+- **改进**：从 `pyproject.toml` 移除 4 个未使用依赖
+
+#### CLAUDE.md
+- **问题**：项目没有 AI 协作配置文件
+- **改进**：创建 `CLAUDE.md`，记录技术栈、关键文件导航、运行命令、编码规范
+
+### 11.8 新增文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `backend/app/services/agent_utils.py` | Agent 工程工具函数（token 估算、截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉、搜索饱和检测、工具结果缓存） |
+| `backend/app/services/shared_tools.py` | 6 个公共工具的统一 schema + 实现（含 LRU 缓存） |
+| `backend/app/services/tool_guidance.py` | 工具诚实能力表 |
+| `backend/tests/test_agent_utils.py` | agent_utils 单元测试 |
+| `backend/tests/test_experience.py` | experience 单元测试 |
+| `backend/tests/test_shared_tools.py` | shared_tools + tool_guidance 单元测试 |
+| `CLAUDE.md` | 项目级 AI 协作配置 |

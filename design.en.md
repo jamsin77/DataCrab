@@ -453,84 +453,15 @@ class LLMManager:
 
 #### 2.3.3 LLM Public API
 
-DataCrab exposes underlying LLM capabilities as a RESTful API. Users can directly call the platform-configured LLM via HTTP requests, supporting multiple call modes.
+DataCrab exposes underlying LLM capabilities as a RESTful API, providing text embedding vectors and more.
 
 ##### API Endpoint List
 
 | Method | Path | Description | Auth |
 |------|------|------|------|
-| POST | /api/v1/llm/chat | LLM chat (non-streaming) | Required |
-| POST | /api/v1/llm/chat-messages | Multi-turn LLM chat (non-streaming) | Required |
-| POST | /api/v1/llm/chat-stream | LLM chat (SSE streaming) | Required |
-| POST | /api/v1/llm/chat-stream-messages | Multi-turn LLM chat (SSE streaming) | Required |
-| POST | /api/v1/llm/chat-stream-thinking | Multi-turn LLM chat (SSE streaming, with reasoning) | Required |
 | POST | /api/v1/llm/embeddings | Generate text embedding vectors | Required |
 
 ##### Request/Response Formats
-
-**Non-streaming chat** `POST /api/v1/llm/chat`
-```json
-// Request
-{
-    "message": "Help me analyze this dataset",
-    "model": null,           // optional; uses system default if omitted
-    "temperature": 0.7,      // 0.0-2.0
-    "max_tokens": 2000       // 1-32000
-}
-
-// Response
-{
-    "content": "Analysis result...",
-    "model": "glm-5.2"
-}
-```
-
-**Multi-turn chat (non-streaming)** `POST /api/v1/llm/chat-messages`
-```json
-// Request
-{
-    "messages": [
-        {"role": "system", "content": "You are a data analysis assistant"},
-        {"role": "user", "content": "Help me analyze the data"},
-        {"role": "assistant", "content": "Sure, please provide the data"},
-        {"role": "user", "content": "Here is the data..."}
-    ],
-    "model": null,
-    "temperature": 0.7,
-    "max_tokens": 2000
-}
-
-// Response
-{
-    "content": "Based on the data analysis...",
-    "model": "glm-5.2"
-}
-```
-
-**SSE streaming chat** `POST /api/v1/llm/chat-stream`
-```
-// Request (JSON)
-{"message": "Help me analyze the data", "temperature": 0.7}
-
-// Response (SSE event stream)
-data: {"type": "content", "content": "Based"}
-data: {"type": "content", "content": "on the data analysis"}
-data: {"type": "done"}
-```
-
-**SSE streaming + reasoning** `POST /api/v1/llm/chat-stream-thinking`
-```
-// Request (JSON, supports multi-turn messages)
-{
-    "messages": [{"role": "user", "content": "Help me analyze the data"}],
-    "temperature": 0.7
-}
-
-// Response (SSE event stream)
-data: {"type": "thinking", "content": "The user needs to analyze data, I should..."}
-data: {"type": "content", "content": "Based on the data analysis"}
-data: {"type": "done"}
-```
 
 **Embeddings** `POST /api/v1/llm/embeddings`
 ```json
@@ -544,31 +475,9 @@ data: {"type": "done"}
 }
 ```
 
-##### Frontend
-
-On the "Config → LLM Chat" page, users can chat directly with the platform-configured LLM:
-- ChatGPT-style conversation interface supporting multi-turn dialogue
-- Switch among three call modes: streaming+reasoning / streaming / non-streaming
-- Temperature slider adjustment
-- Reasoning displayed in a blue card (streaming+reasoning mode)
-- Markdown rendering of replies
-- Supports stop generation and clear conversation
-
 ##### Call Examples (curl)
 
 ```bash
-# Non-streaming chat
-curl -X POST http://localhost:8000/api/v1/llm/chat \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello", "temperature": 0.7}'
-
-# Streaming + reasoning chat
-curl -X POST http://localhost:8000/api/v1/llm/chat-stream-thinking \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "Hello"}], "temperature": 0.7}'
-
 # Embeddings
 curl -X POST http://localhost:8000/api/v1/llm/embeddings \
   -H "Authorization: Bearer <token>" \
@@ -810,9 +719,13 @@ class Skill(Base):
 
 #### 2.3.5 Agent Iteration and Parallel Execution Enhancements
 
-- **Max iterations raised to 12 rounds** (originally 5), supporting more complex multi-step data processing tasks
+- **Dynamic turn budget**: iteration limit allocated by task complexity (simple=15/medium=25/complex=40), replacing fixed limits
 - **Parallel tool calls**: added `_execute_tool_calls_parallel()`; when the LLM returns multiple tool_calls, they execute in parallel via `asyncio.gather()` to improve efficiency
 - Parallel execution results are aggregated in tool_call order and returned to the LLM together, ensuring conversation-context integrity
+- **Output length escalation**: auto-increase max_tokens on `finish_reason=length` (3000→6000→12000)
+- **Context pressure warning**: inject Level-1 hint at 50% token usage, Level-2 urgent at 60%
+- **Tiered anti-hallucination**: basic/standard/strict auto-selected by agent role (Inspector=strict, Processor=standard)
+- **Tool result LRU cache**: read-only tools deduplicated within session (30-min TTL, 50 entries, 100-user LRU)
 
 ### 2.4 Operator Management Module
 
@@ -1122,23 +1035,28 @@ Returns: {success, stdout, result, error, execution_time_ms}
 **Debug Executor core implementation**:
 ```python
 # Tool function injection - provide data-query capability in the operator execution env
-def _build_operator_namespace(datasource_id=None):
-    def query_table_data_sync(datasource_id, table_name, limit=1000, **kwargs):
-        # Run async DB query in a separate thread to avoid event-loop conflicts
-        data = _run_async_in_thread(
-            agent_service.query_table(datasource_id, table_name, limit)
-        )
-        return pd.DataFrame(data["rows"], columns=data["columns"])
-    
-    def get_datasource_id_by_name(name):
-        result = _run_async_in_thread(
-            db.execute(select(DataSource).where(DataSource.name == name))
-        )
-        return str(result.id)
-    
+def _build_operator_namespace(current_user_id):
+    def query_table_data(datasource_id, table_name, **kwargs):
+        args = {"datasource_id": str(datasource_id), "table_name": table_name, **kwargs}
+        # Run async DB query in a separate thread via execute_shared_tool
+        async def _run():
+            async with async_session() as db:
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("query_table_data", args, db, current_user_id)
+        result = json.loads(_run_async_in_thread(_run()))
+        return pd.DataFrame(result["rows"], columns=result["columns"])
+
+    def get_table_schema(datasource_id, table_name):
+        args = {"datasource_id": str(datasource_id), "table_name": table_name}
+        async def _run():
+            async with async_session() as db:
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
+        return json.loads(_run_async_in_thread(_run()))
+
     return {
         "pd": pd,
-        "query_table_data": query_table_data_sync,
+        "query_table_data": query_table_data,
         "get_table_schema": get_table_schema_sync,
         "get_datasource_id_by_name": get_datasource_id_by_name,
     }

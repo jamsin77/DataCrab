@@ -76,15 +76,14 @@ def _run_async_in_thread(coro):
 
 def _build_operator_namespace(current_user_id):
     import pandas as pd
-    from app.services.agent import agent_service, AgentContext
 
     def query_table_data(datasource_id, table_name, **kwargs):
         args = {"datasource_id": str(datasource_id), "table_name": table_name, **kwargs}
 
         async def _run():
             async with async_session() as db:
-                ctx = AgentContext(db=db, user_id=current_user_id)
-                return await agent_service._query_table_data(args, ctx)
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("query_table_data", args, db, current_user_id)
 
         result = json.loads(_run_async_in_thread(_run()))
         if isinstance(result, dict) and "rows" in result and "columns" in result:
@@ -98,8 +97,8 @@ def _build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                ctx = AgentContext(db=db, user_id=current_user_id)
-                return await agent_service._get_table_schema(args, ctx)
+                from app.services.shared_tools import execute_shared_tool
+                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
 
         return json.loads(_run_async_in_thread(_run()))
 
@@ -910,7 +909,7 @@ async def generate_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': 'AI 正在推理和生成算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1034,7 +1033,7 @@ async def modify_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': 'AI 正在推理和修改算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1164,34 +1163,20 @@ async def debug_operator_chat(
     last_error = ctx.get("last_error", "")
 
     from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
-    # 注入当前算子的历史经验（反例库归纳）
     op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id))
-    lessons_block = (
-        f"\n\n## 📖 本算子历史经验（从过往失败中归纳，调试时务必参考）\n{op_lessons}"
-        if op_lessons else ""
-    )
+    lessons_block = f"\n历史经验：\n{op_lessons[:800]}" if op_lessons else ""
     system_prompt = (
-        f"你是一个算子代码调试助手。用户正在调试算子 \"{display_name}\"，"
-        f"函数名：{func_name}。\n\n"
-        f"算子脚本代码：\n```python\n{script_content[:4000]}\n```\n\n"
-        f"{SANDBOX_TOOLS_DOC}\n\n"
-        f"你可以帮助用户：\n"
-        f"- 分析代码逻辑和潜在bug\n"
-        f"- 修改代码并直接输出修改后的完整脚本（用```python围栏包裹）\n"
-        f"- 解释错误原因和修复方案\n"
-        f"- 优化代码性能和可读性\n"
-        f"- 在脚本中使用 llm_chat() 调用大模型进行智能分析\n\n"
-        f"重要规则：\n"
-        f"- 如果修改了代码，输出修改后的完整脚本，用```python和```围栏包裹\n"
-        f"- 不要删除或改变函数签名\n"
-        f"- 保持代码风格一致\n\n"
-        f"{SAFETY_RULES_DOC}"
+        f"你是算子调试助手。算子 \"{display_name}\"，函数：{func_name}。\n\n"
+        f"脚本：\n```python\n{script_content[:2500]}\n```\n\n"
+        "你可以：分析bug、修改代码（输出完整```python脚本）、解释逻辑、优化性能。\n"
+        "规则：修改时输出完整脚本，不改函数签名，只处理用户数据。\n"
+        "修改脚本后系统会自动用当前调试参数执行验证，无需你触发执行。\n"
         f"{lessons_block}"
     )
 
     messages = [{"role": "system", "content": system_prompt}]
-    for h in (request.history or []):
-        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    for h in (request.history or [])[-10:]:
+        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
 
     user_msg = request.message
     if user_input_data or user_params or last_result or last_error:
@@ -1210,7 +1195,9 @@ async def debug_operator_chat(
         import json as json_mod
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+            chosen_model = llm_manager.pick_model(request.message)
+            logger.info(f"算子debug-chat: model={chosen_model}")
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1234,6 +1221,78 @@ async def debug_operator_chat(
                 await db.flush()
                 await db.refresh(operator)
                 yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': func_name or 'main'}, ensure_ascii=False)}\n\n"
+
+                # 自动执行算子验证修改结果
+                yield f"data: {json_mod.dumps({'type': 'executing', 'message': '脚本已更新，正在自动执行验证...'}, ensure_ascii=False)}\n\n"
+
+                try:
+                    import pandas as pd
+                    exec_start = time.time()
+                    captured = io.StringIO()
+                    exec_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
+                    exec_ns.update(_build_operator_namespace(current_user.id))
+                    exec(new_script, exec_ns)
+                    debug_func = exec_ns.get(operator.function_name or func_name or "")
+                    if not debug_func:
+                        raise ValueError(f"脚本中未找到函数: {operator.function_name or func_name}")
+
+                    # 从上下文构造参数
+                    exec_params = {}
+                    for k, v in ctx.items():
+                        if k.startswith("param_"):
+                            pname = k[6:]
+                            try:
+                                exec_params[pname] = json_mod.loads(v) if v.strip() else None
+                            except (json_mod.JSONDecodeError, ValueError):
+                                exec_params[pname] = v
+
+                    # 从上下文构造 test_data
+                    test_data = None
+                    for k, v in ctx.items():
+                        if k.startswith("input_"):
+                            try:
+                                parsed = json_mod.loads(v) if v.strip() else None
+                                if test_data is None:
+                                    test_data = parsed
+                            except (json_mod.JSONDecodeError, ValueError):
+                                pass
+
+                    is_async_func = inspect.iscoroutinefunction(debug_func)
+                    if test_data is not None:
+                        if isinstance(test_data, list):
+                            td = pd.DataFrame(test_data)
+                        elif isinstance(test_data, dict):
+                            td = pd.DataFrame([test_data])
+                        else:
+                            td = test_data
+                        exec_result = await debug_func(td, **exec_params) if is_async_func else debug_func(td, **exec_params)
+                    else:
+                        exec_result = await debug_func(**exec_params) if is_async_func else debug_func(**exec_params)
+
+                    if hasattr(exec_result, "to_dict"):
+                        exec_result = exec_result.to_dict(orient="records")
+
+                    exec_elapsed = (time.time() - exec_start) * 1000
+                    exec_result = _sanitize_op(exec_result)
+                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': {'success': True, 'result': exec_result, 'stdout': captured.getvalue() or None, 'execution_time_ms': round(exec_elapsed, 2)}}, ensure_ascii=False, default=str)}\n\n"
+
+                    # 采集正例
+                    try:
+                        base = experience.operator_experience_dir(operator_id)
+                        if experience.read_negative(base):
+                            experience.append_positive(base, source="debug-chat", parameters=exec_params, result_summary=str(exec_result)[:200], script_name=operator.function_name or "")
+                    except Exception:
+                        pass
+
+                except Exception as exec_err:
+                    exec_elapsed = (time.time() - exec_start) * 1000 if 'exec_start' in dir() else 0
+                    err_msg = str(exec_err)
+                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': {'success': False, 'error': err_msg, 'stdout': captured.getvalue() or None, 'execution_time_ms': round(exec_elapsed, 2)}}, ensure_ascii=False)}\n\n"
+                    # 记录反例
+                    try:
+                        experience.append_negative(experience.operator_experience_dir(operator_id), source="debug-chat", error_type=type(exec_err).__name__, error_message=err_msg, parameters=exec_params if 'exec_params' in dir() else {}, stdout=captured.getvalue() if 'captured' in dir() else "", script_name=operator.function_name or "")
+                    except Exception:
+                        pass
 
         except asyncio.CancelledError:
             yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
@@ -1355,3 +1414,99 @@ async def summarize_operator_experience(
         "error_count": len(errors),
         "lessons": lessons_text.strip(),
     }
+
+
+@router.post("/{operator_id}/to-pipeline-stream")
+async def operator_to_pipeline_stream(
+    operator_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """将算子脚本转为流程（SSE 流式，推送推理过程）"""
+    result = await db.execute(select(Operator).where(Operator.id == operator_id))
+    operator = result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=404, detail="算子不存在")
+
+    if not operator.script_content:
+        raise HTTPException(status_code=400, detail="该算子没有脚本内容")
+
+    from app.services.llm import llm_manager
+    from app.services.pipeline_builder import (
+        _extract_python_code, _extract_main_params, _analyze_skill_calls,
+        PIPELINE_BUILDER_SYSTEM_PROMPT,
+    )
+    from app.models.pipeline import Pipeline
+    from uuid import uuid4
+
+    await llm_manager.initialize()
+
+    script_content = operator.script_content
+    op_name = operator.name
+    op_display = operator.display_name or operator.name
+    op_desc = operator.description or ""
+
+    async def generate():
+        import json as json_mod
+        try:
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在分析算子脚本...'}, ensure_ascii=False)}\n\n"
+
+            user_prompt = (
+                f"请将以下算子脚本转化为一个完整的数据处理流程（Pipeline）主函数。\n\n"
+                f"## 算子信息\n"
+                f"- 名称: {op_display}\n"
+                f"- 描述: {op_desc}\n\n"
+                f"## 算子脚本\n```python\n{script_content[:8000]}\n```\n\n"
+                f"请生成完整的 Python 流程主函数文件。算子中的核心处理函数请内联到主文件中（函数名加 _skill_ 前缀）。"
+            )
+
+            messages = [
+                {"role": "system", "content": PIPELINE_BUILDER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            full_content = ""
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
+                event = {"type": chunk["type"], "content": chunk["content"]}
+                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if chunk["type"] == "content":
+                    full_content += chunk["content"]
+
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在解析生成代码并创建流程...'}, ensure_ascii=False)}\n\n"
+
+            main_code = _extract_python_code(full_content)
+            params = _extract_main_params(main_code)
+            skill_calls = _analyze_skill_calls(main_code, str(operator_id), op_name)
+
+            display_name = f"{op_display} - 流程"
+            pipeline = Pipeline(
+                id=uuid4(),
+                name=f"pl_{op_name}",
+                display_name=display_name,
+                description=op_desc,
+                main_code=main_code,
+                entry_function="main",
+                parameters=params,
+                skill_calls=skill_calls,
+                tags=operator.tags or [],
+                category=operator.category,
+                created_by=current_user.id,
+            )
+            db.add(pipeline)
+            await db.flush()
+            await db.refresh(pipeline)
+            logger.info(f"算子转流程完成: {pipeline.display_name} ({pipeline.id})")
+
+            yield f"data: {json_mod.dumps({'type': 'done', 'pipeline_name': display_name, 'pipeline_id': str(pipeline.id)}, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"算子转流程失败: {e}")
+            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

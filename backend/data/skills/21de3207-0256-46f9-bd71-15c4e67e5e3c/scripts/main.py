@@ -159,9 +159,30 @@ def _is_timestamp_col(col_name: str) -> bool:
     return "时间戳" in str(col_name) or "timestamp" in col_lower
 
 
+def _is_id_col(col_name: str) -> bool:
+    """判断列名是否为 ID 类型列"""
+    col_lower = str(col_name).lower().strip()
+    # 纯 "id" 或以 "_id" 结尾
+    if col_lower == "id":
+        return True
+    if col_lower.endswith("_id"):
+        return True
+    # 中文 "ID" 或 "编号"（但不含其他词）
+    if str(col_name).strip().upper() == "ID":
+        return True
+    if str(col_name).strip() == "编号":
+        return True
+    return False
+
+
 def _generate_timestamp() -> str:
     """生成当前时间戳字符串，确保返回真实时间"""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _generate_id(index: int, width: int = 8) -> str:
+    """生成 8 位补零的序号 ID，如 00000001, 00000002"""
+    return str(index).zfill(width)
 
 
 # ============================================================
@@ -304,9 +325,17 @@ def migrate_data(
     auto_translate: bool = False,
     table_remark: Optional[str] = None,
     column_remarks: Optional[Dict[str, str]] = None,
+    if_table_exists: str = "fail",
     **kwargs
 ) -> Dict[str, Any]:
-    """在不同数据源之间迁移数据，支持列名转换和简单数据处理。"""
+    """在不同数据源之间迁移数据，支持列名转换和简单数据处理。
+
+    if_table_exists 支持的策略:
+      - fail: 默认，目标表已存在时报错
+      - append: 追加数据
+      - add_columns: 增加新列
+      - overwrite: 清空目标表内容后重新写入（第一批 overwrite，后续批次 append）
+    """
 
     # 延迟加载内置函数
     get_datasource_id_by_name = _get_builtin_func('get_datasource_id_by_name')
@@ -354,6 +383,7 @@ def migrate_data(
     print(f"  源:   {source_datasource_name} → {source_table_name}")
     print(f"  目标: {target_datasource_name} → {target_table_name or '(自动生成)'}")
     print(f"  自动翻译: {auto_translate}")
+    print(f"  目标表已存在策略: {if_table_exists}")
     print("=" * 60)
 
     # 探测 write_table_data 签名
@@ -458,14 +488,20 @@ def migrate_data(
     if add_columns:
         for col_name, col_value in add_columns.items():
             if col_name not in df.columns:
-                # ===== 修复点：时间戳列始终生成真实时间 =====
-                # 不管传入的值是什么（None、"now"、空字符串等），
-                # 只要识别为时间戳列，就用 datetime.now() 生成真实时间
+                # ===== 时间戳列：生成真实时间 =====
                 if _is_timestamp_col(col_name):
                     col_value = _generate_timestamp()
                     print(f"    🕐 时间戳列 '{col_name}' 生成真实时间: {col_value}")
-                df[col_name] = col_value
-                print(f"    ✅ 已添加列: {col_name} = {col_value}")
+                    df[col_name] = col_value
+                # ===== ID 列：生成 8 位补零序号 =====
+                elif _is_id_col(col_name):
+                    id_values = [_generate_id(i + 1) for i in range(len(df))]
+                    df[col_name] = id_values
+                    print(f"    🆔 ID列 '{col_name}' 生成 {len(df)} 个8位补零序号 (示例: {id_values[0]} ~ {id_values[-1]})")
+                # ===== 普通常量列 =====
+                else:
+                    df[col_name] = col_value
+                    print(f"    ✅ 已添加列: {col_name} = {col_value}")
 
     # 3.5 强制标识符规范化
     print(f"\n  🔒 [3.5] 标识符合法性检查...")
@@ -508,17 +544,29 @@ def migrate_data(
         write_extra_kwargs["table_remark"] = table_remark
     if "column_remarks" in write_supported_params and column_remarks:
         write_extra_kwargs["column_remarks"] = column_remarks
+    if "if_table_exists" in write_supported_params:
+        # 对于 overwrite 策略，传递原始值给 write_table_data
+        # 在 _write_records 中会针对分批写入做特殊处理
+        write_extra_kwargs["if_table_exists"] = if_table_exists
     if write_extra_kwargs:
         print(f"  📝 附加写入参数: {list(write_extra_kwargs.keys())}")
 
     def _write_records(records, t_name):
         total_written = 0
+        original_if_exists = write_extra_kwargs.get("if_table_exists", "fail")
         for i in range(0, len(records), batch_size):
             batch_num = i // batch_size + 1
             batch = records[i:i + batch_size]
             print(f"  📦 批次 {batch_num}: 写入 {len(batch)} 行...")
+
+            # 对于 overwrite 策略：第一批覆盖写入（清空+写入），后续批次追加写入
+            current_kwargs = dict(write_extra_kwargs)
+            if original_if_exists == "overwrite" and batch_num > 1:
+                current_kwargs["if_table_exists"] = "append"
+                print(f"    📝 后续批次使用 append 策略")
+
             write_result = write_table_data(
-                target_ds_id, t_name, records=batch, **write_extra_kwargs
+                target_ds_id, t_name, records=batch, **current_kwargs
             )
             if not write_result.get("success"):
                 error_msg = write_result.get("error") or write_result.get("message", "未知错误")
@@ -638,6 +686,26 @@ def _test_column_transform():
         status = "✅" if result == expected else "⚠️"
         print(f"  {status} '{col_name}' → is_timestamp={result} (期望: {expected})")
     print()
+
+    print("🧪 自测：ID列识别与生成验证")
+    id_col_tests = [
+        ("ID", True),
+        ("id", True),
+        ("编号", True),
+        ("record_id", True),
+        ("名称", False),
+        ("name", False),
+    ]
+    for col_name, expected in id_col_tests:
+        result = _is_id_col(col_name)
+        status = "✅" if result == expected else "⚠️"
+        print(f"  {status} '{col_name}' → is_id={result} (期望: {expected})")
+    # 测试 ID 生成
+    for i in [1, 2, 10, 999, 12345]:
+        generated = _generate_id(i)
+        status = "✅" if len(generated) == 8 and generated == str(i).zfill(8) else "⚠️"
+        print(f"  {status} _generate_id({i}) = '{generated}'")
+    print()
     return True
 
 
@@ -651,18 +719,45 @@ def main(**kwargs):
     print(f"📥 main() 被调用，收到参数: {kwargs}")
     print(f"{'=' * 60}\n")
 
+    # 参数名兼容映射，解决系统注入参数名不一致的问题
+    param_aliases = {
+        'source_datasource_name': ['source_datasource_name', 'source_datasource', 'sourceDatasource', 'sourceDatasourceName', 'from_datasource', 'fromDatasource', 'datasource'],
+        'source_table_name': ['source_table_name', 'source_table', 'sourceTable', 'sourceTableName', 'table_name', 'tableName', 'from_table', 'fromTable'],
+        'target_datasource_name': ['target_datasource_name', 'target_datasource', 'targetDatasource', 'targetDatasourceName', 'to_datasource', 'toDatasource'],
+        'target_table_name': ['target_table_name', 'target_table', 'targetTable', 'targetTableName', 'to_table', 'toTable'],
+    }
+    
+    normalized_kwargs = {}
+    used_aliases = set()
+    for standard_name, aliases in param_aliases.items():
+        found = False
+        for alias in aliases:
+            if alias in kwargs and kwargs[alias]:
+                normalized_kwargs[standard_name] = kwargs[alias]
+                used_aliases.add(alias)
+                found = True
+                break
+        if not found and standard_name in kwargs and kwargs[standard_name]:
+            normalized_kwargs[standard_name] = kwargs[standard_name]
+            used_aliases.add(standard_name)
+
+    # 合并其他未映射的参数
+    for k, v in kwargs.items():
+        if k not in used_aliases:
+            normalized_kwargs[k] = v
+
     try:
         # 如果有业务参数，执行数据迁移
         has_migration_params = any(
-            kwargs.get(k) for k in [
-                'source_datasource_name', 'source_table_name', 'target_datasource_name',
-                'datasource', 'table_name', 'source_datasource', 'target_datasource'
+            normalized_kwargs.get(k) for k in [
+                'source_datasource_name', 'source_table_name', 'target_datasource_name'
             ]
         )
 
         if has_migration_params:
             print("🚀 检测到迁移参数，开始执行数据迁移...")
-            return migrate_data(**kwargs)
+            print(f"  规范化后的参数: {normalized_kwargs}")
+            return migrate_data(**normalized_kwargs)
         else:
             # 无参数时运行自测
             print("🧪 无迁移参数，运行自测验证...")

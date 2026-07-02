@@ -68,9 +68,6 @@
               </el-button>
             </div>
             <div class="op-actions-row">
-              <el-button size="small" type="warning" plain @click="summarizeExperience(op)" :loading="op._summarizing">
-                <el-icon><MagicStick /></el-icon> 归纳经验
-              </el-button>
               <el-button size="small" type="danger" plain @click="confirmDelete(op)">
                 <el-icon><Delete /></el-icon> 删除
               </el-button>
@@ -86,9 +83,9 @@
       :title="'调试: ' + (debugOperator?.display_name || debugOperator?.name || '')"
       width="95%"
       top="2vh"
-      destroy-on-close
       :close-on-click-modal="false"
       :close-on-press-escape="false"
+      :before-close="handleDebugBeforeClose"
       @closed="resetDebug"
     >
       <div v-if="debugOperator" class="debug-layout">
@@ -462,26 +459,6 @@ function downloadOperator(op: any) {
   }
 }
 
-async function summarizeExperience(op: any) {
-  op._summarizing = true
-  try {
-    const res = await api.post(`/operators/${op.id}/summarize-experience`)
-    if (!res.success && res.error_count === 0) {
-      ElMessage.info(res.message || '暂无错误记录')
-    } else {
-      ElMessage.success(res.message || '经验归纳完成')
-      ElMessageBox.alert(res.lessons || '(无)', `${op.display_name || op.name} - 经验总结`, {
-        confirmButtonText: '确定',
-        customClass: 'experience-msgbox',
-      })
-    }
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '归纳失败')
-  } finally {
-    op._summarizing = false
-  }
-}
-
 async function confirmDelete(op: any) {
   try {
     await ElMessageBox.confirm(
@@ -653,6 +630,14 @@ watch(
   scheduleSaveOpSession,
   { deep: true }
 )
+
+function handleDebugBeforeClose(done: () => void) {
+  if (opStreaming.value || debugRunning.value) {
+    ElMessage.warning('正在执行中，请先等待完成或点击停止')
+    return
+  }
+  done()
+}
 
 function resetDebug() {
   if (opAbortController) {
@@ -1258,6 +1243,13 @@ async function handleOpSend() {
               const fresh = await api.get(`/operators/${debugOperator.value.id}`)
               debugOperator.value = fresh
             } catch { /* skip */ }
+          } else if (data.type === 'executing') {
+            msg.thinking = (msg.thinking || '') + (data.message || '正在执行...') + '\n'
+          } else if (data.type === 'run_result') {
+            msg.runResult = data.result
+            if (!msg.content) {
+              msg.content = data.result?.success ? '执行完成' : '执行失败'
+            }
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           }
@@ -1821,8 +1813,9 @@ onMounted(() => {
     max-height: 250px;
     overflow-y: auto;
     line-height: 1.5;
-    background: #1e1e1e;
-    color: #d4d4d4;
+    background: #ffffff;
+    border: 1px solid #ebeef5;
+    color: #303133;
   }
 }
 </style>
@@ -1851,8 +1844,8 @@ onMounted(() => {
     font-family: 'Consolas', monospace; font-size: 13px; color: #d63384;
   }
   pre {
-    background: #1e1e1e; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
-    code { background: none; color: #d4d4d4; padding: 0; }
+    background: #ffffff; border: 1px solid #ebeef5; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
+    code { background: none; color: #303133; padding: 0; }
   }
   blockquote {
     border-left: 4px solid #409eff; padding: 8px 16px; margin: 12px 0;

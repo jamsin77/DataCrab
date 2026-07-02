@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="mode === 'folder' ? '选择文件夹' : '选择文件'" width="600px" @close="emit('cancel')">
+  <el-dialog v-model="visible" :title="mode === 'folder' ? '选择文件夹' : '选择文件'" width="600px" :close-on-click-modal="false" @close="emit('cancel')">
     <div class="fs-browser">
       <div class="fs-path-bar">
         <el-input v-model="currentPath" size="default" @keydown.enter="navigateTo(currentPath)">
@@ -9,8 +9,9 @@
           </template>
         </el-input>
       </div>
-      <div class="fs-list" v-loading="loading">
-        <div class="fs-item fs-parent" @click="navigateTo(parentPath)" v-if="currentPath !== parentPath">
+      <div class="fs-list">
+        <div v-if="loading" class="fs-loading">加载中...</div>
+        <div class="fs-item fs-parent" @click="navigateTo(parentPath)" v-if="!loading && currentPath !== parentPath">
           <el-icon><Back /></el-icon>
           <span>..</span>
         </div>
@@ -18,9 +19,8 @@
           v-for="d in directories"
           :key="d.path"
           class="fs-item fs-dir"
-          :class="{ selected: selectedPath === d.path }"
-          @click="onSelectDir(d)"
-          @dblclick="navigateTo(d.path)"
+          :class="{ selected: mode === 'folder' && selectedPath === d.path }"
+          @click="onDirClick(d)"
         >
           <el-icon><Folder /></el-icon>
           <span>{{ d.name }}</span>
@@ -80,8 +80,8 @@ watch(visible, (v) => { emit('update:modelValue', v) })
 watch(() => props.modelValue, (v) => {
   if (v) {
     const start = props.defaultPath || 'D:/'
-    navigateTo(start)
     selectedPath.value = ''
+    navigateTo(start)
   }
 })
 
@@ -95,6 +95,9 @@ async function navigateTo(path: string) {
     parentPath.value = res.parent
     directories.value = res.directories || []
     files.value = res.files || []
+    if (props.mode === 'folder') {
+      selectedPath.value = res.current
+    }
   } catch {
     directories.value = []
     files.value = []
@@ -103,10 +106,8 @@ async function navigateTo(path: string) {
   }
 }
 
-function onSelectDir(d: { name: string; path: string }) {
-  if (props.mode === 'folder') {
-    selectedPath.value = d.path
-  }
+function onDirClick(d: { name: string; path: string }) {
+  navigateTo(d.path)
 }
 
 function onSelectFile(f: { name: string; path: string }) {
@@ -153,6 +154,12 @@ function confirm() {
   }
   .fs-parent {
     color: #909399;
+  }
+  .fs-loading {
+    padding: 20px;
+    text-align: center;
+    color: #909399;
+    font-size: 13px;
   }
   .fs-selected {
     margin-top: 10px;

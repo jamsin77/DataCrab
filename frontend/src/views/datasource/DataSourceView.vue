@@ -191,7 +191,12 @@
     <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="95%" top="2vh" @opened="onBrowseOpened">
       <div class="browse-layout">
         <div class="browse-sidebar">
-          <div class="browse-sidebar-title">数据表</div>
+          <div class="browse-sidebar-title">
+            <span>数据表</span>
+            <el-button size="small" text :loading="browseLoading" @click="onBrowseOpened">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
+          </div>
           <el-tooltip
             v-for="item in browseTree"
             :key="item.id"
@@ -254,7 +259,7 @@
 import { ref, onMounted, reactive } from 'vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, FolderOpened } from '@element-plus/icons-vue'
+import { Document, FolderOpened, Refresh } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 
 const dataSources = ref<any[]>([])
@@ -672,6 +677,9 @@ function onFsSelect(path: string) {
 }
 
 .browse-sidebar-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 10px 12px;
   font-weight: 600;
   font-size: 13px;

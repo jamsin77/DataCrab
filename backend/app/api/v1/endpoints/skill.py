@@ -72,7 +72,8 @@ async def _build_datasource_info(db: AsyncSession, user_id) -> str:
             tables = []
             try:
                 connector = get_connector(ds.type, ds.connection_config or {})
-                tables = await connector.get_tables()
+                schema = await connector.get_schema()
+                tables = [s.get("table_name", "") for s in schema if s.get("table_name")]
                 await connector.close()
             except Exception:
                 pass
@@ -1049,7 +1050,7 @@ async def debug_skill_chat(
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, should_use_deep_model
     await llm_manager.initialize()
 
     import asyncio
@@ -1065,70 +1066,49 @@ async def debug_skill_chat(
 
     from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     system_prompt = (
-        "你是 DataCrab 平台的技能调试助手。你正在帮助用户调试和优化一个技能（Skill）。\n\n"
+        "你是 DataCrab 平台的技能调试助手。\n\n"
         "## 你的能力\n"
-        "1. **修改脚本**：输出以下格式的标记来更新脚本：\n"
-        "```json\n"
-        '{"action": "modify_script", "script_name": "main.py"}\n'
-        "```\n"
-        "紧接着输出：\n"
-        "```python\n"
-        "# 完整的脚本内容\n"
-        "```\n"
-        "2. **执行技能**：输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 来触发执行\n"
-        "3. **分析问题**：分析执行结果中的错误，给出建议\n"
-        "4. **解释代码**：解释技能脚本的功能和逻辑\n\n"
-        "## 当前技能信息\n"
-        f"- 技能名称：{skill.display_name or skill.name}\n"
-        f"- 技能描述：{skill.description or '无'}\n"
+        "1. **修改脚本**：输出 JSON `{\"action\": \"modify_script\", \"script_name\": \"main.py\"}`，紧接着用 ```python 代码块提供完整脚本\n"
+        "2. **执行技能**：输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 触发执行（parameters 只传业务参数）\n"
+        "3. **分析问题**：分析错误，给出建议\n"
+        "4. 可在同一回复中先 modify_script 再 run\n\n"
+        f"## 当前技能：{skill.display_name or skill.name}\n"
+        f"- 描述：{skill.description or '无'}\n"
         f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
         f"- 表名：{request.table_name or '未选择'}\n\n"
-        f"## SKILL.md\n```\n{skill_md[:3000]}\n```\n\n"
-        f"## 当前脚本（{request.script_name}）\n```python\n{script_content}\n```\n\n"
-        f"{SANDBOX_TOOLS_DOC}\n\n"
-        "## Action 输出格式\n"
-        "- **run action**：单独一行 JSON，如 `{\"action\": \"run\", \"parameters\": {\"split_column\": \"批次\"}}`\n"
-        "- **modify_script action**：先用 JSON 声明 action，紧接着用 ```python 代码块提供完整脚本\n"
-        "- run 的 parameters 只需传业务参数，不要传 datasource_id/table_name（系统会自动注入）\n"
-        "- 可以在同一回复中先 modify_script 再 run，系统会按顺序执行\n"
-        "- modify_script 的代码块中必须是完整的脚本，不能只写修改的部分\n"
-        "- 如果只是回答问题或分析，不需要输出任何 action\n\n"
-        f"{SAFETY_RULES_DOC}\n\n"
-        "## 调试交互示例\n\n"
-        "用户：运行一下试试\n"
-        '助手：好的，我来执行一下这个技能。\n\n{"action": "run", "parameters": {}}\n\n'
-        "（如果执行成功，分析结果给用户；如果失败，进入修改流程）\n\n"
-        "用户：报错了，列名不对\n"
-        '助手：我看到错误了，数据源中的列名和脚本中使用的不一致。我来修改脚本适配实际的列名。\n\n'
-        '{"action": "modify_script", "script_name": "main.py"}\n```python\n'
-        "# 完整的修改后脚本\n```\n"
-        '{"action": "run", "parameters": {}}\n\n'
-        "（修改后立即运行验证）"
+        f"## SKILL.md（摘要）\n```\n{skill_md[:1500]}\n```\n\n"
+        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2500]}\n```\n\n"
+        "## 规则\n"
+        "- 修改脚本时输出完整脚本，不能只写修改部分\n"
+        "- 只处理用户业务数据，不修改平台自身\n"
+        "- 回答问题或分析时不需要输出 action\n\n"
+        "## 示例\n"
+        '用户：运行一下\n'
+        '助手：{"action": "run", "parameters": {}}\n\n'
+        '用户：报错了\n'
+        '助手：{"action": "modify_script", "script_name": "main.py"}\n```python\n# 完整脚本\n```\n{"action": "run", "parameters": {}}\n'
     )
 
     lessons = read_lessons(folder)
     if lessons:
-        system_prompt += (
-            "\n\n## 📖 历史经验总结（从过往错误中学习的经验，修改脚本时务必参考）\n"
-            f"{lessons}"
-        )
+        system_prompt += f"\n\n## 历史经验（修改脚本时参考）\n{lessons[:800]}"
 
     ctx = request.context or {}
     if ctx:
         ctx_parts = []
         exec_tab = ctx.get("exec_tab", "")
         if exec_tab == "nl" and ctx.get("nl_query"):
-            ctx_parts.append(f"- 用户在自然语言输入框中填入：{ctx['nl_query']}")
+            ctx_parts.append(f"- 自然语言输入：{ctx['nl_query']}")
         elif exec_tab == "cmd" and ctx.get("cmd_str"):
-            ctx_parts.append(f"- 用户在命令行输入框中填入：{ctx['cmd_str']}")
+            ctx_parts.append(f"- 命令行输入：{ctx['cmd_str']}")
         elif exec_tab == "json" and ctx.get("json_params"):
-            ctx_parts.append(f"- 用户在JSON参数输入框中填入：{ctx['json_params']}")
+            ctx_parts.append(f"- JSON参数：{ctx['json_params']}")
         if ctx_parts:
-            system_prompt += "\n\n## 用户当前调试输入（左侧执行面板）\n" + "\n".join(ctx_parts) + "\n请根据用户的调试输入来执行或调试技能，如果用户没有明确要求其他参数，优先使用这些输入作为执行参数。"
+            system_prompt += "\n\n## 用户调试输入\n" + "\n".join(ctx_parts) + "\n优先使用这些输入作为执行参数。"
 
     messages = [{"role": "system", "content": system_prompt}]
-    for msg in request.history[-20:]:
-        messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+    for msg in request.history[-10:]:
+        messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
     messages.append({"role": "user", "content": request.message})
 
     async def generate():
@@ -1158,7 +1138,10 @@ async def debug_skill_chat(
                     run_failures = []
 
                 full_content = ""
-                async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+                is_retry = round_idx > 0
+                chosen_model = llm_manager.pick_model(request.message if not is_retry else feedback_msg, is_retry=is_retry)
+                logger.info(f"技能debug-chat round {round_idx+1}: model={chosen_model} (deep={is_retry or should_use_deep_model(request.message)})")
+                async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
                     event = {"type": chunk["type"], "content": chunk["content"]}
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                     if chunk["type"] == "content":
@@ -1174,12 +1157,18 @@ async def debug_skill_chat(
                     if code_match:
                         actions.append({"action": "modify_script", "script_name": script_name, "content": code_match.group(1).strip()})
 
-                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\})\s*\}', full_content):
+                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*(?:,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\}))?\s*\}', full_content):
                     try:
-                        params = json_mod.loads(m.group(1).replace("'", '"'))
+                        params_str = m.group(1)
+                        params = json_mod.loads(params_str.replace("'", '"')) if params_str else {}
                         actions.append({"action": "run", "parameters": params})
                     except json_mod.JSONDecodeError:
-                        pass
+                        actions.append({"action": "run", "parameters": {}})
+
+                # 如果 AI 修改了脚本但没有输出 run action，自动执行一次验证
+                if actions and any(a.get("action") == "modify_script" for a in actions):
+                    if not any(a.get("action") == "run" for a in actions):
+                        actions.append({"action": "run", "parameters": {}})
 
                 for action in actions:
                     if action.get("action") == "modify_script":
@@ -1655,7 +1644,7 @@ async def modify_skill_stream(
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=llm_manager.model, temperature=0.3, max_tokens=4000):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":

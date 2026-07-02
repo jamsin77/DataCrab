@@ -41,6 +41,12 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function clearMessages() {
+    if (!currentSessionId.value) return
+    await chatApi.clearMessages(currentSessionId.value)
+    messages.value = []
+  }
+
   async function sendMessage(content: string) {
     if (!currentSessionId.value) {
       await createSession()
@@ -155,6 +161,7 @@ export const useChatStore = defineStore('chat', () => {
     createSession,
     switchSession,
     deleteSession,
+    clearMessages,
     sendMessage,
     stopGeneration,
   }

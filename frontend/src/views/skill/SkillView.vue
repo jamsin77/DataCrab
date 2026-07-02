@@ -65,9 +65,6 @@
             <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
               <el-icon><Delete /></el-icon> 删除
             </el-button>
-            <el-button size="small" type="warning" plain @click="convertToPipeline(skill)">
-              <el-icon><Share /></el-icon> 转为流程
-            </el-button>
           </div>
         </div>
       </el-card>
@@ -222,30 +219,41 @@
             <div v-if="modifyThinking" class="modify-thinking-content">
               {{ modifyThinking }}
             </div>
-            <div v-else class="modify-thinking-placeholder">等待模型响应中</div>
+            <div v-if="modifyContent" class="modify-content-preview">
+              <div class="modify-content-label">生成内容</div>
+              <pre>{{ modifyContent }}</pre>
+            </div>
+            <div v-if="!modifyThinking && !modifyContent" class="modify-thinking-placeholder">等待模型响应中</div>
           </div>
         </div>
 
         <el-divider />
 
-        <div class="detail-actions-row">
-          <el-button
-            type="warning"
-            size="small"
-            :loading="summarizingErrors"
-            @click="handleSummarizeErrors"
-          >
-            <el-icon><MagicStick /></el-icon> 总结经验
-          </el-button>
-          <span class="detail-actions-hint">分析历史错误，总结经验写入 SKILL.md</span>
-        </div>
-
         <div class="detail-preview-label">技能详情预览</div>
 
         <el-tabs v-model="detailTab" class="detail-tabs">
           <el-tab-pane label="SKILL.md" name="md">
-            <div v-if="mdEditContent" class="markdown-body" v-html="renderMarkdown(mdEditContent)"></div>
-            <el-empty v-else description="暂无 SKILL.md 内容" />
+            <div class="md-editor-toolbar">
+              <el-radio-group v-model="mdMode" size="small">
+                <el-radio-button value="preview">预览</el-radio-button>
+                <el-radio-button value="edit">编辑</el-radio-button>
+              </el-radio-group>
+              <el-button size="small" type="primary" :loading="savingMd" @click="saveSkillMd">
+                <el-icon><Check /></el-icon> 保存
+              </el-button>
+            </div>
+            <el-input
+              v-if="mdMode === 'edit'"
+              v-model="mdEditContent"
+              type="textarea"
+              :autosize="{ minRows: 12, maxRows: 30 }"
+              placeholder="编辑 SKILL.md 内容（Markdown）"
+              style="font-family: 'Consolas', 'Monaco', monospace; font-size: 13px"
+            />
+            <template v-else>
+              <div v-if="mdEditContent" class="markdown-body" v-html="renderMarkdown(mdEditContent)"></div>
+              <el-empty v-else description="暂无 SKILL.md 内容" />
+            </template>
           </el-tab-pane>
 
           <el-tab-pane label="脚本列表" name="scripts">
@@ -400,6 +408,17 @@
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 调试助手</span>
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              style="margin-left: auto"
+              :loading="convertingPipeline"
+              :disabled="debugStreaming || execRunning"
+              @click="convertToPipeline"
+            >
+              <el-icon><Share /></el-icon> 转为流程
+            </el-button>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onSkillListScroll">
             <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
@@ -643,21 +662,116 @@ function downloadSkill(skill: any) {
   }
 }
 
-// ==================== 删除 ====================
+// ==================== 转为流程（调试页面内，流式推理） ====================
 
-async function convertToPipeline(skill: any) {
+const convertingPipeline = ref(false)
+
+async function convertToPipeline() {
+  if (!debugSkill.value || convertingPipeline.value) return
+
+  const defaultName = `${debugSkill.value.display_name || debugSkill.value.name} - 流程`
+  let pipelineName = defaultName
+  try {
+    const { value } = await ElMessageBox.prompt('请输入流程名称', '转为流程', {
+      confirmButtonText: '生成',
+      cancelButtonText: '取消',
+      inputValue: defaultName,
+      inputValidator: (v: string) => !!v?.trim() || '名称不能为空',
+    })
+    pipelineName = value.trim()
+  } catch {
+    return
+  }
+
+  convertingPipeline.value = true
+
+  const assistantIdx = debugMessages.value.length
+  debugMessages.value.push({
+    role: 'assistant',
+    content: '',
+    thinking: '',
+    thinkingOpen: true,
+  })
+  skillPinnedToBottom.value = true
+  await nextTick()
+  scrollSkillDebugToBottom(true)
+
+  let streamOk = false
+
   try {
     const token = localStorage.getItem('access_token')
-    const resp = await fetch(`/api/v1/pipelines/from-skill/${skill.id}`, {
+    const response = await fetch(`/api/v1/pipelines/from-skill-stream/${debugSkill.value.id}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ display_name: pipelineName }),
     })
-    if (!resp.ok) throw new Error(await resp.text())
-    const pl = await resp.json()
-    ElMessage.success(`流程 "${pl.display_name || pl.name}" 已生成`)
-    router.push('/pipeline')
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    const processLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data: ')) return
+      try {
+        const data = JSON.parse(trimmed.slice(6))
+        const msg = debugMessages.value[assistantIdx]
+        if (data.type === 'status') {
+          msg.thinking = (msg.thinking || '') + data.message + '\n'
+        } else if (data.type === 'thinking') {
+          msg.thinking = (msg.thinking || '') + data.content
+        } else if (data.type === 'content') {
+          msg.content += data.content
+        } else if (data.type === 'done') {
+          pipelineName = data.pipeline_name || data.name || '流程'
+          streamOk = true
+        } else if (data.type === 'error') {
+          msg.content += `\n\n错误: ${data.message || data.content || '未知错误'}`
+        }
+      } catch { /* skip */ }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        const tail = decoder.decode()
+        if (tail) buffer += tail
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) processLine(line)
+        }
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) processLine(line)
+      nextTick(() => scrollSkillDebugToBottom())
+    }
+
+    if (streamOk) {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg.thinking) msg.thinkingOpen = false
+      if (!msg.content) msg.content = `流程 "${pipelineName}" 已生成，可在流程页面查看。`
+      ElMessage.success(`流程 "${pipelineName}" 已生成`)
+      await loadSkills()
+    }
   } catch (e: any) {
-    ElMessage.error('转换失败: ' + (e.message || '未知错误'))
+    if (e.name !== 'AbortError') {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg) msg.content = `转为流程失败: ${e.message || String(e)}`
+    }
+  } finally {
+    convertingPipeline.value = false
+    await nextTick()
+    scrollSkillDebugToBottom()
   }
 }
 
@@ -833,23 +947,27 @@ const detailDrawer = ref(false)
 const detailSkill = ref<any>(null)
 const detailTab = ref('md')
 const mdEditContent = ref('')
+const mdMode = ref<'preview' | 'edit'>('preview')
+const savingMd = ref(false)
 const modifyInstruction = ref('')
 const modifying = ref(false)
 const modifyError = ref('')
 const modifyThinking = ref('')
+const modifyContent = ref('')
 const modifyPhase = ref<'thinking'|'generating'|'idle'>('idle')
 const modifyAbortCtrl = ref<AbortController | null>(null)
 
 const expandedScript = ref('')
 const scriptContents = reactive<Record<string, string>>({})
 const savingScript = ref(false)
-const summarizingErrors = ref(false)
 
 function openDetail(skill: any) {
   detailSkill.value = skill
   mdEditContent.value = skill.skill_md || ''
   modifyInstruction.value = ''
   modifyError.value = ''
+  modifyThinking.value = ''
+  modifyContent.value = ''
   modifyPhase.value = 'idle'
   detailTab.value = 'md'
 
@@ -867,6 +985,7 @@ async function handleModifySkill() {
   modifying.value = true
   modifyError.value = ''
   modifyThinking.value = ''
+  modifyContent.value = ''
   modifyPhase.value = 'thinking'
 
   const ctrl = new AbortController()
@@ -892,48 +1011,65 @@ async function handleModifySkill() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let doneSkill: any = null
+    let cancelled = false
+    let errMsg = ''
+
+    const processLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data: ')) return
+      try {
+        const data = JSON.parse(trimmed.slice(6))
+        if (data.type === 'thinking') {
+          modifyThinking.value += data.content
+        } else if (data.type === 'content') {
+          modifyPhase.value = 'generating'
+          modifyContent.value += data.content
+        } else if (data.type === 'done') {
+          doneSkill = data.skill || null
+        } else if (data.type === 'error') {
+          errMsg = data.content || '修改失败'
+        } else if (data.type === 'cancelled') {
+          cancelled = true
+        }
+      } catch {
+        // skip malformed JSON
+      }
+    }
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        const tail = decoder.decode()
+        if (tail) buffer += tail
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) {
+            processLine(line)
+          }
+        }
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
-
       for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
+        processLine(line)
+      }
+    }
 
-        try {
-          const data = JSON.parse(trimmed.slice(6))
-
-          if (data.type === 'thinking') {
-            modifyThinking.value += data.content
-          } else if (data.type === 'content') {
-            modifyPhase.value = 'generating'
-            if (!modifyThinking.value) {
-              modifyThinking.value = '正在生成修改内容...'
-            }
-          } else if (data.type === 'done') {
-            if (data.skill) {
-              detailSkill.value = data.skill
-              mdEditContent.value = data.skill.skill_md || ''
-            }
-            modifyInstruction.value = ''
-            ElMessage.success('技能已通过 AI 修改')
-            await loadSkills()
-            if (debugDrawer.value) {
-              refreshDebugContext()
-            }
-          } else if (data.type === 'error') {
-            modifyError.value = data.content || '修改失败'
-          } else if (data.type === 'cancelled') {
-            ElMessage.info('修改已取消')
-          }
-        } catch {
-          // skip malformed JSON
-        }
+    if (errMsg) {
+      modifyError.value = errMsg
+    } else if (cancelled) {
+      ElMessage.info('修改已取消')
+    } else if (doneSkill) {
+      detailSkill.value = doneSkill
+      mdEditContent.value = doneSkill.skill_md || ''
+      modifyInstruction.value = ''
+      ElMessage.success('技能已通过 AI 修改')
+      await loadSkills()
+      if (debugDrawer.value) {
+        refreshDebugContext()
       }
     }
   } catch (e: any) {
@@ -982,25 +1118,19 @@ async function saveScriptContent(name: string) {
   }
 }
 
-async function handleSummarizeErrors() {
+async function saveSkillMd() {
   if (!detailSkill.value) return
-  summarizingErrors.value = true
+  savingMd.value = true
   try {
-    const res = await api.post(`/skills/${detailSkill.value.id}/summarize-errors`)
-    if (res.error_count === 0) {
-      ElMessage.info('暂无错误记录，无需总结')
-    } else {
-      ElMessage.success(res.message || `已总结 ${res.error_count} 条错误记录`)
-      const updated = await api.get(`/skills/${detailSkill.value.id}`)
-      if (updated) {
-        detailSkill.value = updated
-        mdEditContent.value = updated.skill_md || ''
-      }
-    }
+    const updated = await api.put(`/skills/${detailSkill.value.id}/skill-md`, {
+      content: mdEditContent.value,
+    })
+    detailSkill.value = updated
+    ElMessage.success('SKILL.md 已保存')
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '总结失败')
+    ElMessage.error(e.response?.data?.detail || '保存失败')
   } finally {
-    summarizingErrors.value = false
+    savingMd.value = false
   }
 }
 
@@ -1072,6 +1202,17 @@ function scrollSkillDebugToBottom(force = false) {
   if (!el) return
   if (!force && !skillPinnedToBottom.value) return
   el.scrollTop = el.scrollHeight
+}
+function scrollThinkingBodyToBottom(msgIdx: number) {
+  nextTick(() => {
+    const list = debugMsgListRef.value
+    if (!list) return
+    const msgs = list.querySelectorAll('.debug-message')
+    const target = msgs[msgIdx] as HTMLElement | undefined
+    if (!target) return
+    const body = target.querySelector('.thinking-body') as HTMLElement | null
+    if (body) body.scrollTop = body.scrollHeight
+  })
 }
 function onSkillListScroll() {
   const el = debugMsgListRef.value
@@ -1604,7 +1745,6 @@ async function handleRunSkill() {
 
           if (data.type === 'executing') {
             msg.thinking = data.message || '正在执行技能脚本...'
-            scrollSkillDebugToBottom()
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -1616,6 +1756,7 @@ async function handleRunSkill() {
           // skip malformed JSON
         }
       }
+      nextTick(() => scrollSkillDebugToBottom())
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
@@ -1689,8 +1830,9 @@ async function handleRunSkillNL() {
           const msg = debugMessages.value[assistantIdx]
 
           if (data.type === 'thinking') {
+            if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
-            scrollSkillDebugToBottom()
+            scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
             execPhase.value = 'executing'
             if (!msg.thinking) msg.thinking = '正在推断参数...'
@@ -1711,6 +1853,7 @@ async function handleRunSkillNL() {
           // skip malformed JSON
         }
       }
+      nextTick(() => scrollSkillDebugToBottom())
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
@@ -1823,7 +1966,6 @@ async function handleRunCmd() {
 
           if (data.type === 'executing') {
             msg.thinking = data.message || '正在执行技能脚本...'
-            scrollSkillDebugToBottom()
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -1835,6 +1977,7 @@ async function handleRunCmd() {
           // skip malformed JSON
         }
       }
+      nextTick(() => scrollSkillDebugToBottom())
     }
   } catch (e: any) {
     if (e.name === 'AbortError') {
@@ -1902,6 +2045,9 @@ async function handleDebugSend() {
   skillPinnedToBottom.value = true
   nextTick(() => scrollSkillDebugToBottom(true))
 
+  let scriptChanged = false
+  let streamOk = false
+
   try {
     const token = localStorage.getItem('access_token')
     const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
@@ -1956,7 +2102,9 @@ async function handleDebugSend() {
           const msg = debugMessages.value[assistantIdx]
 
           if (data.type === 'thinking') {
+            if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
+            scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) {
               thinkingDone = true
@@ -1971,6 +2119,7 @@ async function handleDebugSend() {
             }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
+            scriptChanged = true
             refreshDebugContext()
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
@@ -1979,13 +2128,14 @@ async function handleDebugSend() {
           // skip
         }
       }
-      scrollSkillDebugToBottom()
+      nextTick(() => scrollSkillDebugToBottom())
     }
 
     const finalMsg = debugMessages.value[assistantIdx]
     if (finalMsg.thinking && !thinkingDone) {
       finalMsg.thinking = ''
     }
+    streamOk = true
 
   } catch (e: any) {
     if (e.name === 'AbortError') {
@@ -2003,6 +2153,27 @@ async function handleDebugSend() {
     debugAbortController = null
     await nextTick()
     scrollSkillDebugToBottom()
+  }
+
+  // 脚本被 AI 更新后，自动重新执行一次技能，便于直接查看运行结果
+  if (scriptChanged && streamOk && debugSkill.value) {
+    const assistantMsg = debugMessages.value[assistantIdx]
+    const hasRunResult = assistantMsg?.runResult
+    if (!hasRunResult) {
+      if (execNLQuery.value.trim()) {
+        if (assistantMsg) {
+          assistantMsg.content += '\n\n> 脚本已更新，正在用自然语言重新执行技能…'
+        }
+        await handleRunSkillNL()
+      } else if (execParamsStr.value.trim()) {
+        if (assistantMsg) {
+          assistantMsg.content += '\n\n> 脚本已更新，正在用 JSON 参数重新执行技能…'
+        }
+        await handleRunSkill()
+      } else if (assistantMsg) {
+        assistantMsg.content += '\n\n> 脚本已更新。在左侧执行面板输入参数后执行，即可查看运行结果。'
+      }
+    }
   }
 }
 
@@ -2127,16 +2298,11 @@ onMounted(() => {
   margin-bottom: 8px;
 }
 
-.detail-actions-row {
+.md-editor-toolbar {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.detail-actions-hint {
-  font-size: 12px;
-  color: #909399;
+  margin-bottom: 8px;
 }
 
 .nl-modify-section {
@@ -2223,6 +2389,26 @@ onMounted(() => {
       font-size: 13px;
       color: #c0c4cc;
     }
+
+    .modify-content-preview {
+      border-top: 1px solid #e4e7ed;
+      .modify-content-label {
+        padding: 6px 12px 2px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #67c23a;
+      }
+      pre {
+        margin: 0;
+        padding: 4px 12px 10px;
+        font-size: 12px;
+        color: #606266;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+    }
   }
 }
 
@@ -2293,8 +2479,8 @@ onMounted(() => {
     border-radius: 6px;
     padding: 12px;
     resize: vertical;
-    background: #1e1e1e;
-    color: #d4d4d4;
+    background: #ffffff;
+    color: #303133;
     outline: none;
     &:focus { border-color: #409eff; }
   }
@@ -2828,8 +3014,8 @@ onMounted(() => {
     font-family: 'Consolas', monospace; font-size: 13px; color: #d63384;
   }
   pre {
-    background: #1e1e1e; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
-    code { background: none; color: #d4d4d4; padding: 0; }
+    background: #ffffff; border: 1px solid #ebeef5; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
+    code { background: none; color: #303133; padding: 0; }
   }
   blockquote {
     border-left: 4px solid #409eff; padding: 8px 16px; margin: 12px 0;
@@ -2892,7 +3078,8 @@ onMounted(() => {
 .gen-log-scroll {
   max-height: 280px;
   overflow-y: auto;
-  background: #1e1e1e;
+  background: #ffffff;
+  border: 1px solid #ebeef5;
   border-radius: 6px;
   padding: 12px 14px;
   font-family: 'Consolas', 'Courier New', monospace;
@@ -2906,7 +3093,7 @@ onMounted(() => {
 }
 .gen-log-status { color: #67c23a; }
 .gen-log-progress { color: #e6a23c; }
-.gen-log-chunk { color: #c0c4cc; }
+.gen-log-chunk { color: #909399; }
 .gen-log-error { color: #f56c6c; }
 .gen-log-label {
   font-weight: 600;

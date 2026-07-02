@@ -149,6 +149,8 @@ class AgentRuntime:
         handoff_count = 0
         current_agent = self.registry.get(agent_name)
         current_message = message
+        # 收敛检测：记录 handoff 签名（G）
+        handoff_signatures: List[tuple] = []
 
         while current_agent and handoff_count < max_handoffs:
             async for event in current_agent.run(current_message, context):
@@ -159,6 +161,25 @@ class AgentRuntime:
                         reason=event["reason"],
                         trace_id=current_message.trace_id,
                     )
+
+                    # 收敛检测：记录签名（G）
+                    payload = event.get("payload", {})
+                    sig = (
+                        event["to"],
+                        payload.get("datasource_id", ""),
+                        payload.get("table_name", ""),
+                    )
+                    handoff_signatures.append(sig)
+
+                    # 连续 4 次在同一张表上来回 → 未收敛
+                    if len(handoff_signatures) >= 4:
+                        recent = handoff_signatures[-4:]
+                        tables = set((s[1], s[2]) for s in recent)
+                        if len(tables) == 1 and recent[0][0] != recent[-1][0]:
+                            yield {"type": "content", "content": "自动修复未能收敛，同一问题反复出现，请人工介入检查。"}
+                            yield {"type": "done", "result": {"agent": "runtime", "content": "收敛失败"}}
+                            return
+
                     target_name = event["to"]
                     current_agent = self.registry.get(target_name)
                     current_message = AgentMessage(

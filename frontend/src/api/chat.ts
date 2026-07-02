@@ -50,6 +50,10 @@ export const chatApi = {
     return api.get(`/chat/sessions/${sessionId}/messages`)
   },
 
+  clearMessages(sessionId: string): Promise<void> {
+    return api.delete(`/chat/sessions/${sessionId}/messages`)
+  },
+
   sendMessage(sessionId: string, content: string): Promise<ChatMessage> {
     return api.post('/chat/messages', { session_id: sessionId, content })
   },

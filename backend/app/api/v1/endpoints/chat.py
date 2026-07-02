@@ -4,12 +4,11 @@ import asyncio
 import json
 import os
 from uuid import UUID, uuid4
-from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from loguru import logger
 
 _active_stream_events: dict[str, asyncio.Event] = {}
@@ -32,6 +31,8 @@ from app.schemas.chat import (
 from app.api.deps import get_current_user
 from app.services.llm import llm_manager
 from app.services.agent_config import agent_config
+from app.services.agent_utils import estimate_tokens, build_identifier_hint
+from app.services.tool_guidance import get_tool_guidance
 
 router = APIRouter()
 
@@ -69,6 +70,7 @@ async def get_agent_config():
 def _build_system_prompt(datasource_context: str) -> str:
     from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     persona_block = f"{ASSISTANT_PERSONA}\n\n---\n\n" if ASSISTANT_PERSONA else ""
+    tool_guidance = get_tool_guidance()
     return f"""{persona_block}## 数据源知识库
 {datasource_context}
 
@@ -79,7 +81,9 @@ def _build_system_prompt(datasource_context: str) -> str:
 
 {SANDBOX_TOOLS_DOC}
 
-{SAFETY_RULES_DOC}"""
+{SAFETY_RULES_DOC}
+
+{tool_guidance}"""
 
 
 async def build_datasource_context(
@@ -138,208 +142,6 @@ async def build_datasource_context(
     return "\n".join(lines)
 
 
-CHINESE_ERA_MAP = {
-    "旧石器": -1000000, "旧石器时代": -1000000,
-    "更新世": -1000000,
-    "新石器": -10000, "新石器时代": -10000, "石器时代": -10000,
-    "新时器时代": -10000,
-    "青铜时代": -2000, "新石器至青铜时代": -2000,
-    "夏": -2070, "夏商": -2070, "夏至商": -2070, "夏至周": -2070,
-    "夏至西周": -2070, "夏商至唐宋": -2070,
-    "商": -1600, "殷": -1600, "商周": -1600,
-    "西周": -1046, "西周至东周": -1046, "西周至春秋": -1046,
-    "西周至战国": -1046, "西周至宋": -1046,
-    "东周": -770,
-    "春秋": -770, "春秋至战国": -770, "春秋至汉": -770,
-    "春秋至西汉": -770, "春秋至明": -770, "春秋至清": -770,
-    "春秋至南北朝": -770, "春秋至五代": -770,
-    "战国": -475, "战国至汉": -475, "战国至秦": -475,
-    "战国至清": -475, "战国至明": -475, "战国至唐": -475,
-    "战国至宋": -475, "战国至晋": -475, "战国至金": -475,
-    "战国至民国": -475, "战国至秦汉": -475, "战国至东汉": -475,
-    "战国至西汉": -475, "战国至隋唐": -475,
-    "秦": -221, "秦至汉": -221, "秦至清": -221,
-    "秦至宋": -221, "秦至晋": -221, "秦至西汉": -221,
-    "秦汉": -221, "秦、汉": -221, "秦、西汉": -221,
-    "汉": -206, "西汉": -206, "西汉至东汉": -206,
-    "西汉至宋": -206, "西汉至清": -206, "西汉至隋": -206,
-    "西汉至西晋": -206, "汉至三国": -206, "汉至六朝": -206,
-    "汉至北魏": -206, "汉至南北朝": -206, "汉至唐": -206,
-    "汉至宋": -206, "汉至明": -206, "汉至晋": -206,
-    "汉至民国": -206, "汉至清": -206, "汉至近代": -206,
-    "汉至魏": -206, "汉至魏晋": -206, "汉魏": -206,
-    "汉晋": -206, "汉唐": -206, "汉至清": -206,
-    "东汉": 25,
-    "三国": 220, "曹魏": 220, "曹魏至北齐": 220,
-    "魏至唐": 220, "西魏": 535,
-    "晋": 266, "西晋": 266, "西晋至民国": 266,
-    "晋至唐": 266, "晋至宋": 266, "晋至民国": 266,
-    "晋至清": 266, "晋至宋": 266, "晋十六国": 266,
-    "十六国": 304,
-    "南北朝": 420, "北魏": 386,
-    "隋": 581, "隋唐": 581, "隋至唐": 581,
-    "隋至宋": 581, "隋至明": 581, "隋至清": 581,
-    "隋至五代": 581, "隋至元": 581,
-    "唐": 618, "高昌": 460,
-    "五代": 907, "五代十国": 907,
-    "渤海": 698,
-    "宋": 960, "北宋": 960, "南宋": 1127,
-    "宋至元": 960, "宋至明": 960, "宋至清": 960,
-    "宋至民国": 960, "宋至近代": 960, "宋至中华人民共和国": 960,
-    "宋辽": 960, "宋金": 960, "宋金元": 960,
-    "宋元": 960, "宋明": 960, "宋明至清": 960,
-    "宋明": 960, "宋明清": 960, "宋清": 960,
-    "辽": 907, "辽至元": 907, "辽至明": 907,
-    "辽至清": 907, "辽至金": 907, "辽金": 907,
-    "辽金元": 907, "辽金清": 907,
-    "西夏": 1038, "西夏至元": 1038, "西夏至明代": 1038,
-    "金": 1115, "金至元": 1115, "金至明": 1115,
-    "金至民国": 1115, "金至清": 1115, "金元": 1115,
-    "金元明": 1115, "金明": 1115, "金明清": 1115,
-    "金清": 1115, "汉金": -206,
-    "元": 1271,
-    "明": 1368, "明至清末": 1368, "明至民国": 1368,
-    "明至清": 1368, "明以前": 1368, "明初至清": 1368,
-    "明至中华人民共和国": 1368, "明清": 1368, "明民国": 1368,
-    "明近代": 1368,
-    "清": 1644, "清代中期": 1776, "清末": 1911,
-    "清末民初": 1911, "清至民国": 1644, "清至近代": 1644,
-    "清至中华人民共和国": 1644, "清民国": 1644,
-    "民国": 1912, "近代": 1840, "近现代": 1912,
-    "离": 9999,
-}
-
-
-def extract_sort_year(era_text: str) -> int:
-    """将时代文本转换为可排序的年份数字"""
-    import re as _re
-    if not isinstance(era_text, str) or not era_text.strip():
-        return 99999
-
-    text = era_text.strip()
-    text_clean = _re.sub(r'\[.*?\]', '', text).strip()
-
-    year_match = _re.search(r'(\d{4})', text_clean)
-    if year_match:
-        year = int(year_match.group(1))
-        if "前" in text_clean or "B" in text_clean.upper():
-            year = -year
-        return year
-
-    for key, year in sorted(CHINESE_ERA_MAP.items(), key=lambda x: -len(x[0])):
-        if key in text_clean:
-            return year
-
-    return 99999
-
-
-DYNASTY_PATTERNS = {
-    "旧石器时代": "旧石器", "新石器时代": "新石器", "新石器": "新石器", "旧石器": "旧石器",
-    "夏代": "夏", "夏朝": "夏",
-    "商代": "商", "商朝": "商",
-    "西周": "周", "东周": "周", "周代": "周", "周朝": "周",
-    "春秋": "春秋", "战国": "战国",
-    "秦代": "秦", "秦朝": "秦",
-    "西汉": "汉", "东汉": "汉", "汉代": "汉", "汉朝": "汉",
-    "三国": "三国",
-    "西晋": "晋", "东晋": "晋", "晋代": "晋", "晋朝": "晋",
-    "南北朝": "南北朝",
-    "隋代": "隋", "隋朝": "隋",
-    "唐代": "唐", "唐朝": "唐",
-    "五代": "五代", "十国": "十国",
-    "北宋": "宋", "南宋": "宋", "宋代": "宋", "宋朝": "宋",
-    "辽代": "辽", "辽朝": "辽",
-    "西夏": "西夏",
-    "金代": "金", "金朝": "金",
-    "元代": "元", "元朝": "元",
-    "明代": "明", "明朝": "明",
-    "清代": "清", "清朝": "清",
-    "民国": "民国",
-}
-
-
-def _parse_complex_query(user_message: str) -> dict:
-    """解析用户消息中的复杂查询意图，返回操作指令"""
-    import re as _re
-    msg = user_message.lower() if user_message else ""
-    result = {
-        "is_complex": False,
-        "sort_field": None,
-        "sort_order": "asc",
-        "filter_field": None,
-        "filter_value": None,
-        "limit": None,
-        "aggregate": None,
-        "group_by": None,
-        "dynasty_keywords": None,
-    }
-
-    earliest = _re.search(r'最早[的的]?\s*(\d+)?\s*[个条]', msg)
-    latest = _re.search(r'最晚[的的]?\s*(\d+)?\s*[个条]', msg)
-    newest = _re.search(r'最新[的的]?\s*(\d+)?\s*[个条]', msg)
-
-    if earliest:
-        result["is_complex"] = True
-        result["sort_field"] = "时代"
-        result["sort_order"] = "asc"
-        result["limit"] = int(earliest.group(1)) if earliest.group(1) else 100
-    elif latest or newest:
-        result["is_complex"] = True
-        result["sort_field"] = "时代"
-        result["sort_order"] = "desc"
-        result["limit"] = int((latest or newest).group(1)) if (latest or newest).group(1) else 100
-
-    sort_match = _re.search(r'按[照]?\s*(\S{1,4})\s*(升序|降序|从早到晚|从晚到早|从小到大|从大到小)?\s*排[序名]', msg)
-    if sort_match:
-        result["is_complex"] = True
-        result["sort_field"] = sort_match.group(1)
-        order_hint = sort_match.group(2) or ""
-        if any(w in order_hint for w in ["降", "到早", "到大"]):
-            result["sort_order"] = "desc"
-
-    top_match = _re.search(r'(?:取|要|查|找|显示|列出)\s*(?:前|最前面的|前面的)?\s*(\d+)\s*[个条]', msg)
-    if top_match:
-        result["is_complex"] = True
-        if result["limit"] is None:
-            result["limit"] = int(top_match.group(1))
-
-    filter2 = _re.search(r'(\S{1,4})\s*(包含|含有|大于|小于|大于等于|小于等于|>=|<=|>|<)\s*(\S{1,20})', msg)
-    if filter2:
-        result["is_complex"] = True
-        result["filter_field"] = filter2.group(1)
-        result["filter_value"] = filter2.group(3)
-
-    dynasty_found = set()
-    sorted_patterns = sorted(DYNASTY_PATTERNS.keys(), key=lambda x: -len(x))
-    for pattern in sorted_patterns:
-        if pattern in user_message:
-            dynasty_found.add(DYNASTY_PATTERNS[pattern])
-    if dynasty_found:
-        result["is_complex"] = True
-        result["dynasty_keywords"] = list(dynasty_found)
-        if result["filter_field"] is None:
-            result["filter_field"] = "时代"
-            result["filter_value"] = "|".join(dynasty_found)
-        if result["sort_field"] is None:
-            result["sort_field"] = "时代"
-            result["sort_order"] = "asc"
-        if result["limit"] is None:
-            fallback_limit = _re.search(r'(\d+)\s*[个条]', msg)
-            if fallback_limit:
-                result["limit"] = int(fallback_limit.group(1))
-
-    if _re.search(r'(统计|计数|数量|多少个|count)', msg):
-        result["is_complex"] = True
-        result["aggregate"] = "count"
-
-    group_match = _re.search(r'按[照]?\s*(\S{1,4})\s*(分组|分类|group)', msg)
-    if group_match:
-        result["is_complex"] = True
-        result["group_by"] = group_match.group(1)
-
-    return result
-
-
 async def _query_datasource_previews(sources, user_message: str) -> str:
     """查询用户消息中提到的数据源的实际数据预览"""
     from app.services.connectors import get_connector
@@ -350,8 +152,6 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
     previews = []
 
     import re
-    complex_intent = _parse_complex_query(user_message)
-
     all_keywords = ["全部", "所有", "所有数据", "全部数据", "all", "完整", "整个"]
     want_all = any(kw in msg_lower for kw in all_keywords)
     page_match = re.search(r'第\s*(\d+)\s*页|page\s*(\d+)', msg_lower)
@@ -363,7 +163,7 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
     elif next_match:
         page = 2
 
-    page_size = 200 if want_all else 50
+    page_size = 100 if want_all else 20
 
     matched_sources = []
     for ds in sources:
@@ -403,20 +203,6 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
             except Exception:
                 pass
 
-            if complex_intent["is_complex"]:
-                logger.info(f"复杂查询 [{ds.name}] 表 {first_table} intent={complex_intent}")
-                load_size = total_rows if total_rows > 0 else 99999
-                df = await connector.get_table_data(first_table, page=1, page_size=load_size)
-                await connector.close()
-
-                if df.empty:
-                    continue
-
-                preview_text = _execute_complex_query(df, ds.name, first_table, complex_intent)
-                if preview_text:
-                    previews.append(preview_text)
-                continue
-
             logger.info(f"查询数据源 [{ds.name}] 表 {first_table} page={page} size={page_size}")
 
             df = await connector.get_table_data(first_table, page=page, page_size=page_size)
@@ -433,7 +219,7 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
             preview_text += f"总行数: {total_rows}, 总列数: {col_count}, 当前第 {page} 页"
             if total_pages > 0:
                 preview_text += f", 共 {total_pages} 页"
-                preview_text += "\n> 提示: 如需翻页请说\"显示第2页\"，想看更多请说\"显示所有数据\""
+                preview_text += "\n> 提示: 如需翻页请说\"显示第2页\"，想看更多请说\"显示所有数据\"；如需排序、筛选、统计等操作请直接告诉我"
             preview_text += f"\n\n显示 {row_count} 行:\n\n"
 
             headers = list(df.columns)
@@ -444,7 +230,7 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
                 vals = [str(v)[:30] if v is not None and str(v) != "nan" else "" for v in row]
                 preview_text += "| " + " | ".join(vals) + " |\n"
 
-            previews.append(preview_text)
+            previews.append(_cap_preview(preview_text, note="数据较多，已截断预览；如需完整数据请明确说明"))
             logger.info(f"数据源 [{ds.name}] 已查询: {row_count}/{total_rows}行 x {col_count}列")
 
         except Exception as e:
@@ -454,95 +240,6 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
     if previews:
         return "\n## 实时数据查询结果\n以下是从数据源中查询到的真实数据，请基于这些数据回答用户问题：\n" + "\n".join(previews)
     return ""
-
-
-def _execute_complex_query(df, ds_name: str, table_name: str, intent: dict) -> str:
-    """对DataFrame执行复杂查询操作（排序、筛选、限制、聚合）"""
-    import re as _re
-
-    result_text = f"\n### 【复杂查询】{ds_name} - {table_name}\n"
-    result_text += f"总行数: {len(df)}, 总列数: {len(df.columns)}\n\n"
-
-    if intent["sort_field"]:
-        sort_field = intent["sort_field"]
-        if sort_field not in df.columns:
-            for col in df.columns:
-                if sort_field in str(col):
-                    sort_field = col
-                    break
-
-        if sort_field in df.columns:
-            ascending = intent["sort_order"] == "asc"
-            if sort_field == "时代":
-                result_text += "> 排序方式: 按中国历史年代表排序\n\n"
-                df["_sort_year"] = df[sort_field].apply(extract_sort_year)
-                df = df.sort_values("_sort_year", ascending=ascending)
-                df = df.drop(columns=["_sort_year"])
-            else:
-                try:
-                    df[sort_field] = pd.to_numeric(df[sort_field], errors="coerce")
-                    df = df.sort_values(sort_field, ascending=ascending)
-                except Exception:
-                    df = df.sort_values(sort_field, ascending=ascending)
-            result_text += f"按 `{intent['sort_field']}` {'升序' if ascending else '降序'} 排序\n\n"
-
-    if intent["filter_field"]:
-        filter_field = intent["filter_field"]
-        filter_value = intent["filter_value"]
-        df_before = len(df)
-
-        if filter_field in df.columns and filter_value:
-            if "|" in filter_value:
-                mask = df[filter_field].astype(str).str.contains(filter_value, regex=True, na=False)
-            else:
-                mask = df[filter_field].astype(str).str.contains(_re.escape(filter_value), na=False)
-            df = df[mask]
-            matched = len(df)
-            if intent.get("dynasty_keywords"):
-                dynasty_names = ", ".join(intent["dynasty_keywords"])
-                result_text += f"筛选: `{filter_field}` 匹配朝代 [{dynasty_names}]，匹配 {matched}/{df_before} 行\n\n"
-            else:
-                result_text += f"筛选: `{filter_field}` 包含 `{filter_value}`，匹配 {matched}/{df_before} 行\n\n"
-        else:
-            for col in df.columns:
-                if filter_field in str(col):
-                    if "|" in filter_value:
-                        mask = df[col].astype(str).str.contains(filter_value, regex=True, na=False)
-                    else:
-                        mask = df[col].astype(str).str.contains(_re.escape(filter_value), na=False)
-                    df = df[mask]
-                    result_text += f"筛选: `{col}` 包含 `{filter_value}`，匹配 {len(df)} 行\n\n"
-                    break
-
-    if intent["group_by"] and intent["aggregate"] == "count":
-        group_field = intent["group_by"]
-        if group_field in df.columns:
-            counts = df.groupby(group_field).size().reset_index(name="数量")
-            counts = counts.sort_values("数量", ascending=False)
-            result_text += f"按 `{group_field}` 分组计数:\n\n"
-            result_text += counts.head(50).to_markdown(index=False)
-            result_text += f"\n\n共 {len(counts)} 个分组\n"
-            return result_text
-
-    if intent["limit"]:
-        limit = intent["limit"]
-        df = df.head(limit)
-        result_text += f"取前 {min(limit, len(df))} 行\n\n"
-
-    row_count = len(df)
-    headers = list(df.columns)
-    result_text += f"显示 {row_count} 行:\n\n"
-    result_text += "| " + " | ".join(str(h)[:15] for h in headers) + " |\n"
-    result_text += "| " + " | ".join("---" for _ in headers) + " |\n"
-
-    for _, row in df.iterrows():
-        vals = [str(v)[:40] if v is not None and str(v) != "nan" else "" for v in row]
-        result_text += "| " + " | ".join(vals) + " |\n"
-
-    if row_count == intent.get("limit", 0):
-        result_text += f"\n> 已按排序规则返回前 {row_count} 行，如需更多请指定数量\n"
-
-    return result_text
 
 
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -663,6 +360,27 @@ async def list_messages(
     return result.scalars().all()
 
 
+@router.delete("/sessions/{session_id}/messages", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_messages(
+    session_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """清空会话的所有消息（保留会话本身）"""
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+    await db.execute(
+        delete(ChatMessage).where(ChatMessage.session_id == session_id)
+    )
+
+
 @router.post("/messages", response_model=ChatMessageResponse, status_code=status.HTTP_201_CREATED)
 async def send_message(
     request: ChatMessageCreate,
@@ -729,8 +447,7 @@ async def send_message(
         # 组装 messages 列表
         messages = [{"role": "system", "content": system_content}]
 
-        for msg in history_messages:
-            messages.append({"role": msg.role, "content": msg.content})
+        messages.extend(await _compress_history(history_messages, str(request.session_id)))
 
         messages.append({"role": "user", "content": request.content})
 
@@ -758,17 +475,64 @@ async def send_message(
     return ai_message
 
 
-def _route_to_agent(user_message: str) -> str:
-    msg_lower = user_message.lower()
-    inspect_keywords = [
-        "检查", "质量", "审查", "合规", "安全检查", "数据质量",
-        "质量检查", "标准检查", "安全审计", "pii", "脱敏",
-        "inspect", "quality", "audit",
-    ]
-    for kw in inspect_keywords:
-        if kw in msg_lower:
-            return "data_inspector"
-    return "data_processor"
+# ==================== 上下文压缩 ====================
+# 会话历史压缩缓存：session_id -> (摘要文本, 已摘要覆盖到的最后一条消息id)
+_HISTORY_SUMMARIES: dict = {}
+HISTORY_CHAR_BUDGET = 6000   # 历史原文总 token 估算超过此值则触发压缩
+HISTORY_KEEP_RECENT = 6      # 压缩时保留最近 N 条原文
+PREVIEW_CHAR_LIMIT = 5000    # 单个数据源预览的字符上限
+
+
+async def _compress_history(history_messages: list, session_id: str) -> list:
+    """历史消息分层压缩：总量超预算时，旧消息摘要 + 最近若干条原文。
+
+    改进（L）：标识符机械抽取——压缩时提取表名/数据源ID/UUID，保留在摘要中。
+    改进（M）：使用 CJK 感知的 token 估算替代字符数。
+    """
+    if not history_messages:
+        return []
+    total = sum(estimate_tokens(m.content or "") for m in history_messages)
+    if total <= HISTORY_CHAR_BUDGET or len(history_messages) <= HISTORY_KEEP_RECENT:
+        return [{"role": m.role, "content": m.content} for m in history_messages]
+
+    keep = history_messages[-HISTORY_KEEP_RECENT:]
+    older = history_messages[:-HISTORY_KEEP_RECENT]
+    last_older_id = str(older[-1].id) if older else ""
+
+    cached = _HISTORY_SUMMARIES.get(session_id)
+    summary = None
+    if cached and cached[1] == last_older_id:
+        summary = cached[0]
+    else:
+        try:
+            older_text = "\n".join(f"[{m.role}] {(m.content or '')[:500]}" for m in older)
+            # 标识符保护：从旧消息中机械提取表名/数据源ID/UUID（L）
+            id_hint = build_identifier_hint(older_text)
+            summary = await llm_manager.chat_with_messages(
+                [
+                    {"role": "system", "content": "你是对话摘要助手。把多轮对话压缩成简洁中文要点摘要，保留关键数据、结论和上下文，不要寒暄，限300字以内。" + id_hint},
+                    {"role": "user", "content": older_text[:8000]},
+                ],
+                temperature=0.2,
+                max_tokens=400,
+            )
+            _HISTORY_SUMMARIES[session_id] = (summary, last_older_id)
+        except Exception as e:
+            logger.warning(f"历史摘要生成失败，降级为仅保留近期: {e}")
+            summary = None
+
+    compressed: list = []
+    if summary:
+        compressed.append({"role": "system", "content": f"## 先前对话摘要\n{summary}"})
+    compressed.extend({"role": m.role, "content": m.content} for m in keep)
+    return compressed
+
+
+def _cap_preview(text: str, limit: int = PREVIEW_CHAR_LIMIT, note: str = "") -> str:
+    """截断过长的数据预览，避免撑爆上下文"""
+    if text and len(text) > limit:
+        return text[:limit] + (f"\n\n> {note}" if note else "")
+    return text
 
 
 @router.post("/stream")
@@ -811,105 +575,67 @@ async def stream_response(
                 db, current_user.id, request.content
             )
 
-            use_multi_agent = _route_to_agent(request.content) == "data_inspector"
+            # 统一路由：始终从 data_processor 开始，Agent 自主决定是否 handoff（O）
+            from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+            from app.services.data_processor_agent import DataProcessorAgent
+            from app.services.data_inspector_agent import DataInspectorAgent
 
-            if use_multi_agent:
-                from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-                from app.services.data_processor_agent import DataProcessorAgent
-                from app.services.data_inspector_agent import DataInspectorAgent
+            if not agent_registry.get("data_processor"):
+                agent_registry.register(DataProcessorAgent())
+            if not agent_registry.get("data_inspector"):
+                agent_registry.register(DataInspectorAgent())
 
-                if not agent_registry.get("data_processor"):
-                    agent_registry.register(DataProcessorAgent())
-                if not agent_registry.get("data_inspector"):
-                    agent_registry.register(DataInspectorAgent())
+            runtime = AgentRuntime(agent_registry, llm_manager)
 
-                runtime = AgentRuntime(agent_registry, llm_manager)
+            trace_id = str(uuid4())
+            compressed_history = await _compress_history(history_messages, session_id)
+            context = {
+                "db": db,
+                "user_id": current_user.id,
+                "datasource_context": datasource_context,
+                "persona": ASSISTANT_PERSONA,
+                "session_id": session_id,
+                "history": compressed_history,
+                "has_preinjected_data": "实时数据查询结果" in datasource_context,
+            }
 
-                trace_id = str(uuid4())
-                context = {
-                    "db": db,
-                    "user_id": current_user.id,
-                    "datasource_context": datasource_context,
-                    "persona": ASSISTANT_PERSONA,
-                    "session_id": session_id,
-                }
+            message = AgentMessage(
+                from_agent="user",
+                to_agent="data_processor",
+                reason=HandoffReason.DELEGATE,
+                payload={"user_message": request.content, "content": request.content},
+                context=context,
+                trace_id=trace_id,
+            )
 
-                message = AgentMessage(
-                    from_agent="user",
-                    to_agent="data_inspector",
-                    reason=HandoffReason.DELEGATE,
-                    payload={"user_message": request.content, "content": request.content},
-                    context=context,
-                    trace_id=trace_id,
-                )
+            full_response = ""
+            async for event in runtime.run("data_processor", message, context):
+                if cancel_event.is_set():
+                    yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                    return
 
-                full_response = ""
-                async for event in runtime.run("data_inspector", message, context):
-                    if cancel_event.is_set():
-                        yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                        return
+                if event.get("type") == "agent_switch":
+                    yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'reason': event['reason']}, ensure_ascii=False)}\n\n"
+                elif event.get("type") == "content":
+                    content = event.get("content", "")
+                    full_response += content
+                    yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
+                elif event.get("type") == "tool_result":
+                    yield f"data: {json.dumps({'type': 'tool_result', 'content': event.get('content', '')[:200]}, ensure_ascii=False)}\n\n"
+                elif event.get("type") == "done":
+                    pass
+                else:
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
-                    if event.get("type") == "agent_switch":
-                        yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'reason': event['reason']}, ensure_ascii=False)}\n\n"
-                    elif event.get("type") == "content":
-                        content = event.get("content", "")
-                        full_response += content
-                        yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
-                    elif event.get("type") == "tool_result":
-                        yield f"data: {json.dumps({'type': 'tool_result', 'content': event.get('content', '')[:200]}, ensure_ascii=False)}\n\n"
-                    elif event.get("type") == "done":
-                        pass
-                    else:
-                        yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            ai_message = ChatMessage(
+                session_id=request.session_id,
+                role="assistant",
+                content=full_response,
+            )
+            db.add(ai_message)
+            await db.flush()
 
-                ai_message = ChatMessage(
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=full_response,
-                )
-                db.add(ai_message)
-                await db.flush()
-
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            else:
-                system_content = _build_system_prompt(datasource_context)
-                messages = [{"role": "system", "content": system_content}]
-                for msg in history_messages:
-                    messages.append({"role": msg.role, "content": msg.content})
-                messages.append({"role": "user", "content": request.content})
-
-                from app.services.agent import agent_service, AgentContext
-
-                agent_ctx = AgentContext(
-                    db=db,
-                    user_id=current_user.id,
-                    datasource_context=datasource_context,
-                    persona=ASSISTANT_PERSONA,
-                )
-
-                full_response = ""
-                async for sse_chunk in agent_service.run_stream(messages, agent_ctx):
-                    if cancel_event.is_set():
-                        yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                        return
-                    yield sse_chunk
-
-                    try:
-                        data = json.loads(sse_chunk.removeprefix("data: ").strip())
-                        if data.get("type") == "content":
-                            full_response += data.get("content", "")
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
-
-                ai_message = ChatMessage(
-                    session_id=request.session_id,
-                    role="assistant",
-                    content=full_response,
-                )
-                db.add(ai_message)
-                await db.flush()
-
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
@@ -948,8 +674,9 @@ async def process_data_with_natural_language(
 ):
     """使用自然语言处理数据"""
     try:
-        # 导入NL数据处理服务
+        import pandas as pd
         from app.services.nl_data_processor import nl_processor
+        from app.services.skill_library import skill_library
 
         # 初始化技能库
         await skill_library.initialize()
@@ -1025,7 +752,9 @@ async def process_data_streaming(
     """流式处理数据"""
     async def generate():
         try:
+            import pandas as pd
             from app.services.nl_data_processor import nl_processor, DataProcessingRequest
+            from app.services.skill_library import skill_library
 
             # 初始化技能库
             await skill_library.initialize()
@@ -1081,6 +810,7 @@ async def process_data_streaming(
 @router.get("/skills")
 async def list_available_skills():
     """列出可用技能"""
+    from app.services.skill_library import skill_library
     await skill_library.initialize()
     skills = skill_library.list_skills()
     return {

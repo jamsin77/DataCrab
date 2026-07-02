@@ -1,43 +1,78 @@
 <template>
-  <div class="pipeline-view">
-    <div class="pl-toolbar">
-      <el-button type="primary" @click="showCreateDialog = true">新建流程</el-button>
-      <el-dropdown @command="handleFromSkill" style="margin-left:8px">
-        <el-button>从Skill生成 <el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item v-for="s in skills" :key="s.id" :command="s.id">
-              {{ s.display_name || s.name }}
-            </el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
-      <el-input v-model="searchText" placeholder="搜索流程..." size="small" style="width:200px;margin-left:12px" clearable @input="loadPipelines" />
+  <div class="pipeline-page">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <el-button type="primary" @click="showCreateDialog = true">
+          <el-icon><Plus /></el-icon> 新建流程
+        </el-button>
+        <el-dropdown @command="handleFromSkill">
+          <el-button type="success">
+            <el-icon><MagicStick /></el-icon> 从Skill生成
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="s in skills" :key="s.id" :command="s.id">
+                {{ s.display_name || s.name }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+      <div class="toolbar-right">
+        <el-input
+          v-model="searchText"
+          placeholder="搜索流程"
+          style="width: 220px"
+          clearable
+          :prefix-icon="Search"
+          @input="loadPipelines"
+        />
+      </div>
     </div>
 
-    <div class="pl-grid" v-if="pipelines.length">
-      <el-card v-for="pl in pipelines" :key="pl.id" class="pl-card" shadow="hover">
-        <div class="pl-card-header">
-          <span class="pl-card-name">{{ pl.display_name || pl.name }}</span>
-          <el-tag size="small" type="primary">主函数</el-tag>
+    <div class="op-grid" v-if="pipelines.length">
+      <el-card v-for="pl in pipelines" :key="pl.id" class="operator-card" shadow="hover">
+        <template #header>
+          <div class="card-header">
+            <span class="op-name">{{ pl.display_name || pl.name }}</span>
+            <el-tag size="small" type="primary">{{ pl.entry_function || 'main' }}</el-tag>
+          </div>
+        </template>
+        <p class="op-desc">{{ pl.description || '暂无描述' }}</p>
+        <div class="op-meta">
+          <el-tag v-if="pl.skill_calls?.length" size="small" type="info" effect="plain">
+            调用 {{ pl.skill_calls.length }} 个 Skill
+          </el-tag>
+          <el-tag v-else size="small" type="info" effect="plain">无 Skill 依赖</el-tag>
+          <el-tag v-if="pl.source_skill_id" size="small" type="warning" effect="plain">从 Skill 生成</el-tag>
         </div>
-        <div class="pl-card-desc">{{ pl.description || '暂无描述' }}</div>
-        <div class="pl-card-meta">
-          <span v-if="pl.skill_calls?.length">调用 {{ pl.skill_calls.length }} 个 Skill 脚本</span>
-          <span v-else>无 Skill 依赖</span>
-          <span v-if="pl.source_skill_id" style="margin-left:8px;color:#909399">· 从 Skill 生成</span>
-        </div>
-        <div class="pl-card-actions">
-          <el-button size="small" type="primary" text @click="viewCode(pl)">查看代码</el-button>
-          <el-button size="small" type="success" text @click="runPipeline(pl)">运行</el-button>
-          <el-button size="small" text @click="clonePipeline(pl)">复制</el-button>
-          <el-button size="small" type="danger" text @click="deletePipeline(pl)">删除</el-button>
+        <div class="op-actions">
+          <div class="op-actions-row">
+            <el-button size="small" type="success" plain @click="openDebug(pl)">
+              <el-icon><VideoPlay /></el-icon> 调试
+            </el-button>
+            <el-button size="small" type="primary" @click="viewCode(pl)">
+              <el-icon><Document /></el-icon> 查看代码
+            </el-button>
+            <el-button size="small" @click="downloadPipeline(pl)">
+              <el-icon><Download /></el-icon> 下载
+            </el-button>
+          </div>
+          <div class="op-actions-row">
+            <el-button size="small" @click="clonePipeline(pl)">
+              <el-icon><CopyDocument /></el-icon> 另存
+            </el-button>
+            <el-button size="small" type="danger" plain @click="deletePipeline(pl)">
+              <el-icon><Delete /></el-icon> 删除
+            </el-button>
+          </div>
         </div>
       </el-card>
     </div>
     <el-empty v-else description="暂无流程" />
 
-    <!-- 创建流程对话框 -->
+    <!-- 新建流程对话框 -->
     <el-dialog v-model="showCreateDialog" title="新建流程" width="600px">
       <el-form label-width="80px">
         <el-form-item label="名称">
@@ -57,6 +92,159 @@
         <el-button @click="showCreateDialog = false">取消</el-button>
         <el-button type="primary" @click="doCreate">创建</el-button>
       </template>
+    </el-dialog>
+
+    <!-- 调试对话框（复刻算子调试） -->
+    <el-dialog
+      v-model="debugDrawer"
+      :title="'调试: ' + (debugPipeline?.display_name || debugPipeline?.name || '')"
+      width="95%"
+      top="2vh"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :before-close="handleDebugBeforeClose"
+      @closed="resetDebug"
+    >
+      <div v-if="debugPipeline" class="debug-layout">
+        <div class="debug-left">
+          <div class="debug-section-title">
+            <span>流程参数</span>
+            <el-button size="small" text type="primary" @click="refreshPipelineScript" :loading="saving">
+              <el-icon><Refresh /></el-icon> 刷新
+            </el-button>
+          </div>
+
+          <div class="func-signature">
+            <code>{{ debugPipeline?.entry_function || 'main' }}({{ signatureParams }})</code>
+            <span class="return-type">→ dict</span>
+          </div>
+
+          <div v-if="debugPipeline?.parameters?.length" class="param-group">
+            <div class="group-title">参数说明</div>
+            <div v-for="(p, i) in debugPipeline.parameters" :key="i" class="param-section">
+              <div class="label">
+                {{ typeof p === 'string' ? p : p.name }}
+                <el-tag v-if="typeof p === 'object' && p.type" size="small" type="primary" effect="plain">{{ p.type }}</el-tag>
+                <el-tag v-if="typeof p === 'object' && p.required !== false" size="small" type="danger" effect="plain">必填</el-tag>
+                <el-tag v-else-if="typeof p === 'object'" size="small" effect="plain">可选</el-tag>
+              </div>
+              <div v-if="typeof p === 'object' && p.description" class="param-desc">{{ p.description }}</div>
+            </div>
+          </div>
+
+          <div class="param-group">
+            <div class="group-title">输入参数 (JSON)</div>
+            <el-input
+              v-model="debugInputs"
+              type="textarea"
+              :rows="8"
+              placeholder='{"datasource_name": "...", "table_name": "..."}'
+              style="font-family: 'Consolas', monospace; font-size: 13px"
+            />
+          </div>
+
+          <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%; margin-top: 8px">
+            <el-icon><CaretRight /></el-icon> 执行调试
+          </el-button>
+        </div>
+
+        <div class="debug-right">
+          <div class="debug-chat-header">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>AI 调试助手</span>
+          </div>
+          <div class="debug-message-list" ref="debugMsgListRef" @scroll="onDebugListScroll">
+            <div v-if="debugMessages.length === 0 && !debugRunning" class="debug-empty">
+              <p>输入消息调试流程代码，例如"帮我修一下这个报错"、"优化这段代码"</p>
+            </div>
+            <div
+              v-for="(msg, idx) in debugMessages"
+              :key="idx"
+              class="debug-message"
+              :class="msg.role"
+            >
+              <div class="debug-msg-avatar">
+                <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+              </div>
+              <div class="debug-msg-body">
+                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-else class="debug-msg-assistant">
+                  <div v-if="msg.thinking" class="debug-msg-thinking">
+                    <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                      <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
+                      <span>推理过程</span>
+                    </div>
+                    <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
+                  </div>
+                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.runResult" class="debug-msg-runresult">
+                    <div class="runresult-header">
+                      <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
+                        {{ msg.runResult.success ? '执行成功' : '执行失败' }}
+                      </el-tag>
+                      <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
+                    </div>
+                    <div v-if="msg.runResult.error" class="debug-result-error"><pre>{{ msg.runResult.error }}</pre></div>
+                    <div v-if="msg.runResult.stdout" class="debug-result-stdout">
+                      <el-collapse>
+                        <el-collapse-item title="运行日志">
+                          <pre>{{ msg.runResult.stdout }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                    <div v-if="msg.runResult.result != null" class="debug-result-data">
+                      <el-collapse>
+                        <el-collapse-item title="返回结果">
+                          <pre>{{ formatResult(msg.runResult.result) }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
+                  </div>
+                  <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
+                    <el-tag type="warning" size="small">代码已更新: {{ msg.scriptUpdated }}</el-tag>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="(plStreaming || debugRunning) && !debugMessages.length" class="debug-message assistant">
+              <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">AI</el-avatar></div>
+              <div class="debug-msg-body">
+                <div class="typing-indicator"><span></span><span></span><span></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="debug-input-area">
+            <el-input
+              v-model="debugInput"
+              type="textarea"
+              :rows="2"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              placeholder="输入调试指令... (Enter发送，↑↓切换历史)"
+              @keydown="handleDebugKeyDown"
+              :disabled="plStreaming"
+            />
+            <el-button
+              v-if="plStreaming"
+              type="danger"
+              circle
+              @click="stopDebugGeneration"
+            >
+              <el-icon><VideoPause /></el-icon>
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              circle
+              :disabled="!debugInput.trim()"
+              @click="handleDebugSend"
+            >
+              <el-icon><Promotion /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </div>
     </el-dialog>
 
     <!-- 代码查看抽屉 -->
@@ -128,31 +316,16 @@
         </div>
       </template>
     </el-drawer>
-
-    <!-- 运行对话框 -->
-    <el-dialog v-model="showRunDialog" title="运行流程" width="500px">
-      <el-form label-width="80px">
-        <el-form-item label="参数(JSON)">
-          <el-input v-model="runInputs" type="textarea" :rows="6" placeholder='{"datasource_name": "...", "table_name": "..."}' style="font-family:monospace" />
-        </el-form-item>
-      </el-form>
-      <div v-if="runResult" class="run-result" :class="runResult.status">
-        <div class="run-status">{{ runResult.status === 'success' ? '✅ 成功' : '❌ 失败' }} {{ runResult.duration_ms }}ms</div>
-        <pre v-if="runResult.outputs" class="run-output">{{ JSON.stringify(runResult.outputs, null, 2) }}</pre>
-        <pre v-if="runResult.error_message" class="run-error">{{ runResult.error_message }}</pre>
-      </div>
-      <template #footer>
-        <el-button @click="showRunDialog = false">关闭</el-button>
-        <el-button type="primary" :loading="running" @click="doRun">{{ running ? '执行中...' : '执行' }}</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown } from '@element-plus/icons-vue'
+import {
+  Plus, ArrowDown, MagicStick, Search, VideoPlay, Document, CopyDocument,
+  Delete, Download, CaretRight, ChatDotRound, Promotion, VideoPause, Refresh,
+} from '@element-plus/icons-vue'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import '@vue-flow/core/dist/style.css'
@@ -161,9 +334,15 @@ import api from '@/api/index'
 import hljs from 'highlight.js/lib/core'
 import python from 'highlight.js/lib/languages/python'
 import 'highlight.js/styles/vs2015.css'
+import markdownIt from 'markdown-it'
 import FlowNode from './FlowNode.vue'
 
 hljs.registerLanguage('python', python)
+
+const md = markdownIt({ html: false, breaks: true, linkify: true })
+function renderMarkdown(text: string): string {
+  return md.render(text || '')
+}
 
 interface Pipeline {
   id: string
@@ -198,20 +377,25 @@ interface Execution {
   created_at: string
 }
 
+interface DebugMessage {
+  role: 'user' | 'assistant'
+  content: string
+  thinking?: string
+  thinkingOpen?: boolean
+  runResult?: any
+  scriptUpdated?: string
+}
+
 const pipelines = ref<Pipeline[]>([])
 const skills = ref<any[]>([])
 const searchText = ref('')
 const showCreateDialog = ref(false)
 const showCodeDrawer = ref(false)
-const showRunDialog = ref(false)
-const running = ref(false)
-const runInputs = ref('{}')
-const runResult = ref<any>(null)
-const runTarget = ref<Pipeline | null>(null)
 const codePipeline = ref<Pipeline | null>(null)
 const executions = ref<Execution[]>([])
 const detailTab = ref('code')
 const flowCanvasRef = ref<HTMLElement | null>(null)
+const saving = ref(false)
 
 const createForm = ref({
   name: '',
@@ -254,14 +438,7 @@ function buildFlowGraph(pipeline: Pipeline) {
       data: { label: 'read_table()', sub: 'ConnectorManager', color: '#909399' },
       draggable: true,
     })
-    edges.push({
-      id: 'e-main-read',
-      source: 'main',
-      target: 'read',
-      type: 'smoothstep',
-      animated: true,
-      style: { stroke: '#b0b0b0', strokeWidth: 2 },
-    })
+    edges.push({ id: 'e-main-read', source: 'main', target: 'read', type: 'smoothstep', animated: true, style: { stroke: '#b0b0b0', strokeWidth: 2 } })
     y += spacing
   }
 
@@ -272,21 +449,10 @@ function buildFlowGraph(pipeline: Pipeline) {
       id,
       type: 'custom',
       position: { x: 250, y },
-      data: {
-        label: call.function + '()',
-        sub: `${call.skill_name} › ${call.script}`,
-        color: '#67c23a',
-      },
+      data: { label: call.function + '()', sub: `${call.skill_name} › ${call.script}`, color: '#67c23a' },
       draggable: true,
     })
-    edges.push({
-      id: `e-${prevId}-${id}`,
-      source: prevId,
-      target: id,
-      type: 'smoothstep',
-      animated: true,
-      style: { stroke: '#67c23a', strokeWidth: 2 },
-    })
+    edges.push({ id: `e-${prevId}-${id}`, source: prevId, target: id, type: 'smoothstep', animated: true, style: { stroke: '#67c23a', strokeWidth: 2 } })
     prevId = id
     y += spacing
   })
@@ -299,14 +465,7 @@ function buildFlowGraph(pipeline: Pipeline) {
       data: { label: 'write_table()', sub: 'ConnectorManager', color: '#909399' },
       draggable: true,
     })
-    edges.push({
-      id: `e-${prevId}-write`,
-      source: prevId,
-      target: 'write',
-      type: 'smoothstep',
-      animated: true,
-      style: { stroke: '#b0b0b0', strokeWidth: 2 },
-    })
+    edges.push({ id: `e-${prevId}-write`, source: prevId, target: 'write', type: 'smoothstep', animated: true, style: { stroke: '#b0b0b0', strokeWidth: 2 } })
   }
 
   flowElements.value = [...nodes, ...edges]
@@ -321,7 +480,7 @@ async function loadPipelines() {
     const params: any = {}
     if (searchText.value) params.search = searchText.value
     pipelines.value = await api.get('/pipelines', { params }) as any
-  } catch (e: any) {
+  } catch {
     ElMessage.error('加载流程列表失败')
   }
 }
@@ -383,29 +542,6 @@ function copyCode() {
   }
 }
 
-function runPipeline(pl: Pipeline) {
-  runTarget.value = pl
-  runInputs.value = '{\n  "datasource_name": "",\n  "table_name": ""\n}'
-  runResult.value = null
-  showRunDialog.value = true
-}
-
-async function doRun() {
-  if (!runTarget.value) return
-  running.value = true
-  try {
-    let inputs: any = {}
-    try { inputs = JSON.parse(runInputs.value) } catch { ElMessage.warning('参数 JSON 格式错误'); running.value = false; return }
-    const result = await api.post(`/pipelines/${runTarget.value.id}/run`, { inputs }) as any
-    runResult.value = result
-  } catch (e: any) {
-    runResult.value = { status: 'failed', error_message: e.response?.data?.detail || '执行失败' }
-  } finally {
-    running.value = false
-    if (codePipeline.value) await loadExecutions(codePipeline.value.id)
-  }
-}
-
 async function clonePipeline(pl: Pipeline) {
   try {
     await api.post(`/pipelines/${pl.id}/clone`)
@@ -414,6 +550,21 @@ async function clonePipeline(pl: Pipeline) {
   } catch {
     ElMessage.error('复制失败')
   }
+}
+
+function downloadPipeline(pl: Pipeline) {
+  const code = pl.main_code || ''
+  if (!code) { ElMessage.warning('该流程没有可下载的代码'); return }
+  const blob = new Blob([code], { type: 'text/x-python;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${pl.name || 'pipeline'}.py`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('代码已下载')
 }
 
 async function deletePipeline(pl: Pipeline) {
@@ -432,117 +583,692 @@ function formatTime(t?: string) {
   return new Date(t).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// ==================== 调试弹窗（复刻算子调试） ====================
+const debugDrawer = ref(false)
+const debugPipeline = ref<Pipeline | null>(null)
+const debugMessages = ref<DebugMessage[]>([])
+const debugInput = ref('')
+const debugInputs = ref('{}')
+const debugRunning = ref(false)
+const plStreaming = ref(false)
+const debugMsgListRef = ref<HTMLElement>()
+let debugAbortController: AbortController | null = null
+
+const signatureParams = computed(() => {
+  const params = debugPipeline.value?.parameters as any[] | undefined
+  if (!params || !params.length) return 'inputs'
+  return params.map(p => {
+    const name = typeof p === 'string' ? p : p.name
+    const required = typeof p === 'object' ? p.required !== false : true
+    return required ? name : `${name}=...`
+  }).join(', ')
+})
+const debugPinnedToBottom = ref(true)
+
+// 输入历史
+const HISTORY_KEY = 'dc_pipeline_debug_history'
+const HISTORY_MAX = 100
+const debugHistory = ref<string[]>(loadDebugHistory())
+const debugHistoryIdx = ref(-1)
+const debugDraft = ref('')
+
+function loadDebugHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+function saveDebugHistory(list: string[]) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(-HISTORY_MAX))) } catch {}
+}
+
+function scrollDebugToBottom(force = false) {
+  const el = debugMsgListRef.value
+  if (!el) return
+  if (!force && !debugPinnedToBottom.value) return
+  el.scrollTop = el.scrollHeight
+}
+function scrollThinkingBodyToBottom(msgIdx: number) {
+  nextTick(() => {
+    const list = debugMsgListRef.value
+    if (!list) return
+    const msgs = list.querySelectorAll('.debug-message')
+    const target = msgs[msgIdx] as HTMLElement | undefined
+    if (!target) return
+    const body = target.querySelector('.thinking-body') as HTMLElement | null
+    if (body) body.scrollTop = body.scrollHeight
+  })
+}
+function onDebugListScroll() {
+  const el = debugMsgListRef.value
+  if (!el) return
+  debugPinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+function openDebug(pl: Pipeline) {
+  debugPipeline.value = { ...pl }
+  debugMessages.value = []
+  debugInput.value = ''
+  const params = (pl as any).parameters as any[] | undefined
+  if (params && params.length) {
+    const example: Record<string, any> = {}
+    for (const p of params) {
+      const name = typeof p === 'string' ? p : p.name
+      if (!name || name.startsWith('*')) continue
+      const required = typeof p === 'object' ? p.required !== false : true
+      if (required) {
+        example[name] = typeof p === 'object' && p.description ? p.description : ''
+      }
+    }
+    debugInputs.value = JSON.stringify(example, null, 2)
+  } else {
+    debugInputs.value = '{}'
+  }
+  debugDrawer.value = true
+  debugPinnedToBottom.value = true
+}
+
+function resetDebug() {
+  if (debugAbortController) {
+    debugAbortController.abort()
+    debugAbortController = null
+  }
+  plStreaming.value = false
+}
+
+function handleDebugBeforeClose(done: () => void) {
+  if (plStreaming.value || debugRunning.value) {
+    ElMessage.warning('正在执行中，请先等待完成或点击停止')
+    return
+  }
+  done()
+}
+
+async function refreshPipelineScript() {
+  if (!debugPipeline.value) return
+  saving.value = true
+  try {
+    const fresh = await api.get(`/pipelines/${debugPipeline.value.id}`)
+    debugPipeline.value = fresh as any
+    ElMessage.success('流程数据已刷新')
+    await loadPipelines()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '刷新失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function runDebug() {
+  if (!debugPipeline.value) return
+  let inputs: any = {}
+  try {
+    inputs = JSON.parse(debugInputs.value || '{}')
+  } catch {
+    ElMessage.warning('输入参数 JSON 格式错误')
+    return
+  }
+  debugRunning.value = true
+  try {
+    const res = await api.post(`/pipelines/${debugPipeline.value.id}/run`, { inputs }) as any
+    const success = res?.status === 'success'
+    debugMessages.value.push({
+      role: 'assistant',
+      content: success ? '执行完成' : '执行失败',
+      runResult: {
+        success,
+        result: res?.outputs ?? null,
+        error: res?.error_message || null,
+        stdout: res?.logs || null,
+        execution_time_ms: res?.duration_ms ?? null,
+      },
+    })
+    if (codePipeline.value?.id === debugPipeline.value.id) {
+      await loadExecutions(debugPipeline.value.id)
+    }
+  } catch (e: any) {
+    debugMessages.value.push({
+      role: 'assistant',
+      content: '执行失败',
+      runResult: { success: false, error: e.response?.data?.detail || String(e) },
+    })
+  } finally {
+    debugRunning.value = false
+    nextTick(() => scrollDebugToBottom(true))
+  }
+}
+
+function formatResult(result: any): string {
+  try { return JSON.stringify(result, null, 2) } catch { return String(result) }
+}
+
+function stopDebugGeneration() {
+  if (debugAbortController) {
+    debugAbortController.abort()
+  }
+}
+
+function handleDebugKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleDebugSend()
+    return
+  }
+  // ↑↓ 切换历史
+  if (e.key === 'ArrowUp') {
+    if (debugHistory.value.length === 0) return
+    e.preventDefault()
+    if (debugHistoryIdx.value === -1) {
+      debugDraft.value = debugInput.value
+      debugHistoryIdx.value = debugHistory.value.length - 1
+    } else if (debugHistoryIdx.value > 0) {
+      debugHistoryIdx.value--
+    }
+    debugInput.value = debugHistory.value[debugHistoryIdx.value]
+  } else if (e.key === 'ArrowDown') {
+    if (debugHistoryIdx.value === -1) return
+    e.preventDefault()
+    if (debugHistoryIdx.value < debugHistory.value.length - 1) {
+      debugHistoryIdx.value++
+      debugInput.value = debugHistory.value[debugHistoryIdx.value]
+    } else {
+      debugHistoryIdx.value = -1
+      debugInput.value = debugDraft.value
+    }
+  }
+}
+
+async function handleDebugSend() {
+  if (!debugPipeline.value || !debugInput.value.trim() || plStreaming.value) return
+
+  const userMsg = debugInput.value.trim()
+  if (debugHistory.value[debugHistory.value.length - 1] !== userMsg) {
+    debugHistory.value.push(userMsg)
+    if (debugHistory.value.length > HISTORY_MAX) debugHistory.value = debugHistory.value.slice(-HISTORY_MAX)
+    saveDebugHistory(debugHistory.value)
+  }
+  debugHistoryIdx.value = -1
+
+  debugMessages.value.push({ role: 'user', content: userMsg })
+  debugInput.value = ''
+  plStreaming.value = true
+  debugAbortController = new AbortController()
+
+  const assistantIdx = debugMessages.value.length
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
+  debugPinnedToBottom.value = true
+  await nextTick()
+  scrollDebugToBottom(true)
+
+  let scriptChanged = false
+  let streamOk = false
+
+  try {
+    const token = localStorage.getItem('access_token')
+    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+      role: m.role,
+      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
+    }))
+
+    const contextData: Record<string, string> = {}
+    if (debugInputs.value.trim()) contextData['inputs'] = debugInputs.value.trim()
+    const lastRunMsg = [...debugMessages.value].reverse().find(m => m.runResult)
+    if (lastRunMsg?.runResult) {
+      contextData['last_result'] = lastRunMsg.runResult.success ? '成功' : '失败'
+      if (lastRunMsg.runResult.error) contextData['last_error'] = lastRunMsg.runResult.error
+    }
+
+    const response = await fetch(`/api/v1/pipelines/${debugPipeline.value.id}/debug-chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ message: userMsg, history, context: contextData }),
+      signal: debugAbortController.signal,
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(errText || `HTTP ${response.status}`)
+    }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let thinkingDone = false
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          const msg = debugMessages.value[assistantIdx]
+
+          if (data.type === 'thinking') {
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
+            scrollThinkingBodyToBottom(assistantIdx)
+          } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) thinkingDone = true
+            msg.content += data.content
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+            scriptChanged = true
+            try {
+              const fresh = await api.get(`/pipelines/${debugPipeline.value!.id}`)
+              debugPipeline.value = fresh as any
+            } catch { /* skip */ }
+          } else if (data.type === 'error') {
+            msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          }
+        } catch { /* skip */ }
+      }
+      nextTick(() => scrollDebugToBottom())
+    }
+
+    const finalMsg = debugMessages.value[assistantIdx]
+    if (finalMsg.thinking && !thinkingDone) {
+      finalMsg.thinking = ''
+    }
+    streamOk = true
+  } catch (e: any) {
+    if (e.name === 'AbortError') {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg.content) msg.content += '\n\n*[已停止生成]*'
+      else msg.content = '*[已停止生成]*'
+    } else {
+      debugMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+    }
+  } finally {
+    plStreaming.value = false
+    debugAbortController = null
+    await nextTick()
+    scrollDebugToBottom()
+  }
+
+  // 代码被 AI 更新后，若左侧有输入参数，自动重跑一次流程查看结果
+  if (scriptChanged && streamOk && debugPipeline.value) {
+    const assistantMsg = debugMessages.value[assistantIdx]
+    try {
+      JSON.parse(debugInputs.value || '{}')
+      if (assistantMsg) assistantMsg.content += '\n\n> 代码已更新，正在重新执行流程…'
+      await runDebug()
+    } catch {
+      if (assistantMsg) assistantMsg.content += '\n\n> 代码已更新。左侧填写有效 JSON 参数后点击「执行调试」查看结果。'
+    }
+  }
+}
+
 onMounted(() => {
   loadPipelines()
   loadSkills()
 })
 </script>
 
-<style scoped>
-.pipeline-view { padding: 20px; }
-.pl-toolbar { margin-bottom: 20px; display: flex; align-items: center; }
-.pl-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
-}
-.pl-card { cursor: default; }
-.pl-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.pl-card-name { font-weight: 600; font-size: 15px; color: #303133; }
-.pl-card-desc { font-size: 13px; color: #909399; margin-bottom: 10px; min-height: 20px; }
-.pl-card-meta { font-size: 12px; color: #909399; margin-bottom: 10px; }
-.pl-card-actions { display: flex; gap: 4px; }
-
-.pl-detail-layout {
-  display: flex;
-  gap: 16px;
-  height: calc(100vh - 120px);
-}
-.pl-detail-main {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.pl-tabs {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.pl-tabs :deep(.el-tabs__content) {
-  flex: 1;
-  overflow: hidden;
-}
-.pl-tabs :deep(.el-tab-pane) {
+<style lang="scss" scoped>
+.pipeline-page {
+  padding: 20px;
   height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
-.pl-code-header {
+
+.toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 20px;
+  gap: 12px;
+
+  .toolbar-left { display: flex; gap: 12px; align-items: center; }
+  .toolbar-right { display: flex; gap: 12px; align-items: center; }
 }
-.pl-code-title { font-weight: 600; font-size: 14px; }
-.pl-code-body {
+
+.op-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.operator-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  :deep(.el-card__header) { flex-shrink: 0; }
+  :deep(.el-card__body) { flex: 1; display: flex; flex-direction: column; }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    .op-name {
+      font-weight: 600;
+      font-size: 15px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+  .op-desc {
+    color: #666;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0;
+  }
+  .op-meta {
+    margin: 8px 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 26px;
+  }
+  .op-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: auto;
+    padding-top: 12px;
+
+    .op-actions-row {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+  }
+}
+
+.debug-layout {
+  display: flex;
+  gap: 16px;
+  height: 75vh;
+}
+
+.debug-left {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  gap: 8px;
+}
+
+.debug-section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: #303133;
+}
+
+.debug-right {
   flex: 1;
-  overflow: auto;
-  background: #1e1e1e;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e4e7ed;
   border-radius: 8px;
-  padding: 16px;
+  overflow: hidden;
+  background: #f9fafb;
 }
-.pl-code-body pre {
-  margin: 0;
+
+.func-signature {
+  background: #f0f5ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  code { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 13px; color: #1d39c4; }
+  .return-type { font-size: 12px; color: #52c41a; margin-left: 8px; }
+}
+
+.param-group {
+  margin-bottom: 4px;
+  .group-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #303133;
+    margin-bottom: 8px;
+    padding-left: 4px;
+    border-left: 3px solid #409eff;
+  }
+}
+
+.param-section {
+  margin-bottom: 6px;
+  .label {
+    font-size: 13px;
+    color: #606266;
+    margin-bottom: 2px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .param-desc {
+    font-size: 12px;
+    color: #909399;
+    padding-left: 2px;
+  }
+}
+
+.debug-msg-runresult {
+  margin-top: 6px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+
+  .runresult-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: #f5f7fa;
+    border-bottom: 1px solid #e4e7ed;
+  }
+  .exec-time { font-size: 11px; color: #909399; }
+  .debug-result-error {
+    padding: 6px 10px;
+    pre { margin: 0; font-size: 12px; color: #f56c6c; white-space: pre-wrap; word-break: break-all; }
+  }
+  .debug-result-stdout,
+  .debug-result-data {
+    :deep(.el-collapse-item__header) { font-size: 12px; height: 28px; line-height: 28px; padding-left: 10px; }
+    pre { margin: 0; font-size: 11px; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow-y: auto; }
+  }
+}
+
+.debug-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #ebeef5;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  background: #fff;
+}
+
+.debug-message-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: #c0c4cc;
+  p { font-size: 14px; text-align: center; line-height: 1.6; padding: 0 12px; }
+}
+
+.debug-message {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+
+  &.user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+    .debug-msg-user {
+      background: #409eff;
+      color: #fff;
+      border-radius: 10px 10px 2px 10px;
+      padding: 6px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-width: 85%;
+    }
+  }
+
+  &.assistant {
+    align-self: flex-start;
+    max-width: 100%;
+    .debug-msg-assistant {
+      background: #fff;
+      border: 1px solid #e4e7ed;
+      border-radius: 10px 10px 10px 2px;
+      padding: 8px 12px;
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+  }
+}
+
+.debug-msg-avatar { flex-shrink: 0; }
+.debug-msg-body { min-width: 0; max-width: 100%; overflow: hidden; }
+
+.debug-msg-thinking {
+  margin-bottom: 8px;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ecf5ff;
+
+  .thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #409eff;
+    font-weight: 500;
+    border-bottom: 1px solid #d9ecff;
+    cursor: pointer;
+    user-select: none;
+    .thinking-toggle { transition: transform 0.2s; }
+    .thinking-toggle.open { transform: rotate(90deg); }
+  }
+
+  .thinking-body {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #606266;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+}
+
+.debug-msg-content {
   font-size: 13px;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.pl-code-body code {
-  font-family: 'Cascadia Code', 'Consolas', monospace;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  :deep(pre) { white-space: pre-wrap; word-break: break-all; overflow-x: auto; max-width: 100%; }
+  :deep(table) { width: 100%; table-layout: fixed; word-break: break-all; }
+  :deep(code) { white-space: pre-wrap; word-break: break-all; }
 }
 
-.pl-flow-header {
+.debug-msg-script-updated { margin-top: 6px; }
+
+.debug-input-area {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid #ebeef5;
+  background: #fff;
+  .el-textarea { flex: 1; font-size: 14px; }
+  .el-button { margin-bottom: 4px; }
 }
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 6px 0;
+  span {
+    width: 6px; height: 6px; border-radius: 50%; background: #c0c4cc;
+    animation: typing 1.4s infinite ease-in-out both;
+    &:nth-child(1) { animation-delay: 0s; }
+    &:nth-child(2) { animation-delay: 0.2s; }
+    &:nth-child(3) { animation-delay: 0.4s; }
+  }
+}
+
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* 代码查看抽屉 */
+.pl-detail-layout { display: flex; gap: 16px; height: calc(100vh - 120px); }
+.pl-detail-main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.pl-tabs { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.pl-tabs :deep(.el-tabs__content) { flex: 1; overflow: hidden; }
+.pl-tabs :deep(.el-tab-pane) { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.pl-code-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.pl-code-title { font-weight: 600; font-size: 14px; }
+.pl-code-body {
+  flex: 1; overflow: auto; background: #ffffff; color: #303133;
+  border: 1px solid #ebeef5; border-radius: 8px; padding: 16px;
+  pre { margin: 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+  code { font-family: 'Cascadia Code', 'Consolas', monospace; }
+}
+.pl-flow-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .pl-flow-hint { font-size: 12px; color: #909399; }
 .pl-flow-canvas {
-  flex: 1;
-  min-height: 400px;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  overflow: hidden;
-  background: #fafbfc;
+  flex: 1; min-height: 400px; border: 1px solid #ebeef5; border-radius: 8px; overflow: hidden; background: #fafbfc;
 }
-.pl-vue-flow {
-  width: 100%;
-  height: 100%;
-}
-
-.pl-detail-side {
-  width: 260px;
-  flex-shrink: 0;
-  overflow-y: auto;
-}
-
+.pl-vue-flow { width: 100%; height: 100%; }
+.pl-detail-side { width: 260px; flex-shrink: 0; overflow-y: auto; }
 .call-tree { font-size: 13px; font-family: monospace; line-height: 1.7; padding-top: 4px; }
 .call-root { color: #409eff; font-weight: 600; }
 .call-connector { color: #909399; padding-left: 4px; }
 .call-skill { color: #67c23a; padding-left: 4px; }
 .call-func { color: #909399; padding-left: 16px; font-size: 12px; }
-
 .exec-list { font-size: 12px; }
 .exec-item { padding: 6px 0; border-bottom: 1px solid #ebeef5; }
 .exec-item:last-child { border-bottom: none; }
@@ -550,27 +1276,46 @@ onMounted(() => {
 .exec-time { color: #909399; margin-right: 8px; }
 .exec-duration { color: #606266; }
 .exec-error { color: #f56c6c; display: block; margin-top: 2px; }
-.exec-success .exec-status { color: #67c23a; }
-.exec-failed .exec-status { color: #f56c6c; }
+</style>
 
-.run-result {
-  margin-top: 16px;
-  padding: 12px;
-  border-radius: 8px;
-  font-size: 13px;
+<style lang="scss">
+.debug-layout {
+  .el-textarea__inner,
+  .el-input__inner {
+    &::placeholder { white-space: pre-wrap; word-break: break-all; }
+  }
 }
-.run-result.success { background: #f0f9eb; border: 1px solid #e1f3d8; }
-.run-result.failed { background: #fef0f0; border: 1px solid #fde2e2; }
-.run-status { font-weight: 600; margin-bottom: 8px; }
-.run-output, .run-error {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  max-height: 200px;
-  overflow: auto;
-  white-space: pre-wrap;
+
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #303133;
+
+  h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; color: #1d1d1f; }
+  h1 { font-size: 22px; border-bottom: 2px solid #409eff; padding-bottom: 6px; }
+  h2 { font-size: 19px; border-bottom: 1px solid #e4e7ed; padding-bottom: 4px; }
+  h3 { font-size: 16px; }
+  p { margin: 8px 0; }
+  ul, ol { padding-left: 24px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  code {
+    background: #f0f2f5; padding: 2px 6px; border-radius: 4px;
+    font-family: 'Consolas', monospace; font-size: 13px; color: #d63384;
+  }
+  pre {
+    background: #ffffff; border: 1px solid #ebeef5; border-radius: 8px; padding: 14px 18px; overflow-x: auto;
+    code { background: none; color: #303133; padding: 0; }
+  }
+  blockquote {
+    border-left: 4px solid #409eff; padding: 8px 16px; margin: 12px 0;
+    background: #f0f5ff; color: #606266; border-radius: 0 6px 6px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0;
+    th, td { border: 1px solid #dcdfe6; padding: 8px 12px; text-align: left; }
+    th { background: #f5f7fa; font-weight: 600; }
+  }
+  a { color: #409eff; }
+  hr { border: none; border-top: 1px solid #e4e7ed; margin: 20px 0; }
+  strong { font-weight: 600; color: #1d1d1f; }
 }
-.run-error { color: #f56c6c; }
 </style>

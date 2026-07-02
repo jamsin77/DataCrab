@@ -209,7 +209,7 @@ def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
         return result
     return ""
 
-def write_table_data(datasource_id, table_name, records=None, data=None):
+def write_table_data(datasource_id, table_name, records=None, data=None, if_table_exists="fail", table_remark="", column_remarks=None, **extra):
     import re as _re
     if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
         _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
@@ -217,9 +217,23 @@ def write_table_data(datasource_id, table_name, records=None, data=None):
             datasource_id = _resolved
     _records = data if data is not None else records
     import json as _json, subprocess, sys as _sys, tempfile as _tf, os as _os
+
+    # 将额外参数序列化，通过临时文件传递
+    _kwargs = {}
+    if if_table_exists and if_table_exists != "fail":
+        _kwargs["if_table_exists"] = if_table_exists
+    if table_remark:
+        _kwargs["table_remark"] = table_remark
+    if column_remarks:
+        _kwargs["column_remarks"] = column_remarks
+    _kwargs.update(extra)
+    _extra = _json.dumps(_sanitize_nans(_kwargs), ensure_ascii=False)
     _tmp = _tf.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
     _tmp.write(_json.dumps(_sanitize_nans(_records), ensure_ascii=False))
     _tmp.close()
+    _tmp_extra = _tf.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
+    _tmp_extra.write(_extra)
+    _tmp_extra.close()
     try:
         code = (
             "import asyncio, json, sys, os\\n"
@@ -230,18 +244,25 @@ def write_table_data(datasource_id, table_name, records=None, data=None):
             "async def _q():\\n"
             "    with open(r'{{tmp_path}}', encoding='utf-8') as _f:\\n"
             "        _records = json.load(_f)\\n"
+            "    with open(r'{{tmp_extra}}', encoding='utf-8') as _f2:\\n"
+            "        _kwargs = json.load(_f2)\\n"
             "    async with async_session() as session:\\n"
             "        mgr = get_connector_manager(session)\\n"
-            "        return await mgr.write_table('{{ds_id}}', '{{tbl}}', _records)\\n"
+            "        return await mgr.write_table('{{ds_id}}', '{{tbl}}', _records, **_kwargs)\\n"
             "\\n"
             "result = asyncio.run(_q())\\n"
             "print(json.dumps(result or {{{{}}}}))\\n"
             "os.unlink(r'{{tmp_path}}')\\n"
-        ).format(ds_id=datasource_id, tbl=table_name, tmp_path=_tmp.name.replace('\\\\', '/'))
+            "os.unlink(r'{{tmp_extra}}')\\n"
+        ).format(ds_id=datasource_id, tbl=table_name, tmp_path=_tmp.name.replace('\\\\', '/'), tmp_extra=_tmp_extra.name.replace('\\\\', '/'))
         _result = _run_async_query(code)
     finally:
         try:
             _os.unlink(_tmp.name)
+        except OSError:
+            pass
+        try:
+            _os.unlink(_tmp_extra.name)
         except OSError:
             pass
     return _result if _result else {{"success": False, "message": "write failed"}}

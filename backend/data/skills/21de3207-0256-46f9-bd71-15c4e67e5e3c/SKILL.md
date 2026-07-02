@@ -20,8 +20,9 @@ tags:
 2. **列删除**：删除不需要的列
 3. **列添加**：添加常量列
 4. **数据处理**：对列值进行基本转换处理
-5. **中英文翻译**：在 ETL 过程中对指定列调用语言翻译算子，实现中英文自动翻译
+5. **中英文翻译**：在 ETL 过程中如果有语言翻译的需求，优先调用"文本翻译"算子对指定列进行中英文自动翻译
 6. **批量写入**：支持分批写入目标数据源
+7. **目标表已存在处理**：当指定的目标数据表已经存在时，支持在原表上操作，可选择追加内容或增加表的列，或者将原有内容删除后追加，以及按照主键更新原有内容
 
 ### 支持的数据处理类型
 
@@ -38,11 +39,11 @@ tags:
 | `prefix` | 添加前缀 | `value`: 前缀字符串 |
 | `suffix` | 添加后缀 | `value`: 后缀字符串 |
 | `replace` | 字符串替换 | `old`: 旧值, `new`: 新值 |
-| `translate` | 中英文翻译（调用语言翻译算子） | `source_lang`: 源语言（`zh`/`en`），`target_lang`: 目标语言（`zh`/`en`） |
+| `translate` | 中英文翻译（调用"文本翻译"算子） | `source_lang`: 源语言（`zh`/`en`），`target_lang`: 目标语言（`zh`/`en`） |
 
-### 语言翻译算子说明
+### 文本翻译算子说明
 
-当 ETL 过程中有中英文翻译需求时，可通过 `translate` 处理类型调用语言翻译算子：
+当 ETL 过程中有中英文翻译需求时，可通过 `translate` 处理类型优先调用"文本翻译"算子：
 
 - **`source_lang`**：源语言，支持 `zh`（中文）和 `en`（英文）
 - **`target_lang`**：目标语言，支持 `zh`（中文）和 `en`（英文）
@@ -52,6 +53,24 @@ tags:
   - `en → zh`：将英文列值翻译为中文
 
 > ⚠️ 翻译算子会对列中每个值逐条调用翻译服务，处理大数据量时可能较慢，建议结合 `limit` 参数控制处理行数或分批处理。
+
+### 目标表已存在时的处理策略
+
+当目标数据表已经存在时，通过 `if_table_exists` 参数控制处理方式：
+
+| 策略 | 说明 |
+|------|------|
+| `fail` | 默认行为，目标表已存在时报错中止 |
+| `append` | 在原表上追加数据，不修改表结构 |
+| `replace` | DROP TABLE 后重建表（丢弃索引、约束、序列等） |
+| `overwrite` | 清空表数据 + 自动补齐缺失列（保留表结构和索引） |
+| `truncate` | 同 `overwrite` |
+| `delete_rows` | DELETE 清空数据（保留表结构，不补列） |
+| `upsert` | 按 id 列做 INSERT ON CONFLICT DO UPDATE（无 id 列则退化为 append） |
+| `delete_append` | 删除原有内容后追加新数据 |
+| `update` | 按 id 列更新原有内容，无 id 列则追加 |
+
+> ⚠️ 使用 `append` 时，源数据的列应与目标表列兼容；使用 `add_columns` 时，仅会新增列，不会修改或删除已有列的数据。
 
 ## 🚀 使用方式
 
@@ -91,6 +110,35 @@ tags:
 对 category 列进行英文翻译为中文（source_lang: en, target_lang: zh）
 ```
 
+### 目标表已存在时追加数据
+
+```
+将 "CSVFormTest" 的 "orders" 表迁移到 "SQLite测试数据库" 的 "orders_all" 表，
+目标表已存在，追加数据（if_table_exists: append）
+```
+
+### 目标表已存在时增加列
+
+```
+将 "CSVFormTest" 的 "products" 表迁移到 "SQLite测试数据库" 的 "products" 表，
+目标表已存在，增加新列（if_table_exists: add_columns），
+添加 remark 列值为 "imported"
+```
+
+### 目标表已存在时删除后追加数据
+
+```
+将 "CSVFormTest" 的 "orders" 表迁移到 "SQLite测试数据库" 的 "orders_all" 表，
+目标表已存在，删除原有内容后追加数据（if_table_exists: delete_append）
+```
+
+### 目标表已存在时按主键更新数据
+
+```
+将 "CSVFormTest" 的 "orders" 表迁移到 "SQLite测试数据库" 的 "orders_all" 表，
+目标表已存在，按主键更新数据（if_table_exists: update）
+```
+
 ## 📋 参数规范
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
@@ -103,6 +151,7 @@ tags:
 | `column_transforms` | dict | ❌ | None | 列转换规则 `{列名: {type: 类型, ...}}` |
 | `drop_columns` | list | ❌ | None | 要删除的列名列表 |
 | `add_columns` | dict | ❌ | None | 要添加的列 `{列名: 值}` |
+| `if_table_exists` | str | ❌ | `fail` | 目标表已存在时的处理策略：`fail`（报错）、`append`（追加）、`replace`（删表重建）、`overwrite`/`truncate`（清空+补列）、`delete_rows`（清空不补列）、`upsert`（按id更新或插入）、`delete_append`（删除后追加）、`update`（按主键更新） |
 | `batch_size` | int | ❌ | 1000 | 批量写入大小 |
 | `limit` | int | ❌ | 10000 | 读取行数上限 |
 | `output_dir` | str | ❌ | None | 输出目录（文件型数据源时使用） |
@@ -131,7 +180,8 @@ tags:
 3. 应用列转换（`column_transforms`，包含翻译算子调用）
 4. 列名映射（`column_mapping`）
 5. 添加新列（`add_columns`）
-6. 写入目标数据源
+6. 检查目标表是否存在，根据 `if_table_exists` 策略处理（报错 / 追加 / 增加列 / 清空重写 / 删除后追加 / 更新）
+7. 写入目标数据源
 
 ### 输出路径说明
 
@@ -143,16 +193,6 @@ tags:
 
 | 脚本 | 说明 |
 |------|------|
-| `main.py` | 核心迁移脚本，包含 `migrate_data()` 主函数和 `apply_column_transform()` 列转换工具函数。当列转换类型为 `translate` 时，调用语言翻译算子完成中英文翻译 |
+| `main.py` | 核心迁移脚本，包含 `migrate_data()` 主函数和 `apply_column_transform()` 列转换工具函数。当列转换类型为 `translate` 时，调用"文本翻译"算子完成中英文翻译。支持通过 `if_table_exists` 参数处理目标表已存在的场景（追加数据或增加列） |
 
 ## 常见问题与经验
-
-### 数据迁移执行中断
-- **问题描述**: 调用 `migrate_data` 执行数据迁移时触发 `execution_error`，导致任务中断。
-- **根因分析**: 源/目标数据源连接异常、表名不存在或数据类型转换不兼容导致底层报错。
-- **修复建议**: 执行前增加数据源连通性与目标表存在性校验，完善数据转换时的异常捕获机制。
-
-### 错误日志截断问题
-- **问题描述**: 错误堆栈信息在输出时被截断，无法获取完整的报错详情和具体代码行。
-- **根因分析**: 日志输出预览长度受限，未将完整的 Traceback 信息优先展示或持久化保存。
-- **修复建议**: 优化日志捕获机制，确保关键异常堆栈不被截断，或将完整日志写入文件供排查。

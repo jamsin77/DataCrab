@@ -34,13 +34,17 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'datasource',
-        name: 'DataSource',
-        component: () => import('@/views/datasource/DataSourceView.vue'),
+        redirect: { path: '/config', query: { tab: 'datasource' } },
       },
       {
         path: 'metadata',
         name: 'Metadata',
         component: () => import('@/views/metadata/MetadataView.vue'),
+      },
+      {
+        path: 'knowledge',
+        name: 'Knowledge',
+        component: () => import('@/views/kb/KnowledgeView.vue'),
       },
       {
         path: 'skill',

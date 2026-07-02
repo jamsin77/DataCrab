@@ -163,3 +163,103 @@ def experience_stats(base: Path) -> Dict[str, int]:
         "positive_count": len(data.get("positive", [])),
         "has_lessons": bool(data.get("lessons", "")),
     }
+
+
+# ==================== 跨算子经验聚合（N）====================
+# 借鉴 DeepAnalyze AutoDream 的跨会话经验整合思想，
+# 将多个算子/技能的经验 lessons 做一次 LLM 整合，提炼通用数据处理模式。
+
+GLOBAL_LESSONS_FILE = "global_lessons.md"
+
+
+def global_lessons_path() -> Path:
+    """全局经验文件路径"""
+    from app.core.config import settings
+    return Path(settings.SKILL_STORAGE_PATH).parent / GLOBAL_LESSONS_FILE
+
+
+def read_global_lessons() -> str:
+    """读取全局通用经验"""
+    p = global_lessons_path()
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return ""
+
+
+async def distill_cross_patterns(db, user_id) -> str:
+    """跨算子经验聚合：收集所有算子+技能的 lessons，用 LLM 提炼通用模式（N）。
+
+    借鉴 DeepAnalyze 的 AutoDream 思路，但适合 DataCrab 的粒度：
+    - DataCrab 按 算子/skill 积累经验（experience.json → lessons）
+    - 本函数把多个 lessons 做一次跨算子整合，发现通用数据处理经验
+    - 结果存到 global_lessons.md，在生成/修改算子时注入
+    """
+    # 收集所有 lessons
+    parts = []
+    try:
+        from app.models.operator import Operator
+        from sqlalchemy import select
+        res = await db.execute(select(Operator).where(Operator.author == user_id))
+        for op in res.scalars():
+            ls = read_lessons(operator_experience_dir(op.id))
+            if ls:
+                parts.append(f"### 算子「{op.display_name or op.name}」经验\n{ls[:300]}")
+    except Exception:
+        pass
+    try:
+        from app.models.skill import Skill
+        from sqlalchemy import select
+        from app.core.config import settings
+        skill_base = Path(settings.SKILL_STORAGE_PATH)
+        res = await db.execute(select(Skill).where(Skill.author == user_id))
+        for s in res.scalars():
+            sp = skill_base / str(s.id)
+            ls = read_lessons(sp)
+            if ls:
+                parts.append(f"### 技能「{s.display_name or s.name}」经验\n{ls[:300]}")
+    except Exception:
+        pass
+
+    if not parts:
+        return ""
+
+    # 用 LLM 提炼通用模式
+    try:
+        from app.services.llm import llm_manager
+        all_lessons = "\n\n".join(parts)[:8000]
+        prompt = f"""以下是多个算子和技能各自积累的数据处理经验。请从中提炼出通用的数据处理模式和最佳实践，
+不要重复单个算子的细节，而是找出跨算子的共性规律。输出限 500 字以内，用中文。
+
+{all_lessons}
+"""
+        distilled = await llm_manager.chat_with_messages(
+            messages=[
+                {"role": "system", "content": "你是数据处理经验整合助手。从多条经验中提炼通用模式。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=600,
+        )
+        if distilled:
+            global_lessons_path().parent.mkdir(parents=True, exist_ok=True)
+            global_lessons_path().write_text(distilled, encoding="utf-8")
+            return distilled
+    except Exception as e:
+        from loguru import logger
+        logger.warning(f"跨算子经验聚合失败: {e}")
+
+    return ""
+
+
+async def collect_all_lessons_with_global(db, user_id) -> str:
+    """收集该用户所有经验 + 全局通用经验，用于注入提示词。"""
+    parts = []
+    # 全局通用经验
+    global_ls = read_global_lessons()
+    if global_ls:
+        parts.append(f"## 通用数据处理经验\n{global_ls[:500]}")
+    # 各算子/技能经验
+    individual = await collect_all_lessons(db, user_id)
+    if individual:
+        parts.append(individual)
+    return "\n\n".join(parts) if parts else ""

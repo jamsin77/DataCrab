@@ -1,22 +1,38 @@
-"""DataProcessor 数据处理智能体"""
+"""DataProcessor 数据处理智能体
+
+改进点：
+- 工具定义和实现使用 shared_tools（去重 F）
+- StuckDetector 卡死检测（J）
+- 反幻觉检查（K）+ 无工具支撑的数据声明警告（P）
+- 工具能力表注入 system prompt（D）
+- 动态轮次预算（Q）
+- 上下文压力主动告警（R）
+- 输出长度升级（S）
+- 三级反幻觉注入：standard 级别（T）
+"""
 
 import json
 import asyncio
-import uuid as _uuid
-from typing import Dict, Any, List, AsyncGenerator
-from pathlib import Path
+from typing import Dict, Any, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from loguru import logger
 
 from app.services.multi_agent import BaseAgent, AgentMessage, HandoffReason
 from app.services.llm import llm_manager
-from app.models.datasource import DataSource
-from app.models.filelink import FileLink
-from app.models.operator import Operator
-from app.models.skill import Skill
-from app.services.connectors import get_connector
+from app.services.shared_tools import SHARED_TOOL_SCHEMAS, execute_shared_tool
+from app.services.agent_utils import (
+    StuckDetector,
+    is_planning_only,
+    should_warn_ungrounded_claim,
+    estimate_complexity,
+    get_turn_budget,
+    get_context_pressure_level,
+    build_pressure_warning,
+    get_anti_hallucination_section,
+    SearchSaturationDetector,
+)
+from app.services.tool_guidance import get_tool_guidance
 
 DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（DataProcessor），一位数据处理专家。
 
@@ -30,6 +46,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 2. **输出默认同源**：处理后的数据默认写回原数据源
 3. **修改后必验证**：每次修改数据后必须验证结果
 4. **交接检查**：数据处理完成后，应交接给 DataInspector 进行质量检查
+5. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
 
 ## 当收到 DataInspector 的检查结果时
 - 应定位问题根源
@@ -41,94 +58,29 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 - 当用户请求是数据质量检查相关时，直接交接（delegate）给 DataInspector
 """
 
-DATA_PROCESSOR_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_table_data",
-            "description": "查询数据源中某个表的数据，支持筛选、排序和分页",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源的UUID"},
-                    "table_name": {"type": "string", "description": "要查询的表名"},
-                    "filter_column": {"type": "string", "description": "用于筛选的列名，可选"},
-                    "filter_value": {"type": "string", "description": "筛选的值，支持正则和|分隔的多值OR匹配，可选"},
-                    "sort_column": {"type": "string", "description": "排序的列名，可选"},
-                    "sort_order": {"type": "string", "enum": ["asc", "desc"], "description": "排序方向"},
-                    "limit": {"type": "integer", "description": "返回的最大行数，默认100"},
-                },
-                "required": ["datasource_id", "table_name"],
+# handoff 工具（DataProcessor 专用）
+HANDOFF_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "handoff_to_inspector",
+        "description": "将处理结果交接给数据检查智能体进行质量检查",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "datasource_id": {"type": "string", "description": "数据源ID"},
+                "table_name": {"type": "string", "description": "检查的表名"},
+                "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
+                "result_summary": {"type": "string", "description": "处理结果摘要"},
             },
+            "required": ["datasource_id", "table_name"],
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_table_schema",
-            "description": "获取数据源中某个表的结构信息（列名、数据类型、行数等）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源的UUID"},
-                    "table_name": {"type": "string", "description": "要查看结构的表名"},
-                },
-                "required": ["datasource_id", "table_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_user_datasources",
-            "description": "列出用户已连接的数据源，包括名称、类型、表列表",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_user_file_links",
-            "description": "列出用户已挂载的文件链接目录",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_file_to_link",
-            "description": "在用户已授权的文件链接目录中保存文件（CSV格式）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "link_id": {"type": "string", "description": "文件链接的UUID"},
-                    "subpath": {"type": "string", "description": "文件路径，如 export/result.csv"},
-                    "content": {"type": "string", "description": "要保存的文件内容"},
-                },
-                "required": ["link_id", "subpath", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "handoff_to_inspector",
-            "description": "将处理结果交接给数据检查智能体进行质量检查",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "检查的表名"},
-                    "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
-                    "result_summary": {"type": "string", "description": "处理结果摘要"},
-                },
-                "required": ["datasource_id", "table_name"],
-            },
-        },
-    },
-]
+}
 
-MAX_PROCESSOR_ITERATIONS = 12
+DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL]
+
+# 输出长度升级链（S）
+_OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
 
 
 class DataProcessorAgent(BaseAgent):
@@ -156,6 +108,11 @@ class DataProcessorAgent(BaseAgent):
         system_prompt = self.build_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
 
+        # 注入压缩历史（O：统一路由后由 chat.py 传入）
+        history = context.get("history", [])
+        if history:
+            local_messages.extend(history)
+
         if message.payload:
             if message.reason == HandoffReason.FIX_REQUIRED:
                 issues = message.payload.get("issues", [])
@@ -178,18 +135,77 @@ class DataProcessorAgent(BaseAgent):
             yield {"type": "done", "result": {"error": "空消息"}}
             return
 
-        for i in range(MAX_PROCESSOR_ITERATIONS):
+        stuck_detector = StuckDetector()
+        saturation_detector = SearchSaturationDetector()
+
+        # 动态轮次预算（Q）
+        user_msg = message.payload.get("user_message", message.payload.get("content", ""))
+        complexity = estimate_complexity(user_msg)
+        max_iterations = get_turn_budget(complexity)
+        logger.info(f"DataProcessor: complexity={complexity}, budget={max_iterations} turns")
+
+        had_any_tool_calls = False
+        pressure_warned = False
+        output_token_idx = 0
+        has_preinjected_data = context.get("has_preinjected_data", False)
+
+        for i in range(max_iterations):
+            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
             response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=3000
+                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
             )
             tool_calls = response.get("tool_calls", [])
+            finish_reason = response.get("finish_reason")
+
+            # 输出长度升级（S）
+            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
+                output_token_idx += 1
+                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
+                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
+                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
+                continue
 
             if not tool_calls:
                 content = response.get("content", "")
+
+                # 反幻觉：防"只规划不执行"（K）
+                if is_planning_only(content) and i == 0:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
+                    continue
+
+                # 反幻觉：无工具支撑的数据声明警告（P）
+                # 例外：system prompt 已预注入实时数据时，Agent 基于预注入数据回答是合理的
+                if not had_any_tool_calls and not has_preinjected_data:
+                    warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
+                    if warn and i < max_iterations - 1:
+                        local_messages.append({"role": "assistant", "content": content})
+                        local_messages.append({"role": "user", "content": warn})
+                        continue
+
+                # 卡死检测：空转检查
+                intervention = stuck_detector.record_idle()
+                if intervention and i < max_iterations - 1:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": intervention})
+                    continue
+
                 if content:
                     yield {"type": "content", "content": content}
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
+
+            had_any_tool_calls = True
+
+            # 卡死检测：重复调用检查
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    args = {}
+                intervention = stuck_detector.record_tool_call(tc["function"]["name"], args)
+                if intervention:
+                    local_messages.append({"role": "user", "content": intervention})
 
             content = response.get("content") or ""
             if content:
@@ -206,6 +222,17 @@ class DataProcessorAgent(BaseAgent):
                 local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
                 yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
 
+                # 搜索饱和检测（U）：对 kb_search 结果检测重复
+                tool_name = ""
+                for tc in tool_calls:
+                    if tc["id"] == r["tool_call_id"]:
+                        tool_name = tc["function"]["name"]
+                        break
+                if tool_name in ("kb_search", "query_table_data"):
+                    sat_warn = saturation_detector.record_search(r["content"])
+                    if sat_warn:
+                        local_messages.append({"role": "user", "content": sat_warn})
+
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
@@ -220,6 +247,15 @@ class DataProcessorAgent(BaseAgent):
                 except (json.JSONDecodeError, AttributeError):
                     pass
 
+            # 上下文压力主动告警（R）
+            level, ratio = get_context_pressure_level(local_messages)
+            if level > 0 and not pressure_warned:
+                warning = build_pressure_warning(level, ratio)
+                if warning:
+                    local_messages.append({"role": "user", "content": warning})
+                    pressure_warned = True
+                    logger.info(f"DataProcessor 上下文压力告警: level={level}, ratio={ratio:.1%}")
+
         yield {"type": "content", "content": "处理超时，请简化您的问题后重试。"}
         yield {"type": "done", "result": {"agent": self.name, "content": "处理超时"}}
 
@@ -228,7 +264,10 @@ class DataProcessorAgent(BaseAgent):
         persona = context.get("persona", "")
         persona_block = f"{persona}\n\n---\n\n" if persona else ""
         ctx_block = f"\n## 可用数据源\n{datasource_context}\n" if datasource_context else ""
-        return f"{persona_block}{self.instructions}{ctx_block}"
+        tool_guidance = get_tool_guidance()
+        # 三级反幻觉注入：DataProcessor 用 standard 级别（T）
+        anti_hallucination = get_anti_hallucination_section("standard")
+        return f"{persona_block}{self.instructions}{ctx_block}\n{tool_guidance}{anti_hallucination}"
 
     async def _execute_tool_calls_parallel(self, tool_calls: list, db: AsyncSession, user_id, context: Dict) -> list:
         async def _safe_execute(tc):
@@ -245,17 +284,7 @@ class DataProcessorAgent(BaseAgent):
     async def _execute_tool(self, name: str, arguments: dict, db: AsyncSession, user_id, context: Dict) -> str:
         logger.info(f"DataProcessor执行工具: {name}")
 
-        if name == "query_table_data":
-            return await self._query_table_data(arguments, db, user_id)
-        elif name == "get_table_schema":
-            return await self._get_table_schema(arguments, db, user_id)
-        elif name == "list_user_datasources":
-            return await self._list_user_datasources(db, user_id)
-        elif name == "list_user_file_links":
-            return await self._list_user_file_links(db, user_id)
-        elif name == "save_file_to_link":
-            return await self._save_file_to_link(arguments, db, user_id)
-        elif name == "handoff_to_inspector":
+        if name == "handoff_to_inspector":
             return json.dumps({
                 "_handoff": True,
                 "to": "data_inspector",
@@ -267,150 +296,5 @@ class DataProcessorAgent(BaseAgent):
                     "result_summary": arguments.get("result_summary", ""),
                 },
             }, ensure_ascii=False)
-        else:
-            return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
-    async def _query_table_data(self, args: dict, db: AsyncSession, user_id) -> str:
-        try:
-            result = await db.execute(
-                select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
-            )
-            datasource = result.scalar_one_or_none()
-            if not datasource:
-                return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
-
-            limit = args.get("limit", 100)
-            connector = get_connector(datasource.type, datasource.connection_config or {})
-
-            filter_column = args.get("filter_column")
-            filter_value = args.get("filter_value")
-            sort_column = args.get("sort_column")
-
-            if filter_column or sort_column:
-                df = await connector.get_table_data(args["table_name"], page=1, page_size=50000)
-                if filter_column and filter_value and filter_column in df.columns:
-                    if "|" in filter_value:
-                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
-                    else:
-                        mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=False)
-                    df = df[mask]
-                if sort_column and sort_column in df.columns:
-                    df = df.sort_values(by=sort_column, ascending=args.get("sort_order", "asc") == "asc")
-                total = len(df)
-                if limit and limit > 0:
-                    df = df.head(limit)
-            else:
-                total = 0
-                try:
-                    stats = await connector.get_table_stats(args["table_name"])
-                    total = stats.get("row_count", 0)
-                except Exception:
-                    pass
-                df = await connector.get_table_data(args["table_name"], page=1, page_size=limit or 100)
-
-            await connector.close()
-
-            return json.dumps({
-                "total_matched": total or len(df),
-                "returned_rows": len(df),
-                "columns": list(df.columns),
-                "rows": df.fillna("").to_dict(orient="records"),
-            }, ensure_ascii=False, default=str)
-        except Exception as e:
-            logger.error(f"查询数据失败: {e}")
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    async def _get_table_schema(self, args: dict, db: AsyncSession, user_id) -> str:
-        try:
-            result = await db.execute(
-                select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
-            )
-            datasource = result.scalar_one_or_none()
-            if not datasource:
-                return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
-
-            connector = get_connector(datasource.type, datasource.connection_config or {})
-            df = await connector.get_table_data(args["table_name"], page=1, page_size=5)
-            stats = {}
-            try:
-                stats = await connector.get_table_stats(args["table_name"])
-            except Exception:
-                pass
-            await connector.close()
-
-            return json.dumps({
-                "table_name": args["table_name"],
-                "row_count": stats.get("row_count", "未知"),
-                "columns": [
-                    {"name": col, "dtype": str(df[col].dtype), "sample": df[col].dropna().head(3).tolist()}
-                    for col in df.columns
-                ],
-            }, ensure_ascii=False, default=str)
-        except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    async def _list_user_datasources(self, db: AsyncSession, user_id) -> str:
-        try:
-            result = await db.execute(
-                select(DataSource).where(
-                    DataSource.created_by == user_id,
-                    DataSource.is_active == True,
-                )
-            )
-            sources = result.scalars().all()
-            data = []
-            for ds in sources:
-                item = {"id": str(ds.id), "name": ds.name, "type": ds.type}
-                try:
-                    connector = get_connector(ds.type, ds.connection_config or {})
-                    item["tables"] = await connector.get_tables()
-                    await connector.close()
-                except Exception:
-                    item["tables"] = []
-                data.append(item)
-            return json.dumps({"datasources": data}, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    async def _list_user_file_links(self, db: AsyncSession, user_id) -> str:
-        try:
-            result = await db.execute(
-                select(FileLink).where(
-                    FileLink.created_by == user_id,
-                    FileLink.is_active == True,
-                )
-            )
-            links = result.scalars().all()
-            return json.dumps({
-                "file_links": [{"id": str(l.id), "name": l.name, "path": l.path, "link_type": l.link_type} for l in links]
-            }, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    @staticmethod
-    async def _save_file_to_link(args: dict, db: AsyncSession, user_id) -> str:
-        try:
-            result = await db.execute(
-                select(FileLink).where(
-                    FileLink.id == _uuid.UUID(args["link_id"]),
-                    FileLink.created_by == user_id,
-                )
-            )
-            link = result.scalar_one_or_none()
-            if not link:
-                return json.dumps({"error": "文件链接不存在或无权访问"}, ensure_ascii=False)
-            if link.link_type != "directory":
-                return json.dumps({"error": "只能向目录类型的链接写入文件"}, ensure_ascii=False)
-
-            base_path = Path(link.path).resolve()
-            full_path = (base_path / args["subpath"]).resolve()
-            if not str(full_path).startswith(str(base_path)):
-                return json.dumps({"error": "非法路径"}, ensure_ascii=False)
-
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(args["content"])
-
-            return json.dumps({"status": "success", "path": str(full_path), "size": full_path.stat().st_size}, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return await execute_shared_tool(name, arguments, db, user_id)

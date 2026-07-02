@@ -1,7 +1,8 @@
 """系统配置API端点"""
 
 import os
-from typing import Optional
+import json
+from typing import Optional, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,17 @@ class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     model: str = "gpt-4"
+    fast_model: Optional[str] = None
     embedding_model: str = "text-embedding-ada-002"
+    fallback_models: Optional[List[Dict[str, str]]] = None
+
+
+class FallbackModelItem(BaseModel):
+    """降级模型项（不回显 api_key）"""
+    provider: str
+    api_base: Optional[str] = None
+    model: str
+    api_key_set: bool = False
 
 
 class LLMConfigResponse(BaseModel):
@@ -31,8 +42,10 @@ class LLMConfigResponse(BaseModel):
     api_key_set: bool  # 不返回实际key，只返回是否已设置
     api_base: Optional[str] = None
     model: str
+    fast_model: Optional[str] = None
     embedding_model: str
     is_configured: bool
+    fallback_models: List[FallbackModelItem] = []
 
 
 class AgentConfigRequest(BaseModel):
@@ -82,13 +95,24 @@ async def get_llm_config():
         model = llm_manager.model or settings.OPENAI_MODEL
         embedding_model = llm_manager.embedding_model or settings.OPENAI_EMBEDDING_MODEL
 
+        fb_items = [
+            FallbackModelItem(
+                provider=f.get("provider") or "custom",
+                api_base=f.get("api_base"),
+                model=f.get("model") or "",
+                api_key_set=bool(f.get("api_key")),
+            )
+            for f in (getattr(llm_manager, "fallback_models", []) or [])
+        ]
         return LLMConfigResponse(
             provider=provider,
             api_key_set=bool(api_key),
             api_base=api_base,
             model=model,
+            fast_model=getattr(settings, 'LLM_FAST_MODEL', '') or '',
             embedding_model=embedding_model,
             is_configured=bool(api_key),
+            fallback_models=fb_items,
         )
     except Exception as e:
         logger.error(f"获取配置失败: {e}")
@@ -112,10 +136,31 @@ async def update_llm_config(
         except FileNotFoundError:
             env_lines = []
 
+        # 降级链：未传则保留现有；传入项空 key 则按 provider+model 复用已有 key
+        if config.fallback_models is not None:
+            existing = {(f.get("provider"), f.get("model")): f.get("api_key") for f in llm_manager.fallback_models}
+            fallback_models = []
+            for f in config.fallback_models:
+                key = (f.get("provider"), f.get("model"))
+                api_key = f.get("api_key") or ""
+                if not api_key and key in existing and existing[key]:
+                    api_key = existing[key]
+                fallback_models.append({
+                    "provider": f.get("provider") or "custom",
+                    "api_base": f.get("api_base"),
+                    "model": f.get("model") or "",
+                    "api_key": api_key,
+                })
+        else:
+            fallback_models = llm_manager.fallback_models
+        fallback_json = json.dumps(fallback_models or [], ensure_ascii=False)
+
         config_map = {
             "LLM_PROVIDER": config.provider,
             "OPENAI_MODEL": config.model,
+            "LLM_FAST_MODEL": config.fast_model or "",
             "OPENAI_EMBEDDING_MODEL": config.embedding_model,
+            "LLM_FALLBACK_MODELS": fallback_json,
         }
         if config.api_key and config.api_key.strip():
             config_map["OPENAI_API_KEY"] = config.api_key
@@ -145,7 +190,9 @@ async def update_llm_config(
         # 立即更新运行时settings
         settings.LLM_PROVIDER = config.provider
         settings.OPENAI_MODEL = config.model
+        settings.LLM_FAST_MODEL = config.fast_model or ""
         settings.OPENAI_EMBEDDING_MODEL = config.embedding_model
+        settings.LLM_FALLBACK_MODELS = fallback_json
         if config.api_key and config.api_key.strip():
             settings.OPENAI_API_KEY = config.api_key
         if config.api_base and config.api_base.strip():
@@ -163,6 +210,7 @@ async def update_llm_config(
                     api_base=current_api_base,
                     model=config.model,
                     embedding_model=config.embedding_model,
+                    fallback_models=fallback_models,
                 )
         except Exception as e:
             logger.warning(f"LLM客户端重新初始化失败（配置已保存）: {e}")

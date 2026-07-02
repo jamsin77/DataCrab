@@ -50,7 +50,7 @@
           </div>
         </el-form-item>
 
-        <el-form-item label="对话模型">
+        <el-form-item label="深度模型">
           <el-select v-model="form.model" placeholder="选择模型" filterable :allow-create="form.provider === 'custom'">
             <el-option
               v-for="m in availableModels"
@@ -59,6 +59,27 @@
               :value="m.value"
             />
           </el-select>
+          <div class="form-tip">
+            <el-text size="small" type="info">
+              深度推理模型，用于生成/修改脚本、流程生成等需要深度思考的场景
+            </el-text>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="快速模型">
+          <el-select v-model="form.fast_model" placeholder="留空则自动选择" filterable clearable :allow-create="form.provider === 'custom'">
+            <el-option
+              v-for="m in availableModels"
+              :key="m.value"
+              :label="m.label"
+              :value="m.value"
+            />
+          </el-select>
+          <div class="form-tip">
+            <el-text size="small" type="info">
+              非推理型快速模型，用于调试对话等场景（留空则按提供商自动选择，如 GLM→glm-4-flash）
+            </el-text>
+          </div>
         </el-form-item>
 
         <el-form-item label="嵌入模型">
@@ -71,6 +92,35 @@
             <el-text size="small" type="info">
               用于将文本转换为向量，支持技能语义搜索
             </el-text>
+          </div>
+        </el-form-item>
+
+        <el-divider content-position="left">降级模型链（可选）</el-divider>
+
+        <el-form-item label="降级模型">
+          <div class="fallback-wrap">
+            <div class="form-tip" style="margin-bottom: 8px">
+              <el-text size="small" type="info">
+                主模型调用失败（限流/鉴权/超时）时，按顺序尝试以下模型；留空则不降级。
+              </el-text>
+            </div>
+            <div v-for="(fb, idx) in fallbackModels" :key="idx" class="fallback-row">
+              <el-select v-model="fb.provider" placeholder="提供商" style="width: 130px" @change="onFbProviderChange(idx)">
+                <el-option label="阿里百炼" value="qwen" />
+                <el-option label="智谱AI (GLM)" value="glm" />
+                <el-option label="硅基流动" value="siliconflow" />
+                <el-option label="自定义" value="custom" />
+              </el-select>
+              <el-select v-model="fb.model" placeholder="模型" filterable :allow-create="fb.provider === 'custom'" style="width: 190px">
+                <el-option v-for="m in (providerModels[fb.provider] || [])" :key="m.value" :label="m.label" :value="m.value" />
+              </el-select>
+              <el-input v-model="fb.api_key" type="password" show-password style="width: 180px" :placeholder="fb.api_key_set ? '已设置（输入可更新）' : 'API Key'" />
+              <el-input v-model="fb.api_base" style="width: 220px" :placeholder="providerBaseUrls[fb.provider] || 'API 地址'" />
+              <el-button type="danger" text :icon="Delete" @click="removeFallback(idx)" />
+            </div>
+            <el-button size="small" type="primary" plain @click="addFallback">
+              <el-icon><Plus /></el-icon> 添加降级模型
+            </el-button>
           </div>
         </el-form-item>
 
@@ -140,6 +190,7 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
+import { Plus, Delete } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -159,6 +210,9 @@ const providerModels: Record<string, { label: string; value: string }[]> = {
     { label: 'GLM-5', value: 'glm-5' },
     { label: 'GLM-4 Plus', value: 'glm-4-plus' },
     { label: 'GLM-4', value: 'glm-4' },
+    { label: 'GLM-4 Air', value: 'glm-4-air' },
+    { label: 'GLM-4 Flash', value: 'glm-4-flash' },
+    { label: 'GLM-4 FlashX', value: 'glm-4-flashx' },
     { label: 'GLM-3 Turbo', value: 'glm-3-turbo' },
   ],
   siliconflow: [
@@ -206,11 +260,40 @@ const form = ref({
   api_key: '',
   api_base: '',
   model: 'glm-5.2',
+  fast_model: '',
   embedding_model: 'text-embedding-ada-002'
 })
 
 const testResult = ref<any>(null)
 const saveResult = ref<any>(null)
+
+// 降级模型链
+interface FallbackModel {
+  provider: string
+  model: string
+  api_key: string
+  api_base: string
+  api_key_set: boolean
+}
+const fallbackModels = ref<FallbackModel[]>([])
+
+function addFallback() {
+  const provider = 'qwen'
+  fallbackModels.value.push({
+    provider,
+    model: '',
+    api_key: '',
+    api_base: providerBaseUrls[provider] || '',
+    api_key_set: false,
+  })
+}
+function removeFallback(idx: number) {
+  fallbackModels.value.splice(idx, 1)
+}
+function onFbProviderChange(idx: number) {
+  const fb = fallbackModels.value[idx]
+  fb.api_base = providerBaseUrls[fb.provider] || ''
+}
 
 const modelProviders = ref([
   { name: '阿里百炼', models: 'qwen3.7-max, qwen3.7-plus, qwen3.6-flash, deepseek-v4-pro', note: 'API: dashscope.aliyuncs.com/compatible-mode/v1' },
@@ -234,8 +317,16 @@ async function loadConfig(preserveApiKey = false) {
       api_key: res.api_key_set ? '' : currentApiKey,
       api_base: res.api_base || '',
       model: res.model,
+      fast_model: res.fast_model || '',
       embedding_model: res.embedding_model
     }
+    fallbackModels.value = (res.fallback_models || []).map((f: any) => ({
+      provider: f.provider || 'qwen',
+      model: f.model || '',
+      api_key: '',
+      api_base: f.api_base || '',
+      api_key_set: !!f.api_key_set,
+    }))
   } catch (e: any) {
     ElMessage.error('加载配置失败')
   } finally {
@@ -248,7 +339,18 @@ async function saveConfig() {
   saveResult.value = null
   const hasNewApiKey = form.value.api_key && form.value.api_key.trim() !== ''
   try {
-    const res = await api.post('/config/llm', form.value)
+    const payload = {
+      ...form.value,
+      fallback_models: fallbackModels.value
+        .filter(f => f.model && f.model.trim())
+        .map(f => ({
+          provider: f.provider,
+          model: f.model,
+          api_key: f.api_key,
+          api_base: f.api_base,
+        })),
+    }
+    const res = await api.post('/config/llm', payload)
     saveResult.value = res
     if (res.success) {
       ElMessage.success('配置已保存')
@@ -302,6 +404,18 @@ async function testConnection() {
 
 .form-tip {
   margin-top: 4px;
+}
+
+.fallback-wrap {
+  width: 100%;
+}
+
+.fallback-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 
 .help-card {

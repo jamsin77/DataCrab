@@ -208,44 +208,93 @@ def _analyze_skill_calls(code: str, skill_id: str, skill_name: str) -> List[Dict
 
 
 def _extract_main_params(code: str) -> List[Dict[str, Any]]:
-    """AST 提取 main 函数的参数定义"""
+    """AST 提取 main 函数的参数定义，并从 docstring 中解析参数说明"""
     try:
         tree = ast.parse(code)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "main":
+                docstring = ast.get_docstring(node) or ""
+                param_docs = _parse_docstring_params(docstring)
+
                 params = []
                 for arg in node.args.args:
+                    name = arg.arg
                     params.append({
-                        "name": arg.arg,
+                        "name": name,
                         "type": _annotation_to_str(arg.annotation),
                         "required": True,
-                        "description": "",
+                        "description": param_docs.get(name, ""),
                     })
                 for arg in node.args.kwonlyargs:
+                    name = arg.arg
                     params.append({
-                        "name": arg.arg,
+                        "name": name,
                         "type": _annotation_to_str(arg.annotation),
                         "required": False,
-                        "description": "",
+                        "description": param_docs.get(name, ""),
                     })
                 if node.args.vararg:
+                    name = f"*{node.args.vararg.arg}"
+                    raw_name = node.args.vararg.arg
                     params.append({
-                        "name": f"*{node.args.vararg.arg}",
+                        "name": name,
                         "type": "tuple",
                         "required": False,
-                        "description": "",
+                        "description": param_docs.get(raw_name, param_docs.get(name, "")),
                     })
                 if node.args.kwarg:
+                    name = f"**{node.args.kwarg.arg}"
+                    raw_name = node.args.kwarg.arg
                     params.append({
-                        "name": f"**{node.args.kwarg.arg}",
+                        "name": name,
                         "type": "dict",
                         "required": False,
-                        "description": "",
+                        "description": param_docs.get(raw_name, param_docs.get(name, "")),
                     })
                 return params
     except SyntaxError:
         pass
     return []
+
+
+def _parse_docstring_params(docstring: str) -> Dict[str, str]:
+    """从 docstring 的 Args:/Arguments:/Parameters: 部分解析参数说明"""
+    import re
+    result: Dict[str, str] = {}
+    lines = docstring.split("\n")
+    in_args = False
+    current_name = ""
+    current_desc = ""
+
+    for line in lines:
+        stripped = line.strip()
+        low = stripped.lower()
+        if low in ("args:", "arguments:", "parameters:", "参数:"):
+            in_args = True
+            continue
+        if in_args:
+            if low in ("returns:", "return:", "yields:", "raises:", "examples:", "example:", "note:", "notes:"):
+                if current_name:
+                    result[current_name] = current_desc.strip()
+                break
+            m = re.match(r'^(\*{0,2}\w+)\s*[:：]\s*(.*)$', stripped)
+            if m:
+                if current_name:
+                    result[current_name] = current_desc.strip()
+                current_name = m.group(1).lstrip("*")
+                current_desc = m.group(2)
+            elif stripped and current_name:
+                current_desc += " " + stripped
+            elif not stripped:
+                if current_name and current_desc:
+                    result[current_name] = current_desc.strip()
+                    current_name = ""
+                    current_desc = ""
+
+    if current_name:
+        result[current_name] = current_desc.strip()
+
+    return result
 
 
 def _annotation_to_str(ann) -> str:

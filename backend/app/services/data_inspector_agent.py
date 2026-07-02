@@ -1,14 +1,34 @@
-"""DataInspector 数据检查智能体"""
+"""DataInspector 数据检查智能体
+
+改进点：
+- StuckDetector 卡死检测（J）
+- 反幻觉：防"只规划不执行"（K）+ 无工具支撑的数据声明警告（P）
+- 动态轮次预算（Q）
+- 上下文压力主动告警（R）
+- 输出长度升级（S）
+- 三级反幻觉注入：strict 级别（T）
+"""
 
 import json
 import asyncio
-from typing import Dict, Any, List, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator
 
 from loguru import logger
 
 from app.services.multi_agent import BaseAgent, AgentMessage, HandoffReason
 from app.services.llm import llm_manager
 from app.services.inspector_tools import inspector_tools
+from app.services.agent_utils import (
+    StuckDetector,
+    is_planning_only,
+    should_warn_ungrounded_claim,
+    estimate_complexity,
+    get_turn_budget,
+    get_context_pressure_level,
+    build_pressure_warning,
+    get_anti_hallucination_section,
+)
+from app.services.tool_guidance import get_tool_guidance
 
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（DataInspector），一位数据质量专家。
 
@@ -152,7 +172,8 @@ DATA_INSPECTOR_TOOLS = [
     },
 ]
 
-MAX_INSPECTOR_ITERATIONS = 12
+# 输出长度升级链（S）
+_OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
 
 
 class DataInspectorAgent(BaseAgent):
@@ -180,7 +201,9 @@ class DataInspectorAgent(BaseAgent):
                     base += f"\n\n## {title}\n{p.read_text(encoding='utf-8')}"
         except Exception:
             pass
-        return base
+        # 三级反幻觉注入：DataInspector 用 strict 级别（T）
+        anti_hallucination = get_anti_hallucination_section("strict")
+        return base + "\n" + get_tool_guidance() + anti_hallucination
 
     async def run(
         self,
@@ -193,6 +216,10 @@ class DataInspectorAgent(BaseAgent):
         if not db or not user_id:
             yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
             return
+
+        # 将 payload 中的数据源信息写入 context，供 handoff_to_processor 回交时使用（P2-5）
+        context["current_datasource_id"] = message.payload.get("datasource_id", "")
+        context["current_table_name"] = message.payload.get("table_name", "")
 
         await llm_manager.initialize()
 
@@ -232,18 +259,74 @@ class DataInspectorAgent(BaseAgent):
                 yield {"type": "done", "result": {"error": "空消息"}}
                 return
 
-        for i in range(MAX_INSPECTOR_ITERATIONS):
+        stuck_detector = StuckDetector()
+
+        # 动态轮次预算（Q）：检查任务通常 medium 复杂度
+        inspect_msg = message.payload.get("user_message", message.payload.get("content", ""))
+        complexity = estimate_complexity(inspect_msg) if inspect_msg else "medium"
+        max_iterations = get_turn_budget(complexity)
+        logger.info(f"DataInspector: complexity={complexity}, budget={max_iterations} turns")
+
+        had_any_tool_calls = False
+        pressure_warned = False
+        output_token_idx = 0
+
+        for i in range(max_iterations):
+            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
             response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=3000
+                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
             )
             tool_calls = response.get("tool_calls", [])
+            finish_reason = response.get("finish_reason")
+
+            # 输出长度升级（S）
+            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
+                output_token_idx += 1
+                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
+                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
+                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
+                continue
 
             if not tool_calls:
                 content = response.get("content", "")
+
+                # 反幻觉：防"只规划不执行"（K）
+                if is_planning_only(content) and i == 0:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行检查操作。"})
+                    continue
+
+                # 反幻觉：无工具支撑的数据声明警告（P）
+                if not had_any_tool_calls:
+                    warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
+                    if warn and i < max_iterations - 1:
+                        local_messages.append({"role": "assistant", "content": content})
+                        local_messages.append({"role": "user", "content": warn})
+                        continue
+
+                # 卡死检测：空转检查（J）
+                intervention = stuck_detector.record_idle()
+                if intervention and i < max_iterations - 1:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": intervention})
+                    continue
+
                 if content:
                     yield {"type": "content", "content": content}
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
+
+            had_any_tool_calls = True
+
+            # 卡死检测：重复调用检查（J）
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    args = {}
+                intervention = stuck_detector.record_tool_call(tc["function"]["name"], args)
+                if intervention:
+                    local_messages.append({"role": "user", "content": intervention})
 
             content = response.get("content") or ""
             if content:
@@ -273,6 +356,15 @@ class DataInspectorAgent(BaseAgent):
                         return
                 except (json.JSONDecodeError, AttributeError):
                     pass
+
+            # 上下文压力主动告警（R）
+            level, ratio = get_context_pressure_level(local_messages)
+            if level > 0 and not pressure_warned:
+                warning = build_pressure_warning(level, ratio)
+                if warning:
+                    local_messages.append({"role": "user", "content": warning})
+                    pressure_warned = True
+                    logger.info(f"DataInspector 上下文压力告警: level={level}, ratio={ratio:.1%}")
 
         yield {"type": "content", "content": "检查超时，请稍后重试。"}
         yield {"type": "done", "result": {"agent": self.name, "content": "检查超时"}}

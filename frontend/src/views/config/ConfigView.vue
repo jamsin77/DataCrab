@@ -1,14 +1,14 @@
 <template>
   <div class="config-container">
     <el-tabs v-model="activeTab" @tab-change="handleTabChange">
+      <el-tab-pane label="数据源管理" name="datasource">
+        <DataSourceView />
+      </el-tab-pane>
       <el-tab-pane label="智能体设置" name="agent">
         <AgentConfigView />
       </el-tab-pane>
       <el-tab-pane label="模型设置" name="model">
         <ModelConfigView />
-      </el-tab-pane>
-      <el-tab-pane label="大模型对话" name="llm-chat">
-        <LLMChatView />
       </el-tab-pane>
       <el-tab-pane label="数据标准库" name="standards">
         <DataStandardsConfig />
@@ -25,9 +25,9 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AgentConfigView from './AgentConfigView.vue'
 import ModelConfigView from './ModelConfigView.vue'
-import LLMChatView from './LLMChatView.vue'
 import DataStandardsConfig from './DataStandardsConfig.vue'
 import PermissionView from './PermissionView.vue'
+import DataSourceView from '@/views/datasource/DataSourceView.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,7 +35,7 @@ const activeTab = ref('agent')
 
 onMounted(() => {
   const tab = (route.query.tab as string) || 'agent'
-  if (['agent', 'model', 'llm-chat', 'standards', 'permission'].includes(tab)) {
+  if (['datasource', 'agent', 'model', 'standards', 'permission'].includes(tab)) {
     activeTab.value = tab
   }
 })

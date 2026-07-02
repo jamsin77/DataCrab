@@ -39,21 +39,24 @@ DataCrab adopts a multi-agent collaboration architecture where each agent has cl
 | **DataInspector** | Performs standard, quality, and security inspections on processed data |
 
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
-- Up to 12 iterations per Agent run, with parallel tool calls
+- Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
+- Supports parallel tool calls
 - SSE streaming of reasoning process and execution results
 
 ### 3. Data Source Management
 
-- Pluggable connector architecture supporting 6 data sources:
+- Pluggable connector architecture supporting 8 data sources:
 
 | Connector | Description |
 |--------|------|
 | PostgreSQL | Async connection based on asyncpg |
 | MySQL | Async connection based on aiomysql |
+| SQLite | Async connection based on aiosqlite |
 | CSV | Local CSV files |
-| Excel | Multi-sheet support |
+| Excel | Multi-sheet support (longest-prefix table name matching) |
 | OBS/S3 | Huawei Cloud OBS object storage |
 | HDFS | Hadoop HDFS (WebHDFS REST API) |
+| ChromaDB | Vector database |
 
 - Connection testing, schema discovery, paginated table data browsing
 - Data quality analysis (completeness, missing values, outlier detection)
@@ -123,13 +126,9 @@ The platform exposes underlying LLM capabilities as a RESTful API:
 
 | Endpoint | Description |
 |------|------|
-| `POST /llm/chat` | LLM chat (non-streaming) |
-| `POST /llm/chat-stream` | LLM chat (SSE streaming) |
-| `POST /llm/chat-stream-thinking` | Multi-turn LLM chat (SSE streaming, with reasoning) |
 | `POST /llm/embeddings` | Generate text embedding vectors |
 
 - The `llm_chat()` function can be called directly inside operator and skill scripts
-- The frontend config page supports switching among three call modes
 
 ### 10. File Link Management
 
@@ -295,7 +294,7 @@ All API routes are prefixed with `/api/v1/`:
 | `/schedules` | Schedule CRUD, pause/resume, trigger, stats |
 | `/metadata` | Metadata management, AI-enriched business metadata |
 | `/filelinks` | File link CRUD |
-| `/llm` | LLM chat (streaming/non-streaming), embeddings |
+| `/llm` | Text embedding vectors |
 | `/config` | LLM provider runtime config |
 | `/agents` | Agent list, run agent, data inspection |
 | `/permissions` | Permission management |

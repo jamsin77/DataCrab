@@ -1,17 +1,42 @@
 <template>
   <div class="metadata-page">
-    <div class="page-header">
-      <h2>元数据管理</h2>
-      <div class="header-actions">
-        <el-select v-model="filterDataSource" placeholder="全部数据源" clearable style="width: 200px" @change="loadMetadata">
-          <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
-        </el-select>
-        <el-input v-model="searchQuery" placeholder="搜索表名/业务名称/描述..." clearable style="width: 280px" @clear="loadMetadata" @keyup.enter="loadMetadata">
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
-        <el-button type="primary" @click="loadMetadata">刷新</el-button>
+    <!-- 左侧：按数据源浏览 -->
+    <div class="ds-sidebar">
+      <div class="ds-sidebar-title">数据源</div>
+      <div class="ds-item" :class="{ active: !filterDataSource }" @click="selectDataSource('')">
+        <el-icon><Files /></el-icon>
+        <span>全部数据源</span>
       </div>
+      <el-tooltip
+        v-for="ds in datasources"
+        :key="ds.id"
+        :content="ds.name"
+        placement="right"
+        :show-after="300"
+      >
+        <div
+          class="ds-item"
+          :class="{ active: filterDataSource === ds.id }"
+          @click="selectDataSource(ds.id)"
+        >
+          <el-icon><Connection /></el-icon>
+          <span class="ds-item-label">{{ ds.name }}</span>
+        </div>
+      </el-tooltip>
+      <el-empty v-if="!datasources.length" description="暂无数据源" :image-size="50" />
     </div>
+
+    <!-- 右侧：表格与搜索 -->
+    <div class="ds-main">
+      <div class="page-header">
+        <h2>元数据管理</h2>
+        <div class="header-actions">
+          <el-input v-model="searchQuery" placeholder="搜索表名/业务名称/描述..." clearable style="width: 280px" @clear="loadMetadata" @keyup.enter="loadMetadata">
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-button type="primary" @click="loadMetadata">刷新</el-button>
+        </div>
+      </div>
 
     <div class="stats-bar" v-if="stats">
       <el-tag type="info">总计 {{ stats.total }} 个数据集</el-tag>
@@ -53,6 +78,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-drawer v-model="detailDrawer" :title="detailData?.business_name || detailData?.table_name || '元数据详情'" size="60%">
       <div v-if="detailData" class="detail-layout">
@@ -137,7 +163,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { Search, CircleCheckFilled } from '@element-plus/icons-vue'
+import { Search, CircleCheckFilled, Files, Connection } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
 
@@ -159,6 +185,11 @@ async function loadDatasources() {
   try {
     datasources.value = await api.get('/datasources')
   } catch {}
+}
+
+function selectDataSource(id: string) {
+  filterDataSource.value = id
+  loadMetadata()
 }
 
 async function loadMetadata() {
@@ -280,7 +311,14 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.metadata-page { padding: 20px; }
+.metadata-page { display: flex; gap: 16px; padding: 16px; }
+.ds-sidebar { width: 220px; flex-shrink: 0; background: #fff; border: 1px solid #ebeef5; border-radius: 6px; overflow-y: auto; max-height: calc(100vh - 90px); }
+.ds-sidebar-title { padding: 10px 12px; font-weight: 600; font-size: 13px; color: #303133; border-bottom: 1px solid #ebeef5; background: #fafafa; }
+.ds-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 13px; color: #606266; border-bottom: 1px solid #f5f5f5; transition: background 0.15s; }
+.ds-item .ds-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-item:hover { background: #f5f7fa; }
+.ds-item.active { background: #ecf5ff; color: #409eff; font-weight: 500; }
+.ds-main { flex: 1; min-width: 0; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .page-header h2 { margin: 0; }
 .header-actions { display: flex; gap: 8px; align-items: center; }

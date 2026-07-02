@@ -1,6 +1,8 @@
 """流程管理API端点"""
 
 import json
+import re
+import asyncio
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -22,9 +24,11 @@ from app.schemas.pipeline import (
     PipelineRunRequest,
     PipelineFromSkillRequest,
     PipelineExecutionResponse,
+    PipelineDebugChatRequest,
 )
 from app.services.pipeline_builder import build_pipeline_from_skill
 from app.services.pipeline_executor import execute_pipeline, execute_pipeline_stream
+from app.services.llm import llm_manager
 
 router = APIRouter()
 
@@ -214,54 +218,101 @@ async def create_pipeline_from_skill_stream(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """SSE 流式生成流程"""
+    """SSE 流式生成流程，推送推理过程"""
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="Skill 不存在")
 
-    async def event_stream():
-        yield f"data: {json.dumps({'type': 'status', 'message': '正在分析 Skill 结构...'}, ensure_ascii=False)}\n\n"
+    from app.services.llm import llm_manager
+    from app.services.pipeline_builder import (
+        build_pipeline_from_skill, PIPELINE_BUILDER_SYSTEM_PROMPT,
+    )
+    from app.services.skill_parser import read_skill_md, read_skill_script, list_skill_scripts
+    from pathlib import Path
+    import asyncio
 
-        built = {}
+    await llm_manager.initialize()
+
+    skill_path = Path(skill.skill_path)
+    skill_md = read_skill_md(skill_path) or ""
+    scripts = {}
+    for script_info in list_skill_scripts(skill_path):
+        name = script_info["name"] if isinstance(script_info, dict) else script_info
+        content = script_info.get("content") if isinstance(script_info, dict) else read_skill_script(skill_path, script_info)
+        scripts[name] = content
+
+    scripts_text = ""
+    for name, content in scripts.items():
+        scripts_text += f"\n### scripts/{name}\n```python\n{content}\n```\n"
+
+    user_prompt = (
+        f"请根据以下 Skill 信息生成一个完整的 Python 流程主函数。\n\n"
+        f"## Skill 信息\n- 名称: {skill.name}\n- 显示名称: {skill.display_name or skill.name}\n\n"
+        f"## SKILL.md 内容\n{skill_md[:3000]}\n\n"
+        f"## 脚本内容\n{scripts_text[:8000]}\n\n"
+        f"请生成完整的 Python 主函数文件。"
+    )
+
+    messages = [
+        {"role": "system", "content": PIPELINE_BUILDER_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    async def event_stream():
+        import json as json_mod
         try:
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在分析 Skill 结构...'}, ensure_ascii=False)}\n\n"
+
+            full_content = ""
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
+                event = {"type": chunk["type"], "content": chunk["content"]}
+                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
+                if chunk["type"] == "content":
+                    full_content += chunk["content"]
+
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在解析代码并创建流程...'}, ensure_ascii=False)}\n\n"
+
             built = await build_pipeline_from_skill(
                 skill_path_str=skill.skill_path,
                 skill_id=str(skill_id),
                 skill_name=skill.name,
                 skill_display_name=skill.display_name or skill.name,
             )
+            # 覆盖为流式获取的代码（更完整）
+            if full_content.strip():
+                from app.services.pipeline_builder import _extract_python_code
+                built["main_code"] = _extract_python_code(full_content)
+
+            display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
+
+            pipeline = Pipeline(
+                id=uuid4(),
+                name=f"pl_{skill.name}",
+                display_name=display_name,
+                description=skill.description,
+                main_code=built["main_code"],
+                entry_function=built.get("entry_function", "main"),
+                parameters=built.get("parameters", []),
+                skill_calls=built.get("skill_calls", []),
+                source_skill_id=skill_id,
+                tags=skill.tags or [],
+                category=skill.category,
+                created_by=current_user.id,
+            )
+            db.add(pipeline)
+            await db.flush()
+            await db.refresh(pipeline)
+            logger.info(f"流程已流式生成: {pipeline.display_name} ({pipeline.id})")
+
+            yield f"data: {json_mod.dumps({'type': 'done', 'pipeline_name': display_name}, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            return
+            yield f"data: {json_mod.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
-        yield f"data: {json.dumps({'type': 'status', 'message': '正在创建流程...'}, ensure_ascii=False)}\n\n"
-
-        display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
-
-        pipeline = Pipeline(
-            id=uuid4(),
-            name=f"pl_{skill.name}",
-            display_name=display_name,
-            description=skill.description,
-            main_code=built["main_code"],
-            entry_function=built.get("entry_function", "main"),
-            parameters=built.get("parameters", []),
-            skill_calls=built.get("skill_calls", []),
-            source_skill_id=skill_id,
-            tags=skill.tags or [],
-            category=skill.category,
-            created_by=current_user.id,
-        )
-        db.add(pipeline)
-        await db.flush()
-        await db.refresh(pipeline)
-
-        resp = _build_response(pipeline)
-        resp_data = resp.model_dump(mode="json")
-        yield f"data: {json.dumps({'type': 'created', 'pipeline': resp_data}, ensure_ascii=False, default=str)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
 
 @router.post("/{pipeline_id}/run", response_model=PipelineExecutionResponse)
@@ -317,6 +368,90 @@ async def run_pipeline_stream(
             yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{pipeline_id}/debug-chat")
+async def debug_pipeline_chat(
+    pipeline_id: UUID,
+    req: PipelineDebugChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """流程 AI 调试助手（流式）—— 镜像算子 debug-chat"""
+    result = await db.execute(
+        select(Pipeline).where(Pipeline.id == pipeline_id, Pipeline.is_active == True)
+    )
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="流程不存在")
+
+    await llm_manager.initialize()
+
+    main_code = p.main_code or ""
+    entry_function = p.entry_function or "main"
+    display_name = p.display_name or p.name
+
+    ctx = req.context or {}
+    last_result = ctx.get("last_result", "")
+    last_error = ctx.get("last_error", "")
+
+    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+    system_prompt = (
+        f"你是一个流程代码调试助手。用户正在调试流程 \"{display_name}\"，"
+        f"入口函数：{entry_function}(inputs)。\n\n"
+        f"流程主函数代码：\n```python\n{main_code[:6000]}\n```\n\n"
+        f"{SANDBOX_TOOLS_DOC}\n\n"
+        f"你可以帮助用户：\n"
+        f"- 分析流程代码逻辑和潜在bug\n"
+        f"- 修改代码并直接输出修改后的完整主函数脚本（用```python围栏包裹）\n"
+        f"- 解释错误原因和修复方案\n"
+        f"- 优化代码性能和可读性\n\n"
+        f"重要规则：\n"
+        f"- 如果修改了代码，输出修改后的完整主函数脚本，用```python和```围栏包裹\n"
+        f"- 保持入口函数名 {entry_function} 不变\n"
+        f"- 保持代码风格一致\n\n"
+        f"{SAFETY_RULES_DOC}"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for h in (req.history or []):
+        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+
+    user_msg = req.message
+    if last_result or last_error:
+        user_msg += "\n\n[当前调试上下文]"
+        if last_result:
+            user_msg += f"\n上次执行结果: {last_result}"
+        if last_error:
+            user_msg += f"\n上次错误: {last_error[:500]}"
+    messages.append({"role": "user", "content": user_msg})
+
+    async def generate():
+        full_content = ""
+        try:
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+                if chunk["type"] == "thinking":
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
+                elif chunk["type"] == "content":
+                    full_content += chunk["content"]
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
+
+            code_match = re.search(r'```python\s*\n(.*?)```', full_content, re.DOTALL)
+            if code_match:
+                new_code = code_match.group(1).strip()
+                p.main_code = new_code
+                p.version = (p.version or 1) + 1
+                await db.flush()
+                await db.refresh(p)
+                yield f"data: {json.dumps({'type': 'script_updated', 'script_name': entry_function}, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"流程调试聊天失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
 
 @router.get("/{pipeline_id}/executions", response_model=list[PipelineExecutionResponse])

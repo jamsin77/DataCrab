@@ -36,6 +36,19 @@
         <p>输入自然语言描述，AI将帮你处理数据</p>
       </div>
       <template v-else>
+        <!-- 顶部工具栏 -->
+        <div class="chat-toolbar">
+          <span class="chat-toolbar-title">{{ currentSessionTitle || '新会话' }}</span>
+          <el-button
+            class="clear-history-btn"
+            size="small"
+            :icon="Delete"
+            :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
+            @click="handleClearMessages"
+          >
+            清空记录
+          </el-button>
+        </div>
         <!-- 消息流 -->
         <div class="message-list" ref="messageListRef">
           <div
@@ -161,10 +174,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument } from '@element-plus/icons-vue'
+import { CopyDocument, Delete } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import api from '@/api/index'
 
@@ -173,6 +186,11 @@ const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
+
+const currentSessionTitle = computed(() => {
+  const s = chatStore.sessions.find((s) => s.id === chatStore.currentSessionId)
+  return s?.title || ''
+})
 
 const md = new MarkdownIt({
   html: false,
@@ -280,6 +298,21 @@ async function handleSend() {
   await chatStore.sendMessage(text)
 }
 
+async function handleClearMessages() {
+  try {
+    await ElMessageBox.confirm(
+      '确定清空当前会话的所有消息吗？此操作不可恢复。',
+      '清空记录',
+      { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  await chatStore.clearMessages()
+  reasoningExpanded.value = {}
+  ElMessage.success('已清空当前会话记录')
+}
+
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -363,6 +396,28 @@ async function handleSessionCommand(command: string, sessionId: string) {
   background: #fff;
 }
 
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+
+  .chat-toolbar-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: #606266;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .clear-history-btn {
+    flex-shrink: 0;
+  }
+}
+
 .empty-chat {
   flex: 1;
   display: flex;
@@ -429,8 +484,9 @@ async function handleSessionCommand(command: string, sessionId: string) {
         font-size: 14px;
 
         :deep(pre) {
-          background: #1d1d1d;
-          color: #f8f8f2;
+          background: #ffffff;
+          color: #303133;
+          border: 1px solid #ebeef5;
           padding: 16px;
           border-radius: 8px;
           overflow-x: auto;

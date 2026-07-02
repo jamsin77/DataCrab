@@ -39,23 +39,27 @@ DataCrab 采用多智能体协作架构，各智能体分工明确、通过 Hand
 | **DataInspector** | 对加工后的数据进行标准检查、质量检查、安全检查 |
 
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
-- Agent 迭代最多 12 轮，支持并行工具调用
+- 动态轮次预算：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40）
+- 支持并行工具调用
 - SSE 流式输出推理过程和执行结果
 
 ### 3. 数据源管理
 
-- 插件化连接器架构，支持 6 种数据源：
+- 插件化连接器架构，支持 8 种数据源：
 
 | 连接器 | 说明 |
 |--------|------|
 | PostgreSQL | 基于 asyncpg 的异步连接 |
 | MySQL | 基于 aiomysql 的异步连接 |
+| SQLite | 基于 aiosqlite 的异步连接 |
 | CSV | 本地 CSV 文件 |
-| Excel | 多 Sheet 支持 |
+| Excel | 多 Sheet 支持（最长前缀匹配解析表名） |
 | OBS/S3 | 华为云 OBS 对象存储 |
 | HDFS | Hadoop HDFS（WebHDFS REST API） |
+| ChromaDB | 向量数据库 |
 
 - 连接测试、Schema 发现、表数据分页浏览
+- 数据写入支持 7 种策略：`fail`（报错）、`append`（追加）、`replace`（删表重建）、`overwrite`/`truncate`（清空+补列）、`delete_rows`（清空不补列）、`upsert`（按 id 更新或插入）；支持表备注和列备注（PostgreSQL/MySQL/SQLite）
 - 数据质量分析（完整性、缺失值、异常值检测）
 - 表统计信息（行数、列数、大小）
 
@@ -75,6 +79,7 @@ DataCrab 采用多智能体协作架构，各智能体分工明确、通过 Hand
 - **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
 - **调试/执行**：在沙盒命名空间中运行算子，注入工具函数（query_table_data、llm_chat 等）
+- **AI 调试助手**：Chat 风格交互式调试，AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；根据消息内容自动选择深度模型或快速模型
 - **下载**：导出为 `.py` 文件
 - **自我进化经验库**：调试失败自动记录反例、修错后成功采集正例，LLM 归纳经验（常见错误+成功模式）并注入后续生成/修改/调试提示词，越用越聪明
 
@@ -95,7 +100,7 @@ assets/           # 静态资源
 - **AI 修改**：自然语言指令修改 SKILL.md 内容（SSE 流式，展示思考过程）
 - **执行**：在子进程沙盒中执行脚本，支持超时控制、SSE 流式状态推送
 - **自然语言执行**：LLM 推断执行参数（含推理过程展示），然后运行技能
-- **AI 调试助手**：Chat 风格交互式调试，AI 可自动执行或修改脚本
+- **AI 调试助手**：Chat 风格交互式调试，AI 修改脚本后自动执行验证，执行结果显示在消息流中；支持在调试对话框中一键"转为流程"（流式推送 AI 推理过程）
 - **技能自我进化**：失败记录反例、修错后成功采集正例，LLM 归纳经验写入 SKILL.md；与算子共用统一经验库，生成新技能时自动注入历史经验
 - **技能 JSON 参数样例**：参数定义支持 example 字段，前端自动填入示例值
 
@@ -104,8 +109,9 @@ assets/           # 静态资源
 流程是 DataCrab 的核心编排概念——**每个流程就是一个 Python 主函数**：
 
 - 一个流程 = 一个 Python 主函数 + 它调用的 Skill 脚本
-- 从 Skill 一键转换为可独立运行的 Python 主函数
+- 从 Skill 一键转换为可独立运行的 Python 主函数（在技能调试页面 AI 助手中触发，流式展示推理过程）
 - 代码可视化：展示主函数源码 + 调用关系图
+- 调试面板：显示真实函数签名和参数说明，自动生成参数示例（含中文描述）
 - 直接执行：无需 DAG 引擎，直接运行主函数
 - SSE 流式生成和执行
 
@@ -123,13 +129,9 @@ assets/           # 静态资源
 
 | 端点 | 说明 |
 |------|------|
-| `POST /llm/chat` | 大模型对话（非流式） |
-| `POST /llm/chat-stream` | 大模型对话（SSE 流式） |
-| `POST /llm/chat-stream-thinking` | 大模型多轮对话（SSE 流式，含推理过程） |
 | `POST /llm/embeddings` | 生成文本嵌入向量 |
 
 - 算子和技能脚本中可直接调用 `llm_chat()` 函数
-- 前端配置页面支持三种调用模式切换
 
 ### 10. 文件链接管理
 
@@ -149,13 +151,14 @@ assets/           # 静态资源
 
 | 提供商 | 说明 |
 |--------|------|
-| 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 等 |
+| 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash 等 |
 | 阿里百炼 | Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4 等 |
 | 硅基流动 | DeepSeek-V3 / Qwen2.5-72B / Qwen2.5-Coder 等 |
 | 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等） |
 
 - 运行时动态切换模型提供商/密钥/模型
 - 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
+- **深度模型 + 快速模型双模型架构**：深度模型（如 GLM-5.2）用于生成/修改脚本、流程生成等深度推理场景；快速模型（如 GLM-4-Flash）用于调试对话等轻量场景。调试助手根据消息内容自动选择合适模型（含修改/修复/报错关键词→深度模型，运行/执行/解释→快速模型），配置页面可分别设置
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
 
@@ -221,13 +224,16 @@ DataCrab/
 │   │       ├── data_processor_agent.py  # DataProcessor 智能体
 │   │       ├── data_inspector_agent.py  # DataInspector 智能体
 │   │       ├── inspector_tools.py       # 数据检查工具集
-│   │       ├── skill_library.py  # 向量索引 + 语义搜索
+│   │       ├── skill_library.py  # 向量索引 + 语义搜索（磁盘持久化）
 │   │       ├── skill_parser.py   # SKILL.md 解析器
 │   │       ├── skill_runner.py   # 子进程沙盒执行器
 │   │       ├── skill_creator.py  # AI 技能包生成器
 │   │       ├── pipeline_builder.py  # 流程生成器
 │   │       ├── pipeline_executor.py # 流程执行引擎
-│   │       ├── connectors.py    # 6 种数据源连接器
+│   │       ├── connectors.py    # 8 种数据源连接器
+│   │       ├── shared_tools.py  # 6 个公共工具统一入口（LRU 缓存）
+│   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警等）
+│   │       ├── tool_guidance.py # 工具诚实能力表
 │   │       └── operator_parser.py # Python AST 脚本解析器
 │   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
@@ -295,7 +301,7 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 | `/schedules` | 调度 CRUD、暂停/恢复、触发、统计 |
 | `/metadata` | 元数据管理、AI 补充业务元数据 |
 | `/filelinks` | 文件链接 CRUD |
-| `/llm` | 大模型对话（流式/非流式）、嵌入向量 |
+| `/llm` | 文本嵌入向量 |
 | `/config` | LLM 提供商运行时配置 |
 | `/agents` | 智能体列表、运行智能体、数据检查 |
 | `/permissions` | 权限管理 |

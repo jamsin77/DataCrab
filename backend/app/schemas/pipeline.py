@@ -84,3 +84,9 @@ class PipelineExecutionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PipelineDebugChatRequest(BaseModel):
+    message: str = Field(..., description="用户调试消息")
+    history: Optional[List[Dict[str, str]]] = Field(default=[], description="对话历史")
+    context: Optional[Dict[str, Any]] = Field(default={}, description="调试上下文")
