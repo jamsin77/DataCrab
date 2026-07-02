@@ -219,7 +219,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
     import json as _json, subprocess, sys as _sys, tempfile as _tf, os as _os
 
     # 将额外参数序列化，通过临时文件传递
-    _kwargs = {}
+    _kwargs = {{}}
     if if_table_exists and if_table_exists != "fail":
         _kwargs["if_table_exists"] = if_table_exists
     if table_remark:

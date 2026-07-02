@@ -586,6 +586,13 @@ function formatTime(t?: string) {
 // ==================== 调试弹窗（复刻算子调试） ====================
 const debugDrawer = ref(false)
 const debugPipeline = ref<Pipeline | null>(null)
+
+// 息屏防护：页面不可见时阻止对话框关闭
+watch(debugDrawer, (newVal, oldVal) => {
+  if (oldVal === true && newVal === false && document.hidden) {
+    nextTick(() => { debugDrawer.value = true })
+  }
+})
 const debugMessages = ref<DebugMessage[]>([])
 const debugInput = ref('')
 const debugInputs = ref('{}')

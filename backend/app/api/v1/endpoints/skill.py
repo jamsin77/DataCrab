@@ -1065,6 +1065,13 @@ async def debug_skill_chat(
             ds_name = ds_obj.name
 
     from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+    # 提取参数规范部分（优先于全文截取，确保 AI 知道参数定义）
+    import re as _re_extract
+    params_section = ""
+    params_match = _re_extract.search(r'(##\s*📋?\s*参数规范.*?)(?=\n##\s|###\s|##\s*📁|\Z)', skill_md, _re_extract.DOTALL)
+    if params_match:
+        params_section = params_match.group(1).strip()[:1500]
+
     system_prompt = (
         "你是 DataCrab 平台的技能调试助手。\n\n"
         "## 你的能力\n"
@@ -1076,12 +1083,14 @@ async def debug_skill_chat(
         f"- 描述：{skill.description or '无'}\n"
         f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
         f"- 表名：{request.table_name or '未选择'}\n\n"
-        f"## SKILL.md（摘要）\n```\n{skill_md[:1500]}\n```\n\n"
-        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2500]}\n```\n\n"
+        f"## SKILL.md（摘要）\n```\n{skill_md[:1200]}\n```\n\n"
+        f"## 参数规范\n{params_section or '（未找到参数定义，请参考脚本函数签名）'}\n\n"
+        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2000]}\n```\n\n"
         "## 规则\n"
         "- 修改脚本时输出完整脚本，不能只写修改部分\n"
         "- 只处理用户业务数据，不修改平台自身\n"
-        "- 回答问题或分析时不需要输出 action\n\n"
+        "- 回答问题或分析时不需要输出 action\n"
+        "- 执行时根据用户需求推断参数，如数据源名、表名、策略等\n\n"
         "## 示例\n"
         '用户：运行一下\n'
         '助手：{"action": "run", "parameters": {}}\n\n'

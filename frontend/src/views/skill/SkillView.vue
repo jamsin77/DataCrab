@@ -1139,6 +1139,13 @@ const debugDrawer = ref(false)
 const debugSkill = ref<any>(null)
 const debugScriptName = ref('main.py')
 
+// 息屏防护：页面不可见时阻止对话框关闭
+watch(debugDrawer, (newVal, oldVal) => {
+  if (oldVal === true && newVal === false && document.hidden) {
+    nextTick(() => { debugDrawer.value = true })
+  }
+})
+
 // 执行面板
 const execRunning = ref(false)
 let execAbortController: AbortController | null = null
@@ -1209,9 +1216,12 @@ function scrollThinkingBodyToBottom(msgIdx: number) {
     if (!list) return
     const msgs = list.querySelectorAll('.debug-message')
     const target = msgs[msgIdx] as HTMLElement | undefined
-    if (!target) return
-    const body = target.querySelector('.thinking-body') as HTMLElement | null
-    if (body) body.scrollTop = body.scrollHeight
+    if (target) {
+      const body = target.querySelector('.thinking-body') as HTMLElement | null
+      if (body) body.scrollTop = body.scrollHeight
+    }
+    // 同时滚动主消息列表
+    list.scrollTop = list.scrollHeight
   })
 }
 function onSkillListScroll() {
@@ -2133,7 +2143,7 @@ async function handleDebugSend() {
 
     const finalMsg = debugMessages.value[assistantIdx]
     if (finalMsg.thinking && !thinkingDone) {
-      finalMsg.thinking = ''
+      finalMsg.thinking += '\n\n[推理过程已中断]'
     }
     streamOk = true
 

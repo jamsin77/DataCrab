@@ -631,6 +631,13 @@ watch(
   { deep: true }
 )
 
+// 息屏防护：页面不可见时阻止对话框关闭
+watch(debugDrawer, (newVal, oldVal) => {
+  if (oldVal === true && newVal === false && document.hidden) {
+    nextTick(() => { debugDrawer.value = true })
+  }
+})
+
 function handleDebugBeforeClose(done: () => void) {
   if (opStreaming.value || debugRunning.value) {
     ElMessage.warning('正在执行中，请先等待完成或点击停止')
@@ -1231,6 +1238,7 @@ async function handleOpSend() {
           const msg = opMessages.value[assistantIdx]
 
           if (data.type === 'thinking') {
+            if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) {
@@ -1244,6 +1252,7 @@ async function handleOpSend() {
               debugOperator.value = fresh
             } catch { /* skip */ }
           } else if (data.type === 'executing') {
+            if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + (data.message || '正在执行...') + '\n'
           } else if (data.type === 'run_result') {
             msg.runResult = data.result
@@ -1262,7 +1271,7 @@ async function handleOpSend() {
 
     const finalMsg = opMessages.value[assistantIdx]
     if (finalMsg.thinking && !thinkingDone) {
-      finalMsg.thinking = ''
+      finalMsg.thinking += '\n\n[推理过程已中断]'
     }
 
   } catch (e: any) {
