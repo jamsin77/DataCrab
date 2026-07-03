@@ -440,7 +440,7 @@
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                      <span>推理过程</span>
+                      <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
@@ -1195,6 +1195,7 @@ interface DebugMessage {
   thinkingOpen?: boolean
   runResult?: any
   scriptUpdated?: string
+  model?: string
 }
 
 const debugMessages = ref<DebugMessage[]>([])
@@ -1839,7 +1840,9 @@ async function handleRunSkillNL() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = debugMessages.value[assistantIdx]
 
-          if (data.type === 'thinking') {
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'thinking') {
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
@@ -2111,13 +2114,16 @@ async function handleDebugSend() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = debugMessages.value[assistantIdx]
 
-          if (data.type === 'thinking') {
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'thinking') {
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) {
               thinkingDone = true
+              msg.thinkingOpen = false
             }
             msg.content += data.content
           } else if (data.type === 'executing') {
@@ -2868,6 +2874,7 @@ onMounted(() => {
     .thinking-spin { animation: rotate 1.2s linear infinite; }
     .thinking-toggle { transition: transform 0.2s; }
     .thinking-toggle.open { transform: rotate(90deg); }
+    .thinking-model { margin-left: 8px; font-size: 11px; color: #909399; font-weight: normal; }
   }
 
   .thinking-body {

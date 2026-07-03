@@ -183,6 +183,11 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
 
     for ds in matched_sources:
 
+        # 全局预览上限：多个数据源预览总和不超过 8000 字
+        if sum(len(p) for p in previews) >= 8000:
+            previews.append("> [更多数据源未预览，请单独查询]")
+            break
+
         try:
             connector = get_connector(ds.type, ds.connection_config or {})
             schema = await connector.get_schema()

@@ -134,13 +134,73 @@ class LLMManager:
         configured = getattr(settings, 'LLM_FAST_MODEL', '') or ''
         return configured.strip() or FAST_MODELS.get(self.provider) or self.model
 
+    # 任务关键词分类
+    _COMPLEX_KEYWORDS = {
+        "修改", "修复", "改一下", "帮我改", "fix", "优化", "重构", "改进", "重写", "改写",
+        "optimize", "refactor", "improve", "rewrite", "生成", "创建", "写一个", "生成代码",
+        "generate", "create", "modify", "报错", "错误", "失败", "异常", "error", "exception",
+        "traceback", "fail", "failed", "不对", "不正确", "有问题", "不工作", "bug", "wrong",
+    }
+    _SIMPLE_KEYWORDS = {
+        "运行", "执行", "试一下", "跑一下", "跑个", "run", "execute", "试跑",
+        "解释", "说明", "看看", "查看", "展示", "explain", "show", "describe",
+        "分析", "analyze", "统计", "汇总", "总结", "summarize",
+    }
+
+    def pick_model(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
+        """根据消息内容和上下文选择模型。不按入口写死，所有端点统一调用。
+
+        判断优先级：
+        1. 重试（执行失败后） → 深度模型
+        2. 复杂关键词（修改/修复/报错/生成） → 深度模型
+        3. 上下文（最近在改代码） → 深度模型
+        4. 简单关键词（运行/执行/解释） → 快速模型
+        5. 不确定 → 深度模型（宁深不浅）
+        """
+        if is_retry:
+            return self.model
+
+        msg_lower = message.lower() if message else ""
+
+        # 1. 复杂任务 → 深度
+        for kw in self._COMPLEX_KEYWORDS:
+            if kw in msg_lower or kw in message:
+                return self.model
+
+        # 2. 上下文：最近 1 条 assistant 回复涉及代码修改 → 深度
+        if history:
+            for h in history[-3:]:
+                if h.get("role") != "assistant":
+                    continue
+                content = (h.get("content") or "").lower()
+                for kw in self._COMPLEX_KEYWORDS:
+                    if kw in content:
+                        return self.model
+
+        # 3. 简单任务 → 快速
+        for kw in self._SIMPLE_KEYWORDS:
+            if kw in msg_lower or kw in message:
+                return self.fast_model
+
+        # 4. 不确定 → 深度（宁深不浅）
+        return self.model
+
     def _resolve_model(self, model: Optional[str]) -> str:
-        """解析模型：指定则用指定，断路器熔断则降级到快速模型。"""
+        """解析模型：指定则用指定，断路器熔断则降级到另一个模型。"""
         target = model or self.model
         if _circuit.is_available(target):
             return target
-        logger.warning(f"断路器降级: {target} 不可用，切换到 {self.fast_model}")
-        return self.fast_model
+        fallback = self.fast_model if target != self.fast_model else self.model
+        logger.warning(f"断路器降级: {target} 不可用，切换到 {fallback}")
+        return fallback
+
+    def _degradation_chain(self, target: str) -> List[str]:
+        """构建降级链：目标模型 → 另一个模型，去重。"""
+        other = self.fast_model if target != self.fast_model else self.model
+        chain = [target]
+        if other != target:
+            chain.append(other)
+        return chain
 
     # ---------- 客户端管理 ----------
     def _client_for(self, cfg: Dict[str, str]):
@@ -420,56 +480,76 @@ class LLMManager:
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, str], None]:
         """流式对话（含推理过程）。
-        
-        模型选择策略（借鉴 DeepAnalyze ModelRouter）：
-        - 默认用深度模型，断路器熔断时自动降级到快速模型
-        - 连接失败时记录断路器，重试降级模型
+
+        模型选择 + 输出长度升级（借鉴 DeepAnalyze）：
+        - 断路器自动降级：首选模型失败 → 切另一个模型
+        - 输出长度升级：finish_reason=length → max_tokens 翻倍重试（4K→8K→16K）
         """
         if not self._initialized:
             await self.initialize()
 
         target_model = self._resolve_model(model)
+        chain = self._degradation_chain(target_model)
         tried_models: List[str] = []
 
-        for attempt_model in [target_model, self.fast_model]:
+        # 输出长度升级链（借鉴 DeepAnalyze 四级回退）
+        base_tokens = max_tokens or 4000
+        token_chain = [base_tokens, base_tokens * 2, base_tokens * 4]
+
+        for attempt_model in chain:
             if attempt_model in tried_models:
                 continue
             if not _circuit.is_available(attempt_model):
                 continue
             tried_models.append(attempt_model)
 
-            cfg = self._model_configs()[0]  # 用主 provider 配置
-            try:
-                logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}")
-                create_kwargs = dict(
-                    model=attempt_model,
-                    messages=messages,
-                    temperature=temperature,
-                    stream=True,
-                )
-                if max_tokens:
-                    create_kwargs["max_tokens"] = max_tokens
-                stream = await self._acreate(cfg, **create_kwargs)
-            except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
-                continue
+            for token_budget in token_chain:
+                cfg = self._model_configs()[0]
+                try:
+                    logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}, max_tokens={token_budget}")
+                    create_kwargs = dict(
+                        model=attempt_model,
+                        messages=messages,
+                        temperature=temperature,
+                        stream=True,
+                        max_tokens=token_budget,
+                    )
+                    stream = await self._acreate(cfg, **create_kwargs)
+                except Exception as e:
+                    _circuit.record_failure(attempt_model)
+                    logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
+                    break  # 换模型，不重试 token
 
-            try:
-                async for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                        yield {"type": "thinking", "content": delta.reasoning_content}
-                    if delta.content:
-                        yield {"type": "content", "content": delta.content}
-                _circuit.record_success(attempt_model)
-                return
-            except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
-                continue
+                try:
+                    yield {"type": "model", "content": attempt_model}
+                    finish_reason = None
+                    has_content = False
+                    async for chunk in stream:
+                        if not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                            yield {"type": "thinking", "content": delta.reasoning_content}
+                        if delta.content:
+                            yield {"type": "content", "content": delta.content}
+                            has_content = True
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+
+                    _circuit.record_success(attempt_model)
+
+                    # finish_reason=length 且有内容 → 正常结束（内容可能被截断但有输出）
+                    # finish_reason=length 且无内容 → 推理耗尽了 token，升级重试
+                    if finish_reason == "length" and not has_content and token_budget < token_chain[-1]:
+                        logger.warning(f"模型 {attempt_model} 推理耗尽 max_tokens={token_budget}，升级到 {token_budget * 2}")
+                        continue  # 重试更大的 token_budget
+
+                    return  # 正常结束
+                except Exception as e:
+                    _circuit.record_failure(attempt_model)
+                    logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                    break  # 换模型
 
         raise RuntimeError(f"所有模型均不可用: {tried_models}")
 

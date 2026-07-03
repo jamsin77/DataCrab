@@ -28,7 +28,6 @@ from app.services.agent_utils import (
     build_pressure_warning,
     get_anti_hallucination_section,
 )
-from app.services.tool_guidance import get_tool_guidance
 
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（DataInspector），一位数据质量专家。
 
@@ -202,8 +201,9 @@ class DataInspectorAgent(BaseAgent):
         except Exception:
             pass
         # 三级反幻觉注入：DataInspector 用 strict 级别（T）
+        # Inspector 有自己的工具集，不注入共享工具能力表（P2 优化）
         anti_hallucination = get_anti_hallucination_section("strict")
-        return base + "\n" + get_tool_guidance() + anti_hallucination
+        return base + anti_hallucination
 
     async def run(
         self,

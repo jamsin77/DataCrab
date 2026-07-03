@@ -924,7 +924,7 @@ async def run_skill_nl_stream(
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=llm_manager.fast_model, temperature=0.2, max_tokens=2000):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":
@@ -1063,13 +1063,17 @@ async def debug_skill_chat(
         if ds_obj:
             ds_name = ds_obj.name
 
-    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     # 提取参数规范部分（优先于全文截取，确保 AI 知道参数定义）
     import re as _re_extract
     params_section = ""
     params_match = _re_extract.search(r'(##\s*📋?\s*参数规范.*?)(?=\n##\s|###\s|##\s*📁|\Z)', skill_md, _re_extract.DOTALL)
     if params_match:
         params_section = params_match.group(1).strip()[:1500]
+
+    # SKILL.md 摘要：排除参数规范段落（避免与 params_section 重复），取前 800 字
+    skill_md_excerpt = skill_md[:1200]
+    if params_match:
+        skill_md_excerpt = skill_md.replace(params_match.group(0), "", 1)[:800]
 
     system_prompt = (
         "你是 DataCrab 平台的技能调试助手。\n\n"
@@ -1082,20 +1086,21 @@ async def debug_skill_chat(
         f"- 描述：{skill.description or '无'}\n"
         f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
         f"- 表名：{request.table_name or '未选择'}\n\n"
-        f"## SKILL.md（摘要）\n```\n{skill_md[:1200]}\n```\n\n"
-        f"## 参数规范\n{params_section or '（未找到参数定义，请参考脚本函数签名）'}\n\n"
-        f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2000]}\n```\n\n"
+        + (f"## SKILL.md（摘要）\n```\n{skill_md_excerpt}\n```\n\n" if skill_md_excerpt else "")
+        + (f"## 参数规范\n{params_section}\n\n" if params_section else "")
+        + f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2000]}\n```\n\n"
         "## 规则\n"
-        "- 修改脚本时输出完整脚本，不能只写修改部分\n"
+        "- 修改脚本时只需输出修改的函数，不用输出整个脚本（系统会自动合并）\n"
         "- 只处理用户业务数据，不修改平台自身\n"
         "- 回答问题或分析时不需要输出 action\n"
         "- 执行时根据用户需求推断参数，如数据源名、表名、策略等\n"
-        "- run 的 parameters 必须包含技能所需的关键参数，不能为空\n\n"
+        "- run 的 parameters 必须包含技能所需的关键参数，不能为空\n"
+        "- 推理请简洁，直奔重点\n\n"
         "## 示例\n"
         '用户：从XX数据源把YY表迁移到ZZ库\n'
         '助手：好的，我来执行迁移。\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ", "if_table_exists": "overwrite"}}\n\n'
         '用户：报错了，列名不对\n'
-        '助手：我来修改脚本。\n{"action": "modify_script", "script_name": "main.py"}\n```python\n# 完整脚本\n```\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ"}}\n'
+        '助手：我来修改对应函数。\n{"action": "modify_script", "script_name": "main.py"}\n```python\ndef migrate_data(...):\n    # 只输出修改的函数\n```\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ"}}\n'
     )
 
     lessons = read_lessons(folder)
@@ -1147,8 +1152,9 @@ async def debug_skill_chat(
                     run_failures = []
 
                 full_content = ""
-                logger.info(f"技能debug-chat round {round_idx+1}: model=auto (断路器自动降级)")
-                async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+                chosen_model = llm_manager.pick_model(request.message, request.history)
+                logger.info(f"技能debug-chat round {round_idx+1}: model={chosen_model}")
+                async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
                     event = {"type": chunk["type"], "content": chunk["content"]}
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                     if chunk["type"] == "content":
@@ -1194,7 +1200,11 @@ async def debug_skill_chat(
                         script_name = action.get("script_name", request.script_name)
                         new_content = action.get("content", "")
                         if new_content:
-                            write_skill_script(folder, script_name, new_content)
+                            # 函数级合并：只替换修改的函数，不重写整个脚本
+                            from app.services.operator_parser import apply_partial_code
+                            merged = apply_partial_code(script_content, new_content)
+                            write_skill_script(folder, script_name, merged)
+                            script_content = merged  # 更新当前脚本内容供后续 run 使用
                             yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
 
                     elif action.get("action") == "run":
@@ -1369,7 +1379,7 @@ async def generate_skill_endpoint(
     from app.services.skill_creator import generate_skill, create_skill_on_disk
     try:
         ds_info = await _build_datasource_info(db, current_user.id)
-        all_lessons = await _collect_all_lessons(db, current_user.id)
+        all_lessons = (await _collect_all_lessons(db, current_user.id))[:2000]
         generated = await generate_skill(request.prompt, datasource_info=ds_info, lessons=all_lessons)
     except Exception as e:
         logger.error(f"Skill Creator 生成失败: {e}")
@@ -1429,7 +1439,7 @@ async def generate_skill_stream_endpoint(
     import json
 
     ds_info = await _build_datasource_info(db, current_user.id)
-    all_lessons = await _collect_all_lessons(db, current_user.id)
+    all_lessons = (await _collect_all_lessons(db, current_user.id))[:2000]
 
     async def event_stream():
         parsed_data = None

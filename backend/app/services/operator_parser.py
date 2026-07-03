@@ -172,3 +172,67 @@ def _serialize_default(node) -> Optional[str]:
 
 def extract_script_name(filename: str) -> str:
     return re.sub(r"\.py$", "", filename, flags=re.IGNORECASE)
+
+
+def apply_partial_code(original_code: str, partial_code: str) -> str:
+    """将部分代码（函数级修改）合并到原始脚本中。
+
+    策略：
+    1. 如果 partial_code 是完整脚本（含 import 或多个顶级定义）→ 直接替换
+    2. 否则用 AST 提取 partial_code 中的函数/类定义，替换 original_code 中的同名定义
+    """
+    partial_stripped = partial_code.strip()
+
+    # 判断是否是完整脚本：含 import 语句或有 3+ 个顶级定义
+    try:
+        partial_tree = ast.parse(partial_stripped)
+    except SyntaxError:
+        return partial_stripped  # 语法错误，直接返回原始
+
+    partial_top_defs = [n for n in ast.iter_child_nodes(partial_tree)
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    has_imports = any(isinstance(n, (ast.Import, ast.ImportFrom)) for n in ast.iter_child_nodes(partial_tree))
+
+    # 完整脚本 → 直接替换
+    if has_imports and len(partial_top_defs) >= 2:
+        return partial_stripped
+
+    # 单函数/少函数 → 替换同名定义
+    try:
+        orig_tree = ast.parse(original_code)
+    except SyntaxError:
+        return partial_stripped  # 原始脚本语法错误，直接替换
+
+    # 收集 partial 中的定义名 → 源代码片段
+    partial_lines = partial_stripped.split("\n")
+    replacements = {}
+    for node in partial_top_defs:
+        if hasattr(node, 'name'):
+            start = node.lineno - 1
+            end = node.end_lineno if hasattr(node, 'end_lineno') else start + 1
+            replacements[node.name] = "\n".join(partial_lines[start:end])
+
+    if not replacements:
+        return partial_stripped  # 没有可替换的定义
+
+    # 在原始代码中找到同名定义并替换
+    orig_lines = original_code.split("\n")
+    # 收集需要替换的行范围（从后往前替换，避免行号偏移）
+    replace_ranges = []
+    for node in ast.iter_child_nodes(orig_tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in replacements:
+                start = node.lineno - 1
+                end = node.end_lineno if hasattr(node, 'end_lineno') else start + 1
+                replace_ranges.append((start, end, node.name, replacements[node.name]))
+
+    if not replace_ranges:
+        # 原脚本中没有同名定义 → 追加
+        return original_code.rstrip() + "\n\n\n" + partial_stripped
+
+    # 从后往前替换
+    replace_ranges.sort(key=lambda x: x[0], reverse=True)
+    for start, end, name, new_code in replace_ranges:
+        orig_lines[start:end] = [new_code]
+
+    return "\n".join(orig_lines)

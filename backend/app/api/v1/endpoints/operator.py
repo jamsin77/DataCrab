@@ -35,6 +35,7 @@ from app.schemas.operator import (
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager
 from app.services import experience
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
 from app.api.deps import get_current_user
 
 
@@ -45,7 +46,7 @@ async def _system_prompt_with_lessons(db: AsyncSession, current_user: User) -> s
         return (
             SYSTEM_PROMPT
             + "\n\n## 📖 历史经验库（从过往失败中归纳的经验，生成脚本时务必参考，避免重蹈覆辙）\n"
-            + lessons
+            + lessons[:2000]
         )
     return SYSTEM_PROMPT
 
@@ -569,31 +570,7 @@ SYSTEM_PROMPT = """你是一个专业的Python数据算子脚本生成器。你�
 5. 只输出Python代码，不要任何解释文字，不要markdown代码块标记（不要```python和```），直接输出纯代码
 6. 输出格式：直接输出纯Python代码，第一个字符必须是import或def等Python关键字
 
-## 内置工具函数（脚本中直接使用，无需 import）
-
-### 数据查询函数
-- query_table_data(datasource_id_or_name, table_name, limit=1000) → DataFrame: 从数据源查询表数据
-- get_table_data(datasource_id_or_name, table_name, limit=1000) → 同 query_table_data
-- get_table_schema(datasource_id_or_name, table_name) → dict: 获取表结构信息
-- get_datasource_id_by_name(name) → str: 根据数据源名称获取UUID
-- write_table_data(datasource_id_or_name, table_name, records=...) → dict: 写入数据
-
-### 大模型调用函数
-- llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000) → str: 调用平台大模型
-  - prompt: 用户消息（必填）
-  - system_prompt: 系统提示词，用于设定AI角色和规则（可选）
-  - temperature: 温度参数 0.0-2.0，越高越随机（默认0.7）
-  - max_tokens: 最大生成token数（默认2000）
-  - 返回: 大模型的文本回复
-  - 用途: 在脚本中调用AI进行文本分析、翻译、分类、摘要、数据质量检查等
-  - 示例: result = llm_chat("分析这组数据的趋势", system_prompt="你是数据分析师")
-
-### 内置变量
-- pd (pandas) 和 json 已内置，无需再 import
-
-⚠️ **绝对禁止** `import datacrab` 或 `from datacrab import ...`，datacrab 包不存在！
-⚠️ **绝对禁止** `pip install datacrab`，datacrab 不是可安装的包！
-⚠️ 上述工具函数由运行环境自动注入，脚本中直接使用即可
+""" + SANDBOX_TOOLS_DOC + """
 
 ## 编码最佳实践
 1. 主函数通过 get_datasource_id_by_name() 获取数据源ID，再通过 query_table_data() 读取数据
@@ -675,18 +652,7 @@ if __name__ == "__main__":
     result = filter_expensive_products(min_price=100.0)
     print(f"结果: {result}")
 
-🚫 安全红线（必须遵守）：
-- 算子只能处理用户的业务数据，绝不能修改 DataCrab 平台自身
-- 不得生成访问或修改平台系统表（users, roles, permissions等）的代码
-- 不得生成修改平台源代码、配置文件的代码
-
-✅ 修改后必验证（必须遵守）：
-- 生成或修改脚本后，必须在脚本末尾添加自测逻辑：if __name__ == "__main__" 块中用示例数据调用主函数
-- 自测逻辑应使用少量测试数据（如3-5行），验证主函数能正常执行并返回预期结果
-
-✅ 输出默认同源（必须遵守）：
-- 数据处理生成新文件时，如果用户未指定输出路径（output_dir），默认保存到 DataSource（数据源）指定的文件路径下
-- 如果 DataSource 来自数据库而非文件，需要用户明确指定输出路径"""
+""" + SAFETY_RULES_DOC
 
 
 @router.post("/generate", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
@@ -1162,15 +1128,17 @@ async def debug_operator_chat(
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
 
-    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
     op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id))
     lessons_block = f"\n历史经验：\n{op_lessons[:800]}" if op_lessons else ""
     system_prompt = (
         f"你是算子调试助手。算子 \"{display_name}\"，函数：{func_name}。\n\n"
         f"脚本：\n```python\n{script_content[:2500]}\n```\n\n"
-        "你可以：分析bug、修改代码（输出完整```python脚本）、解释逻辑、优化性能。\n"
-        "规则：修改时输出完整脚本，不改函数签名，只处理用户数据。\n"
-        "修改脚本后系统会自动用当前调试参数执行验证，无需你触发执行。\n"
+        "你可以：分析bug、修改代码、解释逻辑、优化性能。\n"
+        "规则：\n"
+        "- 修改代码时只需输出修改的函数，不用输出整个脚本（系统自动合并）\n"
+        "- 不改函数签名，只处理用户数据\n"
+        "- 修改后系统自动执行验证\n"
+        "- 推理请简洁，直奔重点\n"
         f"{lessons_block}"
     )
 
@@ -1195,8 +1163,9 @@ async def debug_operator_chat(
         import json as json_mod
         full_content = ""
         try:
-            logger.info(f"算子debug-chat: model=auto (深度模型优先, 断路器自动降级)")
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+            chosen_model = llm_manager.pick_model(request.message, request.history)
+            logger.info(f"算子debug-chat: model={chosen_model}")
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1206,10 +1175,13 @@ async def debug_operator_chat(
             import re
             code_match = re.search(r'```python\s*\n(.*?)```', full_content, re.DOTALL)
             if code_match:
-                new_script = code_match.group(1).strip()
-                operator.script_content = new_script
+                new_code = code_match.group(1).strip()
+                # 函数级合并：只替换修改的函数，不重写整个脚本
+                from app.services.operator_parser import apply_partial_code
+                merged_script = apply_partial_code(script_content, new_code)
+                operator.script_content = merged_script
                 try:
-                    parsed = parse_python_script(new_script)
+                    parsed = parse_python_script(merged_script)
                     if parsed.get("function_name"):
                         operator.function_name = parsed.get("function_name")
                         operator.inputs = parsed.get("inputs", operator.inputs)

@@ -414,8 +414,8 @@ async def debug_pipeline_chat(
     )
 
     messages = [{"role": "system", "content": system_prompt}]
-    for h in (req.history or []):
-        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    for h in (req.history or [])[-10:]:
+        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
 
     user_msg = req.message
     if last_result or last_error:
@@ -429,7 +429,9 @@ async def debug_pipeline_chat(
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+            chosen_model = llm_manager.pick_model(request.message, request.history)
+            logger.info(f"流程debug-chat: model={chosen_model}")
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":

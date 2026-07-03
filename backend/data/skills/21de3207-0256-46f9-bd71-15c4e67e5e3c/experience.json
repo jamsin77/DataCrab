@@ -27,6 +27,264 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': False, 'error': '缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。', 'message': '参数校验失败'}"
+    },
+    {
+      "timestamp": "2026-07-03T14:57:04.788635",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': False, 'error': '缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。', 'message': '参数校验失败'}"
+    },
+    {
+      "timestamp": "2026-07-03T15:01:35.151360",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "其他列名": "其他列名"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 988, 'columns': ['name', 'era', 'address', 'batch', 'remark', 'ID', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'column_remarks': {'name'"
+    },
+    {
+      "timestamp": "2026-07-03T15:13:14.412890",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "其他列名": "其他列名"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 988, 'columns': ['name', 'era', 'address', 'batch', 'remark', 'ID', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'column_remarks': {'name'"
+    },
+    {
+      "timestamp": "2026-07-03T15:23:34.339129",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "其他列名": "其他列名"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 988, 'columns': ['name', 'era', 'address', 'batch', 'remark', 'ID', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'column_remarks': {'name'"
+    },
+    {
+      "timestamp": "2026-07-03T15:47:06.639297",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "其他列名": "其他列名"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 988, 'columns': ['name', 'era', 'address', 'batch', 'remark', 'ID', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'column_remarks': {'name'"
+    },
+    {
+      "timestamp": "2026-07-03T16:10:21.516435",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "其他列名": "其他列名"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 988, 'columns': ['name', 'era', 'address', 'batch', 'remark', 'ID', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'column_remarks': {'name'"
+    },
+    {
+      "timestamp": "2026-07-03T16:11:04.031422",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': False, 'error': '缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。', 'message': '参数校验失败'}"
+    },
+    {
+      "timestamp": "2026-07-03T16:15:25.023593",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物保护单位",
+        "column_mapping": {
+          "文物名称": "文物名称",
+          "文物类型": "文物类型",
+          "文物时代": "文物时代",
+          "文物地址": "文物地址",
+          "文物简介": "文物简介"
+        },
+        "add_columns": {
+          "ID": "00000000",
+          "时间戳": "当前时间"
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units', "
+    },
+    {
+      "timestamp": "2026-07-03T16:38:08.246816",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物保护单位",
+        "column_mapping": {
+          "文物名称": "文物名称",
+          "文物类型": "文物类型",
+          "文物时代": "文物时代",
+          "文物地址": "文物地址",
+          "文物简介": "文物简介"
+        },
+        "add_columns": {
+          "ID": "00000000",
+          "时间戳": "当前时间"
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units', "
+    },
+    {
+      "timestamp": "2026-07-03T16:53:23.687502",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物保护单位",
+        "column_mapping": {
+          "文物名称": "文物名称",
+          "文物类型": "文物类型",
+          "文物时代": "文物时代",
+          "文物地址": "文物地址",
+          "文物简介": "文物简介"
+        },
+        "add_columns": {
+          "ID": "00000000",
+          "时间戳": "当前时间"
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units', "
+    },
+    {
+      "timestamp": "2026-07-03T16:59:25.954898",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物保护单位",
+        "column_mapping": {
+          "文物名称": "文物名称",
+          "文物类型": "文物类型",
+          "文物时代": "文物时代",
+          "文物地址": "文物地址",
+          "文物简介": "文物简介"
+        },
+        "add_columns": {
+          "ID": "00000000",
+          "时间戳": "当前时间"
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units', "
     }
   ],
   "lessons": ""
