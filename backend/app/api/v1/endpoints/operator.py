@@ -1195,9 +1195,8 @@ async def debug_operator_chat(
         import json as json_mod
         full_content = ""
         try:
-            chosen_model = llm_manager.pick_model(request.message)
-            logger.info(f"算子debug-chat: model={chosen_model}")
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
+            logger.info(f"算子debug-chat: model=auto (深度模型优先, 断路器自动降级)")
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":

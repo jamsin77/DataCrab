@@ -886,39 +886,37 @@ async def run_skill_nl_stream(
 
     import asyncio
     import json as json_mod
+    import re as _re_nl
+
+    # 提取参数规范（避免传完整 SKILL.md + 脚本导致推理链过长）
+    params_section = ""
+    params_match = _re_nl.search(r'(📋?\s*参数规范.*?)(?=\n##\s|###\s|##\s*📁|\Z)', skill_md, _re_nl.DOTALL)
+    if not params_match:
+        params_match = _re_nl.search(r'(\| 参数 \|.*?)(?=\n##\s|###\s|\Z)', skill_md, _re_nl.DOTALL)
+    if params_match:
+        params_section = params_match.group(1).strip()[:1500]
 
     messages = [
         {
             "role": "system",
             "content": (
-                "你是一个技能参数解析器。根据技能的 SKILL.md 描述、脚本代码和用户的自然语言调用指令，"
-                "推断出执行该技能所需的参数。\n\n"
-                "## 严格要求\n"
-                "1. **参数名必须与 SKILL.md 参数规范完全一致**，不得自创参数名或使用近义词\n"
-                "2. **参数类型必须严格匹配**：string→字符串，int→整数，bool→true/false，"
-                "dict→JSON对象(如 {\"key\":\"value\"})，list→JSON数组。dict 类型绝不能输出为数组\n"
-                "3. **只输出 SKILL.md 中定义的参数**，不要添加定义之外的参数\n"
-                "4. **不要输出以下系统自动注入的参数**：datasource_id、datasource_name、datasource、"
-                "table_name、table_names、tables、table —— 这些由系统自动注入，重复传入会导致冲突\n"
-                "5. **仔细区分数据源名和表名**：数据源名(DataSource)是连接名称，表名(Table)是数据源中的表；"
-                "用户说\"从X数据源\"时X是数据源名，说\"把Y这张表\"时Y是表名，切勿混淆\n"
-                "6. 对于 add_columns 等 dict 类型参数，格式为 {\"列名\": 值}，"
-                "不要用 [{\"name\":..., \"value\":...}] 列表格式\n\n"
-                "## 输出格式\n"
-                "只输出一个 JSON 对象，不要输出任何解释。格式：\n"
-                '{"parameters": {"参数名": 值, ...}, "table_name": "表名(如有)"}\n'
-                "注意：table_name 仅在用户明确提到表名时输出，不要把数据源名放到 table_name 中。"
+                "你是技能参数解析器。根据参数规范和用户指令，推断执行参数。\n"
+                "只输出 JSON，不要解释。\n\n"
+                "规则：\n"
+                "- 参数名必须与参数规范完全一致\n"
+                "- 区分数据源名(DataSource)和表名(Table)\n"
+                "- 不要输出 datasource/table_name 等系统注入参数\n\n"
+                '输出格式：{"parameters": {"参数名": 值}}'
             ),
         },
         {
             "role": "user",
             "content": (
-                f"技能名称：{skill.display_name or skill.name}\n"
-                f"技能描述：{skill.description or ''}\n\n"
-                f"SKILL.md 内容：\n{skill_md[:2000]}\n\n"
-                f"脚本代码（{request.script_name}）：\n{script_content[:3000]}\n\n"
-                f"用户的自然语言调用指令：{request.query}\n\n"
-                f"请严格按 SKILL.md 参数规范推断执行参数，只输出 JSON。"
+                f"技能：{skill.display_name or skill.name}\n"
+                f"描述：{skill.description or ''}\n\n"
+                f"参数规范：\n{params_section or '请参考脚本函数签名推断参数'}\n\n"
+                f"用户指令：{request.query}\n\n"
+                f"只输出 JSON。"
             ),
         },
     ]
@@ -926,7 +924,7 @@ async def run_skill_nl_stream(
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":
@@ -974,6 +972,7 @@ async def run_skill_nl_stream(
                     ds_name = ds.name
 
             yield f"data: {json_mod.dumps({'type': 'inferred_params', 'parameters': parameters, 'table_name': inferred_table}, ensure_ascii=False)}\n\n"
+            logger.info(f"NL推断参数: {json_mod.dumps(parameters, ensure_ascii=False)}")
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '参数推断完成，正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
             exec_result = await run_skill_script_async(
@@ -1050,7 +1049,7 @@ async def debug_skill_chat(
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
-    from app.services.llm import llm_manager, should_use_deep_model
+    from app.services.llm import llm_manager
     await llm_manager.initialize()
 
     import asyncio
@@ -1090,12 +1089,13 @@ async def debug_skill_chat(
         "- 修改脚本时输出完整脚本，不能只写修改部分\n"
         "- 只处理用户业务数据，不修改平台自身\n"
         "- 回答问题或分析时不需要输出 action\n"
-        "- 执行时根据用户需求推断参数，如数据源名、表名、策略等\n\n"
+        "- 执行时根据用户需求推断参数，如数据源名、表名、策略等\n"
+        "- run 的 parameters 必须包含技能所需的关键参数，不能为空\n\n"
         "## 示例\n"
-        '用户：运行一下\n'
-        '助手：{"action": "run", "parameters": {}}\n\n'
-        '用户：报错了\n'
-        '助手：{"action": "modify_script", "script_name": "main.py"}\n```python\n# 完整脚本\n```\n{"action": "run", "parameters": {}}\n'
+        '用户：从XX数据源把YY表迁移到ZZ库\n'
+        '助手：好的，我来执行迁移。\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ", "if_table_exists": "overwrite"}}\n\n'
+        '用户：报错了，列名不对\n'
+        '助手：我来修改脚本。\n{"action": "modify_script", "script_name": "main.py"}\n```python\n# 完整脚本\n```\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ"}}\n'
     )
 
     lessons = read_lessons(folder)
@@ -1147,10 +1147,8 @@ async def debug_skill_chat(
                     run_failures = []
 
                 full_content = ""
-                is_retry = round_idx > 0
-                chosen_model = llm_manager.pick_model(request.message if not is_retry else feedback_msg, is_retry=is_retry)
-                logger.info(f"技能debug-chat round {round_idx+1}: model={chosen_model} (deep={is_retry or should_use_deep_model(request.message)})")
-                async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
+                logger.info(f"技能debug-chat round {round_idx+1}: model=auto (断路器自动降级)")
+                async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
                     event = {"type": chunk["type"], "content": chunk["content"]}
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                     if chunk["type"] == "content":
@@ -1174,10 +1172,22 @@ async def debug_skill_chat(
                     except json_mod.JSONDecodeError:
                         actions.append({"action": "run", "parameters": {}})
 
-                # 如果 AI 修改了脚本但没有输出 run action，自动执行一次验证
+                # 如果 AI 修改了脚本但没有输出 run action，尝试用用户上下文参数自动执行
                 if actions and any(a.get("action") == "modify_script" for a in actions):
                     if not any(a.get("action") == "run" for a in actions):
-                        actions.append({"action": "run", "parameters": {}})
+                        # 从用户上下文提取参数
+                        auto_params = {{}}
+                        ctx = request.context or {{}}
+                        if ctx.get("json_params"):
+                            try:
+                                auto_params = json_mod.loads(ctx["json_params"])
+                            except json_mod.JSONDecodeError:
+                                pass
+                        if auto_params:
+                            actions.append({{"action": "run", "parameters": auto_params}})
+                        else:
+                            # 无可用参数，不自动执行
+                            pass
 
                 for action in actions:
                     if action.get("action") == "modify_script":

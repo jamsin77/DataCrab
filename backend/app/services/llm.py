@@ -1,6 +1,14 @@
-"""LLM管理器（支持多模型降级 + 瞬态重试）"""
+"""LLM管理器（支持多模型降级 + 瞬态重试 + ModelRouter 断路器）
+
+设计借鉴 DeepAnalyze 的 ModelRouter：
+- 默认用深度模型（主模型），失败自动降级到快速模型
+- 断路器：连续 3 次失败的模型熔断 60 秒，之后 half-open 试探恢复
+- 系统内部任务（参数推断等）直接用快速模型，不走断路器
+- 不做关键词路由——由调用方声明任务类型，ModelRouter 负责降级
+"""
 
 import json
+import time
 from typing import Optional, AsyncGenerator, List, Dict, Any
 from app.core.config import settings
 from loguru import logger
@@ -70,30 +78,40 @@ def _parse_fallback_models(raw: str) -> List[Dict[str, str]]:
         return []
 
 
-# 触发深度模型的关键词（需要代码生成/修改/深度分析）
-_DEEP_MODEL_KEYWORDS = {
-    "修改", "修复", "修改脚本", "改一下", "帮我改", "fix", "修复代码",
-    "优化", "重构", "改进", "重写", "改写", "optimize", "refactor", "improve",
-    "生成", "创建", "写一个", "生成代码", "generate", "create", "modify", "rewrite",
-    "报错", "错误", "失败", "异常", "error", "exception", "traceback", "fail", "failed",
-    "不对", "不正确", "有问题", "不工作", "bug", "wrong", "incorrect",
-}
-
-
-def should_use_deep_model(message: str, is_retry: bool = False) -> bool:
-    """根据用户消息和上下文判断是否应该使用深度模型。
-
-    - 执行失败后重试 → 深度模型（需要分析错误+改代码）
-    - 消息含修改/修复/优化/生成/报错等关键词 → 深度模型
-    - 其他（运行/执行/解释/分析） → 快速模型
+class CircuitBreaker:
+    """断路器（借鉴 DeepAnalyze ModelRouter）。
+    
+    状态：closed（正常）→ open（熔断，连续 3 次失败）→ half-open（60s 后试探）
     """
-    if is_retry:
-        return True
-    msg_lower = message.lower()
-    for kw in _DEEP_MODEL_KEYWORDS:
-        if kw in msg_lower or kw in message:
+    def __init__(self, failure_threshold: int = 3, cooldown: int = 60):
+        self._failures: Dict[str, int] = {}
+        self._open_until: Dict[str, float] = {}
+        self._threshold = failure_threshold
+        self._cooldown = cooldown
+
+    def is_available(self, model: str) -> bool:
+        if model not in self._open_until:
             return True
-    return False
+        if time.time() >= self._open_until[model]:
+            del self._open_until[model]
+            self._failures.pop(model, None)
+            logger.info(f"断路器 half-open: {model} 试探恢复")
+            return True
+        return False
+
+    def record_success(self, model: str):
+        self._failures.pop(model, None)
+        self._open_until.pop(model, None)
+
+    def record_failure(self, model: str):
+        count = self._failures.get(model, 0) + 1
+        self._failures[model] = count
+        if count >= self._threshold:
+            self._open_until[model] = time.time() + self._cooldown
+            logger.warning(f"断路器 open: {model} 熔断 {self._cooldown}s (连续 {count} 次失败)")
+
+
+_circuit = CircuitBreaker()
 
 
 class LLMManager:
@@ -112,15 +130,16 @@ class LLMManager:
 
     @property
     def fast_model(self) -> str:
-        """返回快速模型名（非推理模型，用于调试对话等场景）。
-        优先使用配置的 LLM_FAST_MODEL，否则按 provider 自动选择。"""
+        """快速模型名（系统内部任务 + 降级兜底）。"""
         configured = getattr(settings, 'LLM_FAST_MODEL', '') or ''
         return configured.strip() or FAST_MODELS.get(self.provider) or self.model
 
-    def pick_model(self, message: str, is_retry: bool = False) -> str:
-        """根据消息内容动态选择模型：深度任务用主模型，轻量任务用快速模型。"""
-        if should_use_deep_model(message, is_retry):
-            return self.model
+    def _resolve_model(self, model: Optional[str]) -> str:
+        """解析模型：指定则用指定，断路器熔断则降级到快速模型。"""
+        target = model or self.model
+        if _circuit.is_available(target):
+            return target
+        logger.warning(f"断路器降级: {target} 不可用，切换到 {self.fast_model}")
         return self.fast_model
 
     # ---------- 客户端管理 ----------
@@ -400,16 +419,30 @@ class LLMManager:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, str], None]:
+        """流式对话（含推理过程）。
+        
+        模型选择策略（借鉴 DeepAnalyze ModelRouter）：
+        - 默认用深度模型，断路器熔断时自动降级到快速模型
+        - 连接失败时记录断路器，重试降级模型
+        """
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
-        for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+        target_model = self._resolve_model(model)
+        tried_models: List[str] = []
+
+        for attempt_model in [target_model, self.fast_model]:
+            if attempt_model in tried_models:
+                continue
+            if not _circuit.is_available(attempt_model):
+                continue
+            tried_models.append(attempt_model)
+
+            cfg = self._model_configs()[0]  # 用主 provider 配置
             try:
-                logger.info(f"LLM chat_stream_with_thinking: provider={cfg['provider']}, model={actual_model}")
+                logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}")
                 create_kwargs = dict(
-                    model=actual_model,
+                    model=attempt_model,
                     messages=messages,
                     temperature=temperature,
                     stream=True,
@@ -418,19 +451,27 @@ class LLMManager:
                     create_kwargs["max_tokens"] = max_tokens
                 stream = await self._acreate(cfg, **create_kwargs)
             except Exception as e:
-                last_err = e
-                logger.warning(f"LLM chat_stream_with_thinking创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
                 continue
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    yield {"type": "thinking", "content": delta.reasoning_content}
-                if delta.content:
-                    yield {"type": "content", "content": delta.content}
-            return
-        raise last_err or RuntimeError("无可用LLM模型")
+
+            try:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        yield {"type": "thinking", "content": delta.reasoning_content}
+                    if delta.content:
+                        yield {"type": "content", "content": delta.content}
+                _circuit.record_success(attempt_model)
+                return
+            except Exception as e:
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                continue
+
+        raise RuntimeError(f"所有模型均不可用: {tried_models}")
 
     async def chat_stream_with_tools(
         self,

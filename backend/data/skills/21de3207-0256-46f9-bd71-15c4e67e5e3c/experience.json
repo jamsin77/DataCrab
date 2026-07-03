@@ -1,5 +1,33 @@
 {
-  "negative": [],
-  "positive": [],
+  "negative": [
+    {
+      "timestamp": "2026-07-03T11:25:09.709861",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpvml1_d3i.py\", line 832, in migrate_data\n    total_written = _write_records(records, target_table_name)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpvml1_d3i.py\", line 815, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 语法错误 在 \"%\" 或附近的\n\nDuring handling of the above exception, another exception o",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国文物",
+        "if_table_exists": "truncate",
+        "add_columns": {
+          "ID": "auto_id_zero_padded_8",
+          "时间戳": "current_timestamp"
+        }
+      },
+      "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n====================================="
+    }
+  ],
+  "positive": [
+    {
+      "timestamp": "2026-07-03T11:43:36.088261",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': False, 'error': '缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。', 'message': '参数校验失败'}"
+    }
+  ],
   "lessons": ""
 }

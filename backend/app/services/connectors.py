@@ -120,10 +120,8 @@ class PostgreSQLConnector(BaseConnector):
             for col in columns:
                 _validate_identifier(col)
 
-            # 检查表是否存在
-            check_sql = "SELECT to_regclass(%s)"
-            cursor = await self._connection.execute(check_sql, table)
-            row = await cursor.fetchone()
+            # 检查表是否存在 (asyncpg 用 $1 而非 %s, fetchrow 而非 execute+fetchone)
+            row = await self._connection.fetchrow("SELECT to_regclass($1)", table)
             table_exists = row and row[0] is not None
 
             if table_exists:
@@ -135,11 +133,11 @@ class PostgreSQLConnector(BaseConnector):
                     await self._connection.execute(f'CREATE TABLE "{table}" ({col_defs})')
                 elif if_table_exists in ("overwrite", "truncate"):
                     await self._connection.execute(f'TRUNCATE TABLE "{table}"')
-                    # 补齐缺失列
-                    col_cursor = await self._connection.execute(
-                        f"SELECT column_name FROM information_schema.columns WHERE table_name = %s", table
+                    # 补齐缺失列 (asyncpg 用 fetch 而非 execute+fetchall)
+                    col_rows = await self._connection.fetch(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = $1", table
                     )
-                    existing_cols = {r[0] for r in await col_cursor.fetchall()}
+                    existing_cols = {r[0] for r in col_rows}
                     for col in columns:
                         if col not in existing_cols:
                             await self._connection.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" TEXT')
@@ -182,7 +180,7 @@ class PostgreSQLConnector(BaseConnector):
                         safe_remark = str(remark).replace("'", "''")
                         await self._connection.execute(f'COMMENT ON COLUMN "{table}"."{col_name}" IS \'{safe_remark}\'')
 
-            await self._connection.commit()
+            # asyncpg 自动提交，无需 commit()
             return {"success": True, "rows_written": len(records)}
         except Exception as e:
             return {"success": False, "message": str(e)}
