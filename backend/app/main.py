@@ -1,4 +1,4 @@
-"""DataCrab 数据智能应用 - 主入口"""
+"""DataCrab 数据工程智能体 - 主入口"""
 
 from contextlib import asynccontextmanager
 
@@ -38,7 +38,7 @@ def _migrate_skills(connection):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="DataCrab 数据智能应用 API",
+    description="DataCrab 数据工程智能体 API",
     lifespan=lifespan,
 )
 

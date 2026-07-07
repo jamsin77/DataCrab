@@ -11,7 +11,7 @@ class AgentConfig:
     def __init__(self):
         self.name = "DataCrab"
         self.short_name = "DC"
-        self.full_name = "DataCrab 数据分析平台智能助手"
+        self.full_name = "DataCrab 数据工程智能体"
         self._load_from_md()
     
     def _load_from_md(self):

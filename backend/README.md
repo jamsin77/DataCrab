@@ -1,6 +1,6 @@
 # DataCrab Backend
 
-DataCrab 数据智能应用后端服务
+DataCrab 数据工程智能体后端服务
 
 ## 核心理念
 

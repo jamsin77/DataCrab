@@ -2,7 +2,7 @@
   "name": "datacrab",
   "version": "1.0.0",
   "private": true,
-  "description": "DataCrab 数据智能应用平台",
+  "description": "DataCrab 数据工程智能体",
   "scripts": {
     "install:frontend": "cd frontend && npm install",
     "install:backend": "pip install -e ./backend",

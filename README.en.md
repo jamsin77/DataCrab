@@ -1,6 +1,6 @@
-# DataCrab - Data Intelligence Application Platform
+# DataCrab - Data Engineering Agent
 
-DataCrab is an LLM-powered data intelligence application platform that delivers a ChatGPT-style conversational data interaction experience. Without writing any code, users can query, clean, transform, analyze, and visualize data through natural-language conversations.
+DataCrab is an LLM-powered data engineering agent that delivers a ChatGPT-style conversational data interaction experience. Without writing any code, users can query, clean, transform, analyze, and visualize data through natural-language conversations.
 
 ## Core Philosophy
 

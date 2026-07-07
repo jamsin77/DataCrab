@@ -1,6 +1,6 @@
 DataCrab Core Philosophy: Process data through conversation, accumulate data-processing Skills, form a data ecosystem, and ultimately achieve a fully closed AI loop for data processing.
 
-DataCrab Data-Processing Agent Basic Principles:
+DataCrab Data Engineering Agent Basic Principles:
 1. Keep the architecture as minimal as possible; support local deployment and allow selecting a specified coding-capable LLM
 2. Connect to any data source; support custom data-source connectors
 3. All data processing is interacted with via natural language; existing processing flows can be reviewed to judge reusability

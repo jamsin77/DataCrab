@@ -10,7 +10,7 @@ from app.services.llm import llm_manager
 from app.services.skill_parser import read_skill_md, read_skill_script, list_skill_scripts
 
 
-PIPELINE_BUILDER_SYSTEM_PROMPT = """你是一个 Python 代码生成器，专门为 DataCrab 数据平台生成数据处理流程的主函数。
+PIPELINE_BUILDER_SYSTEM_PROMPT = """你是一个 Python 代码生成器，专门为 DataCrab 数据工程智能体生成数据处理流程的主函数。
 
 ## 流程定义
 流程（Pipeline）就是一个完整的 Python 主函数，它负责：

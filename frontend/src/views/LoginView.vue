@@ -2,7 +2,7 @@
   <div class="login-container">
     <div class="login-card">
       <h1 class="title">DataCrab</h1>
-      <p class="subtitle">数据智能应用</p>
+      <p class="subtitle">数据工程智能体</p>
       <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleLogin">
         <el-form-item prop="username">
           <el-input

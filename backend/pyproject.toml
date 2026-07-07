@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "datacrab-backend"
 version = "1.0.0"
-description = "DataCrab 数据智能应用后端"
+description = "DataCrab 数据工程智能体后端"
 authors = ["DataCrab Team"]
 readme = "README.md"
 packages = [{include = "app"}]

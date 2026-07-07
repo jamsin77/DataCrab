@@ -14,7 +14,7 @@ _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.m
 SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
 
-SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab 数据平台创建 Skills。
+SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab 数据工程智能体创建 Skills。
 
 ## 技能规范（必须严格遵守）
 
