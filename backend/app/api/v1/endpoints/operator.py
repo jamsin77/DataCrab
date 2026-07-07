@@ -1,4 +1,4 @@
-"""算子管理API端点"""
+﻿"""算子管理API端点"""
 
 import io
 import time
@@ -328,20 +328,15 @@ async def debug_operator(
 
         elapsed = (time.time() - start_time) * 1000
 
-        # 修错后成功 → 采集正例
-        try:
-            base = experience.operator_experience_dir(operator_id)
-            if experience.read_negative(base):
-                result_preview = str(result_value)[:200] if result_value is not None else ""
-                experience.append_positive(
-                    base,
-                    source="debug",
-                    parameters=request.parameters or {},
-                    result_summary=result_preview,
-                    script_name=operator.function_name or "",
-                )
-        except Exception as log_err:
-            logger.warning(f"记录算子正例失败: {log_err}")
+        # 经验采集（非侵入式）
+        from app.services.data_harness import collect_experience
+        collect_experience(
+            experience.operator_experience_dir(operator_id),
+            source="debug",
+            exec_result={"success": True, "result": result_value, "stdout": captured_output.getvalue()},
+            parameters=request.parameters or {},
+            script_name=operator.function_name or "",
+        )
 
         return OperatorDebugResponse(
             success=True,
@@ -351,19 +346,15 @@ async def debug_operator(
         )
     except Exception as e:
         elapsed = (time.time() - start_time) * 1000
-        # 记录反例到经验库
-        try:
-            experience.append_negative(
-                experience.operator_experience_dir(operator_id),
-                source="debug",
-                error_type=type(e).__name__,
-                error_message=str(e),
-                parameters=request.parameters or {},
-                stdout=captured_output.getvalue(),
-                script_name=operator.function_name or "",
-            )
-        except Exception as log_err:
-            logger.warning(f"记录算子经验失败: {log_err}")
+        # 经验采集（非侵入式）
+        from app.services.data_harness import collect_experience
+        collect_experience(
+            experience.operator_experience_dir(operator_id),
+            source="debug",
+            exec_result={"success": False, "error": f"{type(e).__name__}: {str(e)}", "stdout": captured_output.getvalue()},
+            parameters=request.parameters or {},
+            script_name=operator.function_name or "",
+        )
         return OperatorDebugResponse(
             success=False,
             error=f"{type(e).__name__}: {str(e)}\n\n{traceback.format_exc()}",
@@ -1102,6 +1093,7 @@ async def debug_operator_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """算子 AI 调试助手（多智能体架构：DataProcessor + DataInspector）"""
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
@@ -1114,6 +1106,8 @@ async def debug_operator_chat(
     display_name = operator.display_name or operator.name
 
     ctx = request.context or {}
+    op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id)) or ""
+
     input_parts = []
     param_parts = []
     for k, v in ctx.items():
@@ -1121,154 +1115,86 @@ async def debug_operator_chat(
             input_parts.append(f"{k}: {v}")
         elif k.startswith("param_"):
             param_parts.append(f"{k}: {v}")
-        elif k in ("last_result", "last_error"):
-            pass
-    user_input_data = "\n".join(input_parts)
-    user_params = "\n".join(param_parts)
+    user_ctx = "\n".join(input_parts + param_parts)
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
 
-    op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id))
-    lessons_block = f"\n历史经验：\n{op_lessons[:800]}" if op_lessons else ""
-    system_prompt = (
-        f"你是算子调试助手。算子 \"{display_name}\"，函数：{func_name}。\n\n"
-        f"脚本：\n```python\n{script_content[:2500]}\n```\n\n"
-        "你可以：分析bug、修改代码、解释逻辑、优化性能。\n"
-        "规则：\n"
-        "- 修改代码时只需输出修改的函数，不用输出整个脚本（系统自动合并）\n"
-        "- 不改函数签名，只处理用户数据\n"
-        "- 修改后系统自动执行验证\n"
-        "- 推理请简洁，直奔重点\n"
-        f"{lessons_block}"
-    )
+    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+    from app.services.data_processor_agent import DataProcessorAgent
+    from app.services.data_inspector_agent import DataInspectorAgent
 
-    messages = [{"role": "system", "content": system_prompt}]
+    if not agent_registry.get("data_processor"):
+        agent_registry.register(DataProcessorAgent())
+    if not agent_registry.get("data_inspector"):
+        agent_registry.register(DataInspectorAgent())
+
+    runtime = AgentRuntime(agent_registry, llm_manager)
+
+    history = []
     for h in (request.history or [])[-10:]:
-        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
+        history.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
 
     user_msg = request.message
-    if user_input_data or user_params or last_result or last_error:
+    if user_ctx or last_result or last_error:
         user_msg += f"\n\n[当前调试上下文]"
-        if user_input_data:
-            user_msg += f"\n输入数据: {user_input_data[:500]}"
-        if user_params:
-            user_msg += f"\n参数: {user_params[:500]}"
+        if user_ctx:
+            user_msg += f"\n{user_ctx[:500]}"
         if last_result:
             user_msg += f"\n上次执行结果: {last_result}"
         if last_error:
             user_msg += f"\n上次错误: {last_error[:500]}"
-    messages.append({"role": "user", "content": user_msg})
+
+    context = {
+        "debug_mode": True,
+        "debug_type": "operator",
+        "db": db,
+        "user_id": current_user.id,
+        "history": history,
+        "debug_operator_id": operator_id,
+        "debug_script_name": func_name or "main",
+        "debug_script_content": script_content,
+        "debug_function_name": func_name,
+        "debug_last_success_params": None,
+        "debug_lessons": op_lessons,
+        "debug_user_context": ctx,
+        "debug_max_rounds": 7,"debug_max_inspections": 7,
+    }
+
+    message = AgentMessage(
+        from_agent="user",
+        to_agent="data_processor",
+        reason=HandoffReason.DELEGATE,
+        payload={"user_message": user_msg},
+        context=context,
+    )
+
+    import json as json_mod
 
     async def generate():
-        import json as json_mod
-        full_content = ""
+        import asyncio
         try:
-            chosen_model = llm_manager.pick_model(request.message, request.history)
-            logger.info(f"算子debug-chat: model={chosen_model}")
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
-                if chunk["type"] == "thinking":
-                    yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
-                elif chunk["type"] == "content":
-                    full_content += chunk["content"]
-                    yield f"data: {json_mod.dumps({'type': 'content', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
-
-            import re
-            code_match = re.search(r'```python\s*\n(.*?)```', full_content, re.DOTALL)
-            if code_match:
-                new_code = code_match.group(1).strip()
-                # 函数级合并：只替换修改的函数，不重写整个脚本
-                from app.services.operator_parser import apply_partial_code
-                merged_script = apply_partial_code(script_content, new_code)
-                operator.script_content = merged_script
-                try:
-                    parsed = parse_python_script(merged_script)
-                    if parsed.get("function_name"):
-                        operator.function_name = parsed.get("function_name")
-                        operator.inputs = parsed.get("inputs", operator.inputs)
-                        operator.outputs = parsed.get("outputs", operator.outputs)
-                        operator.parameters = parsed.get("parameters", operator.parameters)
-                except Exception:
-                    pass
-                await db.flush()
-                await db.refresh(operator)
-                yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': func_name or 'main'}, ensure_ascii=False)}\n\n"
-
-                # 自动执行算子验证修改结果
-                yield f"data: {json_mod.dumps({'type': 'executing', 'message': '脚本已更新，正在自动执行验证...'}, ensure_ascii=False)}\n\n"
-
-                try:
-                    import pandas as pd
-                    exec_start = time.time()
-                    captured = io.StringIO()
-                    exec_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
-                    exec_ns.update(_build_operator_namespace(current_user.id))
-                    exec(new_script, exec_ns)
-                    debug_func = exec_ns.get(operator.function_name or func_name or "")
-                    if not debug_func:
-                        raise ValueError(f"脚本中未找到函数: {operator.function_name or func_name}")
-
-                    # 从上下文构造参数
-                    exec_params = {}
-                    for k, v in ctx.items():
-                        if k.startswith("param_"):
-                            pname = k[6:]
-                            try:
-                                exec_params[pname] = json_mod.loads(v) if v.strip() else None
-                            except (json_mod.JSONDecodeError, ValueError):
-                                exec_params[pname] = v
-
-                    # 从上下文构造 test_data
-                    test_data = None
-                    for k, v in ctx.items():
-                        if k.startswith("input_"):
-                            try:
-                                parsed = json_mod.loads(v) if v.strip() else None
-                                if test_data is None:
-                                    test_data = parsed
-                            except (json_mod.JSONDecodeError, ValueError):
-                                pass
-
-                    is_async_func = inspect.iscoroutinefunction(debug_func)
-                    if test_data is not None:
-                        if isinstance(test_data, list):
-                            td = pd.DataFrame(test_data)
-                        elif isinstance(test_data, dict):
-                            td = pd.DataFrame([test_data])
-                        else:
-                            td = test_data
-                        exec_result = await debug_func(td, **exec_params) if is_async_func else debug_func(td, **exec_params)
+            async for event in runtime.run("data_processor", message, context):
+                t = event.get("type")
+                if t == "agent_switch":
+                    agent = event.get("agent")
+                    if agent == "data_inspector":
+                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
+                    elif agent == "data_processor":
+                        evt = {"type": "retry", "round": 2, "message": "DataInspector 发现问题，开始修复..."}
                     else:
-                        exec_result = await debug_func(**exec_params) if is_async_func else debug_func(**exec_params)
-
-                    if hasattr(exec_result, "to_dict"):
-                        exec_result = exec_result.to_dict(orient="records")
-
-                    exec_elapsed = (time.time() - exec_start) * 1000
-                    exec_result = _sanitize_op(exec_result)
-                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': {'success': True, 'result': exec_result, 'stdout': captured.getvalue() or None, 'execution_time_ms': round(exec_elapsed, 2)}}, ensure_ascii=False, default=str)}\n\n"
-
-                    # 采集正例
-                    try:
-                        base = experience.operator_experience_dir(operator_id)
-                        if experience.read_negative(base):
-                            experience.append_positive(base, source="debug-chat", parameters=exec_params, result_summary=str(exec_result)[:200], script_name=operator.function_name or "")
-                    except Exception:
-                        pass
-
-                except Exception as exec_err:
-                    exec_elapsed = (time.time() - exec_start) * 1000 if 'exec_start' in dir() else 0
-                    err_msg = str(exec_err)
-                    yield f"data: {json_mod.dumps({'type': 'run_result', 'result': {'success': False, 'error': err_msg, 'stdout': captured.getvalue() or None, 'execution_time_ms': round(exec_elapsed, 2)}}, ensure_ascii=False)}\n\n"
-                    # 记录反例
-                    try:
-                        experience.append_negative(experience.operator_experience_dir(operator_id), source="debug-chat", error_type=type(exec_err).__name__, error_message=err_msg, parameters=exec_params if 'exec_params' in dir() else {}, stdout=captured.getvalue() if 'captured' in dir() else "", script_name=operator.function_name or "")
-                    except Exception:
-                        pass
-
+                        evt = None
+                    if evt:
+                        yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'clear_thinking', 'content': ''}, ensure_ascii=False)}\n\n"
+                elif t == "done":
+                    pass
+                else:
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            logger.error(f"算子调试聊天失败: {e}")
+            logger.error(f"算子调试对话失败: {e}")
             yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})

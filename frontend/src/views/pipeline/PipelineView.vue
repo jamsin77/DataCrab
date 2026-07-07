@@ -864,7 +864,17 @@ async function handleDebugSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''
+            msg.content = ''
+            msg.thinkingOpen = true
+            thinkingDone = false
           } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
@@ -880,6 +890,23 @@ async function handleDebugSend() {
             } catch { /* skip */ }
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          } else if (data.type === 'inspecting') {
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'retry') {
+            msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'round') {
+            msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
           }
         } catch { /* skip */ }
       }

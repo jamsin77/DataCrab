@@ -267,12 +267,19 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
             pass
     return _result if _result else {{"success": False, "message": "write failed"}}
 
+def log(level, message, *args):
+    _lvl = str(level).upper() if level else "INFO"
+    print(f"[{{_lvl}}] {{message}}" + (" " + " ".join(str(a) for a in args) if args else ""))
+
 # Inject into builtins so scripts using get_data_accessor() can find them
 import builtins as _builtins
 _builtins.get_table_data = get_table_data
 _builtins.query_table_data = get_table_data
 _builtins.write_table_data = write_table_data
 _builtins.llm_chat = llm_chat
+_builtins.log = log
+_builtins.get_datasource_id_by_name = _dc_get_datasource_id_by_name
+_builtins.get_table_schema = _dc_get_table_schema
 
 # __SCRIPT_CONTENT__
 

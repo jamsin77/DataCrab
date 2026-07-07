@@ -15,7 +15,7 @@
 | 6 | 标识符保护 | `agent_utils.py` | ✅ 已完成 | `build_identifier_hint` 在 chat.py `_compress_history` 使用 |
 | 7 | 工具诚实 | `tool_guidance.py` | ✅ 已完成 | 能力表注入 system prompt |
 | 8 | 瞬态重试 | `llm.py` | ✅ 已完成 | `_acreate_with_retry` 429/超时/500 指数退避 |
-| 9 | 收敛检测 | `multi_agent.py` | ✅ 已完成 | 连续 4 次同表 handoff → 终止 |
+| 9 | 收敛检测 | `data_harness.py → multi_agent.py` | ✅ 已完成 | `ConvergenceGuard` 非侵入式，连续 4 次同表 handoff → 终止 |
 | 10 | 压缩保护 | `chat.py` | ✅ 已完成 | `_compress_history` 分层摘要 + 标识符保留 |
 | 11 | 经验聚合 | `experience.py` | ✅ 已完成 | `distill_cross_patterns` 跨算子 LLM 整合 |
 | 12 | 统一路由 | `chat.py` | ✅ 已完成 | `_route_to_agent` 始终从 data_processor 开始 |

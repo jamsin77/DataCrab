@@ -408,6 +408,19 @@
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 调试助手</span>
+            <el-select
+              v-model="debugScriptName"
+              size="small"
+              style="width: 160px; margin-left: 8px"
+              :disabled="debugStreaming || execRunning"
+            >
+              <el-option
+                v-for="s in debugSkill?.scripts || []"
+                :key="s.name"
+                :label="s.name"
+                :value="s.name"
+              />
+            </el-select>
             <el-button
               size="small"
               type="warning"
@@ -445,6 +458,10 @@
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.executingMsg" class="debug-msg-executing">
+                    <el-icon class="thinking-spin"><Loading /></el-icon>
+                    <span>{{ msg.executingMsg }}</span>
+                  </div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
                       <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
@@ -1196,6 +1213,7 @@ interface DebugMessage {
   runResult?: any
   scriptUpdated?: string
   model?: string
+  executingMsg?: string
 }
 
 const debugMessages = ref<DebugMessage[]>([])
@@ -2116,7 +2134,17 @@ async function handleDebugSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''
+            msg.content = ''
+            msg.thinkingOpen = true
+            thinkingDone = false
           } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
@@ -2127,11 +2155,15 @@ async function handleDebugSend() {
             }
             msg.content += data.content
           } else if (data.type === 'executing') {
-            msg.thinking = data.message || '正在执行技能...'
+            msg.executingMsg = data.message || '正在执行脚本...'
           } else if (data.type === 'run_result') {
+            msg.executingMsg = ''
             msg.runResult = data.result
             if (!msg.content) {
-              msg.content = data.result?.success ? '技能执行完成' : '技能执行失败'
+              const r = data.result || {}
+              const inner = typeof r.result === 'object' && r.result ? r.result : {}
+              const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+              msg.content = failed ? '技能执行失败' : '技能执行完成'
             }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
@@ -2139,6 +2171,26 @@ async function handleDebugSend() {
             refreshDebugContext()
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'retry') {
+            msg.executingMsg = ''
+            msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'round') {
+            msg.executingMsg = ''
+            msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
           }
         } catch {
           // skip
@@ -2886,6 +2938,19 @@ onMounted(() => {
     word-break: break-word;
     max-height: 300px;
     overflow-y: auto;
+  }
+}
+
+.debug-msg-executing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #909399;
+
+  .thinking-spin {
+    animation: rotate 1.2s linear infinite;
   }
 }
 

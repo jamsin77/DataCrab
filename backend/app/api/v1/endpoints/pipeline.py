@@ -1,4 +1,4 @@
-"""流程管理API端点"""
+﻿"""流程管理API端点"""
 
 import json
 import re
@@ -377,7 +377,7 @@ async def debug_pipeline_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """流程 AI 调试助手（流式）—— 镜像算子 debug-chat"""
+    """流程 AI 调试助手（多智能体架构：DataProcessor + DataInspector）"""
     result = await db.execute(
         select(Pipeline).where(Pipeline.id == pipeline_id, Pipeline.is_active == True)
     )
@@ -395,27 +395,20 @@ async def debug_pipeline_chat(
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
 
-    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
-    system_prompt = (
-        f"你是一个流程代码调试助手。用户正在调试流程 \"{display_name}\"，"
-        f"入口函数：{entry_function}(inputs)。\n\n"
-        f"流程主函数代码：\n```python\n{main_code[:6000]}\n```\n\n"
-        f"{SANDBOX_TOOLS_DOC}\n\n"
-        f"你可以帮助用户：\n"
-        f"- 分析流程代码逻辑和潜在bug\n"
-        f"- 修改代码并直接输出修改后的完整主函数脚本（用```python围栏包裹）\n"
-        f"- 解释错误原因和修复方案\n"
-        f"- 优化代码性能和可读性\n\n"
-        f"重要规则：\n"
-        f"- 如果修改了代码，输出修改后的完整主函数脚本，用```python和```围栏包裹\n"
-        f"- 保持入口函数名 {entry_function} 不变\n"
-        f"- 保持代码风格一致\n\n"
-        f"{SAFETY_RULES_DOC}"
-    )
+    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+    from app.services.data_processor_agent import DataProcessorAgent
+    from app.services.data_inspector_agent import DataInspectorAgent
 
-    messages = [{"role": "system", "content": system_prompt}]
+    if not agent_registry.get("data_processor"):
+        agent_registry.register(DataProcessorAgent())
+    if not agent_registry.get("data_inspector"):
+        agent_registry.register(DataInspectorAgent())
+
+    runtime = AgentRuntime(agent_registry, llm_manager)
+
+    history = []
     for h in (req.history or [])[-10:]:
-        messages.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
+        history.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
 
     user_msg = req.message
     if last_result or last_error:
@@ -424,33 +417,56 @@ async def debug_pipeline_chat(
             user_msg += f"\n上次执行结果: {last_result}"
         if last_error:
             user_msg += f"\n上次错误: {last_error[:500]}"
-    messages.append({"role": "user", "content": user_msg})
+
+    context = {
+        "debug_mode": True,
+        "debug_type": "pipeline",
+        "db": db,
+        "user_id": current_user.id,
+        "history": history,
+        "debug_pipeline_id": pipeline_id,
+        "debug_script_name": entry_function,
+        "debug_script_content": main_code,
+        "debug_function_name": entry_function,
+        "debug_last_success_params": None,
+        "debug_lessons": "",
+        "debug_user_context": ctx,
+        "debug_max_rounds": 7,"debug_max_inspections": 7,
+    }
+
+    message = AgentMessage(
+        from_agent="user",
+        to_agent="data_processor",
+        reason=HandoffReason.DELEGATE,
+        payload={"user_message": user_msg},
+        context=context,
+    )
 
     async def generate():
-        full_content = ""
+        import asyncio
         try:
-            chosen_model = llm_manager.pick_model(request.message, request.history)
-            logger.info(f"流程debug-chat: model={chosen_model}")
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
-                if chunk["type"] == "thinking":
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
-                elif chunk["type"] == "content":
-                    full_content += chunk["content"]
-                    yield f"data: {json.dumps({'type': 'content', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
-
-            code_match = re.search(r'```python\s*\n(.*?)```', full_content, re.DOTALL)
-            if code_match:
-                new_code = code_match.group(1).strip()
-                p.main_code = new_code
-                p.version = (p.version or 1) + 1
-                await db.flush()
-                await db.refresh(p)
-                yield f"data: {json.dumps({'type': 'script_updated', 'script_name': entry_function}, ensure_ascii=False)}\n\n"
-
+            async for event in runtime.run("data_processor", message, context):
+                t = event.get("type")
+                if t == "agent_switch":
+                    agent = event.get("agent")
+                    if agent == "data_inspector":
+                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
+                    elif agent == "data_processor":
+                        evt = {"type": "retry", "round": 2, "message": "DataInspector 发现问题，开始修复..."}
+                    else:
+                        evt = None
+                    if evt:
+                        yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'clear_thinking', 'content': ''}, ensure_ascii=False)}\n\n"
+                elif t == "done":
+                    pass
+                else:
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            logger.error(f"流程调试聊天失败: {e}")
+            logger.error(f"流程调试对话失败: {e}")
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})

@@ -272,7 +272,12 @@ watch(
 watch(
   () => [chatStore.streamingContent, chatStore.streamingReasoning],
   () => {
-    scrollToBottom()
+    // 推理过程开始流式输出时自动展开（用户手动折叠后尊重其选择）
+    if (chatStore.streamingReasoning && reasoningExpanded.value['streaming'] === undefined) {
+      reasoningExpanded.value['streaming'] = true
+    }
+    // 流式更新使用即时滚动，避免 smooth 动画被高频 token 打断
+    scrollToBottom(false)
   }
 )
 

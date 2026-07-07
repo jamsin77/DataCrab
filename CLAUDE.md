@@ -29,6 +29,7 @@ DataCrab（数据智能应用平台）是一个 ChatGPT 风格的对话式数据
 | `llm.py` | LLM 管理器（多模型降级 + 瞬态重试 + finish_reason 透传） |
 | `chat.py`（endpoints） | 对话 API：流式响应、上下文压缩、统一路由、数据预览注入 |
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
+| `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex） |
 | `skill_library.py` | 技能向量索引（numpy + 磁盘持久化：.npy + JSON） |
 | `skill_runner.py` | 技能脚本沙箱执行 |
@@ -105,7 +106,7 @@ DataProcessorAgent（统一入口）
 | 标识符保护 | agent_utils.py | 压缩时机械抽取 UUID/表名/数据源ID |
 | 工具诚实 | tool_guidance.py | 能力表注入 system prompt |
 | 瞬态重试 | llm.py | 对 429/超时/500 指数退避重试 |
-| 收敛检测 | multi_agent.py | handoff 签名追踪 |
+| 收敛检测 | data_harness.py → multi_agent.py | ConvergenceGuard 非侵入式 handoff 签名追踪 |
 | 压缩保护 | chat.py | _compress_history 加标识符提取 |
 | 经验聚合 | experience.py | distill_cross_patterns 跨算子经验整合 |
 | 统一路由 | chat.py | 始终从 data_processor 开始，Agent 自主 handoff |
@@ -153,3 +154,28 @@ DataProcessorAgent（统一入口）
 | 数据源浏览页刷新按钮 | DataSourceView.vue | 侧边栏标题加刷新图标，重新加载表列表 |
 | LLM 提示词精简 | skill.py + operator.py | debug-chat 系统提示词大幅精简（SKILL.md 3000→1500、脚本截断、删除冗余文档），历史消息 20→10 条 |
 | max_tokens 限制 | llm.py + 4 个端点 | 所有 chat_stream_with_thinking 调用加 max_tokens=4000，防止推理链无限拉长 |
+
+### 第五轮（调试助手推理截断修复 + 参数记忆 + 自愈循环 + 沙箱补全 + 失败检测 + 多智能体架构统一）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 推理截断修复 | llm.py + SkillView/OperatorView/PipelineView.vue + skill.py | 去掉 `not has_content` 守卫；debug-chat max_tokens 4000→8000；clear_thinking 同时清 content + 重置 thinkingDone |
+| debug-chat `{{}}` bug | skill.py | f-string 转义残留 → `{}`，修复 unhashable type:'dict' 导致脚本写不回磁盘 |
+| 执行参数记忆 | skill.py | system prompt 注入 experience.json 最近成功参数；run 参数为空时兜底填充 |
+| 沙箱 log 函数 | skill_runner.py + skill.py | 新增 `log(level, message)` 注入 builtins；`get_datasource_id_by_name`/`get_table_schema` 也注入；system prompt 声明可用函数清单 |
+| 自愈循环 5 轮 | skill.py + SkillView.vue | `range(2)`→`range(5)`；5 轮全失败让 AI 分析原因（give_up 事件）；前端 retry/give_up 处理 |
+| 失败检测两层 | skill.py + SkillView.vue | runner 级 + 技能级（result.success/result.error），修复技能返回失败被误判成功 |
+| **流式工具调用方法** | llm.py | 新增 `chat_stream_with_tools_and_thinking()`：流式推理 + 工具调用 + 长度升级三合一（Orchestrator-Worker 架构地基） |
+| **DataProcessor 调试模式** | data_processor_agent.py | 新增 `modify_script`/`run_script` 工具 + `run_debug()` 流式方法 + debug system prompt；`_execute_tool` 支持 skill/operator/pipeline 三种类型；`run()` 检测 debug_mode 自动分派 |
+| **调试页面统一 AgentRuntime** | skill.py + operator.py + pipeline.py | 三个 debug-chat 端点从手写 LLM 循环改为 AgentRuntime 调用，DataProcessor → DataInspector handoff 统一 |
+| **前端事件适配** | SkillView/OperatorView/PipelineView.vue | 新增 `inspecting`（DataInspector 检查中）/`retry`/`give_up` 事件处理 |
+| **Orchestrator-Worker 粒度** | design.md §2.7.16 + §11.16 | Agent 用于复杂推理（DataInspector），Tool 用于简单操作（modify_script/run_script）；参考 Claude Code / OpenAI Agents SDK |
+
+### 第六轮（非侵入式 Harness 重构 + 沙箱文档统一 + UI 修复）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **非侵入式 Harness 抽出** | data_harness.py（新增）+ multi_agent.py + skill.py + operator.py | 新增 `ConvergenceGuard`（收敛检测）+ `collect_experience`（经验采集）；multi_agent.py 13 行内联签名追踪 → 3 行调用；skill.py/operator.py 4 处共 ~50 行内联正反例采集 → 各 6 行调用；流程层 Harness 从业务代码中解耦 |
+| **沙箱函数文档统一** | skill.py + prompt_docs.py | debug-chat 内联沙箱函数描述（缺返回类型）→ 引用共享 `SANDBOX_TOOLS_DOC`；修复 AI 误把 `get_table_data()` 返回的 dict 当 DataFrame 导致 `'dict' object has no attribute 'columns'` |
+| **数据源刷新只刷当前表** | DataSourceView.vue | 刷新按钮从重载整个表列表+跳回第一张表 → 只刷新当前选中表数据 |
+| **对话推理过程自动滚动** | ChatView.vue | 推理流式输出自动展开 + 即时滚动（smooth→auto），修复 smooth 动画被高频 token 打断导致不滚动 |

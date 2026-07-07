@@ -31,15 +31,19 @@ DataCrab 是一款基于大语言模型（LLM）的数据智能应用平台，�
 
 ### 2. 多智能体协作框架
 
-DataCrab 采用多智能体协作架构，各智能体分工明确、通过 Handoff 机制交接工作：
+DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参考 Claude Code / OpenAI Agents SDK），所有入口统一经由 AgentRuntime：
 
-| 智能体 | 职责 |
-|--------|------|
-| **DataProcessor** | 理解用户意图、生成/修改算子和技能、调度执行、溯源修复 |
-| **DataInspector** | 对加工后的数据进行标准检查、质量检查、安全检查 |
+| 智能体 | 职责 | 触发场景 |
+|--------|------|----------|
+| **DataProcessor**（Orchestrator） | 理解用户意图、修改/执行脚本、调度数据处理、交接检查 | 聊天页面 + 技能/算子/流程调试助手 |
+| **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后自主 handoff |
 
+- **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走 DataProcessor → DataInspector 多智能体流程
+- **Orchestrator-Worker 粒度**：简单操作（modify_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
+- **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用（三合一）
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
 - 动态轮次预算：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40）
+- 收敛检测：`ConvergenceGuard` 非侵入式组件，连续 4 次在同一张表来回 handoff → 终止
 - 支持并行工具调用
 - SSE 流式输出推理过程和执行结果
 

@@ -1,4 +1,4 @@
-"""技能管理API端点 - 遵循 Agent Skills 开放标准"""
+﻿"""技能管理API端点 - 遵循 Agent Skills 开放标准"""
 
 import io
 import math
@@ -53,6 +53,7 @@ from app.services.skill_parser import (
 )
 from app.api.deps import get_current_user
 from app.models.datasource import DataSource
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC
 
 router = APIRouter()
 
@@ -651,28 +652,13 @@ async def run_skill_stream(
             skill.usage_count = (skill.usage_count or 0) + 1
             await db.flush()
 
-            if not exec_result.get("success"):
-                append_error_log(
-                    folder, request.script_name,
-                    error_type="execution_error",
-                    error_message=exec_result.get("error", "未知错误"),
-                    parameters=request.parameters,
-                    stdout=exec_result.get("stdout", ""),
-                    source="run-stream",
-                )
-            else:
-                # 修错后成功 → 采集正例
-                try:
-                    from app.services import experience as _exp
-                    if _exp.read_negative(folder):
-                        _exp.append_positive(
-                            folder, source="run-stream",
-                            parameters=request.parameters,
-                            result_summary=str(exec_result.get("result"))[:200],
-                            script_name=request.script_name,
-                        )
-                except Exception:
-                    pass
+            from app.services.data_harness import collect_experience
+            collect_experience(
+                folder, source="run-stream",
+                exec_result=exec_result,
+                parameters=request.parameters,
+                script_name=request.script_name,
+            )
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
@@ -991,28 +977,46 @@ async def run_skill_nl_stream(
             except Exception as db_err:
                 logger.warning(f"NL stream: db.flush failed: {db_err}")
 
-            if not exec_result.get("success"):
-                append_error_log(
-                    folder, request.script_name,
-                    error_type="execution_error",
-                    error_message=exec_result.get("error", "未知错误"),
-                    parameters=parameters,
-                    stdout=exec_result.get("stdout", ""),
-                    source="run-nl-stream",
-                )
-            else:
-                # 修错后成功 → 采集正例
-                try:
-                    from app.services import experience as _exp
-                    if _exp.read_negative(folder):
-                        _exp.append_positive(
-                            folder, source="run-nl-stream",
-                            parameters=parameters,
-                            result_summary=str(exec_result.get("result"))[:200],
-                            script_name=request.script_name,
-                        )
-                except Exception:
-                    pass
+            from app.services.data_harness import collect_experience
+            collect_experience(
+                folder, source="run-nl-stream",
+                exec_result=exec_result,
+                parameters=parameters,
+                script_name=request.script_name,
+            )
+
+            # 执行成功后 → 触发 DataInspector 质量检查（报告型，不自动修复）
+            _inner_r = exec_result.get("result") if isinstance(exec_result.get("result"), dict) else {}
+            _exec_success = exec_result.get("success") and _inner_r.get("success") is not False
+            if _exec_success:
+                _target_ds_name = parameters.get("target_datasource_name") or parameters.get("source_datasource_name")
+                _target_table = parameters.get("target_table_name") or parameters.get("source_table_name") or inferred_table
+                if _target_ds_name and _target_table:
+                    _target_ds_id = datasource_id
+                    if parameters.get("target_datasource_name"):
+                        from sqlalchemy import select as sa_select
+                        from app.models.datasource import DataSource
+                        _ds_r = await db.execute(sa_select(DataSource).where(DataSource.name == parameters["target_datasource_name"]))
+                        _ds_obj = _ds_r.scalar_one_or_none()
+                        if _ds_obj:
+                            _target_ds_id = str(_ds_obj.id)
+                    if _target_ds_id:
+                        yield f"data: {json_mod.dumps({'type': 'inspecting', 'message': '执行成功，正在进行数据质量检查...'}, ensure_ascii=False)}\n\n"
+                        try:
+                            from app.services.inspector_tools import inspector_tools
+                            _quality = await inspector_tools.check_data_quality(_target_ds_id, _target_table, db)
+                            _standards = await inspector_tools.check_data_standards(_target_ds_id, _target_table, db)
+                            _security = await inspector_tools.check_data_security(_target_ds_id, _target_table, db)
+                            _issues = []
+                            for _check in [_quality, _standards, _security]:
+                                if isinstance(_check, dict):
+                                    _issues.extend(_check.get("issues", []))
+                            _inspection = {"passed": len(_issues) == 0, "issues": _issues,
+                                           "summary": f"检查完成：{len(_issues)} 个问题" + ("，数据质量合格" if not _issues else "")}
+                            yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': _sanitize_nans(_inspection)}, ensure_ascii=False, default=str)}\n\n"
+                        except Exception as inspect_err:
+                            logger.warning(f"数据质量检查失败: {inspect_err}")
+                            yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': {'passed': True, 'error': str(inspect_err)[:200]}}, ensure_ascii=False)}\n\n"
 
             logger.info(f"NL stream: exec_result success={exec_result.get('success')}, error={str(exec_result.get('error',''))[:100]}")
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
@@ -1038,23 +1042,22 @@ async def debug_skill_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.services.skill_runner import run_skill_script_async
+    """技能 AI 调试助手（多智能体架构：DataProcessor + DataInspector）"""
     result_row = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result_row.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
     folder = _get_skill_folder(skill_id)
-
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
     from app.services.llm import llm_manager
     await llm_manager.initialize()
 
-    import asyncio
     import json as json_mod
 
+    # 数据源信息
     ds_name = None
     if request.datasource_id:
         from app.models.datasource import DataSource as DSModel
@@ -1063,203 +1066,97 @@ async def debug_skill_chat(
         if ds_obj:
             ds_name = ds_obj.name
 
-    # 提取参数规范部分（优先于全文截取，确保 AI 知道参数定义）
+    # 提取参数规范
     import re as _re_extract
     params_section = ""
     params_match = _re_extract.search(r'(##\s*📋?\s*参数规范.*?)(?=\n##\s|###\s|##\s*📁|\Z)', skill_md, _re_extract.DOTALL)
     if params_match:
         params_section = params_match.group(1).strip()[:1500]
 
-    # SKILL.md 摘要：排除参数规范段落（避免与 params_section 重复），取前 800 字
     skill_md_excerpt = skill_md[:1200]
     if params_match:
         skill_md_excerpt = skill_md.replace(params_match.group(0), "", 1)[:800]
 
-    system_prompt = (
-        "你是 DataCrab 平台的技能调试助手。\n\n"
-        "## 你的能力\n"
-        "1. **修改脚本**：输出 JSON `{\"action\": \"modify_script\", \"script_name\": \"main.py\"}`，紧接着用 ```python 代码块提供完整脚本\n"
-        "2. **执行技能**：输出 JSON `{\"action\": \"run\", \"parameters\": {...}}` 触发执行（parameters 只传业务参数）\n"
-        "3. **分析问题**：分析错误，给出建议\n"
-        "4. 可在同一回复中先 modify_script 再 run\n\n"
-        f"## 当前技能：{skill.display_name or skill.name}\n"
-        f"- 描述：{skill.description or '无'}\n"
-        f"- 数据源：{ds_name or request.datasource_id or '未选择'}\n"
-        f"- 表名：{request.table_name or '未选择'}\n\n"
-        + (f"## SKILL.md（摘要）\n```\n{skill_md_excerpt}\n```\n\n" if skill_md_excerpt else "")
-        + (f"## 参数规范\n{params_section}\n\n" if params_section else "")
-        + f"## 当前脚本（{request.script_name}）\n```python\n{script_content[:2000]}\n```\n\n"
-        "## 规则\n"
-        "- 修改脚本时只需输出修改的函数，不用输出整个脚本（系统会自动合并）\n"
-        "- 只处理用户业务数据，不修改平台自身\n"
-        "- 回答问题或分析时不需要输出 action\n"
-        "- 执行时根据用户需求推断参数，如数据源名、表名、策略等\n"
-        "- run 的 parameters 必须包含技能所需的关键参数，不能为空\n"
-        "- 推理请简洁，直奔重点\n\n"
-        "## 示例\n"
-        '用户：从XX数据源把YY表迁移到ZZ库\n'
-        '助手：好的，我来执行迁移。\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ", "if_table_exists": "overwrite"}}\n\n'
-        '用户：报错了，列名不对\n'
-        '助手：我来修改对应函数。\n{"action": "modify_script", "script_name": "main.py"}\n```python\ndef migrate_data(...):\n    # 只输出修改的函数\n```\n{"action": "run", "parameters": {"source_datasource_name": "XX", "source_table_name": "YY", "target_datasource_name": "ZZ"}}\n'
+    # 最近成功参数
+    last_success_params = None
+    try:
+        from app.services import experience as _exp
+        _positive = _exp.read_positive(folder)
+        for entry in reversed(_positive or []):
+            _p = entry.get("parameters") or {}
+            _rs = entry.get("result_summary", "") or ""
+            if _p and ("\x27success\x27: True" in _rs or "migrated_rows" in _rs):
+                last_success_params = _p
+                break
+    except Exception:
+        pass
+
+    lessons = read_lessons(folder) or ""
+
+    # 构建多智能体上下文
+    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+    from app.services.data_processor_agent import DataProcessorAgent
+    from app.services.data_inspector_agent import DataInspectorAgent
+
+    if not agent_registry.get("data_processor"):
+        agent_registry.register(DataProcessorAgent())
+    if not agent_registry.get("data_inspector"):
+        agent_registry.register(DataInspectorAgent())
+
+    runtime = AgentRuntime(agent_registry, llm_manager)
+
+    history = []
+    for msg in request.history[-10:]:
+        history.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
+
+    context = {
+        "debug_mode": True,
+        "db": db,
+        "user_id": current_user.id,
+        "history": history,
+        "debug_folder": folder,
+        "debug_script_name": request.script_name,
+        "debug_script_content": script_content,
+        "debug_skill_md": skill_md_excerpt,
+        "debug_params_section": params_section,
+        "debug_last_success_params": last_success_params,
+        "debug_lessons": lessons,
+        "debug_datasource_id": request.datasource_id,
+        "debug_datasource_name": ds_name,
+        "debug_table_name": request.table_name,
+        "debug_user_context": request.context or {},
+        "debug_max_rounds": 7,"debug_max_inspections": 7,
+    }
+
+    message = AgentMessage(
+        from_agent="user",
+        to_agent="data_processor",
+        reason=HandoffReason.DELEGATE,
+        payload={"user_message": request.message},
+        context=context,
     )
 
-    lessons = read_lessons(folder)
-    if lessons:
-        system_prompt += f"\n\n## 历史经验（修改脚本时参考）\n{lessons[:800]}"
-
-    ctx = request.context or {}
-    if ctx:
-        ctx_parts = []
-        exec_tab = ctx.get("exec_tab", "")
-        if exec_tab == "nl" and ctx.get("nl_query"):
-            ctx_parts.append(f"- 自然语言输入：{ctx['nl_query']}")
-        elif exec_tab == "cmd" and ctx.get("cmd_str"):
-            ctx_parts.append(f"- 命令行输入：{ctx['cmd_str']}")
-        elif exec_tab == "json" and ctx.get("json_params"):
-            ctx_parts.append(f"- JSON参数：{ctx['json_params']}")
-        if ctx_parts:
-            system_prompt += "\n\n## 用户调试输入\n" + "\n".join(ctx_parts) + "\n优先使用这些输入作为执行参数。"
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in request.history[-10:]:
-        messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
-    messages.append({"role": "user", "content": request.message})
-
     async def generate():
+        import asyncio
         try:
-            run_failures = []
-            for round_idx in range(2):
-                if round_idx > 0:
-                    if not run_failures:
-                        break
-                    feedback_parts = []
-                    for i, fail in enumerate(run_failures, 1):
-                        part = (
-                            f"### 执行 #{i} 失败\n"
-                            f"- 参数: {json_mod.dumps(fail['parameters'], ensure_ascii=False, default=str)[:500]}\n"
-                            f"- 错误: {fail['error'][:1000]}"
-                        )
-                        if fail['stdout']:
-                            part += f"\n- 标准输出(含错误堆栈):\n```\n{fail['stdout'][:2500]}\n```"
-                        feedback_parts.append(part)
-                    feedback_msg = (
-                        "技能执行失败,以下是具体的错误信息(含标准输出和错误堆栈)。\n"
-                        "请仔细分析错误原因;如果是脚本问题,请输出修改后的完整脚本。\n\n"
-                        + "\n\n".join(feedback_parts)
-                    )
-                    messages.append({"role": "assistant", "content": full_content})
-                    messages.append({"role": "user", "content": feedback_msg})
-                    run_failures = []
-
-                full_content = ""
-                chosen_model = llm_manager.pick_model(request.message, request.history)
-                logger.info(f"技能debug-chat round {round_idx+1}: model={chosen_model}")
-                async for chunk in llm_manager.chat_stream_with_thinking(messages, model=chosen_model, temperature=0.3, max_tokens=4000):
-                    event = {"type": chunk["type"], "content": chunk["content"]}
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                    if chunk["type"] == "content":
-                        full_content += chunk["content"]
-
-                actions = []
-                import re as _re
-                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]modify_script["\x27]\s*,\s*["\x27]script_name["\x27]\s*:\s*["\x27]([^"\x27]*)["\x27]\s*\}', full_content):
-                    script_name = m.group(1) or request.script_name
-                    code_match = _re.search(r'```python\s*\n(.*?)```', full_content[m.end():], _re.DOTALL)
-                    if not code_match:
-                        code_match = _re.search(r'```\s*\n(.*?)```', full_content[m.end():m.end()+50000], _re.DOTALL)
-                    if code_match:
-                        actions.append({"action": "modify_script", "script_name": script_name, "content": code_match.group(1).strip()})
-
-                for m in _re.finditer(r'\{\s*["\x27]action["\x27]\s*:\s*["\x27]run["\x27]\s*(?:,\s*["\x27]parameters["\x27]\s*:\s*(\{[^}]*\}))?\s*\}', full_content):
-                    try:
-                        params_str = m.group(1)
-                        params = json_mod.loads(params_str.replace("'", '"')) if params_str else {}
-                        actions.append({"action": "run", "parameters": params})
-                    except json_mod.JSONDecodeError:
-                        actions.append({"action": "run", "parameters": {}})
-
-                # 如果 AI 修改了脚本但没有输出 run action，尝试用用户上下文参数自动执行
-                if actions and any(a.get("action") == "modify_script" for a in actions):
-                    if not any(a.get("action") == "run" for a in actions):
-                        # 从用户上下文提取参数
-                        auto_params = {{}}
-                        ctx = request.context or {{}}
-                        if ctx.get("json_params"):
-                            try:
-                                auto_params = json_mod.loads(ctx["json_params"])
-                            except json_mod.JSONDecodeError:
-                                pass
-                        if auto_params:
-                            actions.append({{"action": "run", "parameters": auto_params}})
-                        else:
-                            # 无可用参数，不自动执行
-                            pass
-
-                for action in actions:
-                    if action.get("action") == "modify_script":
-                        script_name = action.get("script_name", request.script_name)
-                        new_content = action.get("content", "")
-                        if new_content:
-                            # 函数级合并：只替换修改的函数，不重写整个脚本
-                            from app.services.operator_parser import apply_partial_code
-                            merged = apply_partial_code(script_content, new_content)
-                            write_skill_script(folder, script_name, merged)
-                            script_content = merged  # 更新当前脚本内容供后续 run 使用
-                            yield f"data: {json_mod.dumps({'type': 'script_updated', 'script_name': script_name}, ensure_ascii=False)}\n\n"
-
-                    elif action.get("action") == "run":
-                        parameters = action.get("parameters", {})
-                        for key in ["datasource_id", "datasource_name"]:
-                            parameters.pop(key, None)
-
-                        yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能...'}, ensure_ascii=False)}\n\n"
-
-                        exec_result = await run_skill_script_async(
-                            skill_path=folder,
-                            script_name=request.script_name,
-                            parameters=parameters,
-                            input_data=None,
-                            datasource_id=request.datasource_id,
-                            datasource_name=ds_name,
-                            table_name=request.table_name,
-                        )
-
-                        exec_result = _sanitize_nans(exec_result)
-                        yield f"data: {json_mod.dumps({'type': 'run_result', 'result': exec_result}, ensure_ascii=False, default=str)}\n\n"
-
-                        if not exec_result.get("success"):
-                            append_error_log(
-                                folder, request.script_name,
-                                error_type="execution_error",
-                                error_message=exec_result.get("error", "未知错误"),
-                                parameters=parameters,
-                                stdout=exec_result.get("stdout", ""),
-                                source="debug-chat",
-                            )
-                            run_failures.append({
-                                "parameters": parameters,
-                                "error": exec_result.get("error", "未知错误"),
-                                "stdout": exec_result.get("stdout", ""),
-                            })
-                        else:
-                            # 修错后成功 → 采集正例
-                            try:
-                                from app.services import experience as _exp
-                                if _exp.read_negative(folder):
-                                    _exp.append_positive(
-                                        folder, source="debug-chat",
-                                        parameters=parameters,
-                                        result_summary=str(exec_result.get("result"))[:200],
-                                        script_name=request.script_name,
-                                    )
-                            except Exception:
-                                pass
-
-                skill.usage_count = (skill.usage_count or 0) + 1
-                await db.flush()
-
+            async for event in runtime.run("data_processor", message, context):
+                t = event.get("type")
+                if t == "agent_switch":
+                    agent = event.get("agent")
+                    if agent == "data_inspector":
+                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
+                    elif agent == "data_processor":
+                        evt = {"type": "retry", "round": 2, "message": "DataInspector 发现问题，开始修复..."}
+                    else:
+                        evt = None
+                    if evt:
+                        yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'clear_thinking', 'content': ''}, ensure_ascii=False)}\n\n"
+                elif t == "done":
+                    pass
+                else:
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
             yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-
         except asyncio.CancelledError:
             yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:

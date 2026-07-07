@@ -2635,8 +2635,115 @@ class EventStore:
 | **Phase 4** | 前端：智能体状态指示 + 检查报告页 | ✅ 已完成 |
 | **Phase 5** | 事件存储与溯源 | ✅ 已完成 |
 | **Phase 6** | 扩展：DataGovernor / DataSentinel 等新智能体 | ⬜ 待实现 |
+| **Phase 7** | 调试页面集成多智能体：技能/算子/流程调试助手接入 DataProcessor + DataInspector | ✅ 已完成 |
 
-### 2.8 智能代码生成模块（已废弃）
+#### 2.7.16 调试页面集成多智能体（已完成）
+
+##### 问题背景
+
+改造前，系统的多智能体协作（DataProcessor → DataInspector）**仅在主对话流（`/chat/stream`）中触发**。技能/算子/流程的调试助手（debug-chat）走的是完全独立的路径：手写 LLM 循环 + 正则解析 action + 执行，不经过多智能体框架。
+
+| 入口 | 改造前 | 改造后 |
+|------|--------|--------|
+| 聊天页面 | ✅ AgentRuntime → DataProcessor → DataInspector | 不变 |
+| 技能调试 | ❌ 手写 LLM 循环 | ✅ AgentRuntime → DataProcessor → DataInspector |
+| 算子调试 | ❌ 手写 LLM 循环 | ✅ AgentRuntime → DataProcessor → DataInspector |
+| 流程调试 | ❌ 手写 LLM 循环 | ✅ AgentRuntime → DataProcessor → DataInspector |
+
+##### 架构设计：Orchestrator-Worker 模式
+
+采用主流的 Orchestrator-Worker 模式（Claude Code / OpenAI Agents SDK / Google ADK 同款）：
+
+```
+DataProcessor（Orchestrator + 轻量工具）
+    ├── 直接调用 modify_script（Tool）—— 简单操作，不需要独立 LLM 循环
+    ├── 直接调用 run_script（Tool）—— 简单操作
+    ├── 直接调用 query_table_data / write_table_data 等（共享 Tool）
+    └── delegate → DataInspector（Worker Agent）—— 复杂任务，独立 LLM 循环
+                    ├── profile_data
+                    ├── check_data_standards
+                    ├── check_data_quality
+                    ├── check_data_security
+                    └── handoff_back → DataProcessor 修复
+```
+
+**粒度原则**：Agent 用于复杂推理，Tool 用于简单操作。
+- `modify_script`（代码合并）/ `run_script`（沙箱执行）是简单操作 → Tool，不需要独立 Agent
+- 数据质量检查是复杂推理（决定查什么、解读结果、判断严重等级）→ Agent（Worker）
+- 如果把简单操作也做成独立 Worker，每次 modify+run 多 2 次 Agent 跳转 + 2 次额外 LLM 调用，延迟翻倍
+
+##### 关键技术：流式工具调用 + 推理过程
+
+改造前 DataProcessor 使用 `chat_with_tools()`（非流式，无推理过程），调试助手使用 `chat_stream_with_thinking()`（流式推理，无工具调用）。两者不兼容。
+
+新增 `chat_stream_with_tools_and_thinking()` 方法（`llm.py`），三合一：
+
+| 能力 | 来源 | 实现 |
+|------|------|------|
+| 流式推理（thinking） | chat_stream_with_thinking | 逐 chunk yield reasoning_content |
+| 流式正文（content） | chat_stream_with_thinking | 逐 chunk yield content |
+| 工具调用（tool_calls） | chat_with_tools | 累积 tool_call deltas，流结束后一次性 yield |
+| 长度升级 | chat_stream_with_thinking | finish_reason=length → clear_thinking → 翻倍重试 |
+| 断路器降级 | chat_stream_with_thinking | 模型失败 → 切换降级链 |
+
+##### DataProcessor 调试模式
+
+DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debug_mode"]` 时分派：
+
+| 特性 | run()（主对话流） | run_debug()（调试助手） |
+|------|-------------------|------------------------|
+| LLM 调用 | chat_with_tools()（非流式） | chat_stream_with_tools_and_thinking()（流式） |
+| 工具集 | 共享工具 + handoff_to_inspector | 共享工具 + handoff + modify_script + run_script |
+| system prompt | 通用数据处理指令 | 调试专用指令（含脚本内容、沙箱函数清单、参数记忆） |
+| 自愈 | handoff 来回（DataInspector ↔ DataProcessor） | 工具调用循环内自治（run_script 失败 → LLM 看到错误 → 自动 modify → 再 run） |
+
+##### 新增工具
+
+| 工具 | 类型 | 说明 |
+|------|------|------|
+| `modify_script` | Tool | 修改脚本代码（函数级合并 apply_partial_code）；支持 skill（文件）/ operator（DB）/ pipeline（DB）三种模式 |
+| `run_script` | Tool | 沙箱执行脚本；skill 用 subprocess，operator 用 exec()，pipeline 不支持直接执行 |
+| `handoff_to_inspector` | Tool | 交接给 DataInspector 质量检查（原有，调试模式也可用） |
+
+##### 改造前后代码量
+
+| 端点 | 改造前 | 改造后 | 说明 |
+|------|--------|--------|------|
+| `skill.py` debug-chat | ~300 行手写循环 | ~120 行 AgentRuntime 调用 | -180 行 |
+| `operator.py` debug-chat | ~180 行 | ~90 行 | -90 行 |
+| `pipeline.py` debug-chat | ~85 行 | ~95 行 | +10 行（增加事件翻译） |
+
+##### SSE 事件流
+
+```
+用户消息 → DataProcessor.run_debug()
+    ↓
+model / thinking / content（流式推理 + 正文）
+    ↓
+tool_calls → modify_script → script_updated 事件
+    ↓
+tool_calls → run_script → executing + run_result 事件
+    ↓
+tool_calls → handoff_to_inspector → agent_switch 事件
+    ↓ (AgentRuntime 自动切换)
+inspecting 事件 → DataInspector.run()
+    ↓
+thinking / content / tool_result（检查推理 + 结果）
+    ↓
+handoff_back → agent_switch → retry 事件 → DataProcessor 修复
+    ↓
+done 事件
+```
+
+前端新增事件处理：`inspecting`（🔍 DataInspector 检查中）、`retry`（🔄 修复重试）、`give_up`（⚠ 无法修复）。
+
+##### 支持的调试类型
+
+| 类型 | debug_type | 脚本存储 | 执行方式 | modify_script | run_script |
+|------|-----------|----------|----------|:---:|:---:|
+| 技能 | (默认) | 文件（folder/scripts/） | subprocess 沙箱 | ✅ 文件写入 | ✅ skill_runner |
+| 算子 | "operator" | 数据库（Operator.script_content） | exec() 沙箱 | ✅ DB 更新 | ✅ exec() + _build_operator_namespace |
+| 流程 | "pipeline" | 数据库（Pipeline.main_code） | 不支持直接执行 | ✅ DB 更新 | ❌ 返回"请使用流程执行功能" |
 
 > **已废弃**：此模块基于 DAG 节点/边的 ComposedCode 模型，代码已全部删除（codegen.py, code.py model/schema/endpoint, composed_codes 表）。功能由 §2.6 Pipeline（Python 主函数）和 §2.7 多智能体协作框架替代。以下内容仅作历史参考。
 
@@ -4541,10 +4648,10 @@ volumes:
   - 工具结果携带 `_source` 来源标记（datasource:xxx/table:yyy）
 - **理念**：借鉴 DeepAnalyze 的"防只规划不执行"和零幻觉六层防御
 
-#### Handoff 收敛检测（multi_agent.py）
+#### Handoff 收敛检测（data_harness.py → ConvergenceGuard）
 - **问题**：processor↔inspector 可能对同一问题来回踢皮球，白耗 10×12=120 次 API 调用
-- **改进**：记录 handoff 签名（to_agent, datasource_id, table_name），连续 4 次在同一张表上来回则终止
-- **理念**：借鉴 DeepAnalyze 的收敛检测思想
+- **改进**：`ConvergenceGuard` 非侵入式组件，`record()` 记录 handoff 签名（to_agent, datasource_id, table_name），`is_diverged()` 判断连续 4 次在同一张表上来回则终止；multi_agent.py 只调 3 行，不再内联签名追踪
+- **理念**：借鉴 DeepAnalyze 的收敛检测思想；流程层 Harness 非侵入式，业务代码不感知检测细节
 
 ### 11.3 上下文管理改进
 
@@ -4605,3 +4712,170 @@ volumes:
 | `backend/tests/test_experience.py` | experience 单元测试 |
 | `backend/tests/test_shared_tools.py` | shared_tools + tool_guidance 单元测试 |
 | `CLAUDE.md` | 项目级 AI 协作配置 |
+
+### 11.9 推理截断修复
+
+#### 问题
+技能/算子/流程调试助手的 AI 推理过程（thinking）被截断，用户看到推理断在中间。
+
+#### 根因
+第四轮优化"防止推理链无限拉长"时引入两个问题：
+1. `llm.py:544` 升级恢复条件含 `not has_content` 守卫——当推理长但有部分正文时**不升级重试**，推理断在中间
+2. `max_tokens=4000` 对 GLM-5.2 等推理模型太紧（推理+正文共享预算）
+3. `clear_thinking` 事件只清推理不清正文——即使升级重试也会正文重复
+
+#### 改进
+| 文件 | 改动 |
+|------|------|
+| `llm.py:544` | 去掉 `not has_content` 守卫，任何 `finish_reason=length` 都升级重试（4K→8K→16K） |
+| `skill.py:1158` | debug-chat `max_tokens` 4000→8000，给推理模型足够预算 |
+| `SkillView.vue` / `OperatorView.vue` / `PipelineView.vue` | `clear_thinking` 同时清 `content` + 重置 `thinkingDone`，防重试时正文重复 |
+
+### 11.10 debug-chat `{{}}` bug 修复
+
+#### 问题
+技能调试助手 AI 修改脚本后，`script_updated` 事件不触发，脚本写不回磁盘，报 `unhashable type: 'dict'`。
+
+#### 根因
+`skill.py:1186-1194` 存在 f-string 转义残留：`{{}}` 实际是 `{ {} }`（含空字典的集合），运行到该行抛 `TypeError: unhashable type: 'dict'`。该行在 modify_script 处理之前执行，导致 AI 的修改代码永远写不回磁盘。
+
+#### 改进
+`skill.py`：`{{}}` → `{}`，`{{"action": "run", ...}}` → `{"action": "run", ...}`（3 处）
+
+### 11.11 执行参数记忆
+
+#### 问题
+技能调试助手中，用户说"ID和时间戳没写进去"（不提数据源名），AI 改完脚本后 run action 传空参数 `{}`，技能报"缺少必要迁移参数"。经验库 `experience.json` 的 `positive` 记录了成功参数但**从未回灌给 AI**。
+
+#### 根因
+DataCrab 调试助手记忆机制有 4 层，但存在关键断点：
+- **第 1 层 对话历史**：`history[-10:]`，每条截断 500 字，不含执行参数
+- **第 2 层 执行上下文**：只反映当前输入框的值，不是历史执行参数
+- **第 3 层 经验库**：`positive` 记录了成功参数，但 `read_lessons()` 只读文本总结，不读具体参数
+- **第 4 层 错误日志**：仅用于 LLM 归纳经验
+
+#### 改进
+| 文件 | 改动 |
+|------|------|
+| `skill.py` | debug-chat system prompt 注入最近一次成功执行的参数（从 `experience.json` 的 `positive` 中取，过滤 `success: True` 的条目） |
+| `skill.py` | 兜底：run action 参数为空时自动从最近成功记录填充 |
+
+### 11.12 沙箱函数补全
+
+#### 问题
+AI 调试助手修改脚本时用了 `log("info", ...)` 函数，但 skill_runner 沙箱未注入 `log`，执行报 `NameError: 内置函数 'log' 不存在`。
+
+#### 根因
+1. 调试助手 system prompt **未声明沙箱可用函数清单**，AI 不知道 `log` 不存在
+2. `get_datasource_id_by_name` / `get_table_schema` 只有 `_dc_` 前缀版，技能不通过 `_get_builtin_func` 直接调用会找不到
+
+#### 改进
+| 文件 | 改动 |
+|------|------|
+| `skill_runner.py` | 沙箱新增 `log(level, message)` 函数 → `print(f"[{LEVEL}] {message}")`；`get_datasource_id_by_name`、`get_table_schema` 注入 builtins |
+| `skill.py` | debug-chat system prompt 引用共享 `SANDBOX_TOOLS_DOC`（prompt_docs.py），替代内联描述；`SANDBOX_TOOLS_DOC` 已标注所有函数返回类型（如 `get_table_data` 返回 dict 而非 DataFrame），修复 AI 误用导致的 `'dict' object has no attribute 'columns'` |
+
+### 11.13 自愈循环
+
+#### 问题
+调试助手执行失败后只重试 1 次（`range(2)`）就放弃，不继续修复。
+
+#### 改进
+| 文件 | 改动 |
+|------|------|
+| `skill.py` | `range(2)` → `range(5)`：最多 5 轮自愈（初始 + 4 次重试），每轮失败自动反馈错误信息给 AI 继续修 |
+| `skill.py` | 5 轮全失败后，让 AI 分析无法修复的原因，输出 `give_up` 事件 |
+| `SkillView.vue` | 新增 `retry` 事件处理（显示"🔄 第N次修复尝试"分隔符）和 `give_up` 事件处理（显示"⚠ 无法修复"原因） |
+
+### 11.14 失败检测修复
+
+#### 问题
+技能返回 `{"success": False, "error": "缺少必要迁移参数"}` 时，调试助手判定为**成功**（因为 `run_skill_script` 的 `success` 只表示"脚本没崩溃"，技能自身的 `success` 嵌在 `result` 字段里未被检查）。导致失败不触发自愈重试，还误存为正例。
+
+#### 根因
+`run_skill_script` 返回结构：
+```python
+{"success": True,           # 脚本 exit code 0（没崩溃）
+ "result": {"success": False, "error": "xxx"},  # 技能自身的返回（嵌在里面）
+ "error": None}             # runner 无错误
+```
+旧代码 `if not exec_result.get("success"):` 只检查外层，漏判技能级失败。
+
+#### 改进
+| 文件 | 改动 |
+|------|------|
+| `skill.py` | 失败判定改为两层检查：runner 级（`not success` / 有 error）+ 技能级（`result.success is False` / `result.error` 非空） |
+| `SkillView.vue` | `run_result` 显示也同步检查内层 `result.success` / `result.error` |
+
+### 11.15 调试页面集成多智能体（已完成）
+
+#### 目标
+所有调试页面（技能/算子/流程）与聊天页面一致，使用 DataProcessor + DataInspector 多智能体架构。
+
+#### 实现
+详见 §2.7.16。采用 Orchestrator-Worker 模式：
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 流式工具调用方法 | llm.py | 新增 `chat_stream_with_tools_and_thinking()`，流式推理 + 工具调用 + 长度升级三合一 |
+| DataProcessor 调试模式 | data_processor_agent.py | 新增 `modify_script`/`run_script` 工具 + `run_debug()` 流式方法 + debug 模式 system prompt + `_execute_tool` 支持 skill/operator/pipeline 三种类型 |
+| 技能 debug-chat | skill.py | 手写 LLM 循环 → AgentRuntime 调用（-180 行） |
+| 算子 debug-chat | operator.py | 同上（-90 行） |
+| 流程 debug-chat | pipeline.py | 同上 |
+| 前端事件处理 | SkillView/OperatorView/PipelineView.vue | 新增 `inspecting`/`retry`/`give_up` 事件处理 |
+
+#### 架构变化
+```
+改造前：调试页面 → 手写 LLM 循环（正则解析 action）→ 执行 → 结束
+改造后：所有页面 → AgentRuntime → DataProcessor（流式推理+工具调用）→ DataInspector
+```
+
+### 11.16 Orchestrator-Worker 粒度设计
+
+#### 设计原则
+Agent 用于复杂推理，Tool 用于简单操作。
+
+| 操作 | 复杂度 | 形态 | 原因 |
+|------|--------|------|------|
+| modify_script | 低（代码合并） | Tool | 一次函数调用，不需要 LLM 推理 |
+| run_script | 低（沙箱执行） | Tool | 执行脚本返回结果，不需要 LLM 推理 |
+| 数据质量检查 | 高（多轮推理） | Agent (Worker) | 决定查什么、解读结果、判断严重等级 |
+
+#### 参考框架
+- Claude Code：主 Agent 直接有简单工具（Read/Write/Bash），复杂任务才 spawn subagent
+- OpenAI Agents SDK：Agent = 指令 + 工具 + handoff，简单操作用工具不复用 Agent
+- DataCrab：DataProcessor 直接有 modify_script/run_script，复杂检查 delegate 给 DataInspector
+
+### 11.17 非侵入式 Harness 架构（data_harness.py）
+
+#### 问题
+流程层 Harness 逻辑（收敛检测、经验采集）散落在业务代码中，skill.py / operator.py 各自内联实现，~50 行重复代码，且文档漂移导致 bug。
+
+#### 设计原则
+数据层 Harness 保持侵入式（必须看到数据内容），流程层 Harness 非侵入式（业务代码只调一行）。
+
+| 层 | 组件 | 侵入性 | 原因 |
+|----|------|--------|------|
+| 数据层 | `get_table_data` / `write_table_data` / `inspector_tools` | 侵入式 | 必须访问数据内容、拦截写操作 |
+| 流程层 | `ConvergenceGuard` / `collect_experience` | 非侵入式 | 只需执行结果，不需感知数据细节 |
+
+#### 组件
+
+##### ConvergenceGuard
+```python
+guard = ConvergenceGuard(threshold=4)
+guard.record(to_agent, datasource_id, table_name)
+if guard.is_diverged():  # 连续 4 次同表来回
+    terminate()
+```
+multi_agent.py 从 13 行内联签名追踪 → 3 行调用。
+
+##### collect_experience
+```python
+collect_experience(base, source="debug", exec_result=result, parameters=params, script_name=name)
+# 内部自动判断：失败→记录反例，成功+有历史失败→记录正例
+```
+skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
+
+#### 理念
+借鉴 Vibe Coding 的 test harness 非侵入模式：harness 包裹在代码外部，被测代码不感知 harness 存在。数据场景特化：数据层必须侵入（状态+副作用+内容依赖），流程层可以非侵入。

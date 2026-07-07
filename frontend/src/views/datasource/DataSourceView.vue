@@ -193,7 +193,7 @@
         <div class="browse-sidebar">
           <div class="browse-sidebar-title">
             <span>数据表</span>
-            <el-button size="small" text :loading="browseLoading" @click="onBrowseOpened">
+            <el-button size="small" text :loading="browseLoading" @click="refreshCurrentTable">
               <el-icon><Refresh /></el-icon>
             </el-button>
           </div>
@@ -589,6 +589,14 @@ async function selectBrowseTable(tableName: string) {
     browseColumns.value = []
   } finally {
     browseLoading.value = false
+  }
+}
+
+async function refreshCurrentTable() {
+  if (selectedTable.value) {
+    await selectBrowseTable(selectedTable.value)
+  } else {
+    await onBrowseOpened()
   }
 }
 

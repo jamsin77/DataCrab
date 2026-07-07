@@ -182,6 +182,10 @@
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.executingMsg" class="debug-msg-executing">
+                    <el-icon class="thinking-spin"><Loading /></el-icon>
+                    <span>{{ msg.executingMsg }}</span>
+                  </div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
                       <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
@@ -491,6 +495,7 @@ interface OpChatMessage {
   scriptUpdated?: string
   runResult?: any
   model?: string
+  executingMsg?: string
 }
 const opMessages = ref<OpChatMessage[]>([])
 const opInput = ref('')
@@ -1240,7 +1245,17 @@ async function handleOpSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''
+            msg.content = ''
+            msg.thinkingOpen = true
+            thinkingDone = false
           } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
@@ -1256,15 +1271,35 @@ async function handleOpSend() {
               debugOperator.value = fresh
             } catch { /* skip */ }
           } else if (data.type === 'executing') {
-            if (!msg.thinking) msg.thinkingOpen = true
-            msg.thinking = (msg.thinking || '') + (data.message || '正在执行...') + '\n'
+            msg.executingMsg = data.message || '正在执行...'
           } else if (data.type === 'run_result') {
+            msg.executingMsg = ''
             msg.runResult = data.result
             if (!msg.content) {
               msg.content = data.result?.success ? '执行完成' : '执行失败'
             }
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'retry') {
+            msg.executingMsg = ''
+            msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'round') {
+            msg.executingMsg = ''
+            msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
+            msg.thinking = ''
+            msg.thinkingOpen = false
+            thinkingDone = false
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
           }
         } catch {
           // skip
@@ -1655,6 +1690,19 @@ onMounted(() => {
 @keyframes op-rotate {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+.debug-msg-executing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #909399;
+
+  .thinking-spin {
+    animation: op-rotate 1.2s linear infinite;
+  }
 }
 
 .debug-msg-content {

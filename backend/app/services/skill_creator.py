@@ -7,16 +7,18 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 from app.services.skill_parser import parse_skill_md, build_skill_md
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+
+
+# 加载统一技能规范（单一真相源）
+_SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
+SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
 
 SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab 数据平台创建 Skills。
 
-## Skill 定义
-Skill 是遵循 Agent Skills 开放标准的模块化能力包，包含：
-- SKILL.md：核心指令文档（YAML 元数据 + Markdown 指令）
-- scripts/：可执行 Python 脚本
-- references/：参考资料
+## 技能规范（必须严格遵守）
+
+""" + SKILL_SPEC + """
 
 ## 输出格式（严格遵守）
 你必须在一次回复中输出完整的 Skill 包内容。使用以下分隔符：
@@ -27,31 +29,6 @@ name: skill-name
 description: 技能描述
 ---
 ```
-
-⚠️ **name 命名规范（必须遵守）**：
-- name 必须是根据用户需求语义生成的有意义英文名，用短横线连接
-- 禁止使用 generate_skill、new_skill、custom_skill 等无意义通用名称
-- 命名应体现技能的核心功能，例如：
-  - 用户需求"按朝代筛选文物" → name: filter-by-dynasty
-  - 用户需求"数据缺失值填充" → name: fill-missing-values
-  - 用户需求"销售数据月度统计" → name: monthly-sales-stats
-  - 用户需求"删除重复记录" → name: remove-duplicates
-
-## SKILL.md 内容规范
-用 Markdown 编写，包含：
-1. 功能说明
-2. 使用方式
-3. 脚本说明
-4. 参数规范
-
-## scripts/*.py 规范
-- 使用 pandas 处理数据
-- 函数名和参数要有类型注解
-- 有完整的 docstring
-- 处理边界情况（空表、列不存在等）
-- 使用 print() 输出处理进度
-
-""" + SANDBOX_TOOLS_DOC + "\n\n" + SAFETY_RULES_DOC + """
 
 ## 示例 Skill 包
 
@@ -365,4 +342,36 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
         return
 
     yield {"type": "status", "message": f"解析完成：SKILL.md + {len(parsed.get('scripts', {}))} 个脚本"}
+
+    # 脚本验证：AST 语法检查 + _strip_main_block 检查
+    yield {"type": "status", "message": "正在验证脚本..."}
+    import ast as _ast
+    import re as _re
+    _warnings = []
+    for _sname, _scontent in parsed.get("scripts", {}).items():
+        # AST 语法验证
+        try:
+            _ast.parse(_scontent)
+        except SyntaxError as _se:
+            yield {"type": "error", "message": f"脚本 {_sname} 语法错误（第{_se.lineno}行）: {_se.msg}"}
+            return
+        # 检查函数是否在 if __name__ 之后（会被 _strip_main_block 删除）
+        _if_match = _re.search(r'\nif\s+__name__\s*==\s*["\']__main__["\']\s*:', _scontent)
+        if _if_match:
+            _after = _scontent[_if_match.end():]
+            if _re.search(r'^\s*def\s+', _after, _re.MULTILINE):
+                _w = f"脚本 {_sname} 有函数定义在 if __name__ 之后，执行时会被自动删除导致 NameError"
+                _warnings.append(_w)
+                yield {"type": "warning", "message": _w}
+        # 检查是否有 main 入口函数
+        if not _re.search(r'^def\s+main\s*\(', _scontent, _re.MULTILINE):
+            _w = f"脚本 {_sname} 未找到 main() 入口函数"
+            _warnings.append(_w)
+            yield {"type": "warning", "message": _w}
+
+    if _warnings:
+        yield {"type": "status", "message": f"验证完成：{len(_warnings)} 个警告（技能已生成，建议在调试助手中修复）"}
+    else:
+        yield {"type": "status", "message": "验证通过，脚本符合规范"}
+
     yield {"type": "done", "data": parsed}
