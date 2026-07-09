@@ -2,7 +2,12 @@
   <div class="metadata-page">
     <!-- 左侧：按数据源浏览 -->
     <div class="ds-sidebar">
-      <div class="ds-sidebar-title">数据源</div>
+      <div class="ds-sidebar-title">
+        <span>数据源</span>
+        <el-button size="small" text :loading="dsLoading" @click="loadDatasources">
+          <el-icon><Refresh /></el-icon>
+        </el-button>
+      </div>
       <div class="ds-item" :class="{ active: !filterDataSource }" @click="selectDataSource('')">
         <el-icon><Files /></el-icon>
         <span>全部数据源</span>
@@ -163,7 +168,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { Search, CircleCheckFilled, Files, Connection } from '@element-plus/icons-vue'
+import { Search, CircleCheckFilled, Files, Connection, Refresh } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
 
@@ -180,11 +185,15 @@ const editForm = reactive<any>({})
 const saving = ref(false)
 const enriching = ref(false)
 const syncing = ref(false)
+const dsLoading = ref(false)
 
 async function loadDatasources() {
+  dsLoading.value = true
   try {
     datasources.value = await api.get('/datasources')
-  } catch {}
+  } catch {} finally {
+    dsLoading.value = false
+  }
 }
 
 function selectDataSource(id: string) {
@@ -313,7 +322,7 @@ onMounted(() => {
 <style scoped>
 .metadata-page { display: flex; gap: 16px; padding: 16px; }
 .ds-sidebar { width: 220px; flex-shrink: 0; background: #fff; border: 1px solid #ebeef5; border-radius: 6px; overflow-y: auto; max-height: calc(100vh - 90px); }
-.ds-sidebar-title { padding: 10px 12px; font-weight: 600; font-size: 13px; color: #303133; border-bottom: 1px solid #ebeef5; background: #fafafa; }
+.ds-sidebar-title { padding: 10px 12px; font-weight: 600; font-size: 13px; color: #303133; border-bottom: 1px solid #ebeef5; background: #fafafa; display: flex; align-items: center; justify-content: space-between; }
 .ds-item { display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 13px; color: #606266; border-bottom: 1px solid #f5f5f5; transition: background 0.15s; }
 .ds-item .ds-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-item:hover { background: #f5f7fa; }

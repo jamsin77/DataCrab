@@ -365,6 +365,24 @@ def migrate_data(
             elif isinstance(item, str):
                 temp_add[item] = None
         add_columns = temp_add
+
+    # 修复点：兼容 add_columns 值为 dict（如 {"value": "xxx"} 或 {"value": "lambda ..."}）的情况
+    if isinstance(add_columns, dict):
+        cleaned_add = {}
+        for k, v in add_columns.items():
+            if isinstance(v, dict) and 'value' in v:
+                val = v['value']
+                # 如果是 lambda 字符串，无法执行，设为 None 让自动逻辑处理
+                if isinstance(val, str) and 'lambda' in val:
+                    cleaned_add[k] = None
+                else:
+                    cleaned_add[k] = val
+            elif isinstance(v, str) and 'lambda' in v:
+                cleaned_add[k] = None
+            else:
+                cleaned_add[k] = v
+        add_columns = cleaned_add
+
     if add_columns is None:
         add_columns = {}
 
@@ -498,6 +516,20 @@ def migrate_data(
                     id_values = [_generate_id(i + 1) for i in range(len(df))]
                     df[col_name] = id_values
                     print(f"    🆔 ID列 '{col_name}' 生成 {len(df)} 个8位补零序号 (示例: {id_values[0]} ~ {id_values[-1]})")
+                # ===== 省份列：从地址中提取省份 =====
+                elif col_name == "省份" or _smart_translate(col_name) == "province":
+                    # 找到地址列（可能是中文"地址"或英文"address"）
+                    address_col = None
+                    for c in df.columns:
+                        if c == "地址" or c == "address" or _smart_translate(c) == "address":
+                            address_col = c
+                            break
+                    if address_col:
+                        df[col_name] = df[address_col].apply(lambda x: _extract_province(str(x)) if pd.notna(x) else "")
+                        print(f"    📍 省份列 '{col_name}' 从地址列 '{address_col}' 提取完成 (示例: {df[col_name].iloc[0]})")
+                    else:
+                        df[col_name] = ""
+                        print(f"    ⚠️ 未找到地址列，省份列 '{col_name}' 设为空")
                 # ===== 普通常量列 =====
                 else:
                     df[col_name] = col_value
@@ -545,8 +577,6 @@ def migrate_data(
     if "column_remarks" in write_supported_params and column_remarks:
         write_extra_kwargs["column_remarks"] = column_remarks
     if "if_table_exists" in write_supported_params:
-        # 对于 overwrite 策略，传递原始值给 write_table_data
-        # 在 _write_records 中会针对分批写入做特殊处理
         write_extra_kwargs["if_table_exists"] = if_table_exists
     if write_extra_kwargs:
         print(f"  📝 附加写入参数: {list(write_extra_kwargs.keys())}")
@@ -554,14 +584,15 @@ def migrate_data(
     def _write_records(records, t_name):
         total_written = 0
         original_if_exists = write_extra_kwargs.get("if_table_exists", "fail")
+        clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows", "delete_append"}
         for i in range(0, len(records), batch_size):
             batch_num = i // batch_size + 1
             batch = records[i:i + batch_size]
             print(f"  📦 批次 {batch_num}: 写入 {len(batch)} 行...")
 
-            # 对于 overwrite 策略：第一批覆盖写入（清空+写入），后续批次追加写入
+            # 对于清空策略：第一批用原策略清空+写入，后续批次用 append
             current_kwargs = dict(write_extra_kwargs)
-            if original_if_exists == "overwrite" and batch_num > 1:
+            if original_if_exists in clearing_strategies and batch_num > 1:
                 current_kwargs["if_table_exists"] = "append"
                 print(f"    📝 后续批次使用 append 策略")
 
@@ -715,6 +746,7 @@ def main(**kwargs):
     系统会注入用户参数，直接传递给 migrate_data 执行迁移。
     如果无参数，则运行自测。
     """
+    print("debug start")
     print(f"\n{'=' * 60}")
     print(f"📥 main() 被调用，收到参数: {kwargs}")
     print(f"{'=' * 60}\n")
@@ -775,3 +807,68 @@ def main(**kwargs):
 
 if __name__ == "__main__":
     main()
+
+
+def _extract_province(address: str) -> str:
+    """从中文地址中提取省份/自治区/直辖市/特别行政区。
+    
+    支持的格式：
+    - XX省（如：广东省、湖南省）
+    - XX自治区（如：广西壮族自治区、西藏自治区、新疆维吾尔自治区、内蒙古自治区、宁夏回族自治区）
+    - XX市（直辖市：北京市、上海市、天津市、重庆市）
+    - XX特别行政区（如：香港特别行政区、澳门特别行政区）
+    """
+    if not address or not isinstance(address, str):
+        return ""
+    address = address.strip()
+    
+    # 直辖市列表
+    municipalities = ["北京市", "上海市", "天津市", "重庆市"]
+    for m in municipalities:
+        if address.startswith(m):
+            return m
+    
+    # 特别行政区
+    if "特别行政区" in address:
+        for sar in ["香港特别行政区", "澳门特别行政区"]:
+            if address.startswith(sar):
+                return sar
+        # 简写情况
+        if address.startswith("香港"):
+            return "香港特别行政区"
+        if address.startswith("澳门"):
+            return "澳门特别行政区"
+    
+    # 自治区（按名称长度从长到短匹配，避免"广西"匹配到"西"）
+    autonomous_regions = [
+        "广西壮族自治区", "新疆维吾尔自治区", "宁夏回族自治区", 
+        "内蒙古自治区", "西藏自治区"
+    ]
+    for ar in autonomous_regions:
+        if address.startswith(ar):
+            return ar
+    # 自治区简写
+    ar_short = {
+        "广西": "广西壮族自治区",
+        "新疆": "新疆维吾尔自治区",
+        "宁夏": "宁夏回族自治区",
+        "内蒙古": "内蒙古自治区",
+        "西藏": "西藏自治区",
+    }
+    for short, full in ar_short.items():
+        if address.startswith(short):
+            return full
+    
+    # 普通省份：匹配 "XX省"
+    import re
+    match = re.match(r'^([\u4e00-\u9fa5]{2,4})省', address)
+    if match:
+        return match.group(1) + "省"
+    
+    # 如果以上都没匹配到，尝试取第一个到"省"字为止
+    if "省" in address:
+        idx = address.index("省")
+        return address[:idx + 1]
+    
+    # 无法识别，返回空
+    return ""

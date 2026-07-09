@@ -309,6 +309,7 @@ async def sync_datasource_metadata(
 
     connector = get_connector(ds.type, ds.connection_config or {})
     synced_count = 0
+    current_table_names = set()
 
     try:
         schema_list = await connector.get_schema()
@@ -317,6 +318,8 @@ async def sync_datasource_metadata(
             table_name = table_info.get("table_name", "")
             if not table_name:
                 continue
+
+            current_table_names.add(table_name)
 
             try:
                 df_sample = await connector.get_table_data(table_name, page=1, page_size=5)
@@ -402,6 +405,20 @@ async def sync_datasource_metadata(
                 logger.warning(f"同步表 [{table_name}] 写入失败: {e}")
 
         await db.flush()
+
+        # 删除数据源中已不存在的表的元数据
+        if current_table_names:
+            stale_result = await db.execute(
+                select(TableMetadata).where(
+                    TableMetadata.data_source_id == ds.id,
+                    ~TableMetadata.table_name.in_(current_table_names),
+                )
+            )
+            stale_metas = stale_result.scalars().all()
+            for stale in stale_metas:
+                await db.delete(stale)
+            if stale_metas:
+                logger.info(f"数据源 [{ds.name}] 清理过期元数据: {len(stale_metas)} 张表")
     finally:
         await connector.close()
 

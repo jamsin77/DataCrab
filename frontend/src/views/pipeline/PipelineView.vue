@@ -892,21 +892,36 @@ async function handleDebugSend() {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           } else if (data.type === 'inspecting') {
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'retry') {
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'round') {
             msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
+          } else if (data.type === 'fatal') {
+            const issues = data.issues || []
+            let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              fatalText += `\n- [FATAL] ${issue.description || ''}`
+              if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
+            }
+            msg.content += fatalText
+          } else if (data.type === 'warning_confirmation') {
+            const issues = data.issues || []
+            let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              warnText += `\n- [WARNING] ${issue.description || ''}`
+              if (issue.column) warnText += ` (列: ${issue.column})`
+              if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
+            }
+            warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+            msg.content += warnText
           }
         } catch { /* skip */ }
       }
@@ -1183,6 +1198,7 @@ onMounted(() => {
       word-break: break-word;
       overflow-wrap: break-word;
       max-width: 85%;
+      width: fit-content;
     }
   }
 
@@ -1203,7 +1219,8 @@ onMounted(() => {
 }
 
 .debug-msg-avatar { flex-shrink: 0; }
-.debug-msg-body { min-width: 0; max-width: 100%; overflow: hidden; }
+.debug-msg-body { flex: 1; min-width: 0; max-width: 100%; overflow: hidden; }
+.debug-message.user .debug-msg-body { display: flex; flex-direction: column; align-items: flex-end; }
 
 .debug-msg-thinking {
   margin-bottom: 8px;

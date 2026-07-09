@@ -39,7 +39,7 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（Data
 1. 检查时优先使用 profile_data 获取数据概览，再针对性检查
 2. 发现问题必须给出：问题描述、严重等级、影响范围、修复建议
 3. 对修复后的数据必须再次检查确认
-4. 严重等级：info < warning < error < critical
+4. 严重等级：info < warning < error < critical < fatal
 5. 检查依据下方「数据标准库」和「数据质量库」，命中后在问题中标注对应 STD-xxx / DQ-xxx 编号
 6. 格式类标准（正则/校验位）用确定性逻辑执行；跨表/ETL 对数用 SQL 聚合；语义类用 LLM 判断
 
@@ -49,8 +49,10 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（Data
 - **安全检查**：PII识别、敏感数据暴露、脱敏完整性
 
 ## 交接规则
-- 发现问题时，使用 handoff_to_processor 交接给数据处理智能体修复
-- 所有问题已修复时，返回检查通过结果
+- 发现 `fatal` 问题（违反法律法规）：**不要**交接修复，直接在内容中说明违法风险并停止
+- 发现 `error` 或 `critical` 问题：使用 handoff_to_processor 交接给数据处理智能体**自动修复**
+- 仅发现 `warning` 问题：在内容中列出问题，说明由用户决定是否修复，不要交接
+- 所有问题已修复或无问题时，返回检查通过结果
 """
 
 DATA_INSPECTOR_TOOLS = [
@@ -157,7 +159,7 @@ DATA_INSPECTOR_TOOLS = [
                             "type": "object",
                             "properties": {
                                 "description": {"type": "string", "description": "问题描述"},
-                                "severity": {"type": "string", "enum": ["warning", "error", "critical"]},
+                                "severity": {"type": "string", "enum": ["warning", "error", "critical", "fatal"]},
                                 "column": {"type": "string", "description": "涉及列名"},
                                 "suggestion": {"type": "string", "description": "修复建议"},
                             },
@@ -170,10 +172,6 @@ DATA_INSPECTOR_TOOLS = [
         },
     },
 ]
-
-# 输出长度升级链（S）
-_OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
-
 
 class DataInspectorAgent(BaseAgent):
     name = "data_inspector"
@@ -210,6 +208,7 @@ class DataInspectorAgent(BaseAgent):
         message: AgentMessage,
         context: Dict[str, Any],
     ) -> AsyncGenerator[Dict, None]:
+        """流式推理 + 工具调用，推理过程实时展示给用户。"""
         db = context.get("db")
         user_id = context.get("user_id")
 
@@ -269,27 +268,37 @@ class DataInspectorAgent(BaseAgent):
 
         had_any_tool_calls = False
         pressure_warned = False
-        output_token_idx = 0
+
+        yield {"type": "model", "content": llm_manager.pick_model(inspect_msg or "数据检查")}
 
         for i in range(max_iterations):
-            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
-            response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
-            )
-            tool_calls = response.get("tool_calls", [])
-            finish_reason = response.get("finish_reason")
+            content = ""
+            tool_calls = []
+            finish_reason = None
+            clear_thinking = False
 
-            # 输出长度升级（S）
-            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
-                output_token_idx += 1
-                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
-                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
-                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
-                continue
+            async for event in llm_manager.chat_stream_with_tools_and_thinking(
+                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=8000,
+            ):
+                t = event["type"]
+                if t == "thinking":
+                    yield event
+                elif t == "content":
+                    content += event["content"]
+                    yield event
+                elif t == "tool_calls":
+                    tool_calls = event["tool_calls"]
+                elif t == "finish":
+                    finish_reason = event["finish_reason"]
+                elif t == "clear_thinking":
+                    yield event
+                    clear_thinking = True
+                    content = ""
+
+            if clear_thinking:
+                continue  # 长度升级，重试
 
             if not tool_calls:
-                content = response.get("content", "")
-
                 # 反幻觉：防"只规划不执行"（K）
                 if is_planning_only(content) and i == 0:
                     local_messages.append({"role": "assistant", "content": content})
@@ -328,10 +337,6 @@ class DataInspectorAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            content = response.get("content") or ""
-            if content:
-                yield {"type": "content", "content": content}
-
             local_messages.append({
                 "role": "assistant",
                 "content": content,
@@ -346,14 +351,34 @@ class DataInspectorAgent(BaseAgent):
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        yield {
-                            "type": "handoff",
-                            "to": result_data["to"],
-                            "reason": result_data["reason"],
-                            "payload": result_data.get("payload", {}),
-                            "from": self.name,
-                        }
-                        return
+                        issues = result_data.get("payload", {}).get("issues", [])
+                        summary = result_data.get("payload", {}).get("summary", "")
+                        has_fatal = any(i.get("severity") == "fatal" for i in issues)
+                        has_auto_fix = any(i.get("severity") in ("error", "critical") for i in issues)
+
+                        if has_fatal:
+                            fatal_issues = [i for i in issues if i.get("severity") == "fatal"]
+                            yield {"type": "fatal", "issues": fatal_issues, "summary": summary}
+                            if content:
+                                yield {"type": "content", "content": content}
+                            yield {"type": "done", "result": {"agent": self.name, "content": "发现致命问题（违反法律法规），已停止处理"}}
+                            return
+                        elif not has_auto_fix:
+                            yield {"type": "warning_confirmation", "issues": issues, "summary": summary}
+                            if content:
+                                yield {"type": "content", "content": content}
+                            yield {"type": "done", "result": {"agent": self.name, "content": "仅发现警告问题，等待用户确认是否修复"}}
+                            return
+                        else:
+                            # error/critical → 自动修复
+                            yield {
+                                "type": "handoff",
+                                "to": result_data["to"],
+                                "reason": result_data["reason"],
+                                "payload": result_data.get("payload", {}),
+                                "from": self.name,
+                            }
+                            return
                 except (json.JSONDecodeError, AttributeError):
                     pass
 

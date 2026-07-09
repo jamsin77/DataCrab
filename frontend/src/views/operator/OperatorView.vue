@@ -267,24 +267,26 @@
           />
         </el-form-item>
       </el-form>
-      <div v-if="generateThinking || generateContent || generatePhase" class="ai-process-box">
-        <div v-if="generatePhase" class="ai-phase">
-          <el-icon class="phase-spin"><Loading /></el-icon>
-          <span>{{ generatePhase }}</span>
-        </div>
-        <div v-if="generateThinking" class="ai-thinking">
-          <div class="thinking-header">
-            <el-icon><Cpu /></el-icon>
-            <span>推理过程</span>
+      <div v-if="genMessages.length" class="gen-msg-list">
+        <div v-for="(msg, idx) in genMessages" :key="idx" class="debug-message" :class="msg.role">
+          <div class="debug-msg-avatar">
+            <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
-          <div class="thinking-body">{{ generateThinking }}</div>
-        </div>
-        <div v-if="generateContent" class="ai-code-preview">
-          <div class="code-preview-header">
-            <el-icon><Document /></el-icon>
-            <span>生成的代码</span>
+          <div class="debug-msg-body">
+            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <div v-else class="debug-msg-assistant">
+              <div v-if="msg.thinking" class="debug-msg-thinking">
+                <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                  <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
+                  <span>推理过程</span>
+                </div>
+                <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
+              </div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="generating && idx === genMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
+            </div>
           </div>
-          <pre class="code-preview-body">{{ generateContent }}</pre>
         </div>
       </div>
       <template #footer>
@@ -318,24 +320,26 @@
           />
         </el-form-item>
       </el-form>
-      <div v-if="modifyThinking || modifyContent || modifyPhase" class="ai-process-box">
-        <div v-if="modifyPhase" class="ai-phase">
-          <el-icon class="phase-spin"><Loading /></el-icon>
-          <span>{{ modifyPhase }}</span>
-        </div>
-        <div v-if="modifyThinking" class="ai-thinking">
-          <div class="thinking-header">
-            <el-icon><Cpu /></el-icon>
-            <span>推理过程</span>
+      <div v-if="modifyMessages.length" class="gen-msg-list">
+        <div v-for="(msg, idx) in modifyMessages" :key="idx" class="debug-message" :class="msg.role">
+          <div class="debug-msg-avatar">
+            <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
-          <div class="thinking-body">{{ modifyThinking }}</div>
-        </div>
-        <div v-if="modifyContent" class="ai-code-preview">
-          <div class="code-preview-header">
-            <el-icon><Document /></el-icon>
-            <span>修改后的代码</span>
+          <div class="debug-msg-body">
+            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <div v-else class="debug-msg-assistant">
+              <div v-if="msg.thinking" class="debug-msg-thinking">
+                <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                  <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
+                  <span>推理过程</span>
+                </div>
+                <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
+              </div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
+            </div>
           </div>
-          <pre class="code-preview-body">{{ modifyContent }}</pre>
         </div>
       </div>
       <template #footer>
@@ -778,33 +782,25 @@ function categoryColor(cat: string) {
 const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
-const generateThinking = ref('')
-const generateContent = ref('')
-const generatePhase = ref('')
+const genMessages = ref<any[]>([])
 let generateAbortController: AbortController | null = null
 
 const showModifyDialog = ref(false)
 const modifyTarget = ref<any>(null)
 const modifyInstruction = ref('')
 const modifying = ref(false)
-const modifyThinking = ref('')
-const modifyContent = ref('')
-const modifyPhase = ref('')
+const modifyMessages = ref<any[]>([])
 let modifyAbortController: AbortController | null = null
 
 function onGenerateDialogClosed() {
   generatePrompt.value = ''
-  generateThinking.value = ''
-  generateContent.value = ''
-  generatePhase.value = ''
+  genMessages.value = []
 }
 
 function onModifyDialogClosed() {
   modifyInstruction.value = ''
   modifyTarget.value = null
-  modifyThinking.value = ''
-  modifyContent.value = ''
-  modifyPhase.value = ''
+  modifyMessages.value = []
 }
 
 async function handleGenerate() {
@@ -813,11 +809,12 @@ async function handleGenerate() {
     return
   }
   generating.value = true
-  generateThinking.value = ''
-  generateContent.value = ''
-  generatePhase.value = ''
+  genMessages.value = []
+  const userText = generatePrompt.value.trim()
+  genMessages.value.push({ role: 'user', content: userText })
+  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
   generateAbortController = new AbortController()
-  pushGenericHistory(generateHistory, generateHistoryIdx, generatePrompt.value, 'generate')
+  pushGenericHistory(generateHistory, generateHistoryIdx, userText, 'generate')
 
   try {
     const token = localStorage.getItem('access_token')
@@ -827,7 +824,7 @@ async function handleGenerate() {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ prompt: generatePrompt.value.trim() }),
+      body: JSON.stringify({ prompt: userText }),
       signal: generateAbortController.signal,
     })
 
@@ -839,6 +836,7 @@ async function handleGenerate() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -852,29 +850,39 @@ async function handleGenerate() {
         if (!trimmed.startsWith('data: ')) continue
         try {
           const data = JSON.parse(trimmed.slice(6))
+          const msg = genMessages.value[genMessages.value.length - 1]
           if (data.type === 'thinking') {
-            generateThinking.value += data.content
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
-            generateContent.value += data.content
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += data.content
           } else if (data.type === 'phase') {
-            generatePhase.value = data.message
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += (msg.content ? '\n' : '') + `**[${data.message}]**`
           } else if (data.type === 'done') {
             const op = data.operator
+            msg.content += (msg.content ? '\n\n' : '') + `✅ 算子 "${op.display_name || op.name}" 已生成`
             ElMessage.success(`算子 "${op.display_name || op.name}" 已生成`)
             showGenerateDialog.value = false
             await loadOperators()
             setTimeout(() => openDebug(op), 300)
           } else if (data.type === 'error') {
+            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || '生成失败'}`
             ElMessage.error(data.content || '生成失败')
           }
         } catch { /* skip */ }
       }
     }
   } catch (e: any) {
-    if (e.name === 'AbortError') {
-      ElMessage.info('已取消生成')
-    } else {
-      ElMessage.error(e.message || '生成失败')
+    const msg = genMessages.value[genMessages.value.length - 1]
+    if (msg) {
+      if (e.name === 'AbortError') {
+        msg.content += '\n\n*[已取消生成]*'
+      } else {
+        msg.content += `\n\n❌ ${e.message || '生成失败'}`
+      }
     }
   } finally {
     generating.value = false
@@ -901,11 +909,11 @@ async function handleModify() {
   }
   if (!modifyTarget.value) return
   modifying.value = true
-  modifyThinking.value = ''
-  modifyContent.value = ''
-  modifyPhase.value = ''
+  const userText = modifyInstruction.value.trim()
+  modifyMessages.value.push({ role: 'user', content: userText })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
   modifyAbortController = new AbortController()
-  pushGenericHistory(modifyHistory, modifyHistoryIdx, modifyInstruction.value, 'modify')
+  pushGenericHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
 
   try {
     const token = localStorage.getItem('access_token')
@@ -915,7 +923,7 @@ async function handleModify() {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ instruction: modifyInstruction.value.trim() }),
+      body: JSON.stringify({ instruction: userText }),
       signal: modifyAbortController.signal,
     })
 
@@ -927,6 +935,7 @@ async function handleModify() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -940,30 +949,40 @@ async function handleModify() {
         if (!trimmed.startsWith('data: ')) continue
         try {
           const data = JSON.parse(trimmed.slice(6))
+          const msg = modifyMessages.value[modifyMessages.value.length - 1]
           if (data.type === 'thinking') {
-            modifyThinking.value += data.content
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
-            modifyContent.value += data.content
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += data.content
           } else if (data.type === 'phase') {
-            modifyPhase.value = data.message
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += (msg.content ? '\n' : '') + `**[${data.message}]**`
           } else if (data.type === 'done') {
             const op = data.operator
+            msg.content += (msg.content ? '\n\n' : '') + `✅ 算子 "${op.display_name || op.name}" 已修改`
             ElMessage.success(`算子 "${op.display_name || op.name}" 已修改`)
             showModifyDialog.value = false
             modifyTarget.value = null
             await loadOperators()
             setTimeout(() => openDebug(op), 300)
           } else if (data.type === 'error') {
+            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || '修改失败'}`
             ElMessage.error(data.content || '修改失败')
           }
         } catch { /* skip */ }
       }
     }
   } catch (e: any) {
-    if (e.name === 'AbortError') {
-      ElMessage.info('已取消修改')
-    } else {
-      ElMessage.error(e.message || '修改失败')
+    const msg = modifyMessages.value[modifyMessages.value.length - 1]
+    if (msg) {
+      if (e.name === 'AbortError') {
+        msg.content += '\n\n*[已取消修改]*'
+      } else {
+        msg.content += `\n\n❌ ${e.message || '修改失败'}`
+      }
     }
   } finally {
     modifying.value = false
@@ -1283,23 +1302,38 @@ async function handleOpSend() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'round') {
             msg.executingMsg = ''
             msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
+          } else if (data.type === 'fatal') {
+            const issues = data.issues || []
+            let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              fatalText += `\n- [FATAL] ${issue.description || ''}`
+              if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
+            }
+            msg.content += fatalText
+          } else if (data.type === 'warning_confirmation') {
+            const issues = data.issues || []
+            let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              warnText += `\n- [WARNING] ${issue.description || ''}`
+              if (issue.column) warnText += ` (列: ${issue.column})`
+              if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
+            }
+            warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+            msg.content += warnText
           }
         } catch {
           // skip
@@ -1620,6 +1654,7 @@ onMounted(() => {
       word-break: break-word;
       overflow-wrap: break-word;
       max-width: 85%;
+      width: fit-content;
     }
   }
 
@@ -1645,9 +1680,16 @@ onMounted(() => {
 }
 
 .debug-msg-body {
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+}
+
+.debug-message.user .debug-msg-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .debug-msg-thinking {

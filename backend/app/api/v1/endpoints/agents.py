@@ -149,7 +149,7 @@ async def inspect_data(
             logger.error(f"check_data_security 失败: {e}")
             results["security"] = {"error": str(e)}
 
-    severity_order = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+    severity_order = {"fatal": 0, "critical": 1, "error": 2, "warning": 3, "info": 4}
     max_severity = "info"
     if all_issues:
         severities = [i.get("severity", "info") for i in all_issues]

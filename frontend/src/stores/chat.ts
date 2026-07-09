@@ -9,6 +9,7 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false)
   const streamingContent = ref('')
   const streamingReasoning = ref('')
+  const currentModel = ref('')
   let abortController: AbortController | null = null
 
   async function fetchSessions() {
@@ -64,12 +65,27 @@ export const useChatStore = defineStore('chat', () => {
     }
     messages.value.push(userMessage)
 
+    // 提前创建 assistant 消息（和技能调试一样），流式事件直接更新它
+    const assistantMessage: ChatMessage = {
+      id: `temp-ai-${Date.now()}`,
+      session_id: currentSessionId.value!,
+      role: 'assistant',
+      content: '',
+      reasoning: undefined,
+      model: undefined,
+      code_blocks: null,
+      table_data: null,
+      charts: null,
+      created_at: new Date().toISOString(),
+    }
+    messages.value.push(assistantMessage)
+    const aiIndex = messages.value.length - 1
+
     isStreaming.value = true
     streamingContent.value = ''
     streamingReasoning.value = ''
 
     abortController = new AbortController()
-    let aiIndex = -1
 
     try {
       await chatApi.sendMessageStream(
@@ -77,61 +93,38 @@ export const useChatStore = defineStore('chat', () => {
         content,
         abortController.signal,
         (event: StreamEvent) => {
-          if (event.type === 'reasoning' && event.content) {
-            streamingReasoning.value += event.content
+          const msg = messages.value[aiIndex]
+          if (!msg) return
+
+          if (event.type === 'error') {
+            msg.content = (msg.content || '') + `\n\n❌ ${event.content || '未知错误'}`
+            return
+          }
+          if (event.type === 'model') {
+            msg.model = event.content || ''
+            currentModel.value = event.content || ''
+            return
+          }
+          if ((event.type === 'reasoning' || event.type === 'thinking') && event.content) {
+            msg.reasoning = (msg.reasoning || '') + event.content
+            streamingReasoning.value = msg.reasoning || ''
           } else if (event.type === 'content' && event.content) {
-            streamingContent.value += event.content
-            if (aiIndex < 0) {
-              const assistantMessage: ChatMessage = {
-                id: `temp-ai-${Date.now()}`,
-                session_id: currentSessionId.value!,
-                role: 'assistant',
-                content: streamingContent.value,
-                reasoning: streamingReasoning.value || undefined,
-                code_blocks: null,
-                table_data: null,
-                charts: null,
-                created_at: new Date().toISOString(),
-              }
-              messages.value.push(assistantMessage)
-              aiIndex = messages.value.length - 1
-            } else {
-              messages.value[aiIndex] = {
-                ...messages.value[aiIndex],
-                content: streamingContent.value,
-                reasoning: streamingReasoning.value || undefined,
-              }
-            }
+            msg.content = (msg.content || '') + event.content
+            streamingContent.value = msg.content
           }
         }
       )
+      // 流式结束后从 DB 刷新（同步历史，避免 temp ID 残留）
       messages.value = await chatApi.listMessages(currentSessionId.value!)
     } catch (e: any) {
-      if (e.name === 'AbortError') {
-        if (aiIndex >= 0 && streamingContent.value) {
-          messages.value[aiIndex] = {
-            ...messages.value[aiIndex],
-            content: streamingContent.value + '\n\n*[已停止生成]*',
-          }
-        }
-      } else {
-        if (aiIndex >= 0) {
-          messages.value[aiIndex] = {
-            ...messages.value[aiIndex],
-            content: `请求出错: ${e.message}`,
+      const msg = messages.value[aiIndex]
+      if (msg) {
+        if (e.name === 'AbortError') {
+          if (msg.content) {
+            msg.content += '\n\n*[已停止生成]*'
           }
         } else {
-          const errorMessage: ChatMessage = {
-            id: `temp-err-${Date.now()}`,
-            session_id: currentSessionId.value!,
-            role: 'assistant',
-            content: `请求出错: ${e.message}`,
-            code_blocks: null,
-            table_data: null,
-            charts: null,
-            created_at: new Date().toISOString(),
-          }
-          messages.value.push(errorMessage)
+          msg.content = (msg.content || '') + `\n\n❌ 请求出错: ${e.message}`
         }
       }
     } finally {
@@ -157,6 +150,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     streamingContent,
     streamingReasoning,
+    currentModel,
     fetchSessions,
     createSession,
     switchSession,

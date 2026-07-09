@@ -177,6 +177,17 @@ async def create_pipeline_from_skill(
 
     logger.info(f"从 Skill 生成 Pipeline: {skill.name} ({skill_id})")
 
+    from app.services.skill_parser import read_skill_md
+    from pathlib import Path
+    import re as _re
+    skill_md = read_skill_md(Path(skill.skill_path)) or ""
+    func_desc = ""
+    func_match = _re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, _re.DOTALL)
+    if func_match:
+        func_desc = func_match.group(1).strip()[:1000]
+    if not func_desc:
+        func_desc = skill.description or ""
+
     try:
         built = await build_pipeline_from_skill(
             skill_path_str=skill.skill_path,
@@ -194,7 +205,7 @@ async def create_pipeline_from_skill(
         id=uuid4(),
         name=f"pl_{skill.name}",
         display_name=display_name,
-        description=skill.description,
+        description=func_desc,
         main_code=built["main_code"],
         entry_function=built.get("entry_function", "main"),
         parameters=built.get("parameters", []),
@@ -241,6 +252,15 @@ async def create_pipeline_from_skill_stream(
         name = script_info["name"] if isinstance(script_info, dict) else script_info
         content = script_info.get("content") if isinstance(script_info, dict) else read_skill_script(skill_path, script_info)
         scripts[name] = content
+
+    # 从 SKILL.md 提取功能说明，作为流程备注
+    import re as _re
+    func_desc = ""
+    func_match = _re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, _re.DOTALL)
+    if func_match:
+        func_desc = func_match.group(1).strip()[:1000]
+    if not func_desc:
+        func_desc = skill.description or ""
 
     scripts_text = ""
     for name, content in scripts.items():
@@ -290,7 +310,7 @@ async def create_pipeline_from_skill_stream(
                 id=uuid4(),
                 name=f"pl_{skill.name}",
                 display_name=display_name,
-                description=skill.description,
+                description=func_desc,
                 main_code=built["main_code"],
                 entry_function=built.get("entry_function", "main"),
                 parameters=built.get("parameters", []),
@@ -457,7 +477,6 @@ async def debug_pipeline_chat(
                         evt = None
                     if evt:
                         yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'clear_thinking', 'content': ''}, ensure_ascii=False)}\n\n"
                 elif t == "done":
                     pass
                 else:

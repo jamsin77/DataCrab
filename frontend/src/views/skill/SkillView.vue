@@ -130,28 +130,31 @@
             v-model="generatePrompt"
             type="textarea"
             :rows="5"
-            placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条"
+            placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条（↑↓ 切换历史输入）"
             :disabled="generating"
+            @keydown="onGenHistoryKey"
           />
         </el-form-item>
       </el-form>
 
-      <div v-if="generating || genLog.length" class="gen-process">
-        <div class="gen-process-header" @click="genLogCollapsed = !genLogCollapsed">
-          <span>{{ generating ? '生成中...' : '生成完成' }}</span>
-          <el-icon :class="{ 'gen-collapse-icon': true, 'gen-collapse-rotated': !genLogCollapsed }"><ArrowDown /></el-icon>
-        </div>
-        <div v-show="!genLogCollapsed" class="gen-process-body">
-          <div v-if="genStatusText" class="gen-status-line">
-            <el-icon class="gen-spin"><Loading /></el-icon> {{ genStatusText }}
+      <div v-if="genMessages.length" class="gen-msg-list" ref="genMsgListRef">
+        <div v-for="(msg, idx) in genMessages" :key="idx" class="debug-message" :class="msg.role">
+          <div class="debug-msg-avatar">
+            <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
-          <div class="gen-log-scroll" ref="genLogRef">
-            <div v-for="(line, idx) in genLog" :key="idx" class="gen-log-line" :class="'gen-log-' + line.type">
-              <span v-if="line.type === 'status'" class="gen-log-label">[状态]</span>
-              <span v-else-if="line.type === 'progress'" class="gen-log-label">[进度]</span>
-              <span v-else-if="line.type === 'chunk'" class="gen-log-label">[输出]</span>
-              <span v-else-if="line.type === 'error'" class="gen-log-label">[错误]</span>
-              <span class="gen-log-text">{{ line.text }}</span>
+          <div class="debug-msg-body">
+            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <div v-else class="debug-msg-assistant">
+              <div v-if="msg.thinking" class="debug-msg-thinking">
+                <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                  <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
+                  <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                </div>
+                <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
+              </div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="generating && idx === genMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
             </div>
           </div>
         </div>
@@ -187,8 +190,9 @@
               v-model="modifyInstruction"
               type="textarea"
               :rows="2"
-              placeholder="例如：把描述改成更专业的风格，添加使用示例，修改分类为数据处理"
+              placeholder="例如：把描述改成更专业的风格，添加使用示例，修改分类为数据处理（↑↓ 切换历史输入）"
               class="nl-modify-input"
+              @keydown="onModifyHistoryKey"
             />
             <el-button
               v-if="!modifying"
@@ -211,19 +215,27 @@
           <div v-if="modifyError" class="modify-error">
             <el-alert :title="modifyError" type="error" show-icon :closable="false" />
           </div>
-          <div v-if="modifying" class="modify-thinking-box">
-            <div class="modify-thinking-header">
-              <el-icon class="thinking-spin"><Loading /></el-icon>
-              <span class="modify-thinking-title">{{ modifyPhase === 'thinking' ? 'AI 正在思考...' : 'AI 正在生成修改内容...' }}</span>
+          <div v-if="modifyMessages.length" class="gen-msg-list">
+            <div v-for="(msg, idx) in modifyMessages" :key="idx" class="debug-message" :class="msg.role">
+              <div class="debug-msg-avatar">
+                <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+              </div>
+              <div class="debug-msg-body">
+                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-else class="debug-msg-assistant">
+                  <div v-if="msg.thinking" class="debug-msg-thinking">
+                    <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
+                      <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
+                      <span>推理过程</span>
+                    </div>
+                    <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
+                  </div>
+                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
+                </div>
+              </div>
             </div>
-            <div v-if="modifyThinking" class="modify-thinking-content">
-              {{ modifyThinking }}
-            </div>
-            <div v-if="modifyContent" class="modify-content-preview">
-              <div class="modify-content-label">生成内容</div>
-              <pre>{{ modifyContent }}</pre>
-            </div>
-            <div v-if="!modifyThinking && !modifyContent" class="modify-thinking-placeholder">等待模型响应中</div>
           </div>
         </div>
 
@@ -849,16 +861,12 @@ const showGenerateDialog = ref(false)
 const generatePrompt = ref('')
 const generating = ref(false)
 let generateAbortController: AbortController | null = null
-const genLog = ref<{ type: string; text: string }[]>([])
-const genLogCollapsed = ref(false)
-const genStatusText = ref('')
-const genLogRef = ref<HTMLElement | null>(null)
+const genMessages = ref<any[]>([])
+const genMsgListRef = ref<HTMLElement | null>(null)
 
 function onGenerateDialogClosed() {
   generatePrompt.value = ''
-  genLog.value = []
-  genStatusText.value = ''
-  genLogCollapsed.value = false
+  genMessages.value = []
 }
 
 function stopGenerate() {
@@ -867,9 +875,9 @@ function stopGenerate() {
   }
 }
 
-function scrollGenLog() {
+function scrollGenMsg() {
   nextTick(() => {
-    if (genLogRef.value) genLogRef.value.scrollTop = genLogRef.value.scrollHeight
+    if (genMsgListRef.value) genMsgListRef.value.scrollTop = genMsgListRef.value.scrollHeight
   })
 }
 
@@ -880,16 +888,17 @@ async function handleGenerate() {
   }
   generating.value = true
   generateAbortController = new AbortController()
-  genLog.value = []
-  genStatusText.value = '正在启动...'
-  genLogCollapsed.value = false
+  const userText = generatePrompt.value.trim()
+  pushHistory(genHistory, genHistoryIdx, userText, 'generate')
+  genMessages.value.push({ role: 'user', content: userText })
+  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
 
   try {
     const token = localStorage.getItem('access_token')
     const response = await fetch('/api/v1/skills/generate-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ prompt: generatePrompt.value.trim() }),
+      body: JSON.stringify({ prompt: userText }),
       signal: generateAbortController.signal,
     })
     if (!response.ok) {
@@ -900,6 +909,7 @@ async function handleGenerate() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -912,27 +922,30 @@ async function handleGenerate() {
         if (!line.startsWith('data: ')) continue
         try {
           const data = JSON.parse(line.slice(6))
-          if (data.type === 'status') {
-            genStatusText.value = data.message
-            genLog.value.push({ type: 'status', text: data.message })
-          } else if (data.type === 'progress') {
-            genStatusText.value = data.message
-            genLog.value.push({ type: 'progress', text: data.message })
+          const msg = genMessages.value[genMessages.value.length - 1]
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'chunk') {
-            const text = data.content || ''
-            if (text.trim()) {
-              genLog.value.push({ type: 'chunk', text: text.replace(/\n/g, '\\n') })
-            }
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += data.content
+          } else if (data.type === 'status' || data.type === 'progress') {
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.content += (msg.content ? '\n' : '') + `**[${data.message}]**`
+          } else if (data.type === 'warning') {
+            msg.content += (msg.content ? '\n' : '') + `⚠ ${data.message}`
           } else if (data.type === 'done') {
-            genStatusText.value = data.message
-            genLog.value.push({ type: 'status', text: data.message })
+            if (msg.thinking && !thinkingDone) { msg.thinkingOpen = false }
+            msg.content += (msg.content ? '\n\n' : '') + data.message
           } else if (data.type === 'error') {
-            genLog.value.push({ type: 'error', text: data.message })
+            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.message}`
             ElMessage.error(data.message)
           } else if (data.type === 'created') {
             const skill = data.skill
-            genStatusText.value = '生成完成！'
-            genLog.value.push({ type: 'status', text: `技能 "${skill.display_name || skill.name}" 已创建` })
+            msg.content += (msg.content ? '\n\n' : '') + `✅ 技能 "${skill.display_name || skill.name}" 已创建`
             ElMessage.success(`技能 "${skill.display_name || skill.name}" 已生成`)
             showGenerateDialog.value = false
             await loadSkills()
@@ -942,16 +955,18 @@ async function handleGenerate() {
             detailTab.value = 'md'
             detailDrawer.value = true
           }
-          scrollGenLog()
+          scrollGenMsg()
         } catch {}
       }
     }
   } catch (e: any) {
-    if (e.name === 'AbortError') {
-      genLog.value.push({ type: 'status', text: '已停止生成' })
-    } else {
-      ElMessage.error(e.message || '生成失败')
-      genLog.value.push({ type: 'error', text: e.message || '生成失败' })
+    const msg = genMessages.value[genMessages.value.length - 1]
+    if (msg) {
+      if (e.name === 'AbortError') {
+        msg.content += '\n\n*[已停止生成]*'
+      } else {
+        msg.content += `\n\n❌ ${e.message || '生成失败'}`
+      }
     }
   } finally {
     generating.value = false
@@ -969,9 +984,7 @@ const savingMd = ref(false)
 const modifyInstruction = ref('')
 const modifying = ref(false)
 const modifyError = ref('')
-const modifyThinking = ref('')
-const modifyContent = ref('')
-const modifyPhase = ref<'thinking'|'generating'|'idle'>('idle')
+const modifyMessages = ref<any[]>([])
 const modifyAbortCtrl = ref<AbortController | null>(null)
 
 const expandedScript = ref('')
@@ -983,9 +996,7 @@ function openDetail(skill: any) {
   mdEditContent.value = skill.skill_md || ''
   modifyInstruction.value = ''
   modifyError.value = ''
-  modifyThinking.value = ''
-  modifyContent.value = ''
-  modifyPhase.value = 'idle'
+  modifyMessages.value = []
   detailTab.value = 'md'
 
   Object.keys(scriptContents).forEach(k => delete scriptContents[k])
@@ -1001,9 +1012,10 @@ async function handleModifySkill() {
   if (!detailSkill.value || !modifyInstruction.value.trim()) return
   modifying.value = true
   modifyError.value = ''
-  modifyThinking.value = ''
-  modifyContent.value = ''
-  modifyPhase.value = 'thinking'
+  const userText = modifyInstruction.value.trim()
+  pushHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
+  modifyMessages.value.push({ role: 'user', content: userText })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
 
   const ctrl = new AbortController()
   modifyAbortCtrl.value = ctrl
@@ -1016,7 +1028,7 @@ async function handleModifySkill() {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ instruction: modifyInstruction.value.trim() }),
+      body: JSON.stringify({ instruction: userText }),
       signal: ctrl.signal,
     })
 
@@ -1031,19 +1043,24 @@ async function handleModifySkill() {
     let doneSkill: any = null
     let cancelled = false
     let errMsg = ''
+    let thinkingDone = false
 
     const processLine = (line: string) => {
       const trimmed = line.trim()
       if (!trimmed.startsWith('data: ')) return
       try {
         const data = JSON.parse(trimmed.slice(6))
+        const msg = modifyMessages.value[modifyMessages.value.length - 1]
         if (data.type === 'thinking') {
-          modifyThinking.value += data.content
+          if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
+          if (!msg.thinking) msg.thinkingOpen = true
+          msg.thinking = (msg.thinking || '') + data.content
         } else if (data.type === 'content') {
-          modifyPhase.value = 'generating'
-          modifyContent.value += data.content
+          if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+          msg.content += data.content
         } else if (data.type === 'done') {
           doneSkill = data.skill || null
+          if (msg.thinking && !thinkingDone) msg.thinkingOpen = false
         } else if (data.type === 'error') {
           errMsg = data.content || '修改失败'
         } else if (data.type === 'cancelled') {
@@ -1095,7 +1112,6 @@ async function handleModifySkill() {
     }
   } finally {
     modifying.value = false
-    modifyPhase.value = 'idle'
     modifyAbortCtrl.value = null
   }
 }
@@ -1143,6 +1159,9 @@ async function saveSkillMd() {
       content: mdEditContent.value,
     })
     detailSkill.value = updated
+    mdEditContent.value = updated.skill_md || mdEditContent.value
+    const idx = skills.value.findIndex((s: any) => s.id === updated.id)
+    if (idx >= 0) skills.value[idx] = updated
     ElMessage.success('SKILL.md 已保存')
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
@@ -1289,6 +1308,12 @@ const cmdHistory = ref<string[]>(loadHistory('cmd'))
 const cmdHistoryIdx = ref(-1)
 const chatHistory = ref<string[]>(loadHistory('chat'))
 const chatHistoryIdx = ref(-1)
+const genHistory = ref<string[]>(loadHistory('generate'))
+const genHistoryIdx = ref(-1)
+const genDraft = ref('')
+const modifyHistory = ref<string[]>(loadHistory('modify'))
+const modifyHistoryIdx = ref(-1)
+const modifyDraft = ref('')
 
 function pushHistory(list: Ref<string[]>, idx: Ref<number>, value: string, storageKey: string) {
   const v = value.trim()
@@ -1330,6 +1355,13 @@ function onHistoryKey(e: KeyboardEvent, list: Ref<string[]>, idx: Ref<number>, m
 const nlDraft = ref('')
 const cmdDraft = ref('')
 const chatDraft = ref('')
+
+function onGenHistoryKey(e: KeyboardEvent) {
+  onHistoryKey(e, genHistory, genHistoryIdx, generatePrompt, genDraft)
+}
+function onModifyHistoryKey(e: KeyboardEvent) {
+  onHistoryKey(e, modifyHistory, modifyHistoryIdx, modifyInstruction, modifyDraft)
+}
 
 const cmdPlaceholder = computed(() => {
   const name = debugSkill.value?.name || 'skill'
@@ -1755,6 +1787,7 @@ async function handleRunSkill() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -1772,8 +1805,33 @@ async function handleRunSkill() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = debugMessages.value[assistantIdx]
 
-          if (data.type === 'executing') {
-            msg.thinking = data.message || '正在执行技能脚本...'
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
+            scrollThinkingBodyToBottom(assistantIdx)
+          } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) {
+              thinkingDone = true
+              msg.thinkingOpen = false
+            }
+            if (!msg.content) msg.content = ''
+            msg.content += data.content
+          } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinkingOpen = true
+            thinkingDone = true
+          } else if (data.type === 'inspection_result') {
+            msg.inspectionResult = data.result
+          } else if (data.type === 'executing') {
+            msg.executingMsg = data.message || '正在执行技能脚本...'
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -1841,6 +1899,7 @@ async function handleRunSkillNL() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -1861,12 +1920,29 @@ async function handleRunSkillNL() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
             if (!msg.thinking) msg.thinkingOpen = true
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) {
+              thinkingDone = true
+              msg.thinkingOpen = false
+            }
             execPhase.value = 'executing'
-            if (!msg.thinking) msg.thinking = '正在推断参数...'
+            if (!msg.content) msg.content = ''
+            msg.content += data.content
+          } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinkingOpen = true
+            thinkingDone = true
+          } else if (data.type === 'inspection_result') {
+            msg.inspectionResult = data.result
           } else if (data.type === 'inferred_params') {
             execPhase.value = 'executing'
             if (!msg.thinking) msg.thinking = '参数推断完成'
@@ -1978,6 +2054,7 @@ async function handleRunCmd() {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let thinkingDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -1995,8 +2072,33 @@ async function handleRunCmd() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = debugMessages.value[assistantIdx]
 
-          if (data.type === 'executing') {
-            msg.thinking = data.message || '正在执行技能脚本...'
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'thinking') {
+            if (thinkingDone && msg.thinking) {
+              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinkingOpen = true
+              thinkingDone = false
+            }
+            if (!msg.thinking) msg.thinkingOpen = true
+            msg.thinking = (msg.thinking || '') + data.content
+            scrollThinkingBodyToBottom(assistantIdx)
+          } else if (data.type === 'content') {
+            if (!thinkingDone && msg.thinking) {
+              thinkingDone = true
+              msg.thinkingOpen = false
+            }
+            if (!msg.content) msg.content = ''
+            msg.content += data.content
+          } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.thinkingOpen = true
+            thinkingDone = true
+          } else if (data.type === 'inspection_result') {
+            msg.inspectionResult = data.result
+          } else if (data.type === 'executing') {
+            msg.executingMsg = data.message || '正在执行技能脚本...'
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2174,26 +2276,41 @@ async function handleDebugSend() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'round') {
             msg.executingMsg = ''
             msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
-            msg.thinking = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
+            msg.thinkingOpen = true
+            thinkingDone = true
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
+          } else if (data.type === 'fatal') {
+            const issues = data.issues || []
+            let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              fatalText += `\n- [FATAL] ${issue.description || ''}`
+              if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
+            }
+            msg.content += fatalText
+          } else if (data.type === 'warning_confirmation') {
+            const issues = data.issues || []
+            let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+            for (const issue of issues) {
+              warnText += `\n- [WARNING] ${issue.description || ''}`
+              if (issue.column) warnText += ` (列: ${issue.column})`
+              if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
+            }
+            warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+            msg.content += warnText
           }
-        } catch {
-          // skip
+        } catch (e) {
+          console.error('[DEBUG-CHAT] parse error:', e, 'line:', trimmed.substring(0, 200))
         }
       }
       nextTick(() => scrollSkillDebugToBottom())
@@ -2874,6 +2991,7 @@ onMounted(() => {
       word-break: break-word;
       overflow-wrap: break-word;
       max-width: 85%;
+      width: fit-content;
     }
   }
 
@@ -2899,9 +3017,16 @@ onMounted(() => {
 }
 
 .debug-msg-body {
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+}
+
+.debug-message.user .debug-msg-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .debug-msg-thinking {

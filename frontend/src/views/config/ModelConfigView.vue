@@ -13,10 +13,12 @@
       <el-form :model="form" label-width="120px" v-loading="loading">
         <el-form-item label="服务提供商">
           <el-select v-model="form.provider" placeholder="选择提供商" @change="onProviderChange">
-            <el-option label="阿里百炼" value="qwen" />
-            <el-option label="智谱AI (GLM)" value="glm" />
-            <el-option label="硅基流动" value="siliconflow" />
-            <el-option label="自定义服务" value="custom" />
+            <el-option
+              v-for="p in providers"
+              :key="p.provider_name"
+              :label="p.display_name"
+              :value="p.provider_name"
+            />
           </el-select>
         </el-form-item>
 
@@ -28,6 +30,7 @@
               show-password
               style="flex: 1"
               :placeholder="config.api_key_set ? '已设置（输入可更新）' : '请输入API Key'"
+              @input="clearAlerts"
             />
             <el-tag v-if="config.api_key_set" type="success" size="small">已配置</el-tag>
           </div>
@@ -42,6 +45,7 @@
           <el-input
             v-model="form.api_base"
             :placeholder="apiBasePlaceholder"
+            @input="clearAlerts"
           />
           <div class="form-tip">
             <el-text size="small" type="info">
@@ -51,7 +55,7 @@
         </el-form-item>
 
         <el-form-item label="深度模型">
-          <el-select v-model="form.model" placeholder="选择模型" filterable :allow-create="form.provider === 'custom'">
+          <el-select v-model="form.model" placeholder="选择模型" filterable allow-create @change="clearAlerts">
             <el-option
               v-for="m in availableModels"
               :key="m.value"
@@ -67,7 +71,7 @@
         </el-form-item>
 
         <el-form-item label="快速模型">
-          <el-select v-model="form.fast_model" placeholder="留空则自动选择" filterable clearable :allow-create="form.provider === 'custom'">
+          <el-select v-model="form.fast_model" placeholder="留空则自动选择" filterable clearable allow-create @change="clearAlerts">
             <el-option
               v-for="m in availableModels"
               :key="m.value"
@@ -83,10 +87,13 @@
         </el-form-item>
 
         <el-form-item label="嵌入模型">
-          <el-select v-model="form.embedding_model" placeholder="选择嵌入模型" filterable allow-create>
-            <el-option label="Ada-002" value="text-embedding-ada-002" />
-            <el-option label="Embedding-3 Small" value="text-embedding-3-small" />
-            <el-option label="Embedding-3 Large" value="text-embedding-3-large" />
+          <el-select v-model="form.embedding_model" placeholder="选择嵌入模型" filterable allow-create @change="clearAlerts">
+            <el-option
+              v-for="m in availableEmbeddingModels"
+              :key="m.value"
+              :label="m.label"
+              :value="m.value"
+            />
           </el-select>
           <div class="form-tip">
             <el-text size="small" type="info">
@@ -106,16 +113,21 @@
             </div>
             <div v-for="(fb, idx) in fallbackModels" :key="idx" class="fallback-row">
               <el-select v-model="fb.provider" placeholder="提供商" style="width: 130px" @change="onFbProviderChange(idx)">
-                <el-option label="阿里百炼" value="qwen" />
-                <el-option label="智谱AI (GLM)" value="glm" />
-                <el-option label="硅基流动" value="siliconflow" />
-                <el-option label="自定义" value="custom" />
+                <el-option
+                  v-for="p in providers"
+                  :key="p.provider_name"
+                  :label="p.display_name"
+                  :value="p.provider_name"
+                />
               </el-select>
-              <el-select v-model="fb.model" placeholder="模型" filterable :allow-create="fb.provider === 'custom'" style="width: 190px">
-                <el-option v-for="m in (providerModels[fb.provider] || [])" :key="m.value" :label="m.label" :value="m.value" />
+              <el-input v-model="fb.api_key" type="password" show-password style="width: 160px" :placeholder="fb.api_key_set ? '已设置（输入可更新）' : 'API Key'" @input="clearAlerts" />
+              <el-input v-model="fb.api_base" style="width: 200px" :placeholder="getProviderApiBase(fb.provider) || 'API 地址'" @input="clearAlerts" />
+              <el-select v-model="fb.model" placeholder="深度模型" filterable allow-create style="width: 160px" @change="clearAlerts">
+                <el-option v-for="m in (getProviderModels(fb.provider))" :key="m.value" :label="m.label" :value="m.value" />
               </el-select>
-              <el-input v-model="fb.api_key" type="password" show-password style="width: 180px" :placeholder="fb.api_key_set ? '已设置（输入可更新）' : 'API Key'" />
-              <el-input v-model="fb.api_base" style="width: 220px" :placeholder="providerBaseUrls[fb.provider] || 'API 地址'" />
+              <el-select v-model="fb.fast_model" placeholder="快速模型" filterable allow-create clearable style="width: 160px" @change="clearAlerts">
+                <el-option v-for="m in (getProviderModels(fb.provider))" :key="m.value" :label="m.label" :value="m.value" />
+              </el-select>
               <el-button type="danger" text :icon="Delete" @click="removeFallback(idx)" />
             </div>
             <el-button size="small" type="primary" plain @click="addFallback">
@@ -175,11 +187,17 @@
           <li>点击"保存配置"保存设置</li>
         </ol>
 
-        <h4>支持的模型服务</h4>
-        <el-table :data="modelProviders" size="small">
-          <el-table-column prop="name" label="服务商" />
-          <el-table-column prop="models" label="推荐模型" />
-          <el-table-column prop="note" label="说明" />
+        <h4>已注册的 Provider</h4>
+        <el-table :data="providerTableData" size="small">
+          <el-table-column prop="display_name" label="名称" />
+          <el-table-column prop="provider_name" label="标识" />
+          <el-table-column prop="api_base" label="API 地址" show-overflow-tooltip />
+          <el-table-column label="模型" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ (row.models || []).map((m: any) => m.value).join(', ') }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="fast_model" label="快速模型" />
         </el-table>
       </div>
     </el-card>
@@ -196,54 +214,55 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 
-const providerModels: Record<string, { label: string; value: string }[]> = {
-  qwen: [
-    { label: 'Qwen3.7-Max', value: 'qwen3.7-max' },
-    { label: 'Qwen3.7-Plus', value: 'qwen3.7-plus' },
-    { label: 'Qwen3.6-Flash', value: 'qwen3.6-flash' },
-    { label: 'DeepSeek-V4-Pro', value: 'deepseek-v4-pro' },
-    { label: 'DeepSeek-V4-Flash', value: 'deepseek-v4-flash' },
-  ],
-  glm: [
-    { label: 'GLM-5.2', value: 'glm-5.2' },
-    { label: 'GLM-5.1', value: 'glm-5.1' },
-    { label: 'GLM-5', value: 'glm-5' },
-    { label: 'GLM-4 Plus', value: 'glm-4-plus' },
-    { label: 'GLM-4', value: 'glm-4' },
-    { label: 'GLM-4 Air', value: 'glm-4-air' },
-    { label: 'GLM-4 Flash', value: 'glm-4-flash' },
-    { label: 'GLM-4 FlashX', value: 'glm-4-flashx' },
-    { label: 'GLM-3 Turbo', value: 'glm-3-turbo' },
-  ],
-  siliconflow: [
-    { label: 'DeepSeek-V3', value: 'deepseek-ai/DeepSeek-V3' },
-    { label: 'Qwen2.5-72B', value: 'Qwen/Qwen2.5-72B-Instruct' },
-    { label: 'Qwen2.5-Coder-32B', value: 'Qwen/Qwen2.5-Coder-32B-Instruct' },
-    { label: 'DeepSeek-V2.5', value: 'deepseek-ai/DeepSeek-V2.5' },
-  ],
-  custom: [],
+const providers = ref<any[]>([])
+
+function getProviderModels(providerName: string): { label: string; value: string }[] {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.models || []
 }
 
-const providerBaseUrls: Record<string, string> = {
-  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  glm: 'https://open.bigmodel.cn/api/paas/v4',
-  siliconflow: 'https://api.siliconflow.cn/v1',
-  custom: '',
+function getProviderApiBase(providerName: string): string {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.api_base || ''
 }
 
-const availableModels = computed(() => providerModels[form.value.provider] || [])
+function getProviderFastModel(providerName: string): string {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.fast_model || ''
+}
 
-const apiBasePlaceholder = computed(() => {
-  const url = providerBaseUrls[form.value.provider]
-  return url || '请填写自定义API地址，如 http://localhost:8000/v1'
-})
+const availableModels = computed(() => getProviderModels(form.value.provider))
+
+const availableEmbeddingModels = computed(() => [
+  { label: 'Ada-002', value: 'text-embedding-ada-002' },
+  { label: 'Embedding-3 Small', value: 'text-embedding-3-small' },
+  { label: 'Embedding-3 Large', value: 'text-embedding-3-large' },
+])
+
+const apiBasePlaceholder = computed(() => getProviderApiBase(form.value.provider) || '请填写 API 地址')
 
 function onProviderChange() {
-  const models = providerModels[form.value.provider] || []
+  clearAlerts()
+  const models = getProviderModels(form.value.provider)
   if (models.length > 0 && !models.find(m => m.value === form.value.model)) {
     form.value.model = models[0].value
   }
-  form.value.api_base = providerBaseUrls[form.value.provider] || ''
+  form.value.api_base = getProviderApiBase(form.value.provider) || ''
+  const fastModel = getProviderFastModel(form.value.provider)
+  if (fastModel) {
+    form.value.fast_model = fastModel
+  }
+}
+
+function onFbProviderChange(idx: number) {
+  clearAlerts()
+  const fb = fallbackModels.value[idx]
+  fb.api_base = getProviderApiBase(fb.provider) || ''
+  const models = getProviderModels(fb.provider)
+  if (models.length > 0) {
+    fb.model = models[0].value
+  }
+  fb.fast_model = getProviderFastModel(fb.provider) || ''
 }
 
 const config = ref({
@@ -267,10 +286,16 @@ const form = ref({
 const testResult = ref<any>(null)
 const saveResult = ref<any>(null)
 
+function clearAlerts() {
+  testResult.value = null
+  saveResult.value = null
+}
+
 // 降级模型链
 interface FallbackModel {
   provider: string
   model: string
+  fast_model: string
   api_key: string
   api_base: string
   api_key_set: boolean
@@ -278,36 +303,38 @@ interface FallbackModel {
 const fallbackModels = ref<FallbackModel[]>([])
 
 function addFallback() {
-  const provider = 'qwen'
+  clearAlerts()
+  const firstProvider = providers.value[0]?.provider_name || 'qwen'
   fallbackModels.value.push({
-    provider,
-    model: '',
+    provider: firstProvider,
+    model: getProviderModels(firstProvider)[0]?.value || '',
+    fast_model: getProviderFastModel(firstProvider) || '',
     api_key: '',
-    api_base: providerBaseUrls[provider] || '',
+    api_base: getProviderApiBase(firstProvider),
     api_key_set: false,
   })
 }
 function removeFallback(idx: number) {
+  clearAlerts()
   fallbackModels.value.splice(idx, 1)
 }
-function onFbProviderChange(idx: number) {
-  const fb = fallbackModels.value[idx]
-  fb.api_base = providerBaseUrls[fb.provider] || ''
-}
 
-const modelProviders = ref([
-  { name: '阿里百炼', models: 'qwen3.7-max, qwen3.7-plus, qwen3.6-flash, deepseek-v4-pro', note: 'API: dashscope.aliyuncs.com/compatible-mode/v1' },
-  { name: '智谱AI', models: 'glm-5.2, glm-5.1, glm-5, glm-4, glm-3-turbo', note: 'API: open.bigmodel.cn/api/paas/v4' },
-  { name: '硅基流动', models: 'DeepSeek-V3, Qwen2.5-72B, Qwen2.5-Coder-32B', note: 'API: api.siliconflow.cn/v1' },
-  { name: '本地部署', models: '自定义', note: '如vLLM、Ollama' },
-])
+const providerTableData = computed(() => providers.value)
 
 onMounted(async () => {
+  await loadProviders()
   await loadConfig()
 })
 
+async function loadProviders() {
+  try {
+    providers.value = await api.get('/providers')
+  } catch {}
+}
+
 async function loadConfig(preserveApiKey = false) {
   loading.value = true
+  clearAlerts()
   try {
     const res = await api.get('/config/llm')
     config.value = res
@@ -321,8 +348,9 @@ async function loadConfig(preserveApiKey = false) {
       embedding_model: res.embedding_model
     }
     fallbackModels.value = (res.fallback_models || []).map((f: any) => ({
-      provider: f.provider || 'qwen',
+      provider: f.provider || '',
       model: f.model || '',
+      fast_model: f.fast_model || '',
       api_key: '',
       api_base: f.api_base || '',
       api_key_set: !!f.api_key_set,
@@ -346,6 +374,7 @@ async function saveConfig() {
         .map(f => ({
           provider: f.provider,
           model: f.model,
+          fast_model: f.fast_model || '',
           api_key: f.api_key,
           api_base: f.api_base,
         })),
@@ -374,7 +403,12 @@ async function testConnection() {
   testing.value = true
   testResult.value = null
   try {
-    const res = await api.get('/config/llm/test')
+    const res = await api.post('/config/llm/test', {
+      provider: form.value.provider,
+      api_key: form.value.api_key || undefined,
+      api_base: form.value.api_base || undefined,
+      model: form.value.model,
+    })
     testResult.value = res
     if (res.success) {
       ElMessage.success('连接测试成功')

@@ -10,6 +10,7 @@ from app.models.notebook import Notebook, NotebookVersion
 from app.models.filelink import FileLink
 from app.models.pipeline import Pipeline, PipelineExecution
 from app.models.knowledge import KnowledgeDocument, KnowledgeChunk
+from app.models.custom_extension import CustomConnector, LLMProvider
 
 __all__ = [
     "User",
@@ -31,4 +32,6 @@ __all__ = [
     "PipelineExecution",
     "KnowledgeDocument",
     "KnowledgeChunk",
+    "CustomConnector",
+    "LLMProvider",
 ]

@@ -1,0 +1,24 @@
+{
+  "negative": [
+    {
+      "timestamp": "2026-07-07T17:08:40.130228",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（30秒）",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "文物库",
+        "image_column": "地址",
+        "doc_type": "auto",
+        "if_table_exists": "truncate",
+        "batch_size": 500
+      },
+      "stdout_preview": ""
+    }
+  ],
+  "positive": [],
+  "lessons": ""
+}

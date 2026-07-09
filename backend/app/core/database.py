@@ -10,7 +10,10 @@ from app.core.config import settings
 _is_sqlite = "sqlite" in settings.DATABASE_URL
 
 engine_kwargs = {"echo": False}
-if not _is_sqlite:
+if _is_sqlite:
+    # SQLite busy timeout：等待锁释放而非立即报错（30秒）
+    engine_kwargs["connect_args"] = {"timeout": 30}
+else:
     engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
     engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW
 

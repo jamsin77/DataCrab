@@ -67,6 +67,7 @@
                 <div class="reasoning-header" @click="toggleReasoning(msg.id)">
                   <el-icon><CaretRight /></el-icon>
                   <span>推理过程</span>
+                  <el-tag v-if="msg.model" size="small" type="info">{{ msg.model }}</el-tag>
                   <el-tag size="small" type="info">{{ reasoningExpanded[msg.id] ? '点击折叠' : '点击展开' }}</el-tag>
                 </div>
                 <el-collapse-transition>
@@ -77,8 +78,11 @@
               </div>
               
               <!-- 主要内容 -->
-              <div v-if="msg.role === 'assistant'" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
-              <div v-else class="user-text">{{ msg.content }}</div>
+              <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
+              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming" class="typing-indicator">
+                <span></span><span></span><span></span>
+              </div>
+              <div v-if="msg.role === 'user'" class="user-text">{{ msg.content }}</div>
               
               <div class="message-actions">
                 <el-button
@@ -100,42 +104,6 @@
               </div>
             </div>
           </div>
-          
-          <!-- 流式输出中的消息 -->
-          <div v-if="chatStore.isStreaming && (chatStore.streamingContent || chatStore.streamingReasoning)" class="message-item assistant">
-            <div class="message-avatar"><el-avatar :size="36" style="background:#409eff">{{ agentName }}</el-avatar></div>
-            <div class="message-content">
-              <!-- 流式推理过程 -->
-              <div v-if="chatStore.streamingReasoning" class="reasoning-section">
-                <div class="reasoning-header" @click="toggleReasoning('streaming')">
-                  <el-icon><CaretRight /></el-icon>
-                  <span>推理过程</span>
-                  <el-tag size="small" type="info">{{ reasoningExpanded['streaming'] ? '点击折叠' : '点击展开' }}</el-tag>
-                </div>
-                <el-collapse-transition>
-                  <div v-show="reasoningExpanded['streaming']" class="reasoning-content">
-                    <div class="reasoning-text" v-html="renderMarkdown(chatStore.streamingReasoning)"></div>
-                  </div>
-                </el-collapse-transition>
-              </div>
-              
-              <!-- 流式主要内容 -->
-              <div v-if="chatStore.streamingContent" class="markdown-content" v-html="renderMarkdown(chatStore.streamingContent)"></div>
-              <div v-else class="typing-indicator">
-                <span></span><span></span><span></span>
-              </div>
-            </div>
-          </div>
-          
-          <!-- 等待响应 -->
-          <div v-if="chatStore.isStreaming && !chatStore.streamingContent && !chatStore.streamingReasoning" class="message-item assistant">
-            <div class="message-avatar"><el-avatar :size="36" style="background:#409eff">{{ agentName }}</el-avatar></div>
-            <div class="message-content">
-              <div class="typing-indicator">
-                <span></span><span></span><span></span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- 输入区域 -->
@@ -145,7 +113,7 @@
             type="textarea"
             :rows="2"
             :autosize="{ minRows: 1, maxRows: 6 }"
-            placeholder="输入消息... (Enter发送, Shift+Enter换行)"
+            placeholder="输入消息... (Enter发送, Shift+Enter换行, ↑↓浏览历史)"
             @keydown="handleKeyDown"
           />
           <div class="input-actions">
@@ -186,6 +154,13 @@ const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
+
+// 输入历史（↑↓ 浏览）
+const inputHistory = ref<string[]>(
+  (() => { try { return JSON.parse(localStorage.getItem('dc_chat_history') || '[]') } catch { return [] } })()
+)
+const historyIdx = ref(-1)
+const savedDraft = ref('')
 
 const currentSessionTitle = computed(() => {
   const s = chatStore.sessions.find((s) => s.id === chatStore.currentSessionId)
@@ -272,9 +247,10 @@ watch(
 watch(
   () => [chatStore.streamingContent, chatStore.streamingReasoning],
   () => {
-    // 推理过程开始流式输出时自动展开（用户手动折叠后尊重其选择）
-    if (chatStore.streamingReasoning && reasoningExpanded.value['streaming'] === undefined) {
-      reasoningExpanded.value['streaming'] = true
+    // 推理过程自动展开（用最后一条 assistant 消息的 ID）
+    const lastMsg = chatStore.messages[chatStore.messages.length - 1]
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.reasoning && reasoningExpanded.value[lastMsg.id] === undefined) {
+      reasoningExpanded.value[lastMsg.id] = true
     }
     // 流式更新使用即时滚动，避免 smooth 动画被高频 token 打断
     scrollToBottom(false)
@@ -299,6 +275,11 @@ async function handleNewSession() {
 async function handleSend() {
   if (!inputText.value.trim()) return
   const text = inputText.value
+  // 保存到输入历史
+  inputHistory.value.push(text)
+  if (inputHistory.value.length > 50) inputHistory.value = inputHistory.value.slice(-50)
+  try { localStorage.setItem('dc_chat_history', JSON.stringify(inputHistory.value)) } catch {}
+  historyIdx.value = -1
   inputText.value = ''
   await chatStore.sendMessage(text)
 }
@@ -322,6 +303,26 @@ function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleSend()
+  } else if (e.key === 'ArrowUp') {
+    if (inputHistory.value.length === 0) return
+    e.preventDefault()
+    if (historyIdx.value === -1) {
+      savedDraft.value = inputText.value
+      historyIdx.value = inputHistory.value.length - 1
+    } else if (historyIdx.value > 0) {
+      historyIdx.value--
+    }
+    inputText.value = inputHistory.value[historyIdx.value]
+  } else if (e.key === 'ArrowDown') {
+    if (historyIdx.value === -1) return
+    e.preventDefault()
+    if (historyIdx.value < inputHistory.value.length - 1) {
+      historyIdx.value++
+      inputText.value = inputHistory.value[historyIdx.value]
+    } else {
+      historyIdx.value = -1
+      inputText.value = savedDraft.value
+    }
   }
 }
 
@@ -440,13 +441,18 @@ async function handleSessionCommand(command: string, sessionId: string) {
   overflow-y: auto;
   padding: 20px;
   scroll-behavior: smooth;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .message-item {
   display: flex;
   gap: 12px;
   margin-bottom: 20px;
+
+  .message-content {
+    flex: 1;
+    min-width: 0;
+  }
 
   .message-actions {
     display: flex;
@@ -469,14 +475,20 @@ async function handleSessionCommand(command: string, sessionId: string) {
     flex-direction: row-reverse;
 
     .message-content {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+
       .user-text {
         background: #409eff;
         color: #fff;
-        padding: 10px 16px;
+        padding: 8px 14px;
         border-radius: 12px;
-        max-width: 70%;
+        max-width: 85%;
+        width: fit-content;
         word-break: break-word;
-        font-size: 14px;
+        font-size: 13px;
+        line-height: 1.5;
       }
     }
   }
@@ -484,9 +496,10 @@ async function handleSessionCommand(command: string, sessionId: string) {
   &.assistant {
     .message-content {
       .markdown-content {
-        max-width: 80%;
+        max-width: 92%;
+        width: fit-content;
         line-height: 1.6;
-        font-size: 14px;
+        font-size: 13px;
 
         :deep(pre) {
           background: #ffffff;
@@ -602,10 +615,10 @@ async function handleSessionCommand(command: string, sessionId: string) {
   gap: 12px;
   align-items: flex-end;
 
-  .el-textarea {
-    flex: 1;
-    font-size: 14px;
-  }
+    .el-textarea {
+        flex: 1;
+        font-size: 13px;
+    }
 
   .input-actions {
     display: flex;

@@ -1185,7 +1185,6 @@ async def debug_operator_chat(
                         evt = None
                     if evt:
                         yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
-                    yield f"data: {json_mod.dumps({'type': 'clear_thinking', 'content': ''}, ensure_ascii=False)}\n\n"
                 elif t == "done":
                     pass
                 else:

@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # 降级模型链：JSON 数组，如 [{"provider":"qwen","api_key":"...","model":"qwen-plus"}, {...}]
     LLM_FALLBACK_MODELS: str = ""
 
+    # 加密密钥（用于 API Key 等敏感信息加密存储）
+    ENCRYPT_KEY: str = ""
+
     # CORS配置
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
 

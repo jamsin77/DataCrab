@@ -1149,10 +1149,54 @@ CONNECTOR_REGISTRY: Dict[str, type] = {
 
 SUPPORTED_DATASOURCE_TYPES = list(CONNECTOR_REGISTRY.keys())
 
+# 自定义连接器缓存：name → connector_class（运行时 exec() 加载）
+_custom_connector_cache: Dict[str, type] = {}
+
+
+def _load_custom_connector(code: str, name: str) -> type:
+    """从 Python 源码动态加载连接器类（沙箱 exec）"""
+    import ast
+    # 安全校验：禁止危险调用
+    tree = ast.parse(code)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = node.module if isinstance(node, ast.ImportFrom) else node.names[0].name
+            _DANGER = {"os", "subprocess", "shutil", "ctypes", "sys"}
+            if module.split(".")[0] in _DANGER:
+                raise ValueError(f"自定义连接器禁止 import: {module}")
+
+    namespace = {
+        "BaseConnector": BaseConnector,
+        "pd": __import__("pandas"),
+        "Any": Any, "Dict": Dict, "List": List, "Optional": Optional,
+    }
+    exec(code, namespace)
+
+    # 找到 BaseConnector 的子类
+    for obj in namespace.values():
+        if isinstance(obj, type) and issubclass(obj, BaseConnector) and obj is not BaseConnector:
+            return obj
+    raise ValueError(f"代码中未找到 BaseConnector 的子类: {name}")
+
+
+def register_custom_connector(name: str, code: str) -> type:
+    """注册自定义连接器（测试通过后调用）"""
+    cls = _load_custom_connector(code, name)
+    _custom_connector_cache[name] = cls
+    logger.info(f"自定义连接器已注册: {name} → {cls.__name__}")
+    return cls
+
+
+def get_custom_connector_types() -> List[str]:
+    """获取所有已注册的自定义连接器类型名"""
+    return list(_custom_connector_cache.keys())
+
 
 def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector:
-    """获取连接器实例"""
+    """获取连接器实例（先查内置注册表，再查自定义缓存）"""
     connector_class = CONNECTOR_REGISTRY.get(datasource_type)
+    if not connector_class:
+        connector_class = _custom_connector_cache.get(datasource_type)
     if not connector_class:
         raise ValueError(f"不支持的数据源类型: {datasource_type}")
     return connector_class(config)

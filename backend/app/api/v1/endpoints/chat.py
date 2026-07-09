@@ -122,7 +122,6 @@ async def build_datasource_context(
             lines.append(f"- 基础路径: {cfg.get('base_path', '/')}")
         elif ds.type == "hadoop":
             lines.append(f"- 地址: {cfg.get('host', 'N/A')}:{cfg.get('port', 'N/A')}")
-            lines.append(f"- 用户: {cfg.get('user', 'N/A')}")
             lines.append(f"- 基础路径: {cfg.get('base_path', '/')}")
 
         if ds.table_metadata:
@@ -580,6 +579,9 @@ async def stream_response(
                 db, current_user.id, request.content
             )
 
+            # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
+            await db.commit()
+
             # 统一路由：始终从 data_processor 开始，Agent 自主决定是否 handoff（O）
             from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
             from app.services.data_processor_agent import DataProcessorAgent
@@ -632,13 +634,16 @@ async def stream_response(
                 else:
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
-            ai_message = ChatMessage(
-                session_id=request.session_id,
-                role="assistant",
-                content=full_response,
-            )
-            db.add(ai_message)
-            await db.flush()
+            # 用新 session 保存 AI 消息（避免长流式期间锁住 DB）
+            from app.core.database import async_session as _new_session
+            async with _new_session() as save_session:
+                ai_message = ChatMessage(
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=full_response,
+                )
+                save_session.add(ai_message)
+                await save_session.commit()
 
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 

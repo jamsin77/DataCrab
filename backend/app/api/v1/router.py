@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, llm, permission, agents, knowledge
+from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, llm, permission, agents, knowledge, custom_extension
 
 api_router = APIRouter()
 
@@ -49,3 +49,6 @@ api_router.include_router(agents.router, prefix="/agents", tags=["智能体"])
 
 # 知识库路由
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库"])
+
+# 自定义扩展路由（数据源连接器 + LLM 适配器）
+api_router.include_router(custom_extension.router, tags=["自定义扩展"])

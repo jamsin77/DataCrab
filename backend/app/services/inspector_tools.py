@@ -168,11 +168,12 @@ class DataInspectorTools:
                 for col in df.columns:
                     null_rate = df[col].isna().mean()
                     if null_rate > null_thr:
+                        _sev = "critical" if null_rate >= 1.0 else ("error" if null_rate > null_thr * 3 else "warning")
                         issues.append({
                             "dimension": "completeness",
                             "rule_id": "DQ-COM-003",
                             "column": col,
-                            "severity": "error" if null_rate > null_thr * 3 else "warning",
+                            "severity": _sev,
                             "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）",
                             "suggestion": "建议填充默认值或删除空值行",
                         })
@@ -290,11 +291,13 @@ class DataInspectorTools:
 
             # DQ-ETL-003 对数（记录数一致）
             if src_n != tgt_n:
+                _diff_rate = abs(src_n - tgt_n) / max(src_n, 1)
+                _sev = "critical" if _diff_rate > 0.1 else "error"
                 issues.append({
                     "dimension": "etl_reconciliation",
                     "rule_id": "DQ-ETL-003",
-                    "severity": "error",
-                    "description": f"记录数不一致：源 {src_n} ≠ 目标 {tgt_n}（差 {abs(src_n - tgt_n)}）",
+                    "severity": _sev,
+                    "description": f"记录数不一致：源 {src_n} ≠ 目标 {tgt_n}（差 {abs(src_n - tgt_n)}，偏差 {_diff_rate:.1%}）",
                     "suggestion": "排查过滤条件、丢失记录、重复写入",
                 })
 
@@ -353,7 +356,7 @@ class DataInspectorTools:
             # 兜底：若规则库解析失败，用内置 PII 模式
             if not sec_rules:
                 sec_rules = [
-                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "fatal"},
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]

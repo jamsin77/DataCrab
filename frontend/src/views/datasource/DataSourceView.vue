@@ -60,11 +60,18 @@
           <el-select v-model="configForm.type" @change="onTypeChange" style="width: 100%;">
             <el-option label="PostgreSQL" value="postgresql" />
             <el-option label="MySQL" value="mysql" />
+            <el-option label="SQLite" value="sqlite" />
             <el-option label="CSV 文件" value="csv" />
             <el-option label="Excel 文件" value="excel" />
             <el-option label="ChromaDB 向量库" value="chroma" />
             <el-option label="OBS 华为云对象存储" value="obs" />
             <el-option label="Hadoop HDFS" value="hadoop" />
+            <el-option
+              v-for="c in customConnectors"
+              :key="c.name"
+              :label="c.display_name + ' (自定义)'"
+              :value="c.name"
+            />
           </el-select>
         </el-form-item>
 
@@ -273,6 +280,7 @@ const browseTotal = ref(0)
 const selectedTable = ref('')
 const browseLoading = ref(false)
 const typeFilter = ref('')
+const customConnectors = ref<any[]>([])
 const editId = ref<string | null>(null)
 const saving = ref(false)
 const showFsBrowser = ref(false)
@@ -309,6 +317,9 @@ const configForm = reactive({
 
 onMounted(async () => {
   await fetchDataSources()
+  try {
+    customConnectors.value = await api.get('/connectors/custom')
+  } catch {}
 })
 
 function getTypeLabel(type: string): string {
@@ -430,9 +441,11 @@ function buildConnectionConfig(): Record<string, any> {
         host: configForm.host,
         port: configForm.port,
         database: configForm.database,
-        user: configForm.user,
       }
-      if (configForm.password) {
+      if (configForm.user && configForm.user !== '***') {
+        cfg.user = configForm.user
+      }
+      if (configForm.password && configForm.password !== '***') {
         cfg.password = configForm.password
       }
       return cfg

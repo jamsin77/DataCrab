@@ -34,24 +34,121 @@ def _get_transient_errors():
     return _TRANSIENT_ERRORS
 
 
-# 不同provider的API base URL配置
-PROVIDER_BASE_URLS = {
-    "openai": None,  # 使用默认值
-    "azure": None,  # 需要用户设置
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "glm": "https://open.bigmodel.cn/api/paas/v4",
-    "siliconflow": "https://api.siliconflow.cn/v1",
-    "custom": None,  # 用户自定义
+# Provider 注册表：内存缓存，启动时从 DB 加载
+_provider_registry: Dict[str, Dict[str, Any]] = {}
+
+# 预配置 Provider（启动时 seed 到 DB）
+_SEED_PROVIDERS = {
+    "qwen": {
+        "display_name": "阿里百炼",
+        "description": "通义千问，阿里云大模型服务",
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": [
+            {"label": "Qwen3.7-Max", "value": "qwen3.7-max"},
+            {"label": "Qwen3.7-Plus", "value": "qwen3.7-plus"},
+            {"label": "Qwen3.6-Flash", "value": "qwen3.6-flash"},
+            {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro"},
+            {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash"},
+        ],
+        "default_model": "qwen3.7-max",
+        "fast_model": "qwen3.6-flash",
+    },
+    "glm": {
+        "display_name": "智谱AI (GLM)",
+        "description": "智谱AI GLM 系列大模型",
+        "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "models": [
+            {"label": "GLM-5.2", "value": "glm-5.2"},
+            {"label": "GLM-5.1", "value": "glm-5.1"},
+            {"label": "GLM-5", "value": "glm-5"},
+            {"label": "GLM-4 Plus", "value": "glm-4-plus"},
+            {"label": "GLM-4", "value": "glm-4"},
+            {"label": "GLM-4 Flash", "value": "glm-4-flash"},
+        ],
+        "default_model": "glm-5.2",
+        "fast_model": "glm-4-flash",
+    },
+    "siliconflow": {
+        "display_name": "硅基流动",
+        "description": "硅基流动 Model API 平台",
+        "api_base": "https://api.siliconflow.cn/v1",
+        "models": [
+            {"label": "DeepSeek-V3", "value": "deepseek-ai/DeepSeek-V3"},
+            {"label": "Qwen2.5-72B", "value": "Qwen/Qwen2.5-72B-Instruct"},
+            {"label": "Qwen2.5-Coder-32B", "value": "Qwen/Qwen2.5-Coder-32B-Instruct"},
+        ],
+        "default_model": "deepseek-ai/DeepSeek-V3",
+        "fast_model": "Qwen/Qwen2.5-7B-Instruct",
+    },
 }
 
-# 各 provider 的快速模型（用于调试对话等不需要深度推理的场景）
-FAST_MODELS = {
-    "glm": "glm-4-flash",
-    "qwen": "qwen-turbo",
-    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
-    "openai": "gpt-4o-mini",
-    "custom": None,
-}
+
+async def load_providers_from_db():
+    """启动时从 DB 加载所有 Provider，seed 预配置 Provider"""
+    from app.core.database import async_session
+    from app.models.custom_extension import LLMProvider
+    from sqlalchemy import select as sa_select
+
+    async with async_session() as session:
+        # seed 预配置 Provider
+        for name, info in _SEED_PROVIDERS.items():
+            existing = await session.execute(
+                sa_select(LLMProvider).where(LLMProvider.provider_name == name)
+            )
+            record = existing.scalar_one_or_none()
+            if not record:
+                from datetime import datetime, timedelta
+                _seed_time = datetime(2026, 6, 1)
+                record = LLMProvider(
+                    provider_name=name,
+                    display_name=info["display_name"],
+                    description=info["description"],
+                    api_base=info["api_base"],
+                    models=info["models"],
+                    default_model=info["default_model"],
+                    fast_model=info["fast_model"],
+                    code=None,
+                    created_at=_seed_time,
+                    updated_at=_seed_time,
+                )
+                session.add(record)
+        await session.commit()
+
+        # 加载所有 Provider 到内存
+        result = await session.execute(
+            sa_select(LLMProvider).where(LLMProvider.is_active == True)
+        )
+        _provider_registry.clear()
+        for p in result.scalars().all():
+            _provider_registry[p.provider_name] = {
+                "display_name": p.display_name,
+                "description": p.description,
+                "api_base": p.api_base,
+                "models": p.models or [],
+                "default_model": p.default_model,
+                "fast_model": p.fast_model,
+                "code": p.code,
+            }
+        logger.info(f"已加载 {len(_provider_registry)} 个 Provider: {list(_provider_registry.keys())}")
+
+
+def get_provider_api_base(provider: str) -> str:
+    """获取 Provider 的 API base URL"""
+    info = _provider_registry.get(provider)
+    if info and info.get("api_base"):
+        return info["api_base"]
+    return None
+
+
+def get_all_providers() -> Dict[str, Dict[str, Any]]:
+    """获取所有 Provider 信息"""
+    return dict(_provider_registry)
+
+
+def refresh_provider(provider_name: str, info: Dict[str, Any]):
+    """注册或刷新 Provider 到内存缓存"""
+    _provider_registry[provider_name] = info
+    logger.info(f"Provider 已刷新: {provider_name}")
 
 
 def _parse_fallback_models(raw: str) -> List[Dict[str, str]]:
@@ -67,10 +164,11 @@ def _parse_fallback_models(raw: str) -> List[Dict[str, str]]:
         for item in data:
             if isinstance(item, dict) and item.get("model"):
                 out.append({
-                    "provider": item.get("provider") or "custom",
+                    "provider": item.get("provider") or "",
                     "api_key": item.get("api_key") or "",
                     "api_base": item.get("api_base"),
                     "model": item.get("model"),
+                    "fast_model": item.get("fast_model") or "",
                 })
         return out
     except Exception as e:
@@ -113,6 +211,42 @@ class CircuitBreaker:
 
 _circuit = CircuitBreaker()
 
+# 自定义 LLM 适配器缓存：provider_name → adapter_class
+_custom_adapter_cache: Dict[str, type] = {}
+
+
+def _load_custom_adapter(code: str, provider_name: str) -> type:
+    """从 Python 源码动态加载 LLM 适配器类"""
+    import ast
+    tree = ast.parse(code)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = node.module if isinstance(node, ast.ImportFrom) else node.names[0].name
+            _DANGER = {"os", "subprocess", "shutil", "ctypes", "sys"}
+            if module.split(".")[0] in _DANGER:
+                raise ValueError(f"自定义适配器禁止 import: {module}")
+
+    namespace = {"Any": Any, "Dict": Dict, "List": List, "Optional": Optional}
+    exec(code, namespace)
+
+    for obj in namespace.values():
+        if isinstance(obj, type) and hasattr(obj, "chat_completion") and obj.__name__ != "type":
+            return obj
+    raise ValueError(f"代码中未找到带 chat_completion 方法的适配器类: {provider_name}")
+
+
+def register_custom_adapter(provider_name: str, code: str) -> type:
+    """注册自定义 LLM 适配器"""
+    cls = _load_custom_adapter(code, provider_name)
+    _custom_adapter_cache[provider_name] = cls
+    logger.info(f"自定义 LLM 适配器已注册: {provider_name} → {cls.__name__}")
+    return cls
+
+
+def get_custom_adapter_providers() -> List[str]:
+    """获取所有已注册的自定义适配器 provider 名"""
+    return list(_custom_adapter_cache.keys())
+
 
 class LLMManager:
     """大模型管理器（主模型 + 降级链）"""
@@ -132,7 +266,12 @@ class LLMManager:
     def fast_model(self) -> str:
         """快速模型名（系统内部任务 + 降级兜底）。"""
         configured = getattr(settings, 'LLM_FAST_MODEL', '') or ''
-        return configured.strip() or FAST_MODELS.get(self.provider) or self.model
+        if configured.strip():
+            return configured.strip()
+        info = _provider_registry.get(self.provider)
+        if info and info.get("fast_model"):
+            return info["fast_model"]
+        return self.model
 
     # 任务关键词分类
     _COMPLEX_KEYWORDS = {
@@ -209,9 +348,21 @@ class LLMManager:
         cached = self._client_cache.get(key)
         if cached is not None:
             return cached
+
+        # 优先检查自定义适配器（非 OpenAI 兼容厂商）
+        provider = cfg.get("provider", "")
+        if provider in _custom_adapter_cache:
+            adapter_cls = _custom_adapter_cache[provider]
+            api_key = cfg.get("api_key") or ""
+            base_url = cfg.get("api_base") or ""
+            model = cfg.get("model") or ""
+            client = adapter_cls(api_key=api_key, base_url=base_url, model=model)
+            self._client_cache[key] = client
+            return client
+
         from openai import AsyncOpenAI
         api_key = cfg.get("api_key") or ""
-        base_url = cfg.get("api_base") or PROVIDER_BASE_URLS.get(cfg.get("provider"))
+        base_url = cfg.get("api_base") or get_provider_api_base(cfg.get("provider", ""))
         if cfg.get("provider") == "azure":
             client = AsyncOpenAI(
                 api_key=api_key,
@@ -389,6 +540,7 @@ class LLMManager:
                 choice = response.choices[0]
                 return {
                     "content": choice.message.content,
+                    "reasoning": getattr(choice.message, "reasoning_content", None),
                     "tool_calls": [
                         {
                             "id": tc.id,

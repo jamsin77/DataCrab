@@ -305,28 +305,35 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 
     full_response = ""
     try:
-        async for chunk in llm_manager.chat_stream_with_messages(
+        async for chunk in llm_manager.chat_stream_with_thinking(
             messages=[
                 {"role": "system", "content": SKILL_CREATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
+            max_tokens=8000,
         ):
-            full_response += chunk
-            yield {"type": "chunk", "content": chunk}
+            t = chunk.get("type", "")
+            if t == "model":
+                yield {"type": "model", "content": chunk["content"]}
+            elif t == "thinking":
+                yield {"type": "thinking", "content": chunk["content"]}
+            elif t == "content":
+                full_response += chunk["content"]
+                yield {"type": "chunk", "content": chunk["content"]}
 
-            if "===SKILL_MD===" in full_response and "===SKILL_MD_END===" not in full_response:
-                if "===SKILL_MD_END===" not in chunk:
-                    yield {"type": "progress", "message": "正在生成 SKILL.md..."}
+                if "===SKILL_MD===" in full_response and "===SKILL_MD_END===" not in full_response:
+                    if "===SKILL_MD_END===" not in chunk["content"]:
+                        yield {"type": "progress", "message": "正在生成 SKILL.md..."}
 
-            for marker in ["===SCRIPT:"]:
-                if marker in full_response:
-                    last_script_start = full_response.rfind(marker)
-                    remaining = full_response[last_script_start:]
-                    if "===SCRIPT_END===" not in remaining:
-                        script_name_match = remaining[len(marker):].split("===")
-                        if script_name_match:
-                            yield {"type": "progress", "message": f"正在生成脚本 {script_name_match[0]}..."}
+                for marker in ["===SCRIPT:"]:
+                    if marker in full_response:
+                        last_script_start = full_response.rfind(marker)
+                        remaining = full_response[last_script_start:]
+                        if "===SCRIPT_END===" not in remaining:
+                            script_name_match = remaining[len(marker):].split("===")
+                            if script_name_match:
+                                yield {"type": "progress", "message": f"正在生成脚本 {script_name_match[0]}..."}
 
     except Exception as e:
         logger.error(f"Skill Creator 流式生成失败: {e}")

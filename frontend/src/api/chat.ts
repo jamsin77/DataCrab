@@ -14,6 +14,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   reasoning?: string
+  model?: string
   code_blocks: any[] | null
   table_data: any | null
   charts: any[] | null
@@ -21,7 +22,7 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'reasoning' | 'content' | 'done' | 'error' | 'cancelled'
+  type: 'reasoning' | 'thinking' | 'content' | 'model' | 'done' | 'error' | 'cancelled'
   content?: string
 }
 

@@ -41,6 +41,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 - 擅长 SQL、pandas、数据清洗和转换
 - 能理解用户意图并生成/修改算子和技能
 - 能调度执行数据处理流程
+- **能为用户生成自定义数据源连接器和模型适配器**
 
 ## 工作准则
 1. **安全红线**：DataCrab 不能修改平台自身，只能处理用户数据
@@ -48,6 +49,18 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 3. **修改后必验证**：每次修改数据后必须验证结果
 4. **交接检查**：数据处理完成后，应交接给 DataInspector 进行质量检查
 5. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
+
+## 自定义扩展能力（仅此两项允许用户扩展平台）
+当用户要求添加新的数据源类型或大模型厂商时，你可以生成代码并调用工具注册：
+
+### save_connector — 添加自定义数据源连接器
+用户说"添加 MongoDB 连接器"时，生成一个继承 BaseConnector 的 Python 类，实现 connect/test_connection/get_schema/get_table_data/get_table_stats/close 方法。
+代码中可通过 __import__ 使用第三方库（如 pymongo、redis 等），但禁止 import os/subprocess/sys 等危险模块。
+
+### save_llm_adapter — 添加自定义大模型适配器
+用户说"添加 Anthropic Claude"时，生成一个适配器类，实现 .chat.completions.create() 兼容接口。
+适配器接收 api_key/base_url/model 参数，将 OpenAI messages 格式转为厂商原生格式，调用厂商 API 后转回 OpenAI 响应格式。
+禁止在适配器代码中硬编码 API Key。
 
 ## 当收到 DataInspector 的检查结果时
 - 应定位问题根源
@@ -78,12 +91,12 @@ HANDOFF_TOOL = {
     },
 }
 
-# 调试模式工具（modify_script + run_script）
+# 调试模式工具（modify_script + run_script + modify_and_run）
 MODIFY_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "modify_script",
-        "description": "修改当前调试的脚本。提供修改后的函数代码，系统自动合并到现有脚本（函数级合并）。只需输出修改的函数，不用输出整个脚本。",
+        "description": "修改当前调试的脚本（不执行）。提供修改后的函数代码，系统自动合并到现有脚本（函数级合并）并做语法检查。只需输出修改的函数，不用输出整个脚本。适用于需要多次修改后再执行的场景。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -99,7 +112,7 @@ RUN_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "run_script",
-        "description": "在沙箱中执行当前调试的脚本，返回执行结果。执行失败时会返回错误信息，根据错误修改脚本后可再次执行。",
+        "description": "在沙箱中执行当前调试的脚本，返回执行结果。执行失败时会返回错误信息和修复提示。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -111,7 +124,92 @@ RUN_SCRIPT_TOOL = {
     },
 }
 
-DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL]
+MODIFY_AND_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "modify_and_run",
+        "description": "修改脚本并立即执行（推荐优先使用）。一步完成：合并代码 → 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
+                "code": {"type": "string", "description": "修改后的函数代码（Python 代码，含 def 定义）"},
+                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等）"},
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL, MODIFY_AND_RUN_TOOL]
+
+# 自定义扩展工具（save_connector + save_llm_adapter）
+SAVE_CONNECTOR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "save_connector",
+        "description": "保存自定义数据源连接器。用户提供自然语言描述，你生成继承 BaseConnector 的 Python 类代码，系统验证后注册。注册后用户即可在数据源管理中创建该类型的数据源。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "连接器类型名（英文小写，如 mongodb、redis）"},
+                "display_name": {"type": "string", "description": "显示名称（如 MongoDB）"},
+                "description": {"type": "string", "description": "连接器描述"},
+                "code": {"type": "string", "description": "Python 类代码，必须继承 BaseConnector，实现 connect/test_connection/get_schema/get_table_data/get_table_stats/close 方法"},
+                "config_template": {"type": "array", "description": "配置项模板", "items": {"type": "object", "properties": {"name": {"type": "string"}, "label": {"type": "string"}, "type": {"type": "string"}, "required": {"type": "boolean"}}}},
+            },
+            "required": ["name", "display_name", "code"],
+        },
+    },
+}
+
+SAVE_LLM_ADAPTER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "save_llm_adapter",
+        "description": "注册或更新大模型 Provider。已存在的 Provider 会被刷新更新。注册后可在模型配置中选择该 Provider。所有 Provider 地位平等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "provider_name": {"type": "string", "description": "厂商标识（英文小写，如 anthropic、google、moonshot）"},
+                "display_name": {"type": "string", "description": "显示名称（如 Anthropic Claude）"},
+                "description": {"type": "string", "description": "Provider 描述"},
+                "api_base": {"type": "string", "description": "API 基础地址（如 https://api.moonshot.cn/v1）"},
+                "models": {"type": "array", "description": "可用模型列表", "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}}},
+                "default_model": {"type": "string", "description": "默认深度模型名（用于深度推理场景，如 glm-5.2、moonshot-v1-128k）"},
+                "fast_model": {"type": "string", "description": "快速模型名（用于简单任务，如 glm-4-flash、moonshot-v1-8k）"},
+                "code": {"type": "string", "description": "适配器类代码（OpenAI 兼容厂商可不传，非兼容厂商必须传）。类必须实现 chat_completion(messages, model, temperature, max_tokens, stream) 方法"},
+            },
+            "required": ["provider_name", "display_name", "api_base"],
+        },
+    },
+}
+
+GET_LLM_CONFIG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_llm_config",
+        "description": "查询当前平台的 LLM 配置信息，包括当前使用的 Provider、模型、API地址、所有已注册的 Provider 列表。用户要求添加或更新模型时，先调用此工具了解现有配置。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+DELETE_LLM_ADAPTER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_llm_adapter",
+        "description": "删除指定的 LLM Provider。用户要求删除、移除某个 Provider 时调用此工具。删除后该 Provider 不可用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "provider_name": {"type": "string", "description": "要删除的 Provider 标识（如 moonshot、deepseek）"},
+            },
+            "required": ["provider_name"],
+        },
+    },
+}
+
+EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_TOOL, GET_LLM_CONFIG_TOOL, DELETE_LLM_ADAPTER_TOOL]
 
 # 加载统一技能规范（单一真相源）
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
@@ -120,33 +218,101 @@ _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else
 DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），正在调试一个脚本。
 
 ## 你的能力（通过工具调用）
-1. **modify_script**: 修改脚本代码（只需输出修改的函数，系统自动合并）
-2. **run_script**: 执行脚本，获取结果
-3. **handoff_to_inspector**: 执行成功后交接给 DataInspector 进行数据质量检查
-4. **query_table_data / get_table_schema / write_table_data**: 查询/写入数据（通用数据处理工具）
+1. **modify_and_run**（推荐）：修改脚本并立即执行，一步到位
+2. **modify_script**: 仅修改脚本（不执行），适用于需要多次修改后再执行的场景
+3. **run_script**: 执行脚本，获取结果
+4. **handoff_to_inspector**: 执行成功后交接给 DataInspector 进行数据质量检查
+5. **query_table_data / get_table_schema / write_table_data**: 查询/写入数据（通用数据处理工具）
 
 ## 工作流程
 1. 分析用户问题或错误信息
-2. 用 modify_script 修改脚本
-3. 用 run_script 执行验证
-4. 如果执行失败，根据错误信息继续修改（自动重试，最多 {max_rounds} 轮）
+2. **先在推理中分析错误根因**，确定修复方向后再改代码
+3. 用 modify_and_run 修改并执行（推荐，一步到位）
+4. 如果执行失败，根据错误信息和修复提示继续修改（自动重试，最多 {max_rounds} 轮）
 5. 执行成功后，用 handoff_to_inspector 交接质量检查
 6. 如果 DataInspector 发现问题，修改脚本修复后重新执行（最多 {max_inspections} 轮检查修复）
 
 ## 规则
-- 修改脚本时只需输出修改的函数，系统会自动合并
+- **优先使用 modify_and_run**，减少不必要的对话轮次
+- 修改脚本时只需输出修改的函数，系统会自动合并并做语法检查
 - run_script 的 parameters 必须包含技能所需的关键参数，不能为空
 - 推理请简洁，直奔重点
+- 看到错误后先分析根因，不要盲目尝试
 - 执行成功后**必须**调用 handoff_to_inspector 交接质量检查
 
 ## 技能规范（脚本必须符合此规范）
 """ + _SKILL_SPEC
 
-DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL]
+DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL] + EXTENSION_TOOLS
 
 
 # 输出长度升级链（S）
 _OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
+
+
+def _analyze_error(error_msg: str) -> str:
+    """分析错误信息，返回修复提示"""
+    if not error_msg:
+        return ""
+    hints = []
+    if "ModuleNotFoundError" in error_msg or "ImportError" in error_msg:
+        import re as _re
+        m = _re.search(r"No module named '(\S+)'", error_msg)
+        mod = m.group(1) if m else "该模块"
+        hints.append(f"缺少依赖模块 {mod}，请检查 import 语句或使用替代方案")
+    elif "KeyError" in error_msg:
+        import re as _re
+        m = _re.search(r"KeyError: (.+)", error_msg)
+        key = m.group(1).strip() if m else ""
+        hints.append(f"字典键 {key} 不存在，请检查键名拼写或数据中是否包含该键")
+    elif "TypeError" in error_msg and "argument" in error_msg:
+        hints.append("参数类型/数量不匹配，请检查函数签名和传参")
+    elif "TypeError" in error_msg:
+        hints.append("类型不匹配，请检查变量类型是否正确")
+    elif "IndexError" in error_msg:
+        hints.append("索引越界，请检查列表/数组长度")
+    elif "ValueError" in error_msg:
+        hints.append("值不合法，请检查参数值范围")
+    elif "AttributeError" in error_msg:
+        import re as _re
+        m = _re.search(r"has no attribute '(\w+)'", error_msg)
+        attr = m.group(1) if m else "该属性"
+        hints.append(f"对象没有属性/方法 '{attr}'，请检查对象类型")
+    elif "SyntaxError" in error_msg:
+        hints.append("语法错误，请检查代码格式（括号、缩进、冒号等）")
+    elif "NameError" in error_msg:
+        import re as _re
+        m = _re.search(r"name '(\w+)' is not defined", error_msg)
+        name = m.group(1) if m else "变量"
+        hints.append(f"变量 '{name}' 未定义，请检查拼写或是否需要 import")
+    elif "FileNotFoundError" in error_msg or "路径不存在" in error_msg:
+        hints.append("文件/路径不存在，请检查路径是否正确")
+    elif "连接" in error_msg or "Connection" in error_msg or "connect" in error_msg.lower():
+        hints.append("数据库连接失败，请检查数据源配置和连接参数")
+    elif "权限" in error_msg or "Permission" in error_msg:
+        hints.append("权限不足，请检查用户权限")
+    elif "表已存在" in error_msg or "already exists" in error_msg:
+        hints.append("表已存在，请使用 if_table_exists 参数处理（如 truncate/drop/append）")
+    elif "列" in error_msg and "不匹配" in error_msg:
+        hints.append("列不匹配，请检查 column_mapping 配置和目标表结构")
+    if hints:
+        return hints[0]
+    return ""
+
+
+def _compute_diff_summary(old_code: str, new_code: str) -> list:
+    """计算代码变更摘要，返回变更行列表"""
+    import difflib
+    old_lines = old_code.splitlines()
+    new_lines = new_code.splitlines()
+    diff = list(difflib.unified_diff(old_lines, new_lines, lineterm='', n=0))
+    changed = []
+    for line in diff:
+        if line.startswith('@@') or line.startswith('---') or line.startswith('+++'):
+            continue
+        if line.startswith('+') or line.startswith('-'):
+            changed.append(line[:200])
+    return changed[:30]
 
 
 class DataProcessorAgent(BaseAgent):
@@ -197,7 +363,7 @@ class DataProcessorAgent(BaseAgent):
                     if issue.get("suggestion"):
                         fix_prompt += f" → 建议: {issue['suggestion']}"
                     fix_prompt += "\n"
-                fix_prompt += "\n请分析问题根源，修复数据，修复完成后使用 handoff_to_inspector 交接再检查。"
+                fix_prompt += "\n请分析问题根源，修复数据，修复完成后使用 handoff_to_inspector 交接再检查。注意：这些都是 error 或 critical 级别问题，需要自动修复。fatal 级别问题不会交接给你（会直接停止），warning 级别问题由用户决定。"
                 local_messages.append({"role": "user", "content": fix_prompt})
             else:
                 user_msg = message.payload.get("user_message", message.payload.get("content", ""))
@@ -221,11 +387,36 @@ class DataProcessorAgent(BaseAgent):
         output_token_idx = 0
         has_preinjected_data = context.get("has_preinjected_data", False)
 
+        # 模型选择 + 降级链（与调试模式一致）
+        chosen_model = llm_manager.pick_model(user_msg, context.get("history", []))
+        from app.services.llm import _circuit
+        degradation_chain = llm_manager._degradation_chain(chosen_model)
+
         for i in range(max_iterations):
             max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
-            response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
-            )
+
+            # 降级链：逐个尝试可用模型
+            response = None
+            for attempt_model in degradation_chain:
+                if not _circuit.is_available(attempt_model):
+                    continue
+                try:
+                    response = await llm_manager.chat_with_tools(
+                        messages=local_messages, tools=self.tools, model=attempt_model,
+                        temperature=0.3, max_tokens=max_tokens
+                    )
+                    _circuit.record_success(attempt_model)
+                    if i == 0:
+                        yield {"type": "model", "content": attempt_model}
+                    break
+                except Exception as e:
+                    _circuit.record_failure(attempt_model)
+                    logger.warning(f"模型 {attempt_model} 调用失败: {e}，尝试降级")
+                    continue
+            if response is None:
+                yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
+                yield {"type": "done", "result": {"error": "all models unavailable"}}
+                return
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
 
@@ -236,6 +427,11 @@ class DataProcessorAgent(BaseAgent):
                 local_messages.append({"role": "assistant", "content": response.get("content") or ""})
                 local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
                 continue
+
+            # 推理过程（GLM 等推理模型返回 reasoning_content）
+            reasoning = response.get("reasoning")
+            if reasoning:
+                yield {"type": "thinking", "content": reasoning}
 
             if not tool_calls:
                 content = response.get("content", "")
@@ -419,7 +615,30 @@ class DataProcessorAgent(BaseAgent):
                         write_skill_script(folder, script_name, merged)
 
                 logger.info(f"debug modify_script: {script_name} 已更新 ({len(merged)} 字符)")
-                return json.dumps({"success": True, "script_name": script_name, "message": "脚本已更新", "merged_preview": merged[:8000]}, ensure_ascii=False)
+
+                # AST 语法预检
+                import ast as _ast
+                try:
+                    _ast.parse(merged)
+                except SyntaxError as _se:
+                    logger.warning(f"modify_script 语法错误: {_se}")
+                    return json.dumps({
+                        "success": False,
+                        "error": f"语法错误（第{_se.lineno}行）: {_se.msg}",
+                        "syntax_error": True,
+                        "merged_preview": merged[:3000],
+                    }, ensure_ascii=False)
+
+                # diff 摘要
+                diff_lines = _compute_diff_summary(current, merged)
+
+                return json.dumps({
+                    "success": True,
+                    "script_name": script_name,
+                    "message": "脚本已更新，语法检查通过",
+                    "merged_preview": merged[:8000],
+                    "changed_lines": diff_lines,
+                }, ensure_ascii=False)
             except Exception as e:
                 logger.warning(f"modify_script 失败: {e}")
                 return json.dumps({"success": False, "error": str(e)})
@@ -479,13 +698,231 @@ class DataProcessorAgent(BaseAgent):
                                or (_inner.get("error") and str(_inner.get("error")).strip()))
                     if not _failed:
                         context["debug_last_success_params"] = parameters
+                    else:
+                        _err = str(result.get("error") or _inner.get("error") or "")
+                        _hint = _analyze_error(_err)
+                        if _hint:
+                            result["error_hint"] = _hint
                     logger.info(f"debug run_script (skill): success={not _failed}")
                     return json.dumps(result, ensure_ascii=False, default=str)
             except Exception as e:
                 logger.warning(f"run_script 失败: {e}")
-                return json.dumps({"success": False, "error": str(e)})
+                _hint = _analyze_error(str(e))
+                return json.dumps({"success": False, "error": str(e), **({"error_hint": _hint} if _hint else {})}, ensure_ascii=False)
+
+        if name == "modify_and_run":
+            # 合并工具：modify_script + run_script 一步到位
+            _modify_result = await self._execute_tool("modify_script", {
+                "code": arguments.get("code", ""),
+                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
+            }, db, user_id, context)
+            try:
+                _mdata = json.loads(_modify_result)
+            except json.JSONDecodeError:
+                _mdata = {"success": False, "error": "modify 结果解析失败"}
+            if not _mdata.get("success"):
+                # 修改失败（含语法错误）→ 直接返回，不执行
+                return _modify_result
+            # 修改成功 → 执行
+            _run_result = await self._execute_tool("run_script", {
+                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
+                "parameters": arguments.get("parameters", {}),
+            }, db, user_id, context)
+            try:
+                _rdata = json.loads(_run_result)
+            except json.JSONDecodeError:
+                _rdata = {"success": False, "error": "run 结果解析失败"}
+            # 合并结果
+            _rdata["modify"] = _mdata
+            _rdata["script_name"] = _mdata.get("script_name", "main.py")
+            return json.dumps(_rdata, ensure_ascii=False, default=str)
+
+        # ---- 自定义扩展工具 ----
+        if name == "save_connector":
+            return await self._handle_save_connector(arguments, db, user_id)
+
+        if name == "save_llm_adapter":
+            return await self._handle_save_llm_adapter(arguments, db, user_id)
+
+        if name == "delete_llm_adapter":
+            return await self._handle_delete_llm_adapter(arguments)
+
+        if name == "get_llm_config":
+            return await self._handle_get_llm_config()
 
         return await execute_shared_tool(name, arguments, db, user_id)
+
+    async def _handle_save_connector(self, arguments: dict, db: AsyncSession, user_id) -> str:
+        """保存自定义数据源连接器：验证代码 → 存 DB → 注册缓存"""
+        import json as _json
+        connector_name = arguments.get("name", "").strip().lower()
+        display_name = arguments.get("display_name", connector_name)
+        description = arguments.get("description", "")
+        code = arguments.get("code", "")
+        config_template = arguments.get("config_template", [])
+
+        if not connector_name or not code:
+            return _json.dumps({"success": False, "error": "缺少 name 或 code"}, ensure_ascii=False)
+
+        # 验证代码：能 exec + 找到 BaseConnector 子类
+        from app.services.connectors import register_custom_connector
+        try:
+            register_custom_connector(connector_name, code)
+        except Exception as e:
+            return _json.dumps({"success": False, "error": f"代码验证失败: {e}"}, ensure_ascii=False)
+
+        # 存入数据库（覆盖同名）— 用独立 session 避免与流式 session 冲突
+        from app.core.database import async_session
+        from app.models.custom_extension import CustomConnector
+        from sqlalchemy import select as sa_select
+        async with async_session() as save_session:
+            existing = await save_session.execute(sa_select(CustomConnector).where(CustomConnector.name == connector_name))
+            record = existing.scalar_one_or_none()
+            if record:
+                record.display_name = display_name
+                record.description = description
+                record.code = code
+                record.config_template = config_template
+                record.is_active = True
+            else:
+                record = CustomConnector(
+                    name=connector_name,
+                    display_name=display_name,
+                    description=description,
+                    code=code,
+                    config_template=config_template,
+                    created_by=user_id,
+                )
+                save_session.add(record)
+            await save_session.commit()
+            logger.info(f"连接器已保存: {connector_name}")
+            return _json.dumps({"success": True, "message": f"连接器 '{display_name}' 已注册，现在可以在数据源管理中创建该类型的数据源"}, ensure_ascii=False)
+
+    async def _handle_save_llm_adapter(self, arguments: dict, db: AsyncSession, user_id) -> str:
+        """注册或更新 LLM Provider：验证代码 → 存 DB → 注册缓存（已存在则刷新）"""
+        import json as _json
+        provider_name = arguments.get("provider_name", "").strip().lower()
+        display_name = arguments.get("display_name", provider_name)
+        description = arguments.get("description", "")
+        api_base = arguments.get("api_base", "")
+        models = arguments.get("models", [])
+        default_model = arguments.get("default_model", "")
+        fast_model = arguments.get("fast_model", "")
+        code = arguments.get("code", "")
+
+        if not provider_name or not api_base:
+            return _json.dumps({"success": False, "error": "缺少 provider_name 或 api_base"}, ensure_ascii=False)
+
+        # 如果有适配器代码，验证；OpenAI 兼容厂商可不传 code
+        if code:
+            from app.services.llm import register_custom_adapter
+            try:
+                register_custom_adapter(provider_name, code)
+            except Exception as e:
+                return _json.dumps({"success": False, "error": f"适配器代码验证失败: {e}"}, ensure_ascii=False)
+
+        # 存入数据库（已存在则更新）— 用独立 session 避免与流式 session 冲突
+        from app.core.database import async_session
+        from app.models.custom_extension import LLMProvider
+        from sqlalchemy import select as sa_select
+        async with async_session() as save_session:
+            existing = await save_session.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == provider_name))
+            record = existing.scalar_one_or_none()
+            if record:
+                record.display_name = display_name
+                record.description = description
+                record.api_base = api_base
+                record.models = models
+                record.default_model = default_model
+                record.fast_model = fast_model
+                if code:
+                    record.code = code
+                record.is_active = True
+            else:
+                record = LLMProvider(
+                    provider_name=provider_name,
+                    display_name=display_name,
+                    description=description,
+                    api_base=api_base,
+                    models=models,
+                    default_model=default_model,
+                    fast_model=fast_model,
+                    code=code or None,
+                    created_by=user_id,
+                )
+                save_session.add(record)
+            await save_session.commit()
+
+        # 刷新内存缓存
+        from app.services.llm import refresh_provider
+        refresh_provider(provider_name, {
+            "display_name": display_name,
+            "description": description,
+            "api_base": api_base,
+            "models": models,
+            "default_model": default_model,
+            "fast_model": fast_model,
+            "code": code or None,
+        })
+
+        logger.info(f"Provider 已保存: {provider_name}")
+        return _json.dumps({"success": True, "message": f"Provider '{display_name}' 已注册，可在模型配置中使用"}, ensure_ascii=False)
+
+    async def _handle_get_llm_config(self) -> str:
+        """查询当前 LLM 配置"""
+        import json as _json
+        from app.services.llm import get_all_providers, get_provider_api_base
+
+        all_providers = []
+        for name, info in get_all_providers().items():
+            all_providers.append({
+                "name": name,
+                "display_name": info.get("display_name", name),
+                "description": info.get("description", ""),
+                "api_base": info.get("api_base", "") or "",
+                "models": info.get("models", []),
+                "fast_model": info.get("fast_model", ""),
+            })
+
+        return _json.dumps({
+            "current_provider": llm_manager.provider,
+            "current_model": llm_manager.model,
+            "current_api_base": llm_manager.api_base or get_provider_api_base(llm_manager.provider) or "",
+            "fast_model": llm_manager.fast_model,
+            "api_key_configured": bool(llm_manager.api_key),
+            "providers": all_providers,
+            "hint": "用户要求注册或更新 Provider 时，始终调用 save_llm_adapter 工具。已存在的 Provider 会被刷新更新。所有 Provider 地位平等。用户要求删除 Provider 时，调用 delete_llm_adapter 工具。"
+        }, ensure_ascii=False)
+
+    async def _handle_delete_llm_adapter(self, arguments: dict) -> str:
+        """删除 LLM Provider"""
+        import json as _json
+        provider_name = arguments.get("provider_name", "").strip().lower()
+        if not provider_name:
+            return _json.dumps({"success": False, "error": "缺少 provider_name"}, ensure_ascii=False)
+
+        from app.core.database import async_session
+        from app.models.custom_extension import LLMProvider
+        from sqlalchemy import select as sa_select
+        async with async_session() as session:
+            result = await session.execute(
+                sa_select(LLMProvider).where(LLMProvider.provider_name == provider_name, LLMProvider.is_active == True)
+            )
+            record = result.scalar_one_or_none()
+            if not record:
+                return _json.dumps({"success": False, "error": f"Provider '{provider_name}' 不存在"}, ensure_ascii=False)
+
+            display_name = record.display_name or provider_name
+            record.is_active = False
+            await session.commit()
+
+        # 从内存缓存移除
+        from app.services.llm import _custom_adapter_cache, _provider_registry
+        _custom_adapter_cache.pop(provider_name, None)
+        _provider_registry.pop(provider_name, None)
+
+        logger.info(f"Provider 已删除: {provider_name}")
+        return _json.dumps({"success": True, "message": f"Provider '{display_name}' ({provider_name}) 已删除"}, ensure_ascii=False)
 
     # ==================== 调试模式 ====================
 
@@ -637,7 +1074,7 @@ class DataProcessorAgent(BaseAgent):
             clear_thinking = False
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.3, max_tokens=8000,
+                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=8000,
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -687,9 +1124,12 @@ class DataProcessorAgent(BaseAgent):
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            # 执行前：如果有 run_script 工具，先通知前端"正在执行"
+            # 执行前：如果有 run_script / modify_and_run 工具，先通知前端"正在执行"
             for tc in tool_calls:
-                if tc["function"]["name"] == "run_script":
+                if tc["function"]["name"] == "modify_and_run":
+                    yield {"type": "executing", "message": "正在修改并执行脚本..."}
+                    break
+                elif tc["function"]["name"] == "run_script":
                     yield {"type": "executing", "message": "正在执行脚本..."}
                     break
 
@@ -710,6 +1150,55 @@ class DataProcessorAgent(BaseAgent):
                         rdata = json.loads(r["content"])
                         if rdata.get("success"):
                             yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                    except Exception:
+                        pass
+
+                elif tool_name == "modify_and_run":
+                    try:
+                        rdata = json.loads(r["content"])
+                        # 修改成功 → yield script_updated
+                        _mdata = rdata.get("modify", {})
+                        if _mdata.get("success"):
+                            yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                        # 执行结果 → yield run_result + 失败检测（同 run_script 逻辑）
+                        yield {"type": "run_result", "result": rdata}
+                        _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
+                        _is_fail = (not rdata.get("success")
+                                    or ("success" in _inner_r and not _inner_r["success"])
+                                    or (rdata.get("error") and str(rdata.get("error")).strip())
+                                    or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
+                        _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
+                        if _is_fail and _err_msg:
+                            _sig = _err_msg[:100]
+                            if _sig == _last_error_sig:
+                                _same_error_count += 1
+                            else:
+                                _last_error_sig = _sig
+                                _same_error_count = 1
+                            folder = context.get("debug_folder")
+                            if folder:
+                                try:
+                                    from app.api.v1.endpoints.skill import append_error_log
+                                    append_error_log(folder, script_name, "execution_error", _err_msg, {}, rdata.get("stdout", ""), "debug-chat")
+                                except Exception:
+                                    pass
+                            if _same_error_count >= 3:
+                                yield {"type": "content", "content": f"\n连续 {_same_error_count} 次出现相同错误，自动停止重试。"}
+                                _should_stop = True
+                                break
+                        elif not _is_fail:
+                            _last_error_sig = None
+                            _same_error_count = 0
+                            _run_succeeded = True
+                            local_messages.append({"role": "user", "content": "脚本执行成功！请调用 handoff_to_inspector 交接数据质量检查。"})
+                            folder = context.get("debug_folder")
+                            if folder:
+                                try:
+                                    from app.services import experience as _exp
+                                    if _exp.read_negative(folder):
+                                        _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -806,7 +1295,7 @@ class DataProcessorAgent(BaseAgent):
 
         full_content = ""
         async for event in llm_manager.chat_stream_with_tools_and_thinking(
-            messages=local_messages, tools=debug_tools, temperature=0.3, max_tokens=4000,
+            messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=4000,
         ):
             if event["type"] in ("thinking", "content"):
                 yield event

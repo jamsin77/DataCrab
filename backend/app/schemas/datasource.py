@@ -7,7 +7,7 @@ from uuid import UUID
 
 from app.services.connectors import SUPPORTED_DATASOURCE_TYPES
 
-_SENSITIVE_KEYS = {"password", "secret_key", "access_key", "secret", "token", "apikey", "api_key"}
+_SENSITIVE_KEYS = {"password", "secret_key", "access_key", "secret", "token", "apikey", "api_key", "user", "username"}
 
 
 def _mask_config(config: dict) -> dict:
