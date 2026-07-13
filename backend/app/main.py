@@ -9,6 +9,7 @@ from loguru import logger
 from app.core.config import settings
 from app.core.database import engine, Base, async_session
 from app.api.v1.router import api_router
+from app.services.task_runner import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
@@ -21,7 +22,9 @@ async def lifespan(app: FastAPI):
     logger.info("数据库表已创建")
     await _load_custom_extensions()
     await _init_llm_from_db()
+    await start_scheduler()
     yield
+    await stop_scheduler()
     logger.info("应用关闭")
 
 

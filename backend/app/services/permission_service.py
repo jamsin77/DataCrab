@@ -10,7 +10,7 @@ from loguru import logger
 from app.models.user import User, Role, Permission, user_roles
 
 
-RESOURCE_TYPES = {"datasource", "operator", "skill", "metadata", "filelink", "notebook", "pipeline", "schedule"}
+RESOURCE_TYPES = {"datasource", "operator", "skill", "metadata", "filelink", "pipeline", "schedule"}
 PERMISSION_LEVELS = {"view", "use", "manage"}
 LEVEL_HIERARCHY = {"view": 1, "use": 2, "manage": 3}
 

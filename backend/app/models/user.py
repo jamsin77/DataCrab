@@ -40,7 +40,6 @@ class User(Base):
     roles = relationship("Role", secondary=user_roles, back_populates="users", lazy="selectin")
     data_sources = relationship("DataSource", back_populates="creator", lazy="selectin")
     chat_sessions = relationship("ChatSession", back_populates="user", lazy="selectin")
-    notebooks = relationship("Notebook", back_populates="user", lazy="selectin")
     file_links = relationship("FileLink", back_populates="creator", lazy="selectin")
 
 

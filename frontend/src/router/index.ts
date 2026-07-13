@@ -23,16 +23,6 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/chat/ChatView.vue'),
       },
       {
-        path: 'notebook',
-        name: 'Notebook',
-        component: () => import('@/views/notebook/NotebookView.vue'),
-      },
-      {
-        path: 'explore',
-        name: 'Explore',
-        component: () => import('@/views/explore/ExploreView.vue'),
-      },
-      {
         path: 'datasource',
         redirect: { path: '/config', query: { tab: 'datasource' } },
       },

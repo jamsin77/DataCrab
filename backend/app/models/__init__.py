@@ -6,7 +6,6 @@ from app.models.skill import Skill
 from app.models.operator import Operator
 from app.models.schedule import Schedule, TaskExecution
 from app.models.chat import ChatSession, ChatMessage
-from app.models.notebook import Notebook, NotebookVersion
 from app.models.filelink import FileLink
 from app.models.pipeline import Pipeline, PipelineExecution
 from app.models.knowledge import KnowledgeDocument, KnowledgeChunk
@@ -25,8 +24,6 @@ __all__ = [
     "TaskExecution",
     "ChatSession",
     "ChatMessage",
-    "Notebook",
-    "NotebookVersion",
     "FileLink",
     "Pipeline",
     "PipelineExecution",

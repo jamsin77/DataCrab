@@ -25,6 +25,7 @@ from app.schemas.schedule import (
     CronValidateResponse,
 )
 from app.api.deps import get_current_user
+from app.services.task_runner import execute_task
 
 router = APIRouter()
 
@@ -236,8 +237,15 @@ async def trigger_schedule(
     await db.flush()
     await db.refresh(execution)
     
-    # TODO: 在后台执行任务
-    # background_tasks.add_task(execute_task, execution.id, schedule, request.task_params)
+    background_tasks.add_task(
+        execute_task,
+        execution_id=execution.id,
+        task_type=schedule.task_type,
+        task_target_id=schedule.task_target_id,
+        task_params=request.task_params or schedule.task_params,
+        user_id=current_user.id,
+        timeout=schedule.timeout or 3600,
+    )
     
     return execution
 

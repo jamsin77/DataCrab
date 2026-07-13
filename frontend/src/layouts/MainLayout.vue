@@ -16,16 +16,6 @@
           <el-icon><ChatDotRound /></el-icon>
           <template #title>对话</template>
         </el-menu-item>
-        <!-- Notebook菜单已隐藏 -->
-        <!-- <el-menu-item index="/notebook">
-          <el-icon><Document /></el-icon>
-          <template #title>Notebook</template>
-        </el-menu-item> -->
-        <!-- 数据探索菜单已隐藏 -->
-        <!-- <el-menu-item index="/explore">
-          <el-icon><DataAnalysis /></el-icon>
-          <template #title>数据探索</template>
-        </el-menu-item> -->
         <!-- 数据源管理已移至「系统配置」 -->
         <!-- <el-menu-item index="/datasource">
           <el-icon><Connection /></el-icon>
@@ -119,8 +109,6 @@ const currentRoute = computed(() => route.path)
 const pageTitle = computed(() => {
   const titles: Record<string, string> = {
     '/chat': '对话',
-    '/notebook': 'Notebook',
-    '/explore': '数据探索',
     '/datasource': '数据源管理',
     '/metadata': '元数据',
     '/knowledge': '知识库',

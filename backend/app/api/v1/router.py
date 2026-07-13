@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, chat, datasource, notebook, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, llm, permission, agents, knowledge, custom_extension
+from app.api.v1.endpoints import auth, chat, datasource, skill, operator, schedule, filelink, config, pipeline, metadata, filesystem, llm, permission, agents, knowledge, custom_extension
 
 api_router = APIRouter()
 
@@ -14,9 +14,6 @@ api_router.include_router(chat.router, prefix="/chat", tags=["对话"])
 
 # 数据源路由
 api_router.include_router(datasource.router, prefix="/datasources", tags=["数据源"])
-
-# Notebook路由
-api_router.include_router(notebook.router, prefix="/notebooks", tags=["Notebook"])
 
 # 技能路由
 api_router.include_router(skill.router, prefix="/skills", tags=["技能"])

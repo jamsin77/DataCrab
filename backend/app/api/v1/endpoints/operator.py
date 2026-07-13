@@ -5,9 +5,7 @@ import time
 import traceback
 import sys
 import json
-import asyncio
 import inspect
-import threading
 from uuid import UUID
 from typing import Optional
 
@@ -35,6 +33,7 @@ from app.schemas.operator import (
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager
 from app.services import experience
+from app.services.sandbox_ns import build_operator_namespace as _build_operator_namespace, run_async_in_thread as _run_async_in_thread
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
 from app.api.deps import get_current_user
 
@@ -49,106 +48,6 @@ async def _system_prompt_with_lessons(db: AsyncSession, current_user: User) -> s
             + lessons[:2000]
         )
     return SYSTEM_PROMPT
-
-
-def _run_async_in_thread(coro):
-    result_container = {}
-    exception_container = {}
-
-    def _runner():
-        loop = asyncio.new_event_loop()
-        try:
-            result_container["value"] = loop.run_until_complete(coro)
-        except Exception as exc:
-            exception_container["value"] = exc
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join(timeout=60)
-
-    if "value" in exception_container:
-        raise exception_container["value"]
-    if thread.is_alive():
-        raise RuntimeError("查询超时（60秒）")
-    return result_container.get("value")
-
-
-def _build_operator_namespace(current_user_id):
-    import pandas as pd
-
-    def query_table_data(datasource_id, table_name, **kwargs):
-        args = {"datasource_id": str(datasource_id), "table_name": table_name, **kwargs}
-
-        async def _run():
-            async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("query_table_data", args, db, current_user_id)
-
-        result = json.loads(_run_async_in_thread(_run()))
-        if isinstance(result, dict) and "rows" in result and "columns" in result:
-            return pd.DataFrame(result["rows"], columns=result["columns"])
-        if isinstance(result, dict) and "error" in result:
-            raise RuntimeError(result["error"])
-        return result
-
-    def get_table_schema(datasource_id, table_name):
-        args = {"datasource_id": str(datasource_id), "table_name": table_name}
-
-        async def _run():
-            async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
-
-        return json.loads(_run_async_in_thread(_run()))
-
-    def get_datasource_id_by_name(name):
-        async def _run():
-            async with async_session() as db:
-                from sqlalchemy import select as _select
-                from app.models.datasource import DataSource as _DS
-                result = await db.execute(_select(_DS).where(_DS.name == name))
-                ds = result.scalar_one_or_none()
-                if ds is None:
-                    return json.dumps({"error": f"未找到数据源: {name}"})
-                return json.dumps({"id": str(ds.id), "name": ds.name, "type": ds.type})
-
-        result = json.loads(_run_async_in_thread(_run()))
-        if "error" in result:
-            raise RuntimeError(result["error"])
-        return result["id"]
-
-    def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
-        """在算子脚本中直接调用大模型"""
-        from app.services.llm import llm_manager
-
-        async def _run():
-            await llm_manager.initialize()
-            if system_prompt:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ]
-                return await llm_manager.chat_with_messages(
-                    messages, temperature=temperature, max_tokens=max_tokens
-                )
-            return await llm_manager.chat(
-                prompt, temperature=temperature, max_tokens=max_tokens
-            )
-
-        return _run_async_in_thread(_run())
-
-    return {
-        "query_table_data": query_table_data,
-        "get_table_schema": get_table_schema,
-        "get_datasource_id_by_name": get_datasource_id_by_name,
-        "llm_chat": llm_chat,
-        "pd": pd,
-        "json": json,
-    }
-
-router = APIRouter()
 
 
 def _validate_operator_script(script_content: str, current_user_id) -> tuple[bool, str]:
@@ -201,6 +100,9 @@ def _strip_code_fences(raw_code: str) -> str:
             lines = lines[:-1]
         script_content = "\n".join(lines).strip()
     return script_content
+
+
+router = APIRouter()
 
 
 @router.post("/upload", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
