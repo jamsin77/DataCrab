@@ -406,24 +406,23 @@ async def sync_datasource_metadata(
 
         await db.flush()
 
-        # 删除数据源中已不存在的表的元数据
-        if current_table_names:
-            stale_result = await db.execute(
-                select(TableMetadata).where(
-                    TableMetadata.data_source_id == ds.id,
-                    ~TableMetadata.table_name.in_(current_table_names),
-                )
+        # 删除数据源中已不存在的表的元数据（即使 current_table_names 为空也执行——清理全部）
+        stale_result = await db.execute(
+            select(TableMetadata).where(
+                TableMetadata.data_source_id == ds.id,
+                ~TableMetadata.table_name.in_(current_table_names) if current_table_names else True,
             )
-            stale_metas = stale_result.scalars().all()
-            for stale in stale_metas:
-                await db.delete(stale)
-            if stale_metas:
-                logger.info(f"数据源 [{ds.name}] 清理过期元数据: {len(stale_metas)} 张表")
+        )
+        stale_metas = stale_result.scalars().all()
+        for stale in stale_metas:
+            await db.delete(stale)
+        if stale_metas:
+            logger.info(f"数据源 [{ds.name}] 清理过期元数据: {len(stale_metas)} 张表")
     finally:
         await connector.close()
 
-    logger.info(f"数据源 [{ds.name}] 元数据同步完成: {synced_count} 张表")
-    return {"synced": synced_count, "datasource": ds.name}
+    logger.info(f"数据源 [{ds.name}] 元数据同步完成: {synced_count} 张表, 清理 {len(stale_metas)} 张过期表")
+    return {"synced": synced_count, "deleted_stale": len(stale_metas), "datasource": ds.name}
 
 
 @router.get("/datasources/{datasource_id}")

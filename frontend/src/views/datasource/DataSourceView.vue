@@ -630,7 +630,7 @@ async function syncMetadata(row: any) {
   row._syncing = true
   try {
     const res = await api.post(`/metadata/datasources/${row.id}/sync`, {}, { timeout: 120000 })
-    ElMessage.success(`元数据同步完成: ${res.synced} 张表`)
+    ElMessage.success(`元数据同步完成: ${res.synced} 张表${res.deleted_stale ? `，清理 ${res.deleted_stale} 张过期表` : ''}`)
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || '同步失败')
   } finally {
