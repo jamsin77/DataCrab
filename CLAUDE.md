@@ -33,11 +33,14 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex） |
 | `skill_library.py` | 技能向量索引（numpy + 磁盘持久化：.npy + JSON） |
 | `skill_runner.py` | 技能脚本沙箱执行 |
+| `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
+| `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
+| `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
 | `connectors.py` | 数据源连接器（8 种：PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
 | `personal.md` | 助手人格与安全红线定义 |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-18 个端点文件，主要：
+17 个端点文件，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试
@@ -179,3 +182,13 @@ DataProcessorAgent（统一入口）
 | **沙箱函数文档统一** | skill.py + prompt_docs.py | debug-chat 内联沙箱函数描述（缺返回类型）→ 引用共享 `SANDBOX_TOOLS_DOC`；修复 AI 误把 `get_table_data()` 返回的 dict 当 DataFrame 导致 `'dict' object has no attribute 'columns'` |
 | **数据源刷新只刷当前表** | DataSourceView.vue | 刷新按钮从重载整个表列表+跳回第一张表 → 只刷新当前选中表数据 |
 | **对话推理过程自动滚动** | ChatView.vue | 推理流式输出自动展开 + 即时滚动（smooth→auto），修复 smooth 动画被高频 token 打断导致不滚动 |
+
+### 第七轮（调度系统落地 + 死代码清理 + EP 中文化）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **调度系统后台执行** | task_runner.py（新增）+ schedule.py | `execute_task()` 按 task_type 分派到 skill（to_thread）/ operator（exec+func）/ pipeline（await execute_pipeline）；trigger 端点接入 BackgroundTasks 实际执行；更新 TaskExecution + Schedule 记录 |
+| **定时调度扫描器** | task_runner.py + main.py | 30s 间隔扫描 `next_run_at <= now()` 的 active 调度；并发控制（concurrent_runs）+ next_run_at 重算防重复触发；lifespan 启停（start_scheduler/stop_scheduler） |
+| **沙箱命名空间抽出** | sandbox_ns.py（新增）+ operator.py | `build_operator_namespace` + `run_async_in_thread` 从 operator.py 端点移至 service 层，消除 API→service 反向依赖；operator.py 删除 2 个函数 + 2 个死 import（asyncio/threading） |
+| **Element Plus 中文化** | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
+| **死代码清理** | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行） |

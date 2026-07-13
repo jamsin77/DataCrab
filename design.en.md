@@ -249,15 +249,9 @@ AI: Creating the pipeline...
 - Data table preview + export
 - Chart visualization - streaming response (typewriter effect)
 
-#### 2.1.3 Notebook Data Analysis Environment (Deprecated)
+#### 2.1.3 Notebook Data Analysis Environment (Removed)
 
-> **Deprecated**: The Notebook module only retains basic models and API endpoints; the frontend no longer has a standalone Notebook page. Data analysis is replaced by the chat interface (Chat) and operator/skill execution.
-
-~~The Notebook interface provides a code editing and execution environment as a supplement to conversational interaction.~~
-##### Core Features
-- Code cells (independently executable)
-- Markdown cells (documentation) - execution result display
-- Kernel management (Python/SQL) - save/share/export
+> **Removed**: The Notebook module (frontend + backend + model + schema + routes) has been completely deleted. Data analysis is handled by the chat interface (Chat) and operator/skill execution.
 
 ##### Layout
 ```
@@ -1245,13 +1239,10 @@ Executes Skill scripts in an isolated subprocess, supporting:
   - Built-in skill examples (select, filter, sort, groupby, aggregate, join, fillna, dropna, rename, stats)
   - Skill registration and retrieval
 
-##### skill_executor.py - Skill Executor
+##### skill_executor.py - Execution Context & Result Data Structures
 - ExecutionContext: execution context (session ID, user ID, variables, DataFrame)
-- SkillExecutor: supports multiple executor types:
-  - python_function: dynamically load a Python module function
-  - lambda: safely execute a lambda expression
-  - operator_reference: reference a registered operator
-  - skill_composition: compose multiple skills into a Pipeline
+- ExecutionResult: execution result (success/output/error/logs/metrics)
+- Used by nl_data_processor; SkillExecutor class and built-in skill functions have been removed (unused)
 
 #### 2.5.6 Frontend
 
@@ -2699,36 +2690,38 @@ A new "Data Inspection" page where users can actively select a data source and t
 ### 2.9 Scheduling System Module
 
 #### 2.9.1 Scheduling Architecture
+
+The scheduling system consists of `schedule.py` (API endpoints) + `task_runner.py` (background execution + scheduled scan):
+
 ```
 ┌───────────────────────────────────────────────┐
 │               Scheduler Service               │
 ├───────────────────────────────────────────────┤
 │   ┌───────────────────────────────────────┐   │
-│   │  Schedule Manager                     │   │
-│   │  - Schedule config management         │   │
-│   │  - Schedule policy config             │   │
-│   │  - Schedule history records           │   │
+│   │  Schedule Manager (schedule.py)       │   │
+│   │  - Schedule config CRUD               │   │
+│   │  - Pause/resume/manual trigger        │   │
+│   │  - Cron expression validation         │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Cron Scheduler                       │   │
-│   │  - Cron expression parsing            │   │
-│   │  - Scheduled task triggering          │   │
-│   │  - Task queue management              │   │
+│   │  Task Runner (task_runner.py)         │   │
+│   │  - execute_task(): dispatch by type   │   │
+│   │    skill → asyncio.to_thread          │   │
+│   │    operator → exec+func               │   │
+│   │    pipeline → await execute_pipeline  │   │
+│   │  - Update TaskExecution + Schedule    │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Event Scheduler                      │   │
-│   │  - Event listening                    │   │
-│   │  - Event triggering                   │   │
-│   │  - Real-time scheduling               │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Task Executor                        │   │
-│   │  - Task execution                     │   │
-│   │  - Status monitoring                  │   │
-│   │  - Failure retry                      │   │
+│   │  Scheduler Loop (task_runner.py)      │   │
+│   │  - 30s interval scan next_run_at<=now │   │
+│   │  - Concurrency control (concurrent)   │   │
+│   │  - next_run_at recompute (dedup)      │   │
+│   │  - lifespan start/stop                │   │
 │   └───────────────────────────────────────┘   │
 └───────────────────────────────────────────────┘
 ```
+
+> **Implementation**: Manual trigger (`POST /schedules/{id}/trigger`) calls `execute_task` via FastAPI `BackgroundTasks`; scheduled scanning is performed by `_scheduler_loop` started with `asyncio.create_task` at app startup, scanning due active schedules every 30 seconds. `sandbox_ns.py` provides the operator sandbox namespace (`build_operator_namespace`), shared by `task_runner` and `operator.py`.
 
 #### 2.9.2 Schedule Configuration Model
 ```python
@@ -3726,7 +3719,11 @@ PUT    /api/v1/schedules/{id}           # Update schedule
 DELETE /api/v1/schedules/{id}           # Delete schedule
 POST   /api/v1/schedules/{id}/pause     # Pause schedule
 POST   /api/v1/schedules/{id}/resume    # Resume schedule
+POST   /api/v1/schedules/{id}/trigger   # Manual trigger (BackgroundTasks)
 GET    /api/v1/schedules/{id}/executions # Get execution history
+GET    /api/v1/schedules/executions/{exec_id} # Get execution detail
+POST   /api/v1/schedules/validate-cron  # Cron expression validation
+GET    /api/v1/schedules/stats/overview # Schedule stats overview
 ```
 
 #### Natural Language Processing API (Deprecated)

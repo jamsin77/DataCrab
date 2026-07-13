@@ -118,6 +118,8 @@ A pipeline is DataCrab's core orchestration concept—**each pipeline is a Pytho
 - **Schedule types**: Cron expression, fixed interval (seconds), manual trigger
 - Cron expression validation and next-run preview
 - Pause/resume schedules
+- **Background execution**: On manual trigger or scheduled scan, `task_runner.py` dispatches to skill/operator/pipeline executors and updates execution records & schedule status
+- **Scheduled scan worker**: 30-second interval auto-scan for due schedules, concurrency control (`concurrent_runs`) + `next_run_at` recompute to prevent duplicate triggers, app lifespan start/stop
 - Task execution tracking: status, duration, logs, retry count
 
 ### 9. LLM Public API
@@ -224,6 +226,8 @@ DataCrab/
 │   │       ├── skill_parser.py   # SKILL.md parser
 │   │       ├── skill_runner.py   # Subprocess sandbox executor
 │   │       ├── skill_creator.py  # AI skill-package generator
+│   │       ├── sandbox_ns.py     # Operator sandbox namespace (extracted from operator.py)
+│   │       ├── task_runner.py    # Scheduled task background executor + scan worker
 │   │       ├── pipeline_builder.py  # Pipeline generator
 │   │       ├── pipeline_executor.py # Pipeline execution engine
 │   │       ├── connectors.py    # 6 data-source connectors
@@ -231,7 +235,7 @@ DataCrab/
 │   └── data/skills/           # Skill package on-disk storage
 ├── frontend/                   # Frontend app
 │   ├── src/
-│   │   ├── views/             # 14 page views
+│   │   ├── views/             # 11 page views
 │   │   ├── router/            # Routing config
 │   │   ├── stores/            # Pinia state management
 │   │   ├── api/               # Axios API client
@@ -299,7 +303,6 @@ All API routes are prefixed with `/api/v1/`:
 | `/agents` | Agent list, run agent, data inspection |
 | `/permissions` | Permission management |
 | `/filesystem` | Filesystem browsing |
-| `/notebooks` | Notebook basic CRUD |
 
 ---
 

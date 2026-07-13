@@ -125,6 +125,8 @@ assets/           # 静态资源
 - **调度类型**：Cron 表达式、固定间隔（秒）、手动触发
 - Cron 表达式校验及下次执行时间预览
 - 暂停/恢复调度
+- **后台实际执行**：手动触发或定时扫描后，`task_runner.py` 按 task_type 分派到 skill/operator/pipeline 执行器，更新执行记录与调度状态
+- **定时调度扫描器**：30 秒间隔自动扫描到期调度，并发控制（`concurrent_runs`）+ `next_run_at` 重算防重复触发，应用 lifespan 启停
 - 任务执行追踪：状态、耗时、日志、重试次数
 
 ### 9. 大模型公开 API
@@ -232,6 +234,8 @@ DataCrab/
 │   │       ├── skill_parser.py   # SKILL.md 解析器
 │   │       ├── skill_runner.py   # 子进程沙盒执行器
 │   │       ├── skill_creator.py  # AI 技能包生成器
+│   │       ├── sandbox_ns.py     # 算子沙箱命名空间（从 operator.py 抽出）
+│   │       ├── task_runner.py    # 调度任务后台执行器 + 定时扫描器
 │   │       ├── pipeline_builder.py  # 流程生成器
 │   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 8 种数据源连接器
@@ -242,7 +246,7 @@ DataCrab/
 │   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
 │   ├── src/
-│   │   ├── views/             # 14 个页面视图
+│   │   ├── views/             # 11 个页面视图
 │   │   ├── router/            # 路由配置
 │   │   ├── stores/            # Pinia 状态管理
 │   │   ├── api/               # Axios API 客户端
@@ -310,7 +314,6 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 | `/agents` | 智能体列表、运行智能体、数据检查 |
 | `/permissions` | 权限管理 |
 | `/filesystem` | 文件系统浏览 |
-| `/notebooks` | Notebook 基础 CRUD |
 
 ---
 

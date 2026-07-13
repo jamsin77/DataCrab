@@ -245,15 +245,9 @@ AI：正在创建Pipeline...
 - 代码块语法高亮 + 一键复制/执行
 - 数据表格预览 + 导出
 - 图表可视化 - 流式响应（打字机效果）
-#### 2.1.3 Notebook数据分析环境设计（已废弃）
+#### 2.1.3 Notebook数据分析环境（已移除）
 
-> **已废弃**：Notebook 模块仅保留基础模型和 API 端点，前端已无独立 Notebook 页面。数据分析功能由对话界面（Chat）和算子/技能执行替代。
-
-~~Notebook 界面为用户提供代码编辑和执行环境，作为对话交互的补充。~~
-##### 核心功能
-- 代码单元格（可单独执行）
-- Markdown单元格（文档说明）- 执行结果展示
-- 内核管理（Python/SQL）- 保存/分享/导出
+> **已移除**：Notebook 模块（前后端 + model + schema + 路由）已完全删除。数据分析功能由对话界面（Chat）和算子/技能执行替代。
 
 ##### 界面布局
 ```
@@ -1227,13 +1221,10 @@ tags: [filter, transform]
   - 内置技能示例（select, filter, sort, groupby, aggregate, join, fillna, dropna, rename, stats）
   - 技能注册和检索机制
 
-##### skill_executor.py - 技能执行器
+##### skill_executor.py - 执行上下文与结果数据结构
 - ExecutionContext: 执行上下文（会话ID、用户ID、变量、DataFrame）
-- SkillExecutor: 支持多种执行器类型：
-  - python_function: 动态加载 Python 模块函数
-  - lambda: 安全执行 lambda 表达式
-  - operator_reference: 引用已注册的算子
-  - skill_composition: 组合多个技能形成 Pipeline
+- ExecutionResult: 执行结果（success/output/error/logs/metrics）
+- 供 nl_data_processor 使用；SkillExecutor 类及内置技能函数已删除（无人调用）
 
 #### 2.5.6 前端界面
 
@@ -3185,36 +3176,38 @@ class ComposedCode(Base):
 ### 2.9 调度系统模块
 
 #### 2.9.1 调度架构
+
+调度系统由 `schedule.py`（API 端点）+ `task_runner.py`（后台执行 + 定时扫描）组成：
+
 ```
 ┌───────────────────────────────────────────────┐
 │               Scheduler Service               │
 ├───────────────────────────────────────────────┤
 │   ┌───────────────────────────────────────┐   │
-│   │  Schedule Manager                     │   │
-│   │  - 调度配置管理                       │   │
-│   │  - 调度策略配置                       │   │
-│   │  - 调度历史记录                       │   │
+│   │  Schedule Manager (schedule.py)       │   │
+│   │  - 调度配置 CRUD                      │   │
+│   │  - 暂停/恢复/手动触发                 │   │
+│   │  - Cron 表达式校验                    │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Cron Scheduler                       │   │
-│   │  - Cron表达式解析                     │   │
-│   │  - 定时任务触发                       │   │
-│   │  - 任务队列管理                       │   │
+│   │  Task Runner (task_runner.py)         │   │
+│   │  - execute_task(): 后台执行分派       │   │
+│   │    skill → asyncio.to_thread          │   │
+│   │    operator → exec+func               │   │
+│   │    pipeline → await execute_pipeline  │   │
+│   │  - 更新 TaskExecution + Schedule      │   │
 │   └───────────────────────────────────────┘   │
 │   ┌───────────────────────────────────────┐   │
-│   │  Event Scheduler                      │   │
-│   │  - 事件监听                           │   │
-│   │  - 事件触发                           │   │
-│   │  - 实时调度                           │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Task Executor                        │   │
-│   │  - 任务执行                           │   │
-│   │  - 状态监控                           │   │
-│   │  - 失败重试                           │   │
+│   │  Scheduler Loop (task_runner.py)      │   │
+│   │  - 30s 间隔扫描 next_run_at <= now    │   │
+│   │  - 并发控制 (concurrent_runs)         │   │
+│   │  - next_run_at 重算防重复触发         │   │
+│   │  - lifespan 启停                      │   │
 │   └───────────────────────────────────────┘   │
 └───────────────────────────────────────────────┘
 ```
+
+> **实现说明**：手动触发（`POST /schedules/{id}/trigger`）通过 FastAPI `BackgroundTasks` 调用 `execute_task`；定时扫描由 `_scheduler_loop` 在应用启动时 `asyncio.create_task` 创建，30 秒间隔扫描到期的 active 调度。`sandbox_ns.py` 提供算子沙箱命名空间（`build_operator_namespace`），供 `task_runner` 和 `operator.py` 共用。
 
 #### 2.9.2 调度配置模型
 ```python
@@ -4240,7 +4233,11 @@ PUT    /api/v1/schedules/{id}           # 更新调度
 DELETE /api/v1/schedules/{id}           # 删除调度
 POST   /api/v1/schedules/{id}/pause     # 暂停调度
 POST   /api/v1/schedules/{id}/resume    # 恢复调度
+POST   /api/v1/schedules/{id}/trigger   # 手动触发（BackgroundTasks 后台执行）
 GET    /api/v1/schedules/{id}/executions # 获取执行历史
+GET    /api/v1/schedules/executions/{exec_id} # 获取执行详情
+POST   /api/v1/schedules/validate-cron  # Cron 表达式校验
+GET    /api/v1/schedules/stats/overview # 调度统计概览
 ```
 
 #### 自然语言处理API（已废弃）
