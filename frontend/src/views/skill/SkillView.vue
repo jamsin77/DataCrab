@@ -981,6 +981,8 @@ async function handleGenerate() {
           const msg = genMessages.value[genMessages.value.length - 1]
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
             if (!msg.thinking) msg.thinkingOpen = true
@@ -1107,7 +1109,9 @@ async function handleModifySkill() {
       try {
         const data = JSON.parse(trimmed.slice(6))
         const msg = modifyMessages.value[modifyMessages.value.length - 1]
-        if (data.type === 'thinking') {
+        if (data.type === 'clear_thinking') {
+          msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+        } else if (data.type === 'thinking') {
           if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
           if (!msg.thinking) msg.thinkingOpen = true
           msg.thinking = (msg.thinking || '') + data.content
@@ -1863,6 +1867,8 @@ async function handleRunSkill() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
@@ -1975,6 +1981,8 @@ async function handleRunSkillNL() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
@@ -2130,6 +2138,8 @@ async function handleRunCmd() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'

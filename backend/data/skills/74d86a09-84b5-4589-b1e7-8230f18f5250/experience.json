@@ -1,0 +1,41 @@
+{
+  "negative": [
+    {
+      "timestamp": "2026-07-15T10:10:27.698349",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp77ntyj5f.py\", line 771, in <module>\n    result = semantic_merge_data(input_data, **params) if input_data is not None else semantic_merge_data(**params)\n                                                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: semantic_merge_data() got an unexpected keyword argument 'additional_columns'",
+      "parameters": {
+        "output_table_name": "文物库",
+        "if_table_exists": "truncate",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "filter_condition": "文物跟地址有关的",
+        "merge_field": "备注",
+        "additional_columns": {
+          "ID": {
+            "type": "str",
+            "default_value": "0",
+            "auto_generate": true
+          },
+          "时间戳": {
+            "type": "datetime",
+            "default_value": "now",
+            "auto_generate": true
+          },
+          "省份": {
+            "type": "str",
+            "default_value": "",
+            "auto_generate": true
+          }
+        }
+      },
+      "stdout_preview": "",
+      "context_summary": ""
+    }
+  ],
+  "positive": [],
+  "lessons": ""
+}

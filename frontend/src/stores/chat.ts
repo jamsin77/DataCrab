@@ -105,6 +105,13 @@ export const useChatStore = defineStore('chat', () => {
             currentModel.value = event.content || ''
             return
           }
+          if (event.type === 'clear_thinking') {
+            msg.reasoning = ''
+            msg.content = ''
+            streamingReasoning.value = ''
+            streamingContent.value = ''
+            return
+          }
           if ((event.type === 'reasoning' || event.type === 'thinking') && event.content) {
             msg.reasoning = (msg.reasoning || '') + event.content
             streamingReasoning.value = msg.reasoning || ''
