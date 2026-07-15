@@ -864,6 +864,8 @@ async function handleDebugSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'ping') {
+            // SSE 心跳，忽略
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''

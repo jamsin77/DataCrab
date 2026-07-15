@@ -1110,6 +1110,13 @@ class DataProcessorAgent(BaseAgent):
         system_prompt = self.build_debug_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
 
+        # 注入跨 handoff 调试历史（避免 DataProcessor 忘记之前尝试过什么）
+        if context.get("debug_session_log"):
+            local_messages.append({
+                "role": "user",
+                "content": f"## 之前调试历史（避免重复已失败的修复方向）\n{context['debug_session_log']}"
+            })
+
         # 注入历史
         history = context.get("history", [])
         if history:
@@ -1159,12 +1166,15 @@ class DataProcessorAgent(BaseAgent):
         _same_error_count = 0
         _should_stop = False
         _run_succeeded = False  # run_script 成功过
+        script_name = context.get("debug_script_name", "main.py")  # 供经验记录使用
+        _error_counted_this_round = False  # 防止同轮多工具失败重复计数
 
         yield {"type": "model", "content": llm_manager.pick_model(user_msg, history)}
 
         for i in range(max_iterations):
             # 每轮重建 system prompt（含最新脚本内容，让 AI 看到自己的修改）
             local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context)}
+            _error_counted_this_round = False  # 每轮重置，防止同轮多工具重复计数
 
             # 第2轮起：yield 轮次事件（前端分轮展示）
             if i > 0:
@@ -1175,7 +1185,6 @@ class DataProcessorAgent(BaseAgent):
             thinking_content = ""
             tool_calls = []
             finish_reason = None
-            clear_thinking = False
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=8000,
@@ -1192,12 +1201,11 @@ class DataProcessorAgent(BaseAgent):
                 elif t == "finish":
                     finish_reason = event["finish_reason"]
                 elif t == "clear_thinking":
+                    # 长度升级：清空已流式的内容/推理/工具调用，升级后的响应会继续流式输出
                     yield event
-                    clear_thinking = True
                     content = ""
-
-            if clear_thinking:
-                continue  # 长度升级，重试
+                    thinking_content = ""
+                    tool_calls = []
 
             if not tool_calls:
                 # 无工具调用 → 检查反幻觉
@@ -1205,7 +1213,11 @@ class DataProcessorAgent(BaseAgent):
                     local_messages.append({"role": "assistant", "content": content})
                     local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
                     continue
-                # content 已在流式循环中逐块 yield，此处不再重复发送
+                # 如果之前做过工具调用，AI 输出纯文本 = 放弃修复
+                # → break 走 give_up 流程（分析原因 + 存经验），而非直接 return
+                if had_any_tool_calls:
+                    break
+                # 从未做过工具调用 → 直接结束
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
@@ -1235,10 +1247,13 @@ class DataProcessorAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            # 记录 assistant 消息
+            # 记录 assistant 消息（含推理摘要，让下一轮 LLM 能看到自己的根因分析）
+            _msg_content = content
+            if thinking_content:
+                _msg_content = f"{content}\n\n[上轮推理摘要] {thinking_content[:500]}" if content else f"[上轮推理摘要] {thinking_content[:500]}"
             local_messages.append({
                 "role": "assistant",
-                "content": content,
+                "content": _msg_content,
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
@@ -1289,12 +1304,14 @@ class DataProcessorAgent(BaseAgent):
                         if _is_fail:
                             if not _err_msg:
                                 _err_msg = "执行返回失败（success=False），无明确错误信息"
-                            _sig = _err_msg[:100]
-                            if _sig == _last_error_sig:
-                                _same_error_count += 1
-                            else:
-                                _last_error_sig = _sig
-                                _same_error_count = 1
+                            if not _error_counted_this_round:
+                                _sig = _err_msg[:100]
+                                if _sig == _last_error_sig:
+                                    _same_error_count += 1
+                                else:
+                                    _last_error_sig = _sig
+                                    _same_error_count = 1
+                                _error_counted_this_round = True
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
@@ -1307,6 +1324,8 @@ class DataProcessorAgent(BaseAgent):
                                 yield {"type": "content", "content": f"\n连续 {_same_error_count} 次出现相同错误，自动停止重试。"}
                                 _should_stop = True
                                 break
+                            elif _same_error_count >= 2:
+                                local_messages.append({"role": "user", "content": f"⚠️ 这个错误已连续出现 {_same_error_count} 次，说明你的修复方向可能不对。请尝试完全不同的修复策略，不要做微调。如果确实无法修复，请说明原因。"})
                         elif not _is_fail:
                             _last_error_sig = None
                             _same_error_count = 0
@@ -1337,13 +1356,15 @@ class DataProcessorAgent(BaseAgent):
                         _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
 
                         if _is_fail and _err_msg:
-                            # 重复错误检测：取错误前 100 字作签名
-                            _sig = _err_msg[:100]
-                            if _sig == _last_error_sig:
-                                _same_error_count += 1
-                            else:
-                                _last_error_sig = _sig
-                                _same_error_count = 1
+                            # 重复错误检测：取错误前 100 字作签名（同轮不重复计数）
+                            if not _error_counted_this_round:
+                                _sig = _err_msg[:100]
+                                if _sig == _last_error_sig:
+                                    _same_error_count += 1
+                                else:
+                                    _last_error_sig = _sig
+                                    _same_error_count = 1
+                                _error_counted_this_round = True
 
                             # 经验记录：失败 → 反例 + 错误日志
                             folder = context.get("debug_folder")
@@ -1360,6 +1381,8 @@ class DataProcessorAgent(BaseAgent):
                                 yield {"type": "content", "content": f"\n连续 {_same_error_count} 次出现相同错误，自动停止重试。"}
                                 _should_stop = True
                                 break
+                            elif _same_error_count >= 2:
+                                local_messages.append({"role": "user", "content": f"⚠️ 这个错误已连续出现 {_same_error_count} 次，说明你的修复方向可能不对。请尝试完全不同的修复策略，不要做微调。如果确实无法修复，请说明原因。"})
                         elif not _is_fail:
                             # 成功 → 记录正例 + 停止重试
                             _last_error_sig = None
@@ -1382,6 +1405,26 @@ class DataProcessorAgent(BaseAgent):
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
+                        # 保存调试历史到 context（供 DataInspector 回交后参考）
+                        _session_entries = []
+                        for _msg in local_messages:
+                            if _msg["role"] == "tool":
+                                try:
+                                    _td = json.loads(_msg["content"])
+                                    if isinstance(_td, dict):
+                                        if not _td.get("success"):
+                                            _e = str(_td.get("error") or _td.get("message") or "")[:150]
+                                            _session_entries.append(f"  - 失败: {_e}")
+                                        elif _td.get("modify"):
+                                            _session_entries.append("  - 脚本修改成功")
+                                        elif _td.get("result") is not None:
+                                            _session_entries.append("  - 执行成功")
+                                except Exception:
+                                    pass
+                        _new_log = "\n".join(_session_entries[-10:])
+                        _prev_log = context.get("debug_session_log", "")
+                        context["debug_session_log"] = (_prev_log + f"\n[第{_inspection_round+1}轮调试]\n" + _new_log)[-2000:]
+
                         yield {
                             "type": "handoff",
                             "to": result_data["to"],
@@ -1397,13 +1440,18 @@ class DataProcessorAgent(BaseAgent):
             if _should_stop:
                 break
 
-        # 成功 → 直接结束（不做 give_up 分析）
-        if _run_succeeded:
+        # 成功且未被后续失败覆盖 → 直接结束（不做 give_up 分析）
+        if _run_succeeded and not _should_stop:
             yield {"type": "done", "result": {"agent": self.name, "content": "执行成功"}}
             return
 
-        # 轮次耗尽或重复错误 → 让 AI 分析无法修复的原因
-        _reason = f"连续 {_same_error_count} 次相同错误" if _same_error_count >= 3 else f"已达到最大调试轮次（{max_iterations}）"
+        # 轮次耗尽或重复错误或 AI 主动放弃 → 让 AI 分析无法修复的原因
+        if _same_error_count >= 3:
+            _reason = f"连续 {_same_error_count} 次相同错误"
+        elif had_any_tool_calls and not _should_stop:
+            _reason = f"AI 在第 {i+1} 轮主动停止修复"
+        else:
+            _reason = f"已达到最大调试轮次（{max_iterations}）"
         feedback_msg = (
             f"{_reason}，脚本仍然执行失败。\n"
             "请分析以上错误信息，判断是否确实无法修复。\n"
@@ -1418,10 +1466,15 @@ class DataProcessorAgent(BaseAgent):
         async for event in llm_manager.chat_stream_with_tools_and_thinking(
             messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=4000,
         ):
-            if event["type"] in ("thinking", "content"):
+            t = event["type"]
+            if t == "thinking":
                 yield event
-                if event["type"] == "content":
-                    full_content += event["content"]
+            elif t == "content":
+                full_content += event["content"]
+                yield event
+            elif t == "clear_thinking":
+                yield event
+                full_content = ""
         yield {"type": "give_up", "reason": full_content[:2000]}
 
         # 将"无法修复"的原因分析存入经验库，下次调试可直接参考

@@ -7,6 +7,9 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 from app.services.skill_parser import parse_skill_md, build_skill_md
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+from app.services.tool_guidance import get_tool_guidance
+from app.services.agent_utils import get_anti_hallucination_section
 
 
 # 加载统一技能规范（单一真相源）
@@ -14,11 +17,115 @@ _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.m
 SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
 
+# 常见陷阱警告
+_COMMON_PITFALLS = """
+## 常见陷阱（必须避免）
+
+### 1. query_table_data 返回 dict，不是 DataFrame
+```python
+# ❌ 错误：直接当 DataFrame 用
+result = query_table_data(ds_id, table_name)
+print(result.columns)  # AttributeError: 'dict' object has no attribute 'columns'
+
+# ✅ 正确：从 dict 取出 data 构造 DataFrame
+result = query_table_data(ds_id, table_name)
+if not result.get("success"):
+    raise ValueError(f"查询失败: {result.get('error')}")
+df = pd.DataFrame(result["data"], columns=result["columns"])
+```
+
+### 2. 不要用 if result: 判断查询成功
+```python
+# ❌ 错误（空 dict 或 success=False 的 dict 行为不可预测）
+if result:
+    process(result)
+
+# ✅ 正确
+if result.get("success") and result.get("data") is not None:
+    process(result["data"])
+```
+
+### 3. 不要用 if data: 判断 DataFrame 是否为空
+```python
+# ❌ 错误（会抛 ValueError: truth value of DataFrame is ambiguous）
+if df:
+    process(df)
+
+# ✅ 正确
+if df is not None and not df.empty:
+    process(df)
+```
+
+### 4. write_table_data 的 records 参数是 list[dict]，不是 DataFrame
+```python
+# ❌ 错误（传 DataFrame）
+write_table_data(ds_id, table_name, records=df)
+
+# ✅ 正确（转成 list[dict]）
+write_table_data(ds_id, table_name, records=df.to_dict(orient="records"), if_table_exists="replace")
+```
+
+### 5. write_table_data 返回 dict，检查 success 字段
+```python
+# ❌ 错误
+write_table_data(ds_id, table_name, records=data)
+print("写入成功")
+
+# ✅ 正确
+result = write_table_data(ds_id, table_name, records=data, if_table_exists="replace")
+if not result.get("success"):
+    raise ValueError(f"写入失败: {result.get('message')}")
+```
+
+### 6. 完整端到端示例：查询 → 处理 → 写回
+```python
+def main(datasource_name, table_name, output_table=None):
+    ds_id = get_datasource_id_by_name(datasource_name)
+    if not ds_id:
+        raise ValueError(f"找不到数据源: {datasource_name}")
+
+    # 查询
+    result = query_table_data(ds_id, table_name)
+    if not result.get("success"):
+        raise ValueError(f"查询失败: {result.get('error')}")
+    df = pd.DataFrame(result["data"], columns=result["columns"])
+    if df.empty:
+        return {"success": True, "message": "无数据", "count": 0}
+
+    # 处理
+    df["processed_at"] = pd.Timestamp.now().isoformat()
+    print(f"处理完成: {len(df)} 行")
+
+    # 写回
+    target = output_table or table_name
+    write_result = write_table_data(
+        ds_id, target,
+        records=df.to_dict(orient="records"),
+        if_table_exists="replace",
+    )
+    if not write_result.get("success"):
+        raise ValueError(f"写入失败: {write_result.get('message')}")
+
+    return {"success": True, "count": len(df), "target_table": target}
+```
+"""
+
+
 SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab 数据工程智能体创建 Skills。
 
 ## 技能规范（必须严格遵守）
 
 """ + SKILL_SPEC + """
+
+""" + SANDBOX_TOOLS_DOC + """
+
+""" + _COMMON_PITFALLS + """
+
+""" + SAFETY_RULES_DOC + """
+
+""" + get_tool_guidance() + """
+
+""" + get_anti_hallucination_section("standard") + """
 
 ## 输出格式（严格遵守）
 你必须在一次回复中输出完整的 Skill 包内容。使用以下分隔符：
@@ -183,7 +290,7 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=8000,
         )
     except Exception as e:
         logger.error(f"Skill Creator 生成失败: {e}")

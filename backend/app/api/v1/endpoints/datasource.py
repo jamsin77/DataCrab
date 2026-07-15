@@ -480,6 +480,75 @@ async def internal_llm_chat(body: dict):
         reset_user_llm_config()
 
 
+@router.post("/internal/llm/vision")
+async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部 LLM 视觉端点（无认证，仅供技能执行器子进程本机调用）。
+    读取图片 → base64 编码 → 发送给视觉大模型 → 返回文本。"""
+    import base64
+    from pathlib import Path
+    from app.models.filelink import FileLink
+    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
+
+    user_id = body.get("user_id")
+    image_path = body.get("image_path", "")
+    prompt = body.get("prompt", "")
+    if not image_path or not prompt:
+        raise HTTPException(status_code=400, detail="image_path 和 prompt 必填")
+
+    # 路径校验（同 read_file）
+    result = await db.execute(
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+    )
+    links = result.scalars().all()
+    allowed_dirs = [f.path for f in links if f.link_type == "directory"]
+    for f in links:
+        if f.link_type == "file":
+            allowed_dirs.append(str(Path(f.path).parent))
+
+    validated = _validate_file_path(image_path, allowed_dirs)
+    p = Path(validated)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="图片文件不存在")
+
+    ext = p.suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"):
+        raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext}")
+
+    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
+    mime = mime_map.get(ext, "image/jpeg")
+
+    try:
+        image_data = base64.b64encode(p.read_bytes()).decode("utf-8")
+        if user_id:
+            await init_user_llm_context(user_id)
+        await llm_manager.initialize()
+
+        system_prompt = body.get("system_prompt")
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
+                {"type": "text", "text": prompt},
+            ],
+        })
+
+        result_text = await llm_manager.chat_with_messages(
+            messages,
+            temperature=body.get("temperature", 0.3),
+            max_tokens=int(body.get("max_tokens", 2000)),
+        )
+        return {"content": result_text}
+    except Exception as e:
+        logger.error(f"内部 LLM 视觉异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        reset_user_llm_config()
+
+
 # ==================== 内部 SQL 执行端点 ====================
 
 @router.post("/internal/datasources/{datasource_id}/sql")

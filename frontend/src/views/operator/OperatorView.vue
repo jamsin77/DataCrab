@@ -255,7 +255,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showGenerateDialog" title="AI 生成算子" width="650px" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" title="AI 生成算子" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-form label-width="80px">
         <el-form-item label="需求描述">
           <el-input
@@ -304,7 +304,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showModifyDialog" title="AI 修改算子" width="650px" :close-on-press-escape="false" @closed="onModifyDialogClosed">
+    <el-dialog v-model="showModifyDialog" title="AI 修改算子" width="95%" top="2vh" :close-on-press-escape="false" @closed="onModifyDialogClosed">
       <div v-if="modifyTarget" class="modify-target-info">
         <el-tag>{{ modifyTarget.display_name || modifyTarget.name }}</el-tag>
         <span class="modify-desc">{{ modifyTarget.description || '暂无描述' }}</span>
@@ -1268,6 +1268,8 @@ async function handleOpSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'ping') {
+            // SSE 心跳，忽略
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
@@ -1473,7 +1475,13 @@ onMounted(() => {
 .debug-layout {
   display: flex;
   gap: 16px;
-  height: 75vh;
+  height: calc(92vh - 60px);
+}
+
+.gen-msg-list {
+  max-height: calc(92vh - 280px);
+  overflow-y: auto;
+  padding: 4px 0;
 }
 
 .debug-left {

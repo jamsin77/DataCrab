@@ -1,16 +1,16 @@
 <template>
   <div class="config-container">
     <el-tabs v-model="activeTab" @tab-change="handleTabChange">
-      <el-tab-pane label="数据源管理" name="datasource">
-        <DataSourceView />
-      </el-tab-pane>
       <el-tab-pane label="智能体设置" name="agent">
         <AgentConfigView />
+      </el-tab-pane>
+      <el-tab-pane label="数据源管理" name="datasource">
+        <DataSourceView />
       </el-tab-pane>
       <el-tab-pane label="模型设置" name="model">
         <ModelConfigView />
       </el-tab-pane>
-      <el-tab-pane label="数据标准库" name="standards">
+      <el-tab-pane label="数据规则管理" name="standards">
         <DataStandardsConfig />
       </el-tab-pane>
       <el-tab-pane label="权限管理" name="permission">

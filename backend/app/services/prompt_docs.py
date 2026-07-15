@@ -66,6 +66,16 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
   - 用途: 在脚本中调用AI进行文本分析、翻译、分类、摘要、数据质量检查等
   - 示例: `result = llm_chat("分析这组数据的趋势", system_prompt="你是数据分析师")`
 
+- `llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_tokens=2000)` → str: 图片理解/OCR
+  - image_path: 图片文件路径（必须在文件链接授权目录内）
+  - prompt: 要问的问题，如"提取图片中的所有文字"或"描述图片内容"
+  - system_prompt: 可选系统提示词
+  - temperature: 温度（默认0.3，图片识别用低温度更准确）
+  - max_tokens: 最大返回token数（默认2000）
+  - 返回: 大模型的文本回复
+  - 用途: OCR文字识别、图片内容描述、关键信息提取、图片分类等
+  - 支持格式: png/jpg/jpeg/bmp/webp/gif/tiff
+
 ### 内置变量
 - `pd` (pandas) 和 `json` 已内置，无需再 import
 

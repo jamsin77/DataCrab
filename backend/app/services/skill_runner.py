@@ -36,6 +36,7 @@ SKILL_RUNNER_TEMPLATE = """
 import json
 import sys
 import traceback
+import urllib.error
 import pandas as pd
 
 ALLOWED_IMPORTS = {{"pd": pd, "json": json, "numpy": __import__("numpy") if "numpy" in sys.modules else None}}
@@ -83,29 +84,57 @@ def _sanitize_nans(obj):
         return [_sanitize_nans(v) for v in obj]
     return obj
 
+def _http_err(e):
+    # 从 urllib HTTPError 中提取后端返回的实际错误信息
+    try:
+        body = e.read().decode("utf-8")
+        import json as _j
+        detail = _j.loads(body).get("detail") or _j.loads(body).get("error") or body
+        return str(detail)
+    except Exception:
+        return str(e)
+
+def _resolve_ds(datasource_id):
+    # 数据源名称 → UUID（如果不是 UUID 格式则尝试解析）
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            return _resolved
+    return str(datasource_id)
+
 def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_by=None):
     print(f"[SkillRunner] query_table: ds={{datasource_id}}, table={{table_name}}, limit={{limit}}")
-    import urllib.request
+    import urllib.request, urllib.parse
     page = (offset // limit) + 1 if limit > 0 else 1
-    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables/{{table_name}}/data?page={{page}}&page_size={{limit}}"
+    _tn = urllib.parse.quote(str(table_name))
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
+    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data?page={{page}}&page_size={{limit}}"
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return pd.DataFrame(data.get("rows", []))
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] query failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return pd.DataFrame()
     except Exception as e:
         print(f"[SkillRunner] query failed: {{e}}")
         return pd.DataFrame()
 
 def _dc_get_table_schema(datasource_id, table_name):
-    import urllib.request
-    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/schema"
+    import urllib.request, urllib.parse
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
+    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/schema"
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] schema failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return []
     except Exception as e:
         print(f"[SkillRunner] schema failed: {{e}}")
-        return {{"columns": [], "row_count": 0}}
+        return []
 
 def _dc_get_datasource_id_by_name(name):
     import urllib.request
@@ -146,6 +175,9 @@ def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
         with urllib.request.urlopen(_req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("content", "")
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] llm_chat failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return ""
     except Exception as e:
         print(f"[SkillRunner] llm_chat failed: {{e}}")
         return ""
@@ -157,7 +189,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
         if _resolved:
             datasource_id = _resolved
     _records = data if data is not None else records
-    import urllib.request
+    import urllib.request, urllib.parse
     _kwargs = {{}}
     if if_table_exists and if_table_exists != "fail":
         _kwargs["if_table_exists"] = if_table_exists
@@ -167,11 +199,17 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
         _kwargs["column_remarks"] = column_remarks
     _kwargs.update(extra)
     _payload = json.dumps({{"records": _sanitize_nans(_records or []), **_kwargs}}).encode("utf-8")
-    _url = f"http://localhost:8000/api/v1/internal/datasources/{{datasource_id}}/tables/{{table_name}}/data"
+    _tn = urllib.parse.quote(str(table_name))
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
+    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data"
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] write_table_data failed: HTTP {{e.code}} {{_msg}}")
+        return {{"success": False, "message": _msg}}
     except Exception as e:
         print(f"[SkillRunner] write_table_data failed: {{e}}")
         return {{"success": False, "message": str(e)}}
@@ -189,12 +227,16 @@ def list_tables(datasource_id):
         _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
         if _resolved:
             datasource_id = _resolved
-    import urllib.request
-    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables"
+    import urllib.request, urllib.parse
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
+    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables"
     try:
         with urllib.request.urlopen(_url, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] list_tables failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return []
     except Exception as e:
         print(f"[SkillRunner] list_tables failed: {{e}}")
         return []
@@ -210,13 +252,18 @@ def iter_table_data(datasource_id, table_name, chunk_size=10000):
         _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
         if _resolved:
             datasource_id = _resolved
-    import urllib.request
+    import urllib.request, urllib.parse
+    _tn = urllib.parse.quote(str(table_name))
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
     page = 1
     while True:
-        _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables/{{table_name}}/chunks?chunk_size={{chunk_size}}&page={{page}}"
+        _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/chunks?chunk_size={{chunk_size}}&page={{page}}"
         try:
             with urllib.request.urlopen(_url, timeout=120) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            print(f"[SkillRunner] iter_table_data page {{page}} failed: HTTP {{e.code}} {{_http_err(e)}}")
+            break
         except Exception as e:
             print(f"[SkillRunner] iter_table_data page {{page}} failed: {{e}}")
             break
@@ -236,14 +283,19 @@ def execute_sql(datasource_id, sql, params=None, limit=10000):
         _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
         if _resolved:
             datasource_id = _resolved
-    import urllib.request
+    import urllib.request, urllib.parse
     _payload = json.dumps({{"sql": sql, "limit": int(limit)}}).encode("utf-8")
-    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/sql"
+    _ds = urllib.parse.quote(str(datasource_id), safe='')
+    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/sql"
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return {{"success": True, "data": data.get("rows", []), "columns": data.get("columns", []), "row_count": data.get("row_count", 0)}}
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] execute_sql failed: HTTP {{e.code}} {{_msg}}")
+        return {{"success": False, "data": [], "columns": [], "row_count": 0, "error": _msg}}
     except Exception as e:
         print(f"[SkillRunner] execute_sql failed: {{e}}")
         return {{"success": False, "data": [], "columns": [], "row_count": 0, "error": str(e)}}
@@ -267,6 +319,9 @@ def read_file(path, format=None):
         elif fmt == "csv":
             return {{"columns": data.get("columns", []), "rows": data.get("rows", [])}}
         return data.get("content", "")
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] read_file failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return ""
     except Exception as e:
         print(f"[SkillRunner] read_file failed: {{e}}")
         return ""
@@ -283,6 +338,10 @@ def write_file(path, data, format=None):
     try:
         with urllib.request.urlopen(_req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] write_file failed: HTTP {{e.code}} {{_msg}}")
+        return {{"success": False, "error": _msg}}
     except Exception as e:
         print(f"[SkillRunner] write_file failed: {{e}}")
         return {{"success": False, "error": str(e)}}
@@ -300,6 +359,28 @@ def compute_map(fn, partitions, backend="local", **kwargs):
     from app.services.compute_backend import compute_map as _cm
     return _cm(fn, partitions, backend=backend, **kwargs)
 
+def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_tokens=2000):
+    # 图片理解/OCR（发送图片到视觉大模型，返回文本）
+    # image_path: 图片文件路径（必须在文件链接授权目录内）
+    # prompt: 要问的问题，如"提取图片中的所有文字"或"描述图片内容"
+    # system_prompt: 可选系统提示词
+    # temperature: 温度（默认0.3，图片识别用低温度更准确）
+    # max_tokens: 最大返回token数（默认2000）
+    # 返回: str 大模型的文本回复
+    import urllib.request
+    _payload = json.dumps({{"image_path": image_path, "prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens), "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/llm/vision", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("content", "")
+    except urllib.error.HTTPError as e:
+        print(f"[SkillRunner] llm_vision failed: HTTP {{e.code}} {{_http_err(e)}}")
+        return ""
+    except Exception as e:
+        print(f"[SkillRunner] llm_vision failed: {{e}}")
+        return ""
+
 # Inject into builtins so scripts using get_data_accessor() can find them
 import builtins as _builtins
 _builtins.get_table_data = get_table_data
@@ -311,6 +392,7 @@ _builtins.iter_table_data = iter_table_data
 _builtins.read_file = read_file
 _builtins.write_file = write_file
 _builtins.compute_map = compute_map
+_builtins.llm_vision = llm_vision
 _builtins.llm_chat = llm_chat
 _builtins.log = log
 _builtins.get_datasource_id_by_name = _dc_get_datasource_id_by_name
@@ -449,7 +531,7 @@ def run_skill_script(
             errors="replace",
             timeout=timeout,
             cwd=str(skill_path),
-            env={**os.environ, "PYTHONPATH": str(backend_path)},
+            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8"},
         )
         elapsed_ms = (time.perf_counter() - start) * 1000
 

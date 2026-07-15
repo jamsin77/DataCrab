@@ -118,7 +118,7 @@
     </el-dialog>
 
     <!-- ==================== AI 生成对话框 ==================== -->
-    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="680px" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           Skill Creator 将根据需求描述生成完整 Skill 包（SKILL.md + 脚本）
@@ -172,12 +172,14 @@
     </el-dialog>
 
     <!-- ==================== 技能详情/修改 Drawer ==================== -->
-    <el-drawer
+    <el-dialog
       v-model="detailDrawer"
       :title="detailSkill?.display_name || detailSkill?.name || '技能详情'"
-      size="70%"
+      width="95%"
+      top="2vh"
       destroy-on-close
       :close-on-press-escape="false"
+      class="detail-dialog"
     >
       <div v-if="detailSkill" class="detail-container">
         <div class="nl-modify-section">
@@ -327,7 +329,7 @@
           </el-tab-pane>
         </el-tabs>
       </div>
-    </el-drawer>
+    </el-dialog>
 
     <!-- ==================== 调试技能 Dialog ==================== -->
     <el-dialog
@@ -338,6 +340,7 @@
       destroy-on-close
       :close-on-click-modal="false"
       :close-on-press-escape="false"
+      :before-close="handleDebugBeforeClose"
       @closed="resetDebug"
     >
       <div v-if="debugSkill" class="debug-layout">
@@ -1241,6 +1244,14 @@ watch(debugDrawer, (newVal, oldVal) => {
     nextTick(() => { debugDrawer.value = true })
   }
 })
+
+function handleDebugBeforeClose(done: () => void) {
+  if (debugStreaming.value || execRunning.value) {
+    ElMessage.warning('正在执行中，请先等待完成或点击停止')
+    return
+  }
+  done()
+}
 
 // 执行面板
 const execRunning = ref(false)
@@ -2302,6 +2313,8 @@ async function handleDebugSend() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'ping') {
+            // SSE 心跳，忽略
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
@@ -2397,7 +2410,9 @@ async function handleDebugSend() {
         msg.content = '*[已停止生成]*'
       }
     } else {
-      debugMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+      const msg = debugMessages.value[assistantIdx]
+      const errHint = `⚠ 连接已断开: ${e.message || String(e)}`
+      msg.content = msg.content ? `${msg.content}\n\n${errHint}` : errHint
     }
   } finally {
     debugStreaming.value = false
@@ -2538,9 +2553,17 @@ onMounted(() => {
   color: #909399;
 }
 
-// Detail Drawer
+// Detail Dialog
 .detail-container {
   padding: 0 4px;
+  max-height: calc(92vh - 60px);
+  overflow-y: auto;
+}
+
+.gen-msg-list {
+  max-height: calc(92vh - 280px);
+  overflow-y: auto;
+  padding: 4px 0;
 }
 
 .detail-preview-label {
@@ -2747,7 +2770,7 @@ onMounted(() => {
 .debug-layout {
   display: flex;
   gap: 16px;
-  height: calc(85vh - 60px);
+  height: calc(92vh - 60px);
 }
 
 .debug-left {

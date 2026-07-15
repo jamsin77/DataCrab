@@ -466,8 +466,19 @@ async def debug_pipeline_chat(
         import asyncio
         from app.services.llm import init_user_llm_context
         await init_user_llm_context(current_user.id)
+
+        runtime_gen = runtime.run("data_processor", message, context)
+
         try:
-            async for event in runtime.run("data_processor", message, context):
+            while True:
+                try:
+                    event = await asyncio.wait_for(runtime_gen.__anext__(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                    continue
+                except StopAsyncIteration:
+                    break
+
                 t = event.get("type")
                 if t == "agent_switch":
                     agent = event.get("agent")
@@ -483,6 +494,7 @@ async def debug_pipeline_chat(
                     pass
                 else:
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"

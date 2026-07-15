@@ -60,14 +60,10 @@ DATA_INSPECTOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "profile_data",
-            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据",
+            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据。无需传参，自动检查当前数据源和表",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "表名"},
-                },
-                "required": ["datasource_id", "table_name"],
+                "properties": {},
             },
         },
     },
@@ -75,19 +71,16 @@ DATA_INSPECTOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "check_data_standards",
-            "description": "检查数据是否符合命名规范、类型标准、编码规范",
+            "description": "检查数据是否符合命名规范、类型标准、编码规范。无需传参，自动检查当前数据源和表",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "表名"},
                     "standard_rules": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "检查规则列表，如 ['naming_convention', 'type_consistency', 'encoding_check']",
                     },
                 },
-                "required": ["datasource_id", "table_name"],
             },
         },
     },
@@ -95,19 +88,16 @@ DATA_INSPECTOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "check_data_quality",
-            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性",
+            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性。无需传参，自动检查当前数据源和表",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "表名"},
                     "quality_dimensions": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "质量维度，如 ['completeness', 'uniqueness', 'validity', 'consistency']",
                     },
                 },
-                "required": ["datasource_id", "table_name"],
             },
         },
     },
@@ -115,14 +105,10 @@ DATA_INSPECTOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "check_data_security",
-            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性",
+            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性。无需传参，自动检查当前数据源和表",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "表名"},
-                },
-                "required": ["datasource_id", "table_name"],
+                "properties": {},
             },
         },
     },
@@ -275,7 +261,6 @@ class DataInspectorAgent(BaseAgent):
             content = ""
             tool_calls = []
             finish_reason = None
-            clear_thinking = False
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=8000,
@@ -292,11 +277,8 @@ class DataInspectorAgent(BaseAgent):
                     finish_reason = event["finish_reason"]
                 elif t == "clear_thinking":
                     yield event
-                    clear_thinking = True
                     content = ""
-
-            if clear_thinking:
-                continue  # 长度升级，重试
+                    tool_calls = []
 
             if not tool_calls:
                 # 反幻觉：防"只规划不执行"（K）
@@ -409,31 +391,27 @@ class DataInspectorAgent(BaseAgent):
     async def _execute_tool(self, name: str, arguments: dict, db, context: Dict) -> str:
         logger.info(f"DataInspector执行工具: {name}")
 
+        # 自动从 context 填充数据源和表名（LLM 无需手动传参，避免中文表名复制错误）
+        ds_id = arguments.get("datasource_id") or context.get("current_datasource_id", "")
+        tbl = arguments.get("table_name") or context.get("current_table_name", "")
+        if not ds_id or not tbl:
+            return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
+
         if name == "profile_data":
-            result = await inspector_tools.profile_data(
-                arguments["datasource_id"], arguments["table_name"], db
-            )
+            result = await inspector_tools.profile_data(ds_id, tbl, db)
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "check_data_standards":
             result = await inspector_tools.check_data_standards(
-                arguments["datasource_id"],
-                arguments["table_name"],
-                db,
-                arguments.get("standard_rules"),
+                ds_id, tbl, db, arguments.get("standard_rules"),
             )
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "check_data_quality":
             result = await inspector_tools.check_data_quality(
-                arguments["datasource_id"],
-                arguments["table_name"],
-                db,
-                arguments.get("quality_dimensions"),
+                ds_id, tbl, db, arguments.get("quality_dimensions"),
             )
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "check_data_security":
-            result = await inspector_tools.check_data_security(
-                arguments["datasource_id"], arguments["table_name"], db
-            )
+            result = await inspector_tools.check_data_security(ds_id, tbl, db)
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "check_etl_quality":
             result = await inspector_tools.check_etl_quality(

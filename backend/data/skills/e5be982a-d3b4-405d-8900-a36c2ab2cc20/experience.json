@@ -312,6 +312,147 @@
       "context_summary": ""
     }
   ],
-  "positive": [],
-  "lessons": "## 分析\n\n**根因明确**：沙箱中的 `query_table_data` 函数**无法读取 `generic_file` 类型数据源的数据**，所有尝试都返回 `{'success': True, 'data': [], 'columns': [], 'row_count': 0}`。这是平台沙箱环境的限制，不是代码 bug。\n\n**但可以修复**：我可以用平台工具读取全部71行数据，然后作为参数传入脚本。让我先获取所有数据。"
+  "positive": [
+    {
+      "timestamp": "2026-07-15T11:30:45.417816",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': False, 'error': 'Դ��������', 'message': 'Դ�� ���е�ͼƬ ���ؿ�����'}"
+    },
+    {
+      "timestamp": "2026-07-15T11:48:16.502216",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息提取结果",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': False, 'error': 'Դ��������', 'message': 'Դ�� ���е�ͼƬ ���ؿ�����'}"
+    },
+    {
+      "timestamp": "2026-07-15T12:33:14.877982",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "提取的关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': False, 'error': 'Դ��������', 'message': 'Դ�� ���е�ͼƬ ���ؿ�����'}"
+    },
+    {
+      "timestamp": "2026-07-15T14:41:37.295640",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息表",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': False, 'error': 'Դ��������', 'message': 'Դ�� ���е�ͼƬ ���ؿ�����'}"
+    },
+    {
+      "timestamp": "2026-07-15T14:57:19.272078",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息提取结果",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': False, 'error': '源表无数据', 'message': '源表 所有的图片 返回空数据'}"
+    },
+    {
+      "timestamp": "2026-07-15T15:40:21.425109",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "提取的关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 71, 'target_table': '提取的关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type"
+    },
+    {
+      "timestamp": "2026-07-15T16:32:31.797539",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息提取结果",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 71, 'target_table': '关键信息提取结果', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_typ"
+    }
+  ],
+  "lessons": "## 错误分析结论\n\n经过多轮测试，确认此错误**在脚本层面无法修复**，属于平台层面的限制。\n\n---\n\n### 错误根因\n\n| 测试项 | 结果 | 说明 |\n|--------|------|------|\n| `write_table_data` → 凭证检索库（PostgreSQL，0表） | ❌ HTTP 404 | 所有策略（fail/truncate/replace/overwrite）均 404 |\n| `write_table_data` → 文物库（PostgreSQL，4表） | ❌ HTTP 404 | **有表的 PostgreSQL 也 404**，排除\"表不存在\"原因 |\n| `records` 参数方式 | ❌ 404 | — |\n| `data` (DataFrame) 参数方式 | ❌ DataFrame 真值判断异常 | 沙箱内 `write_table_data` 不支持 DataFrame 参数 |\n| `save_file_to_link`（CSV 导出 fallback） | ❌ `name 'save_file_to_link' is not defined` | 该函数是**平台工具**，未注入沙箱环境 |\n\n### 无法修复的原因\n\n1. **PostgreSQL 连接器不支持写入**：`write_table_data` 是沙箱注入的平台函数，它调用 DataCrab 后端 API 执行写入。对 PostgreSQL 数据源（无论\"凭证检索库\"还是\"文物库\"），后端写入接口统一返回 HTTP 404。这说明 **PostgreSQL 连接器未实现写入方法**（只支持读取 query/schema，不支持 CREATE TABLE / INSERT）。\n\n2. **CSV 导出 fallback 不可用**：`save_file_to_link` 是我（助手）可以直接调用的平台工具，但它**不是沙箱注入函数**，脚本内无法调用。\n\n3. **脚本数据处理逻辑完全正常**：71 条数据全部读取成功，7 种凭证类型全部识别（0 个未知），ID 和时间戳正确生成。唯一卡在写入环节。\n\n---\n\n### 可行的替代方案\n\n虽然脚本内无法写入 PostgreSQL，但我可以**用平台工具直接保存 CSV**。需要你确认：\n\n- **方案 A**：我直接用 `save_file_to_link` 工具将处理结果导出为 CSV，保存到你的文件链接目录（`d:\\wenwu\\export\\credential_extracted_info.csv`）\n- **方案 B**：将目标改为 Excel 数据源（如\"文物列表\"或\"交易数据\"），测试 Excel 连接器是否支持写入\n\n你希望用哪个方案？"
 }

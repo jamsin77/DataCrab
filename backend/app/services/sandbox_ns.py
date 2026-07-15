@@ -270,11 +270,66 @@ def build_operator_namespace(current_user_id):
         from app.services.compute_backend import compute_map as _cm
         return _cm(fn, partitions, backend=backend, **kwargs)
 
+    def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_tokens=2000):
+        """图片理解/OCR（发送图片到视觉大模型，返回文本）"""
+        import base64 as _b64
+        from pathlib import Path
+
+        async def _run():
+            async with async_session() as db:
+                from sqlalchemy import select as _select
+                from app.models.filelink import FileLink
+                result = await db.execute(_select(FileLink).where(
+                    FileLink.is_active == True, FileLink.created_by == current_user_id
+                ))
+                links = result.scalars().all()
+                allowed = [f.path for f in links if f.link_type == "directory"]
+                for f in links:
+                    if f.link_type == "file":
+                        allowed.append(str(Path(f.path).parent))
+
+                resolved = Path(image_path).resolve()
+                ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"路径不在授权目录范围内: {image_path}")
+                if not resolved.exists():
+                    raise RuntimeError(f"图片文件不存在: {image_path}")
+
+                ext = resolved.suffix.lower()
+                mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                            ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
+                mime = mime_map.get(ext, "image/jpeg")
+                image_data = _b64.b64encode(resolved.read_bytes()).decode("utf-8")
+
+                from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
+                if current_user_id:
+                    await init_user_llm_context(current_user_id)
+                try:
+                    await llm_manager.initialize()
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    })
+                    return await llm_manager.chat_with_messages(
+                        messages, temperature=temperature, max_tokens=max_tokens,
+                    )
+                finally:
+                    reset_user_llm_config()
+
+        return run_async_in_thread(_run())
+
     return {
         "query_table_data": query_table_data,
         "get_table_schema": get_table_schema,
         "get_datasource_id_by_name": get_datasource_id_by_name,
         "llm_chat": llm_chat,
+        "llm_vision": llm_vision,
         "execute_sql": execute_sql,
         "list_tables": list_tables,
         "iter_table_data": iter_table_data,

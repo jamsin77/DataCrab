@@ -1,7 +1,7 @@
 ---
 name: semantic-merge-records
 description: 按条件筛选源数据，基于字段语义与大模型匹配将源数据归并到目标数据中，支持归并校验
-version: "1.0.0"
+version: "1.0.1"
 tags:
   - 归并
   - 语义匹配
@@ -12,7 +12,7 @@ tags:
 # 语义归并结构化数据
 
 ## 功能说明
-从指定数据源表中，按筛选条件选出"源数据"（待归并数据），剩余数据作为"目标数据"。利用大模型对指定字段的语义进行相似性匹配，将源数据归并到语义最相似的目标记录中。
+从指定数据源表中，按筛选条件选出"源数据"（待归并数据），剩余数据作为"目标数据"。利用大模型对指定字段的语义进行相似性匹配，将源数据归并到语义最相似的目标记录中。归并后的数据默认写入一张新的数据表，不影响原始表数据。
 
 **归并策略**：
 - `keep_target`：匹配成功时保留目标记录、丢弃源记录（默认）
@@ -21,6 +21,10 @@ tags:
 **校验规则**：
 1. 归并后总条数 ≤ 原始总条数（不应增多）
 2. 减少条数 ≤ 源数据条数（减少的不超过被归并的）
+
+## 注意事项
+- 如果用到翻译，尽量使用文本翻译算子，而非在归并流程中自行处理翻译逻辑。
+- 归并结果默认写入新表 `{table_name}_merged`，不会覆盖原始表。
 
 ## 使用方式
 ```
@@ -38,7 +42,7 @@ tags:
 | `table_name` | str | ✅ | - | 表名 |
 | `filter_condition` | str | ✅ | - | 筛选条件，支持 `列名==值`、`列名!=值`、`列名 contains 值` 或自然语言 |
 | `merge_field` | str | ✅ | - | 用于语义匹配的字段名 |
-| `output_table_name` | str | ❌ | 同 table_name | 输出表名 |
+| `output_table_name` | str | ❌ | {table_name}_merged | 输出表名，默认生成新表 |
 | `if_table_exists` | str | ❌ | overwrite | 写入策略：fail/append/replace/overwrite/truncate/upsert |
 | `merge_strategy` | str | ❌ | keep_target | 归并策略：keep_target/merge_fields |
 | `batch_size` | int | ❌ | 1000 | 数据写入批次大小 |

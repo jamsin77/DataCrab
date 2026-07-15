@@ -53,7 +53,6 @@ from app.services.skill_parser import (
 )
 from app.api.deps import get_current_user
 from app.models.datasource import DataSource
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC
 
 router = APIRouter()
 
@@ -713,9 +712,7 @@ async def run_skill_stream(
                                     if _r.get("content"):
                                         _summary = _r["content"][:500]
                                     break
-                                elif _t == "tool_result":
-                                    pass
-                                else:
+                                elif _t in ("thinking", "model", "clear_thinking"):
                                     yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
@@ -1102,9 +1099,7 @@ async def run_skill_nl_stream(
                                     if _result.get("content"):
                                         _summary = _result["content"][:500]
                                     break
-                                elif _t == "tool_result":
-                                    pass
-                                else:
+                                elif _t in ("thinking", "model", "clear_thinking"):
                                     yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
@@ -1235,8 +1230,19 @@ async def debug_skill_chat(
         import asyncio
         from app.services.llm import init_user_llm_context
         await init_user_llm_context(current_user.id)
+
+        runtime_gen = runtime.run("data_processor", message, context)
+
         try:
-            async for event in runtime.run("data_processor", message, context):
+            while True:
+                try:
+                    event = await asyncio.wait_for(runtime_gen.__anext__(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                    continue
+                except StopAsyncIteration:
+                    break
+
                 t = event.get("type")
                 if t == "agent_switch":
                     agent = event.get("agent")
@@ -1252,6 +1258,7 @@ async def debug_skill_chat(
                     pass
                 else:
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
             yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"

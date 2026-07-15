@@ -15,11 +15,13 @@ from loguru import logger
 
 from app.services.datasource import BaseConnector
 
-_SAFE_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+# 标识符安全校验：拒绝 SQL 注入危险字符，允许 Unicode（含中文）表名/列名
+# 危险字符：双引号(PostgreSQL/SQLite引用符)、反引号(MySQL引用符)、单引号(SQL字符串)、分号(语句分隔)、null字节
+_UNSAFE_IDENTIFIER_RE = re.compile(r'["\'`;\x00]')
 
 
 def _validate_identifier(name: str) -> str:
-    if not name or not _SAFE_IDENTIFIER_RE.match(name):
+    if not name or _UNSAFE_IDENTIFIER_RE.search(name):
         raise ValueError(f"非法的表名标识符: {name}")
     return name
 

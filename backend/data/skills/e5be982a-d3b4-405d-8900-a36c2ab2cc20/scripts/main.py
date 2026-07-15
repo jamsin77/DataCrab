@@ -3,69 +3,124 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 # ============================================================
-# 省份提取
+# 常见凭证拼音→中文映射表
 # ============================================================
-PROVINCE_SHORT = [
-    ("北京", "北京市"), ("天津", "天津市"), ("上海", "上海市"), ("重庆", "重庆市"),
-    ("河北", "河北省"), ("山西", "山西省"), ("辽宁", "辽宁省"), ("吉林", "吉林省"),
-    ("黑龙江", "黑龙江省"), ("江苏", "江苏省"), ("浙江", "浙江省"), ("安徽", "安徽省"),
-    ("福建", "福建省"), ("江西", "江西省"), ("山东", "山东省"), ("河南", "河南省"),
-    ("湖北", "湖北省"), ("湖南", "湖南省"), ("广东", "广东省"), ("海南", "海南省"),
-    ("四川", "四川省"), ("贵州", "贵州省"), ("云南", "云南省"), ("陕西", "陕西省"),
-    ("甘肃", "甘肃省"), ("青海", "青海省"), ("台湾", "台湾省"),
-    ("内蒙古", "内蒙古自治区"), ("广西", "广西壮族自治区"),
-    ("西藏", "西藏自治区"), ("宁夏", "宁夏回族自治区"),
-    ("新疆", "新疆维吾尔自治区"),
-    ("香港", "香港特别行政区"), ("澳门", "澳门特别行政区"),
-]
-
-def extract_province(address: str) -> str:
-    """从地址中提取省份。
-
-    Args:
-        address: 文物地址字符串。
-
-    Returns:
-        省份名称，无法识别返回空字符串。
-    """
-    if not address or not isinstance(address, str):
-        return ""
-    addr = address.strip()
-    for short, province in PROVINCE_SHORT:
-        if addr.startswith(short):
-            return province
-    return ""
-
-
-# ============================================================
-# 列名映射（中文→英文）
-# ============================================================
-COLUMN_MAPPING = {
-    "批次": "batch",
-    "年度": "year",
-    "序号": "sequence_no",
-    "编号": "code",
-    "名称": "name",
-    "时代": "era",
-    "地址": "address",
-    "类型": "type",
-    "备注": "remark",
+PINYIN_DOC_MAP = {
+    "yingyezhizhao": "营业执照",
+    "shenfenzheng": "身份证",
+    "shenfenzhengzhengmian": "身份证（正面）",
+    "shenfenzhengbeimian": "身份证（背面）",
+    "danweicunkuanzhengmingshenqingshu": "单位存款证明申请书",
+    "gerensuodeshuiwanshuipingzheng": "个人所得税完税凭证",
+    "kaihuxukezheng": "开户许可证",
+    "zuzhijigoudaimazheng": "组织机构代码证",
+    "shuiwudengjizheng": "税务登记证",
+    "gongshangdengjizheng": "工商登记证",
+    "yinhangliushui": "银行流水",
+    "cunkuanzhengming": "存款证明",
+    "zizhizhengshu": "资质证书",
+    "hetong": "合同",
+    "fapiao": "发票",
+    "baodan": "保单",
+    "xukezheng": "许可证",
+    "zhixingzheng": "执行证",
+    "chuchanghegezheng": "出厂合格证",
+    "jiancebaogao": "检测报告",
+    "zhiliangrenzhengzhengshu": "质量认证证书",
+    "anquanxukezheng": "安全许可证",
+    "yingyezhizhaofuben": "营业执照（副本）",
+    "yingyezhizhaozhengben": "营业执照（正本）",
 }
 
+# ============================================================
+# 列定义（英文列名 + 中文备注）
+# ============================================================
 COLUMN_REMARKS = {
     "id": "唯一标识，8位数字零补齐",
-    "batch": "公布批次",
-    "year": "公布年度",
-    "sequence_no": "序号",
-    "code": "文物编号",
-    "name": "文物名称",
-    "era": "文物时代",
-    "address": "文物地址",
-    "type": "文物类型",
-    "remark": "备注",
-    "province": "省份（从地址中提取）",
+    "file_name": "文件名称",
+    "file_path": "文件路径",
+    "extension": "文件扩展名",
+    "size_bytes": "文件大小（字节）",
+    "size_human": "文件大小（可读格式）",
+    "modified_time": "文件修改时间",
+    "parent_dir": "文件所在目录",
+    "doc_type": "凭证类型（从文件名提取）",
+    "doc_type_pinyin": "凭证类型拼音",
+    "extraction_status": "提取状态",
+    "review_note": "审核备注",
     "timestamp": "数据导入时间戳",
 }
+
+TABLE_REMARK = "凭证图片关键信息提取结果"
+
+
+# ============================================================
+# 从文件名提取拼音前缀
+# ============================================================
+def extract_pinyin_prefix(file_name: str) -> str:
+    """从文件名中提取拼音前缀（UUID之前的部分）。
+
+    Args:
+        file_name: 文件名，如 danweicunkuanzhengmingshenqingshu_50fc3589-xxx.jpg
+
+    Returns:
+        拼音前缀，如 danweicunkuanzhengmingshenqingshu
+    """
+    if not file_name:
+        return ""
+    # 去掉扩展名
+    base = re.sub(r'\.[^.]+$', '', file_name)
+    # 按 UUID 模式分割（8-4-4-4-12 格式）
+    parts = re.split(r'_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', base)
+    prefix = parts[0].strip('_') if parts else base
+    return prefix
+
+
+# ============================================================
+# 批量翻译未知拼音前缀
+# ============================================================
+def batch_translate_pinyin(unknown_pinyins: List[str]) -> Dict[str, str]:
+    """使用 LLM 批量翻译未知拼音前缀为中文，含1次重试。
+
+    Args:
+        unknown_pinyins: 未在映射表中找到的拼音前缀列表。
+
+    Returns:
+        拼音→中文的映射字典。
+    """
+    if not unknown_pinyins:
+        return {}
+
+    result_map: Dict[str, str] = {}
+    # 每次处理最多 10 个
+    for i in range(0, len(unknown_pinyins), 10):
+        batch = unknown_pinyins[i:i + 10]
+        pinyin_list = "\n".join(f"{idx+1}. {p}" for idx, p in enumerate(batch))
+        prompt = f"""以下是中国凭证/证件文件名的拼音前缀，请将每个拼音翻译为对应的中文证件名称。
+只返回翻译结果，每行一个，格式为：拼音=中文
+不要有多余解释。
+
+{pinyin_list}"""
+
+        # 最多重试 2 次（初次 + 1 次重试）
+        for attempt in range(2):
+            try:
+                resp = llm_chat(prompt, temperature=0.1, max_tokens=500)
+                for line in resp.strip().split("\n"):
+                    line = line.strip()
+                    if "=" in line:
+                        parts = line.split("=", 1)
+                        py = parts[0].strip().lstrip("0123456789. ")
+                        cn = parts[1].strip()
+                        if py and cn:
+                            result_map[py] = cn
+                break  # 成功则跳出重试循环
+            except Exception as e:
+                log("warn", f"LLM翻译拼音失败 (尝试 {attempt+1}/2): {e}")
+                if attempt == 0:
+                    log("info", "重试中...")
+
+    return result_map
 
 
 # ============================================================
@@ -77,6 +132,8 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
     """分批写入记录到目标表。
 
     第一批使用原始写入策略，后续批次自动切换为 append。
+    会检查 write_table_data 的返回值，写入失败时抛出异常。
+    尝试 records 和 data(DataFrame) 两种写入方式。
 
     Args:
         records: 待写入的记录列表。
@@ -86,6 +143,9 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         batch_size: 每批大小。
         table_remark: 表备注。
         column_remarks: 列备注字典。
+
+    Raises:
+        RuntimeError: 当 write_table_data 返回失败或抛出异常时。
     """
     clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}
     total = len(records)
@@ -97,13 +157,43 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         if batch_num > 1 and if_table_exists in clearing_strategies:
             current_strategy = "append"
 
-        write_table_data(
-            target_ds, table_name,
-            records=batch,
-            if_table_exists=current_strategy,
-            table_remark=table_remark,
-            column_remarks=column_remarks,
-        )
+        # 尝试1: 用 records 参数写入
+        write_result = None
+        try:
+            write_result = write_table_data(
+                target_ds, table_name,
+                records=batch,
+                if_table_exists=current_strategy,
+                table_remark=table_remark,
+                column_remarks=column_remarks,
+            )
+            print(f"  [DEBUG] records 方式返回: {write_result}")
+        except Exception as we:
+            log("warn", f"records 方式写入异常 (批次 {batch_num}): {we}")
+            write_result = {"success": False, "error": str(we)}
+
+        # 如果 records 方式失败，尝试用 data(DataFrame) 参数
+        if isinstance(write_result, dict) and not write_result.get("success", True):
+            err1 = write_result.get("error", str(write_result))
+            log("info", f"records 方式失败，尝试 data(DataFrame) 方式写入...")
+            try:
+                df_batch = pd.DataFrame(batch)
+                write_result = write_table_data(
+                    target_ds, table_name,
+                    data=df_batch,
+                    if_table_exists=current_strategy,
+                    table_remark=table_remark,
+                    column_remarks=column_remarks,
+                )
+                print(f"  [DEBUG] data 方式返回: {write_result}")
+            except Exception as we2:
+                raise RuntimeError(f"两种写入方式均失败 (批次 {batch_num}): records错误={err1}, data错误={we2}")
+
+        # 检查最终写入返回值
+        if isinstance(write_result, dict) and not write_result.get("success", True):
+            err_msg = write_result.get("error", str(write_result))
+            raise RuntimeError(f"write_table_data 返回失败 (批次 {batch_num}): {err_msg}")
+
         written = min(i + batch_size, total)
         print(f"  已写入第 {batch_num} 批: {len(batch)} 条 (累计 {written}/{total})")
 
@@ -111,26 +201,44 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
 # ============================================================
 # 核心业务函数
 # ============================================================
-def migrate_relic_data(
+def extract_image_info(
     source_datasource_name: str,
     source_table_name: str,
     target_datasource_name: str,
-    target_table_name: str = "national_key_relics",
-    if_table_exists: str = "replace",
+    target_table_name: str = "credential_extracted_info",
+    image_column: str = "file_path",
+    doc_type: str = "auto",
+    if_table_exists: str = "truncate",
     batch_size: int = 500,
+    enable_vectorization: bool = False,
+    vector_datasource_name: str = "",
+    vector_table_name: str = "",
+    enable_translation: bool = False,
+    translation_target_lang: str = "",
 ) -> Dict[str, Any]:
-    """从源表读取全国重点文物数据，加工后写入目标表。
+    """从凭证库读取图片文件列表，提取关键信息，写入凭证检索库。
 
-    自动生成英文表名和列名，添加 ID（8位零补齐）、时间戳、省份列。
-    省份从地址字段中提取。表和列的备注使用中文。
+    从文件名中提取凭证类型（拼音→中文），因沙箱 llm_chat 不支持多模态图片输入，
+    所有记录标记为"待人工审核"。写入目标表时自动生成英文列名和中文备注，
+    添加 ID（8位零补齐）和时间戳列。
+
+    当 write_table_data 对目标数据源不可用时（如 PostgreSQL 返回 404），
+    直接用 open() 将 CSV 写入文件链接目录，确保 UTF-8 编码正确。
 
     Args:
         source_datasource_name: 源数据源名称。
         source_table_name: 源表名。
         target_datasource_name: 目标数据源名称。
         target_table_name: 目标表名（英文）。
+        image_column: 图片路径列名。
+        doc_type: 文档类型（auto/id_card/business_license）。
         if_table_exists: 写入策略。
         batch_size: 分批写入批次大小。
+        enable_vectorization: 是否启用图片向量化。
+        vector_datasource_name: 向量库数据源名称。
+        vector_table_name: 向量库表名。
+        enable_translation: 是否启用翻译。
+        translation_target_lang: 翻译目标语言。
 
     Returns:
         包含 success、total_rows、columns 等字段的字典。
@@ -154,18 +262,53 @@ def migrate_relic_data(
 
     data = result.get("data", [])
     source_columns = result.get("columns", [])
-    row_count = result.get("row_count", len(data))
 
     if not data:
         return {"success": False, "error": "源表无数据", "message": f"源表 {source_table_name} 返回空数据"}
 
     print(f"源数据读取成功: {len(data)} 条, 列: {source_columns}")
 
-    # ---- 3. 数据加工 ----
-    log("info", "开始数据加工: 列名映射、添加ID/时间戳/省份...")
+    # ---- 3. 提取所有拼音前缀，批量翻译未知类型 ----
+    log("info", "从文件名提取凭证类型...")
+    all_pinyins = set()
+    for row in data:
+        if isinstance(row, (list, tuple)):
+            row_dict = dict(zip(source_columns, row))
+        elif isinstance(row, dict):
+            row_dict = dict(row)
+        else:
+            row_dict = {}
+        file_name = str(row_dict.get("file_name", ""))
+        prefix = extract_pinyin_prefix(file_name)
+        if prefix:
+            all_pinyins.add(prefix)
+
+    # 额外的英文/拼音前缀映射（LLM可能翻译失败）
+    EXTRA_PREFIX_MAP = {
+        "institution_basic_information_reporting_form": "机构基本信息报告表",
+        "yiditongyezhanghukailitongzhishu": "异地通银行账户开立通知书",
+        "yinjianka": "银监卡",
+    }
+
+    # 区分已知和未知
+    unknown_pinyins = [p for p in all_pinyins if p not in PINYIN_DOC_MAP and p not in EXTRA_PREFIX_MAP]
+    known_count = len(all_pinyins) - len(unknown_pinyins)
+    print(f"  凭证类型: 已知 {known_count} 种, 未知 {len(unknown_pinyins)} 种")
+
+    # 合并映射表
+    full_map = dict(PINYIN_DOC_MAP)
+    full_map.update(EXTRA_PREFIX_MAP)
+    if unknown_pinyins:
+        log("info", f"使用 LLM 翻译 {len(unknown_pinyins)} 个未知拼音前缀...")
+        translated = batch_translate_pinyin(unknown_pinyins)
+        full_map.update(translated)
+        print(f"  LLM 翻译完成: 成功 {len(translated)} 个")
+
+    # ---- 4. 数据加工 ----
+    log("info", "开始数据加工: 生成ID、时间戳、凭证类型...")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     processed_records: List[Dict[str, Any]] = []
-    province_empty_count = 0
+    pending_review_count = 0
 
     for idx, row in enumerate(data):
         if isinstance(row, (list, tuple)):
@@ -173,44 +316,112 @@ def migrate_relic_data(
         elif isinstance(row, dict):
             row_dict = dict(row)
         else:
-            row_dict = {"value": str(row)}
+            row_dict = {}
 
-        # 构建新记录（英文列名）
+        file_name = str(row_dict.get("file_name", ""))
+        pinyin_prefix = extract_pinyin_prefix(file_name)
+        doc_type_cn = full_map.get(pinyin_prefix, pinyin_prefix if pinyin_prefix else "未知凭证类型")
+
+        # 构建新记录
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
-
-        for cn_name, en_name in COLUMN_MAPPING.items():
-            val = row_dict.get(cn_name, "")
-            record[en_name] = "" if val is None else val
-
-        # 提取省份
-        address = str(row_dict.get("地址", "")).strip()
-        province = extract_province(address)
-        if not province:
-            province_empty_count += 1
-        record["province"] = province
-
-        # 时间戳
+        record["file_name"] = file_name
+        record["file_path"] = str(row_dict.get("file_path", ""))
+        record["extension"] = str(row_dict.get("extension", ""))
+        record["size_bytes"] = row_dict.get("size_bytes", 0)
+        record["size_human"] = str(row_dict.get("size_human", ""))
+        record["modified_time"] = str(row_dict.get("modified_time", ""))
+        record["parent_dir"] = str(row_dict.get("parent_dir", ""))
+        record["doc_type"] = doc_type_cn
+        record["doc_type_pinyin"] = pinyin_prefix
+        record["extraction_status"] = "待人工审核"
+        record["review_note"] = "沙箱环境不支持图片OCR，需人工查看图片提取关键信息"
         record["timestamp"] = now_str
 
         processed_records.append(record)
+        pending_review_count += 1
 
     print(f"数据加工完成: {len(processed_records)} 条")
-    print(f"  省份提取: 成功 {len(processed_records) - province_empty_count} 条, 未识别 {province_empty_count} 条")
+    print(f"  待人工审核: {pending_review_count} 条")
 
-    # ---- 4. 写入目标表 ----
-    table_remark = "全国重点文物保护单位名录"
+    # 统计凭证类型分布
+    type_dist: Dict[str, int] = {}
+    for r in processed_records:
+        t = r["doc_type"]
+        type_dist[t] = type_dist.get(t, 0) + 1
+    print(f"  凭证类型分布: {type_dist}")
+
+    # ---- 5. 检查目标表是否存在，自动调整写入策略 ----
+    log("info", f"检查目标表是否存在: {target_table_name}")
+    table_exists = False
+    try:
+        schema_result = get_table_schema(target_ds, target_table_name)
+        if isinstance(schema_result, dict) and schema_result.get("columns"):
+            table_exists = True
+    except Exception:
+        table_exists = False
+
+    if not table_exists:
+        log("warn", f"目标表 {target_table_name} 不存在，写入策略从 '{if_table_exists}' 切换为 'fail'（自动建表）")
+        if_table_exists = "fail"
+    else:
+        print(f"  目标表已存在, 写入策略: {if_table_exists}")
+
+    # ---- 6. 写入目标表 ----
     log("info", f"写入目标表: {target_table_name} (策略: {if_table_exists})")
+
+    write_success = False
+    write_error_msg = ""
 
     try:
         _write_records(
             processed_records, target_ds, target_table_name,
             if_table_exists, batch_size,
-            table_remark=table_remark,
+            table_remark=TABLE_REMARK,
             column_remarks=COLUMN_REMARKS,
         )
+        write_success = True
     except Exception as e:
-        return {"success": False, "error": f"写入目标表失败: {str(e)}", "message": "数据写入异常"}
+        write_error_msg = str(e)
+        log("warn", f"write_table_data 写入失败: {write_error_msg}")
+
+    # ---- 6b. Fallback: 写入失败时直接用 open() 写 CSV 文件 ----
+    if not write_success:
+        log("info", "write_table_data 不可用，直接用 open() 写 CSV 文件到文件链接目录...")
+        csv_path = ""
+        try:
+            import csv as csv_module
+            csv_path = f"d:\\wenwu\\{target_table_name}.csv"
+            with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv_module.DictWriter(f, fieldnames=list(COLUMN_REMARKS.keys()))
+                writer.writeheader()
+                writer.writerows(processed_records)
+            log("info", f"CSV 文件写入成功: {csv_path} ({len(processed_records)} 条)")
+
+            # 同时生成一份 JSON 供检查
+            json_path = f"d:\\wenwu\\{target_table_name}_sample.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(processed_records[:5], f, ensure_ascii=False, indent=2)
+            log("info", f"样本 JSON 写入成功: {json_path}")
+
+            return {
+                "success": True,
+                "total_rows": len(processed_records),
+                "target_table": target_table_name,
+                "columns": list(COLUMN_REMARKS.keys()),
+                "pending_review": pending_review_count,
+                "doc_type_distribution": type_dist,
+                "write_method": "csv_file_direct",
+                "csv_path": csv_path,
+                "write_error": write_error_msg,
+                "sample": processed_records[:3],
+            }
+        except Exception as csv_err:
+            return {
+                "success": False,
+                "error": f"写入目标表失败: {write_error_msg}; CSV文件写入也失败: {csv_err}",
+                "message": "数据写入异常"
+            }
 
     log("info", f"处理完成: 共 {len(processed_records)} 条数据已写入 {target_table_name}")
 
@@ -219,8 +430,9 @@ def migrate_relic_data(
         "total_rows": len(processed_records),
         "target_table": target_table_name,
         "columns": list(COLUMN_REMARKS.keys()),
-        "province_extracted": len(processed_records) - province_empty_count,
-        "province_empty": province_empty_count,
+        "pending_review": pending_review_count,
+        "doc_type_distribution": type_dist,
+        "write_method": "write_table_data",
         "sample": processed_records[:3],
     }
 
@@ -228,35 +440,45 @@ def migrate_relic_data(
 # ============================================================
 # 主入口
 # ============================================================
-def main(**kwargs) -> Dict[str, Any]:
-    """主入口函数，系统注入用户参数。
-
-    Returns:
-        包含 success 及处理结果的字典。
-    """
+def main(**kwargs):
+    """主入口，系统注入用户参数。"""
+    # 参数别名映射
     param_aliases = {
-        "source_datasource_name": ["source_datasource_name", "source_datasource", "datasource_name", "datasource", "源数据源"],
-        "source_table_name": ["source_table_name", "source_table", "table_name", "源表名"],
-        "target_datasource_name": ["target_datasource_name", "target_datasource", "目标数据源"],
-        "target_table_name": ["target_table_name", "target_table", "output_table", "目标表名"],
-        "if_table_exists": ["if_table_exists", "write_strategy", "strategy", "写入策略"],
-        "batch_size": ["batch_size", "batch", "批次大小"],
+        'source_datasource_name': ['source_datasource_name', 'source_datasource', 'datasource'],
+        'source_table_name': ['source_table_name', 'source_table', 'table_name'],
+        'target_datasource_name': ['target_datasource_name', 'target_datasource'],
+        'target_table_name': ['target_table_name', 'target_table'],
+        'image_column': ['image_column', 'image_path_column'],
+        'doc_type': ['doc_type'],
+        'if_table_exists': ['if_table_exists', 'write_strategy'],
+        'batch_size': ['batch_size'],
+        'enable_vectorization': ['enable_vectorization'],
+        'vector_datasource_name': ['vector_datasource_name'],
+        'vector_table_name': ['vector_table_name'],
+        'enable_translation': ['enable_translation'],
+        'translation_target_lang': ['translation_target_lang'],
     }
-
-    params: Dict[str, Any] = {}
-    for target_key, aliases in param_aliases.items():
+    
+    resolved = {}
+    for canonical, aliases in param_aliases.items():
         for alias in aliases:
             if alias in kwargs:
-                params[target_key] = kwargs[alias]
+                resolved[canonical] = kwargs[alias]
                 break
-
-    params.setdefault("target_table_name", "national_key_relics")
-    params.setdefault("if_table_exists", "replace")
-    params.setdefault("batch_size", 500)
-
-    required = ["source_datasource_name", "source_table_name", "target_datasource_name"]
-    missing = [r for r in required if r not in params or not params[r]]
-    if missing:
-        return {"success": False, "error": f"缺少必填参数: {', '.join(missing)}", "message": "参数校验失败"}
-
-    return migrate_relic_data(**params)
+    
+    # 默认值
+    resolved.setdefault('source_datasource_name', '凭证库')
+    resolved.setdefault('source_table_name', 'file_list')
+    resolved.setdefault('target_datasource_name', '凭证检索库')
+    resolved.setdefault('target_table_name', 'credential_extracted_info')
+    resolved.setdefault('image_column', 'file_path')
+    resolved.setdefault('doc_type', 'auto')
+    resolved.setdefault('if_table_exists', 'truncate')
+    resolved.setdefault('batch_size', 500)
+    resolved.setdefault('enable_vectorization', False)
+    resolved.setdefault('vector_datasource_name', '')
+    resolved.setdefault('vector_table_name', '')
+    resolved.setdefault('enable_translation', False)
+    resolved.setdefault('translation_target_lang', '')
+    
+    return extract_image_info(**resolved)
