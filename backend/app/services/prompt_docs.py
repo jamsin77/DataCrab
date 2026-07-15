@@ -7,7 +7,54 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
 - `get_table_data(datasource_id_or_name, table_name, limit=1000)` → 同 query_table_data
 - `get_table_schema(datasource_id_or_name, table_name)` → 返回 dict: {"columns": [...], "row_count": int}
 - `get_datasource_id_by_name(name)` → str: 按名称查找数据源UUID
+- `list_tables(datasource_id_or_name)` → list[str]: 列出数据源中的所有表名
 - `write_table_data(datasource_id_or_name, table_name, records=[...])` → dict: 写入数据到数据源
+
+### SQL 执行函数（结构化数据源）
+- `execute_sql(datasource_id_or_name, sql, limit=10000)` → dict: {"success": bool, "data": [行dict], "columns": [列名], "row_count": int}
+  - 在 PostgreSQL/MySQL/SQLite 等数据库型数据源上执行原生 SQL
+  - 适用于跨表 JOIN、聚合、窗口函数等 query_table_data 无法完成的复杂查询
+  - sql: SQL 语句字符串
+  - limit: 最大返回行数（默认 10000）
+  - 注意：仅 DB 型数据源可用，CSV/Excel 等文件型数据源不支持
+
+### 大数据处理函数（分块 + 并行）
+- `iter_table_data(datasource_id_or_name, table_name, chunk_size=10000)` → 生成器
+  - 分块迭代读取大表，避免一次性加载到内存
+  - 每次迭代返回一个 chunk（dict 格式，含 columns/rows/page/total/has_next）
+  - 适用于百万行级数据处理
+  - 示例:
+    ```python
+    for chunk in iter_table_data(ds_id, "big_table", chunk_size=50000):
+        df = pd.DataFrame(chunk["rows"])
+        # 处理 df ...
+    ```
+
+- `compute_map(fn, partitions, backend="local", **kwargs)` → list
+  - 对分块数据并行执行函数（分布式计算抽象）
+  - fn: 处理函数，接收一个 partition，返回处理结果
+  - partitions: 分块列表（通常来自 iter_table_data 的收集）
+  - backend: "sequential"(顺序调试) / "local"(本机并行) / "ray"(分布式预留)
+  - **kwargs: 如 workers=4
+  - 示例:
+    ```python
+    chunks = [pd.DataFrame(c["rows"]) for c in iter_table_data(ds_id, "big_table", 50000)]
+    def clean(df):
+        return df.dropna(subset=['phone'])
+    results = compute_map(clean, chunks, backend="local", workers=4)
+    final = pd.concat(results, ignore_index=True)
+    ```
+
+### 文件 I/O 函数（非结构化数据处理）
+- `read_file(path)` → str | dict | {"columns": [...], "rows": [...]}
+  - 读取文件内容，自动检测格式（txt/json/csv/excel/parquet）
+  - path: 文件路径（必须在文件链接授权目录内）
+  - 返回：text→字符串，json→dict/list，csv/excel→dict {"columns": [...], "rows": [...]}
+- `write_file(path, data, format=None)` → dict: {"success": bool, "path": str, "size": int}
+  - 写入文件，自动检测格式
+  - path: 文件路径（必须在文件链接授权目录内）
+  - data: 要写入的内容（str/dict/list/DataFrame）
+  - format: 可选，强制指定格式（text/json/csv）
 
 ### 大模型调用函数
 - `llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000)` → str: 调用平台大模型

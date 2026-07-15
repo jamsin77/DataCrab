@@ -180,11 +180,137 @@ def log(level, message, *args):
     _lvl = str(level).upper() if level else "INFO"
     print(f"[{{_lvl}}] {{message}}" + (" " + " ".join(str(a) for a in args) if args else ""))
 
+def list_tables(datasource_id):
+    # 列出数据源中的所有表名
+    # datasource_id: 数据源 UUID 或名称
+    # 返回: list[str] 表名列表
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            datasource_id = _resolved
+    import urllib.request
+    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables"
+    try:
+        with urllib.request.urlopen(_url, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("tables", [])
+    except Exception as e:
+        print(f"[SkillRunner] list_tables failed: {{e}}")
+        return []
+
+def iter_table_data(datasource_id, table_name, chunk_size=10000):
+    # 分块迭代读取大表数据（避免一次性加载到内存）
+    # datasource_id: 数据源 UUID 或名称
+    # table_name: 表名
+    # chunk_size: 每块行数（默认 10000）
+    # 返回: 生成器，每次 yield 一个 dict {{"columns": [...], "rows": [...], "page": int, "total": int, "has_next": bool}}
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            datasource_id = _resolved
+    import urllib.request
+    page = 1
+    while True:
+        _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables/{{table_name}}/chunks?chunk_size={{chunk_size}}&page={{page}}"
+        try:
+            with urllib.request.urlopen(_url, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"[SkillRunner] iter_table_data page {{page}} failed: {{e}}")
+            break
+        yield data
+        if not data.get("has_next", False):
+            break
+        page += 1
+
+def execute_sql(datasource_id, sql, params=None, limit=10000):
+    # 在数据源上执行 SQL（支持 JOIN/聚合/窗口函数等复杂查询）
+    # datasource_id: 数据源 UUID 或名称
+    # sql: SQL 语句（DB 型数据源原生 SQL）
+    # limit: 最大返回行数（默认 10000）
+    # 返回: dict {{"success": bool, "data": [行dict], "columns": [列名], "row_count": int}}
+    import re as _re
+    if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
+        _resolved = _dc_get_datasource_id_by_name(str(datasource_id))
+        if _resolved:
+            datasource_id = _resolved
+    import urllib.request
+    _payload = json.dumps({{"sql": sql, "limit": int(limit)}}).encode("utf-8")
+    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/sql"
+    _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return {{"success": True, "data": data.get("rows", []), "columns": data.get("columns", []), "row_count": data.get("row_count", 0)}}
+    except Exception as e:
+        print(f"[SkillRunner] execute_sql failed: {{e}}")
+        return {{"success": False, "data": [], "columns": [], "row_count": 0, "error": str(e)}}
+
+def read_file(path, format=None):
+    # 读取文件内容（自动检测格式，路径必须在文件链接授权目录内）
+    # path: 文件路径（必须在用户已挂载的文件链接目录范围内）
+    # format: 可选，强制指定格式（text/json/csv）
+    # 返回: text→str, json→dict/list, csv/excel→dict {{"columns": [...], "rows": [...]}}
+    import urllib.request
+    _payload = json.dumps({{"path": path, "user_id": INJECTED_USER_ID}}).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/read", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        fmt = data.get("format", "text")
+        if fmt == "text":
+            return data.get("content", "")
+        elif fmt == "json":
+            return data.get("content", {{}})
+        elif fmt == "csv":
+            return {{"columns": data.get("columns", []), "rows": data.get("rows", [])}}
+        return data.get("content", "")
+    except Exception as e:
+        print(f"[SkillRunner] read_file failed: {{e}}")
+        return ""
+
+def write_file(path, data, format=None):
+    # 写入文件（路径必须在文件链接授权目录内）
+    # path: 文件路径
+    # data: 要写入的内容（str/dict/list）
+    # format: 可选，强制指定格式
+    # 返回: dict {{"success": bool, "path": str, "size": int}}
+    import urllib.request
+    _payload = json.dumps({{"path": path, "data": data, "format": format, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/write", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[SkillRunner] write_file failed: {{e}}")
+        return {{"success": False, "error": str(e)}}
+
+def compute_map(fn, partitions, backend="local", **kwargs):
+    # 对分块数据并行执行函数（分布式计算抽象）
+    # fn: 处理函数，接收一个 partition，返回处理结果
+    # partitions: 分块列表（通常来自 iter_table_data）
+    # backend: "sequential"(顺序调试) / "local"(本机 multiprocessing 并行) / "ray"(分布式预留)
+    # **kwargs: 如 workers=4
+    # 返回: 结果列表，顺序与 partitions 一致
+    #
+    # 注意：技能沙箱在子进程中运行，multiprocessing 的 spawn 模式要求 fn 可被 pickle。
+    # 如果 fn 是脚本中定义的局部函数，backend="local" 可能失败，此时自动降级为顺序执行。
+    from app.services.compute_backend import compute_map as _cm
+    return _cm(fn, partitions, backend=backend, **kwargs)
+
 # Inject into builtins so scripts using get_data_accessor() can find them
 import builtins as _builtins
 _builtins.get_table_data = get_table_data
 _builtins.query_table_data = get_table_data
 _builtins.write_table_data = write_table_data
+_builtins.execute_sql = execute_sql
+_builtins.list_tables = list_tables
+_builtins.iter_table_data = iter_table_data
+_builtins.read_file = read_file
+_builtins.write_file = write_file
+_builtins.compute_map = compute_map
 _builtins.llm_chat = llm_chat
 _builtins.log = log
 _builtins.get_datasource_id_by_name = _dc_get_datasource_id_by_name

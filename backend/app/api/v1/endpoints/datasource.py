@@ -1,5 +1,6 @@
 """数据源管理API端点"""
 
+import json
 from uuid import UUID
 from typing import Optional
 
@@ -477,3 +478,224 @@ async def internal_llm_chat(body: dict):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         reset_user_llm_config()
+
+
+# ==================== 内部 SQL 执行端点 ====================
+
+@router.post("/internal/datasources/{datasource_id}/sql")
+async def internal_execute_sql(
+    datasource_id: UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """内部 SQL 执行端点（无认证，仅供技能执行器子进程本机调用）。
+    支持 DB 型连接器的原生 SQL，文件型连接器返回不支持错误。"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
+        await connector.connect()
+        df = await connector.execute_query(body.get("sql", ""))
+        await connector.close()
+        if df is None or df.empty:
+            return {"columns": list(df.columns) if df is not None else [], "rows": [], "row_count": 0}
+        limit = int(body.get("limit", 10000))
+        if len(df) > limit:
+            df = df.head(limit)
+        columns = list(df.columns)
+        rows = df.fillna("").to_dict(orient="records")
+        for r in rows:
+            for k, v in list(r.items()):
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                elif not isinstance(v, (str, int, float, bool, type(None))):
+                    r[k] = str(v)
+        return {"columns": columns, "rows": rows, "row_count": len(rows)}
+    except Exception as e:
+        logger.error(f"内部 SQL 执行异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/internal/datasources/{datasource_id}/tables")
+async def internal_list_tables(
+    datasource_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """内部列出表列表端点（无认证，仅供技能执行器子进程本机调用）"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
+        schema = await connector.get_schema()
+        await connector.close()
+        return {"tables": [t.get("table_name", str(t)) if isinstance(t, dict) else str(t) for t in schema]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/chunks")
+async def internal_iter_table_data(
+    datasource_id: UUID,
+    table_name: str,
+    chunk_size: int = Query(10000, ge=1, le=100000),
+    page: int = Query(1, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """内部分块读取端点（无认证，仅供技能执行器子进程本机调用）。
+    返回指定 chunk 的数据，技能沙箱通过翻页实现迭代。"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
+        df = await connector.get_table_data(table_name, page=page, page_size=chunk_size)
+        stats = await connector.get_table_stats(table_name)
+        await connector.close()
+        total = stats.get("row_count", len(df))
+        columns = list(df.columns)
+        rows = df.fillna("").to_dict(orient="records")
+        for r in rows:
+            for k, v in list(r.items()):
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                elif not isinstance(v, (str, int, float, bool, type(None))):
+                    r[k] = str(v)
+        return {
+            "columns": columns,
+            "rows": rows,
+            "chunk_size": chunk_size,
+            "page": page,
+            "total": total,
+            "total_pages": (total + chunk_size - 1) // chunk_size if chunk_size > 0 else 1,
+            "has_next": page * chunk_size < total,
+        }
+    except Exception as e:
+        logger.error(f"内部分块读取异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== 内部文件 I/O 端点 ====================
+
+def _validate_file_path(path: str, allowed_dirs: list) -> str:
+    """验证文件路径在授权目录范围内，返回 resolved 路径或抛异常"""
+    from pathlib import Path
+    resolved = Path(path).resolve()
+    for allowed in allowed_dirs:
+        allowed_resolved = Path(allowed).resolve()
+        if str(resolved).startswith(str(allowed_resolved)):
+            return str(resolved)
+    raise HTTPException(status_code=403, detail=f"路径不在授权目录范围内: {path}")
+
+
+@router.get("/internal/file-links")
+async def internal_list_file_links(
+    user_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """内部文件链接列表端点（无认证，仅供技能执行器子进程本机调用）"""
+    from app.models.filelink import FileLink
+    result = await db.execute(
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+    )
+    return [
+        {"id": str(f.id), "name": f.name, "path": f.path, "link_type": f.link_type}
+        for f in result.scalars().all()
+    ]
+
+
+@router.post("/internal/files/read")
+async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部文件读取端点（无认证，仅供技能执行器子进程本机调用）。
+    自动检测格式：txt/md/log/py/json/csv/xlsx → 对应解析"""
+    from pathlib import Path
+    from app.models.filelink import FileLink
+
+    user_id = body.get("user_id")
+    file_path = body.get("path", "")
+
+    # 获取用户授权目录
+    result = await db.execute(
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+    )
+    allowed_dirs = [f.path for f in result.scalars().all() if f.link_type == "directory"]
+    # 对 file 类型的链接，允许访问链接指向的文件
+    for f in result.scalars().all():
+        if f.link_type == "file":
+            allowed_dirs.append(str(Path(f.path).parent))
+
+    validated = _validate_file_path(file_path, allowed_dirs)
+    p = Path(validated)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    ext = p.suffix.lower()
+    try:
+        if ext in (".txt", ".md", ".log", ".py", ".js", ".ts", ".html", ".xml", ".yml", ".yaml", ".sql", ".csv"):
+            if ext == ".csv":
+                import pandas as _pd
+                df = _pd.read_csv(p)
+                return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+            return {"format": "text", "content": p.read_text(encoding="utf-8")}
+        elif ext == ".json":
+            return {"format": "json", "content": json.loads(p.read_text(encoding="utf-8"))}
+        elif ext in (".xlsx", ".xls"):
+            import pandas as _pd
+            df = _pd.read_excel(p)
+            return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+        elif ext == ".parquet":
+            import pandas as _pd
+            df = _pd.read_parquet(p)
+            return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+        else:
+            return {"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文件失败: {e}")
+
+
+@router.post("/internal/files/write")
+async def internal_write_file(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部文件写入端点（无认证，仅供技能执行器子进程本机调用）。
+    自动检测格式：txt/json/csv → 对应序列化"""
+    from pathlib import Path
+    from app.models.filelink import FileLink
+    import json as _json
+
+    user_id = body.get("user_id")
+    file_path = body.get("path", "")
+    data = body.get("data")
+    fmt = body.get("format")
+
+    # 获取用户授权目录
+    result = await db.execute(
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+    )
+    allowed_dirs = [f.path for f in result.scalars().all() if f.link_type == "directory"]
+
+    validated = _validate_file_path(file_path, allowed_dirs)
+    p = Path(validated)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    ext = p.suffix.lower()
+    try:
+        if ext == ".json" or fmt == "json":
+            p.write_text(_json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        elif ext == ".csv" or fmt == "csv":
+            import pandas as _pd
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                _pd.DataFrame(data).to_csv(p, index=False, encoding="utf-8-sig")
+            else:
+                p.write_text(str(data), encoding="utf-8")
+        else:
+            # 默认文本写入
+            if isinstance(data, (dict, list)):
+                p.write_text(_json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            else:
+                p.write_text(str(data), encoding="utf-8")
+        return {"success": True, "path": str(p), "size": p.stat().st_size}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"写入文件失败: {e}")

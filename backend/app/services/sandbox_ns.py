@@ -102,11 +102,185 @@ def build_operator_namespace(current_user_id):
 
         return run_async_in_thread(_run())
 
+    def execute_sql(datasource_id, sql, params=None, limit=10000):
+        """在数据源上执行 SQL，返回 DataFrame（支持 JOIN/聚合/窗口函数）"""
+        import uuid as _uuid
+
+        async def _run():
+            async with async_session() as db:
+                from sqlalchemy import select as _select
+                from app.models.datasource import DataSource as _DS
+                from app.services.connectors import get_connector
+                result = await db.execute(_select(_DS).where(_DS.id == _uuid.UUID(str(datasource_id))))
+                ds = result.scalar_one_or_none()
+                if not ds:
+                    raise RuntimeError(f"数据源不存在: {datasource_id}")
+                connector = get_connector(ds.type, ds.connection_config or {})
+                try:
+                    await connector.connect()
+                    df = await connector.execute_query(sql)
+                finally:
+                    await connector.close()
+                if df is not None and not df.empty and len(df) > limit:
+                    df = df.head(limit)
+                return df
+
+        return run_async_in_thread(_run())
+
+    def list_tables(datasource_id):
+        """列出数据源中的所有表名，返回 list[str]"""
+        import uuid as _uuid
+
+        async def _run():
+            async with async_session() as db:
+                from sqlalchemy import select as _select
+                from app.models.datasource import DataSource as _DS
+                from app.services.connectors import get_connector
+                result = await db.execute(_select(_DS).where(_DS.id == _uuid.UUID(str(datasource_id))))
+                ds = result.scalar_one_or_none()
+                if not ds:
+                    raise RuntimeError(f"数据源不存在: {datasource_id}")
+                connector = get_connector(ds.type, ds.connection_config or {})
+                try:
+                    await connector.connect()
+                    schema = await connector.get_schema()
+                finally:
+                    await connector.close()
+                return [t.get("table_name", str(t)) if isinstance(t, dict) else str(t) for t in schema]
+
+        return run_async_in_thread(_run())
+
+    def iter_table_data(datasource_id, table_name, chunk_size=10000):
+        """分块迭代读取大表数据，返回生成器，每次 yield DataFrame"""
+        import uuid as _uuid
+
+        def _generator():
+            page = 1
+            while True:
+                async def _fetch(p=page):
+                    async with async_session() as db:
+                        from sqlalchemy import select as _select
+                        from app.models.datasource import DataSource as _DS
+                        from app.services.connectors import get_connector
+                        result = await db.execute(_select(_DS).where(_DS.id == _uuid.UUID(str(datasource_id))))
+                        ds = result.scalar_one_or_none()
+                        if not ds:
+                            raise RuntimeError(f"数据源不存在: {datasource_id}")
+                        connector = get_connector(ds.type, ds.connection_config or {})
+                        try:
+                            await connector.connect()
+                            df = await connector.get_table_data(table_name, page=p, page_size=chunk_size)
+                            stats = await connector.get_table_stats(table_name)
+                        finally:
+                            await connector.close()
+                        return df, stats.get("row_count", len(df))
+
+                df, total = run_async_in_thread(_fetch())
+                if df is None or df.empty:
+                    break
+                yield df
+                if page * chunk_size >= total:
+                    break
+                page += 1
+
+        return _generator()
+
+    def read_file(path, format=None):
+        """读取文件（自动检测格式，路径须在文件链接授权目录内）"""
+        from pathlib import Path
+
+        async def _run():
+            async with async_session() as db:
+                from sqlalchemy import select as _select
+                from app.models.filelink import FileLink
+                result = await db.execute(_select(FileLink).where(
+                    FileLink.is_active == True, FileLink.created_by == current_user_id
+                ))
+                links = result.scalars().all()
+                allowed = [f.path for f in links if f.link_type == "directory"]
+                for f in links:
+                    if f.link_type == "file":
+                        allowed.append(str(Path(f.path).parent))
+
+                resolved = Path(path).resolve()
+                ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"路径不在授权目录范围内: {path}")
+
+                if not resolved.exists():
+                    raise RuntimeError(f"文件不存在: {path}")
+
+                ext = resolved.suffix.lower()
+                if ext == ".json":
+                    return json.loads(resolved.read_text(encoding="utf-8"))
+                elif ext == ".csv":
+                    return pd.read_csv(resolved)
+                elif ext in (".xlsx", ".xls"):
+                    return pd.read_excel(resolved)
+                elif ext == ".parquet":
+                    return pd.read_parquet(resolved)
+                else:
+                    return resolved.read_text(encoding="utf-8")
+
+        return run_async_in_thread(_run())
+
+    def write_file(path, data, format=None):
+        """写入文件（路径须在文件链接授权目录内）"""
+        from pathlib import Path
+
+        async def _run():
+            async with async_session() as db:
+                from sqlalchemy import select as _select
+                from app.models.filelink import FileLink
+                result = await db.execute(_select(FileLink).where(
+                    FileLink.is_active == True, FileLink.created_by == current_user_id
+                ))
+                links = result.scalars().all()
+                allowed = [f.path for f in links if f.link_type == "directory"]
+
+                resolved = Path(path).resolve()
+                ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"路径不在授权目录范围内: {path}")
+
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                ext = resolved.suffix.lower()
+                if ext == ".json" or format == "json":
+                    resolved.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+                elif ext == ".csv" or format == "csv":
+                    if hasattr(data, "to_csv"):
+                        data.to_csv(resolved, index=False, encoding="utf-8-sig")
+                    elif isinstance(data, list) and data and isinstance(data[0], dict):
+                        pd.DataFrame(data).to_csv(resolved, index=False, encoding="utf-8-sig")
+                    else:
+                        resolved.write_text(str(data), encoding="utf-8")
+                else:
+                    if isinstance(data, (dict, list)):
+                        resolved.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+                    else:
+                        resolved.write_text(str(data), encoding="utf-8")
+                return {"success": True, "path": str(resolved), "size": resolved.stat().st_size}
+
+        return run_async_in_thread(_run())
+
+    def compute_map(fn, partitions, backend="local", **kwargs):
+        """对分块数据并行执行函数（分布式计算抽象）
+        backend: "sequential" / "local"(multiprocessing) / "ray"(预留)
+        """
+        from app.services.compute_backend import compute_map as _cm
+        return _cm(fn, partitions, backend=backend, **kwargs)
+
     return {
         "query_table_data": query_table_data,
         "get_table_schema": get_table_schema,
         "get_datasource_id_by_name": get_datasource_id_by_name,
         "llm_chat": llm_chat,
+        "execute_sql": execute_sql,
+        "list_tables": list_tables,
+        "iter_table_data": iter_table_data,
+        "read_file": read_file,
+        "write_file": write_file,
+        "compute_map": compute_map,
         "pd": pd,
         "json": json,
     }

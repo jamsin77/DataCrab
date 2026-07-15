@@ -140,6 +140,27 @@ SHARED_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_sql",
+            "description": (
+                "在结构化数据源（PostgreSQL/MySQL/SQLite）上执行原生 SQL 查询。"
+                "适用于跨表 JOIN、聚合、窗口函数等 query_table_data 无法完成的复杂查询。"
+                "限制：仅支持 SELECT 语句（只读）；最多返回 1000 行；"
+                "仅 DB 型数据源可用，CSV/Excel 等文件型数据源不支持"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string", "description": "数据源的UUID"},
+                    "sql": {"type": "string", "description": "SQL 查询语句（仅 SELECT）"},
+                    "limit": {"type": "integer", "description": "返回的最大行数，默认1000，最大10000"},
+                },
+                "required": ["datasource_id", "sql"],
+            },
+        },
+    },
 ]
 
 
@@ -344,6 +365,62 @@ async def kb_search(args: dict, db: AsyncSession, user_id) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+async def execute_sql(args: dict, db: AsyncSession, user_id) -> str:
+    """在数据源上执行 SQL 查询（只读 SELECT，行数上限）。"""
+    try:
+        result = await db.execute(
+            select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
+        )
+        datasource = result.scalar_one_or_none()
+        if not datasource:
+            return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
+
+        sql = args.get("sql", "").strip()
+        if not sql:
+            return json.dumps({"error": "sql 不能为空"}, ensure_ascii=False)
+
+        # 只读约束：仅允许 SELECT
+        sql_upper = sql.lstrip("(").lstrip().upper()
+        if not sql_upper.startswith("SELECT") and not sql_upper.startswith("WITH"):
+            return json.dumps({"error": "仅支持 SELECT 或 WITH 语句（只读查询）"}, ensure_ascii=False)
+
+        limit = min(args.get("limit", 1000), 10000)
+
+        connector = get_connector(datasource.type, datasource.connection_config or {})
+        try:
+            await connector.connect()
+            df = await connector.execute_query(sql)
+        finally:
+            await connector.close()
+
+        if df is None or df.empty:
+            return json.dumps({"columns": list(df.columns) if df is not None else [], "rows": [], "row_count": 0, "_source": "sql"}, ensure_ascii=False)
+
+        if len(df) > limit:
+            df = df.head(limit)
+        columns = list(df.columns)
+        rows = df.fillna("").to_dict(orient="records")
+        for r in rows:
+            for k, v in list(r.items()):
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                elif not isinstance(v, (str, int, float, bool, type(None))):
+                    r[k] = str(v)
+
+        result_str = json.dumps({
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": len(df) >= limit,
+            "_source": "sql",
+        }, ensure_ascii=False, default=str)
+
+        return truncate_tool_result(result_str)
+    except Exception as e:
+        logger.error(f"SQL 执行失败: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # ==================== 工具分发 ====================
 
 async def execute_shared_tool(name: str, arguments: dict, db: AsyncSession, user_id) -> str:
@@ -370,6 +447,8 @@ async def execute_shared_tool(name: str, arguments: dict, db: AsyncSession, user
         result = await save_file_to_link(arguments, db, user_id)
     elif name == "kb_search":
         result = await kb_search(arguments, db, user_id)
+    elif name == "execute_sql":
+        result = await execute_sql(arguments, db, user_id)
     else:
         return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 

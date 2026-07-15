@@ -386,9 +386,14 @@ class CSVConnector(BaseConnector):
     async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         import pandas as pd
         file_path = self.config.get("file_path", "")
+        strategy = kwargs.get("if_table_exists", "fail")
         try:
             df_new = pd.DataFrame(records)
-            df_new.to_csv(file_path, index=False)
+            import os as _os
+            if _os.path.exists(file_path) and strategy == "append":
+                df_old = pd.read_csv(file_path)
+                df_new = pd.concat([df_old, df_new], ignore_index=True)
+            df_new.to_csv(file_path, index=False, encoding="utf-8-sig")
             return {"success": True, "rows_written": len(df_new)}
         except Exception as e:
             return {"success": False, "message": str(e)}
@@ -709,6 +714,59 @@ class OBSConnector(BaseConnector):
             logger.error(f"OBS获取统计失败: {e}")
             return {}
 
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """写入数据到 OBS 对象（序列化为 CSV 上传）。
+        if_table_exists 策略: fail(默认,对象已存在则报错) / overwrite(覆盖) / append(下载+合并+上传)"""
+        import pandas as pd
+        if not self._client:
+            await self.connect()
+        if not self._client:
+            return {"success": False, "message": "OBS 连接失败"}
+
+        bucket = self.config.get("bucket", "")
+        if not bucket:
+            return {"success": False, "message": "OBS 未配置 bucket"}
+
+        strategy = kwargs.get("if_table_exists", "fail")
+        object_name = table if table.endswith(".csv") else f"{table}.csv"
+
+        try:
+            df_new = pd.DataFrame(records)
+
+            # 检查对象是否已存在
+            exists = False
+            try:
+                await asyncio.to_thread(self._client.stat_object, bucket, object_name)
+                exists = True
+            except Exception:
+                pass
+
+            if exists and strategy == "fail":
+                return {"success": False, "message": f"对象 {object_name} 已存在（策略=fail）"}
+
+            if exists and strategy == "append":
+                response = await asyncio.to_thread(self._client.get_object, bucket, object_name)
+                old_content = response.read()
+                response.close()
+                response.release_conn()
+                df_old = pd.read_csv(io.BytesIO(old_content))
+                df_new = pd.concat([df_old, df_new], ignore_index=True)
+
+            # overwrite 或 append 合并后直接上传
+            buf = io.StringIO()
+            df_new.to_csv(buf, index=False, encoding="utf-8-sig")
+            buf.seek(0)
+            await asyncio.to_thread(
+                self._client.put_object, bucket, object_name,
+                io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+                len(buf.getvalue().encode("utf-8-sig")),
+                "text/csv",
+            )
+            return {"success": True, "rows_written": len(df_new), "object": object_name}
+        except Exception as e:
+            logger.error(f"OBS写入失败: {e}")
+            return {"success": False, "message": str(e)}
+
     async def close(self) -> None:
         self._client = None
 
@@ -846,6 +904,59 @@ class HadoopHDFSConnector(BaseConnector):
         except Exception as e:
             logger.error(f"Hadoop HDFS获取统计失败: {e}")
             return {}
+
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """写入数据到 HDFS 文件（序列化为 CSV 上传 via WebHDFS PUT）。
+        if_table_exists 策略: fail(默认) / overwrite(覆盖) / append(下载+合并+上传)"""
+        import pandas as pd
+        if not self._client:
+            await self.connect()
+        if not self._client:
+            return {"success": False, "message": "HDFS 连接失败"}
+
+        base_path = self.config.get("base_path", "/")
+        strategy = kwargs.get("if_table_exists", "fail")
+        file_name = table if table.endswith(".csv") else f"{table}.csv"
+        file_path = f"{base_path.rstrip('/')}/{file_name.lstrip('/')}"
+
+        try:
+            df_new = pd.DataFrame(records)
+
+            # 检查文件是否已存在
+            exists = False
+            check_params = {"op": "GETFILESTATUS", "user.name": self._user}
+            check_resp = await self._client.get(f"{self._base_url}{file_path}", params=check_params)
+            if check_resp.status_code == 200:
+                exists = True
+
+            if exists and strategy == "fail":
+                return {"success": False, "message": f"文件 {file_name} 已存在（策略=fail）"}
+
+            if exists and strategy == "append":
+                open_params = {"op": "OPEN", "user.name": self._user}
+                open_resp = await self._client.get(f"{self._base_url}{file_path}", params=open_params)
+                if open_resp.status_code == 200:
+                    df_old = pd.read_csv(io.BytesIO(open_resp.content))
+                    df_new = pd.concat([df_old, df_new], ignore_index=True)
+
+            # PUT 上传（overwrite=true 覆盖）
+            csv_buf = io.StringIO()
+            df_new.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+            csv_bytes = csv_buf.getvalue().encode("utf-8-sig")
+
+            put_params = {"op": "CREATE", "user.name": self._user, "overwrite": "true"}
+            put_resp = await self._client.put(
+                f"{self._base_url}{file_path}",
+                params=put_params,
+                content=csv_bytes,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            if put_resp.status_code in (200, 201):
+                return {"success": True, "rows_written": len(df_new), "file": file_name}
+            return {"success": False, "message": f"HDFS PUT 失败: HTTP {put_resp.status_code}"}
+        except Exception as e:
+            logger.error(f"HDFS写入失败: {e}")
+            return {"success": False, "message": str(e)}
 
     async def close(self) -> None:
         if self._client:
