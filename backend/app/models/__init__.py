@@ -9,7 +9,7 @@ from app.models.chat import ChatSession, ChatMessage
 from app.models.filelink import FileLink
 from app.models.pipeline import Pipeline, PipelineExecution
 from app.models.knowledge import KnowledgeDocument, KnowledgeChunk
-from app.models.custom_extension import CustomConnector, LLMProvider
+from app.models.custom_extension import CustomConnector, LLMProvider, UserLLMConfig
 
 __all__ = [
     "User",
@@ -31,4 +31,5 @@ __all__ = [
     "KnowledgeChunk",
     "CustomConnector",
     "LLMProvider",
+    "UserLLMConfig",
 ]

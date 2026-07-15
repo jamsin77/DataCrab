@@ -41,7 +41,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 - 擅长 SQL、pandas、数据清洗和转换
 - 能理解用户意图并生成/修改算子和技能
 - 能调度执行数据处理流程
-- **能为用户生成自定义数据源连接器和模型适配器**
+- **能为用户生成和修改数据源连接器和模型适配器**
 
 ## 工作准则
 1. **安全红线**：DataCrab 不能修改平台自身，只能处理用户数据
@@ -50,17 +50,24 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 4. **交接检查**：数据处理完成后，应交接给 DataInspector 进行质量检查
 5. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
 
-## 自定义扩展能力（仅此两项允许用户扩展平台）
-当用户要求添加新的数据源类型或大模型厂商时，你可以生成代码并调用工具注册：
+## 扩展能力（允许用户扩展平台的数据源连接器与大模型适配器）
+当用户要求添加或删除数据源类型、大模型厂商时，你可以生成代码并调用工具注册或删除：
 
-### save_connector — 添加自定义数据源连接器
+### save_connector — 添加数据源连接器
 用户说"添加 MongoDB 连接器"时，生成一个继承 BaseConnector 的 Python 类，实现 connect/test_connection/get_schema/get_table_data/get_table_stats/close 方法。
 代码中可通过 __import__ 使用第三方库（如 pymongo、redis 等），但禁止 import os/subprocess/sys 等危险模块。
+同名或同显示名称的连接器会被覆盖更新（不会产生重复）。
 
-### save_llm_adapter — 添加自定义大模型适配器
+### delete_connector — 删除数据源连接器
+用户说"删除 MongoDB 连接器"时调用。已被数据源使用的连接器无法删除（需先删除相关数据源）。仅所有者或管理员可删。
+
+### save_llm_adapter — 添加大模型适配器
 用户说"添加 Anthropic Claude"时，生成一个适配器类，实现 .chat.completions.create() 兼容接口。
 适配器接收 api_key/base_url/model 参数，将 OpenAI messages 格式转为厂商原生格式，调用厂商 API 后转回 OpenAI 响应格式。
 禁止在适配器代码中硬编码 API Key。
+
+### delete_llm_adapter — 删除大模型适配器
+用户说"删除某个 Provider"时调用，传入 provider_name。
 
 ## 当收到 DataInspector 的检查结果时
 - 应定位问题根源
@@ -144,19 +151,30 @@ MODIFY_AND_RUN_TOOL = {
 DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL, MODIFY_AND_RUN_TOOL]
 
 # 自定义扩展工具（save_connector + save_llm_adapter）
+
+# BaseConnector 契约规范——save_connector 生成代码时必须严格遵守
+CONNECTOR_CONTRACT = """BaseConnector 契约（所有方法必须是 async def）：
+- async def connect(self) -> bool  # 建立连接，返回 True/False
+- async def test_connection(self) -> bool  # 测试连接，返回 True/False（不是元组）
+- async def get_schema(self) -> list[dict]  # 返回表列表，每个 dict 必须含 {"table_name": "xxx", "table_type": "xxx"}，不能返回单个 dict
+- async def get_table_data(self, table: str, page: int = 1, page_size: int = 20, filters: dict = None, sort: dict = None) -> "pd.DataFrame"  # 签名必须含 page 和 page_size 参数，返回 pandas DataFrame（不是 list）
+- async def get_table_stats(self, table: str) -> dict  # 返回 {"row_count": N}
+- async def close(self) -> None  # 关闭连接
+execute_query 可选，非结构化数据源无需实现（基类有默认空实现返回空 DataFrame）。"""
+
 SAVE_CONNECTOR_TOOL = {
     "type": "function",
     "function": {
         "name": "save_connector",
-        "description": "保存自定义数据源连接器。用户提供自然语言描述，你生成继承 BaseConnector 的 Python 类代码，系统验证后注册。注册后用户即可在数据源管理中创建该类型的数据源。",
+        "description": "保存数据源连接器（新建或更新）。用户提供自然语言描述，你生成继承 BaseConnector 的 Python 类代码，系统验证后注册。注册后用户即可在数据源管理中创建该类型的数据源。同名或同显示名称的连接器会被覆盖更新，不会产生重复。",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "连接器类型名（英文小写，如 mongodb、redis）"},
+                "name": {"type": "string", "description": "连接器类型名（英文小写，如 mongodb、redis）。更新已有连接器时尽量沿用原 name"},
                 "display_name": {"type": "string", "description": "显示名称（如 MongoDB）"},
                 "description": {"type": "string", "description": "连接器描述"},
-                "code": {"type": "string", "description": "Python 类代码，必须继承 BaseConnector，实现 connect/test_connection/get_schema/get_table_data/get_table_stats/close 方法"},
-                "config_template": {"type": "array", "description": "配置项模板", "items": {"type": "object", "properties": {"name": {"type": "string"}, "label": {"type": "string"}, "type": {"type": "string"}, "required": {"type": "boolean"}}}},
+                "code": {"type": "string", "description": CONNECTOR_CONTRACT},
+                "config_template": {"type": "array", "description": "配置项模板，前端据此动态渲染表单。每项 {name,label,type,required,default?,options?,depends_on?}。type 支持：string(文本)、number(数字)、password(密码)、boolean(开关)、select(下拉选择，需配 options:[{label,value}])、filepath(文件路径选择器，带浏览按钮)、folderpath(文件夹路径选择器)、filepath_list(多文件路径列表，可增删)。文件类连接器务必用 filepath/folderpath/filepath_list 而非 string，这样前端会显示文件浏览按钮。depends_on 可选，条件显隐，如 {\"mode\":\"files\"}", "items": {"type": "object", "properties": {"name": {"type": "string"}, "label": {"type": "string"}, "type": {"type": "string"}, "required": {"type": "boolean"}}}},
             },
             "required": ["name", "display_name", "code"],
         },
@@ -209,7 +227,22 @@ DELETE_LLM_ADAPTER_TOOL = {
     },
 }
 
-EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_TOOL, GET_LLM_CONFIG_TOOL, DELETE_LLM_ADAPTER_TOOL]
+DELETE_CONNECTOR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_connector",
+        "description": "删除指定的数据源连接器。用户要求删除、移除某个连接器时调用此工具。已被数据源使用的连接器无法删除。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要删除的连接器类型名（如 universal_file、generic_file）"},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, DELETE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_TOOL, GET_LLM_CONFIG_TOOL, DELETE_LLM_ADAPTER_TOOL]
 
 # 加载统一技能规范（单一真相源）
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
@@ -690,6 +723,7 @@ class DataProcessorAgent(BaseAgent):
                     result = await run_skill_script_async(
                         skill_path=folder, script_name=script_name, parameters=parameters,
                         input_data=None, datasource_id=ds_id, datasource_name=ds_name, table_name=tbl,
+                        user_id=str(user_id) if user_id else None,
                     )
                     _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
                     _failed = (not result.get("success")
@@ -741,6 +775,9 @@ class DataProcessorAgent(BaseAgent):
         if name == "save_connector":
             return await self._handle_save_connector(arguments, db, user_id)
 
+        if name == "delete_connector":
+            return await self._handle_delete_connector(arguments, db, user_id)
+
         if name == "save_llm_adapter":
             return await self._handle_save_llm_adapter(arguments, db, user_id)
 
@@ -753,7 +790,7 @@ class DataProcessorAgent(BaseAgent):
         return await execute_shared_tool(name, arguments, db, user_id)
 
     async def _handle_save_connector(self, arguments: dict, db: AsyncSession, user_id) -> str:
-        """保存自定义数据源连接器：验证代码 → 存 DB → 注册缓存"""
+        """保存数据源连接器：验证代码 → 存 DB → 注册缓存"""
         import json as _json
         connector_name = arguments.get("name", "").strip().lower()
         display_name = arguments.get("display_name", connector_name)
@@ -771,19 +808,36 @@ class DataProcessorAgent(BaseAgent):
         except Exception as e:
             return _json.dumps({"success": False, "error": f"代码验证失败: {e}"}, ensure_ascii=False)
 
-        # 存入数据库（覆盖同名）— 用独立 session 避免与流式 session 冲突
+        # 存入数据库（覆盖同名或同 display_name，避免重复）— 用独立 session 避免与流式 session 冲突
         from app.core.database import async_session
         from app.models.custom_extension import CustomConnector
-        from sqlalchemy import select as sa_select
+        from sqlalchemy import select as sa_select, or_
         async with async_session() as save_session:
-            existing = await save_session.execute(sa_select(CustomConnector).where(CustomConnector.name == connector_name))
-            record = existing.scalar_one_or_none()
+            existing = await save_session.execute(
+                sa_select(CustomConnector).where(
+                    or_(CustomConnector.name == connector_name, CustomConnector.display_name == display_name),
+                    CustomConnector.is_active == True,
+                )
+            )
+            # 用 first() 而非 scalar_one_or_none()，避免已有重复记录时报 MultipleResultsFound
+            record = existing.scalars().first()
             if record:
+                # 覆盖已有记录（保持原 name 不变，避免破坏已创建的数据源引用）
                 record.display_name = display_name
                 record.description = description
                 record.code = code
                 record.config_template = config_template
                 record.is_active = True
+                # 若存在其他同 display_name 的重复记录，停用它们
+                dup_result = await save_session.execute(
+                    sa_select(CustomConnector).where(
+                        CustomConnector.display_name == display_name,
+                        CustomConnector.is_active == True,
+                        CustomConnector.id != record.id,
+                    )
+                )
+                for dup in dup_result.scalars().all():
+                    dup.is_active = False
             else:
                 record = CustomConnector(
                     name=connector_name,
@@ -795,8 +849,57 @@ class DataProcessorAgent(BaseAgent):
                 )
                 save_session.add(record)
             await save_session.commit()
-            logger.info(f"连接器已保存: {connector_name}")
+            logger.info(f"连接器已保存: {record.name} (display={display_name})")
             return _json.dumps({"success": True, "message": f"连接器 '{display_name}' 已注册，现在可以在数据源管理中创建该类型的数据源"}, ensure_ascii=False)
+
+    async def _handle_delete_connector(self, arguments: dict, db: AsyncSession, user_id) -> str:
+        """删除数据源连接器：校验所有权 + 数据源使用 → 软删除 + 移除注册"""
+        import json as _json
+        connector_name = arguments.get("name", "").strip().lower()
+        if not connector_name:
+            return _json.dumps({"success": False, "error": "缺少 name"}, ensure_ascii=False)
+
+        from app.core.database import async_session
+        from app.models.custom_extension import CustomConnector
+        from app.models.datasource import DataSource
+        from app.models.user import User
+        from sqlalchemy import select as sa_select, func
+        async with async_session() as del_session:
+            result = await del_session.execute(
+                sa_select(CustomConnector).where(CustomConnector.name == connector_name, CustomConnector.is_active == True)
+            )
+            record = result.scalar_one_or_none()
+            if not record:
+                return _json.dumps({"success": False, "error": f"连接器 '{connector_name}' 不存在"}, ensure_ascii=False)
+
+            # 所有权：仅所有者或超管可删
+            user_result = await del_session.execute(sa_select(User).where(User.id == user_id))
+            cur_user = user_result.scalar_one_or_none()
+            is_super = bool(cur_user and cur_user.is_superuser)
+            if record.created_by != user_id and not is_super:
+                return _json.dumps({"success": False, "error": "无权删除此连接器（仅所有者或管理员可删）"}, ensure_ascii=False)
+
+            # 限制：已被数据源使用的连接器不能删除
+            ds_count = await del_session.scalar(
+                sa_select(func.count(DataSource.id)).where(
+                    DataSource.type == connector_name,
+                    DataSource.is_active == True,
+                )
+            )
+            if ds_count and ds_count > 0:
+                return _json.dumps({"success": False, "error": f"该连接器已被 {ds_count} 个数据源使用，无法删除。请先删除或迁移相关数据源"}, ensure_ascii=False)
+
+            display_name = record.display_name or connector_name
+            record.is_active = False
+            await del_session.commit()
+
+        # 从内存注册表移除
+        from app.services.connectors import _connector_registry, _sync_supported_types
+        _connector_registry.pop(connector_name, None)
+        _sync_supported_types()
+
+        logger.info(f"连接器已删除: {connector_name}")
+        return _json.dumps({"success": True, "message": f"连接器 '{display_name}' ({connector_name}) 已删除"}, ensure_ascii=False)
 
     async def _handle_save_llm_adapter(self, arguments: dict, db: AsyncSession, user_id) -> str:
         """注册或更新 LLM Provider：验证代码 → 存 DB → 注册缓存（已存在则刷新）"""
@@ -1069,6 +1172,7 @@ class DataProcessorAgent(BaseAgent):
 
             # 流式 LLM 调用（推理 + 工具调用）
             content = ""
+            thinking_content = ""
             tool_calls = []
             finish_reason = None
             clear_thinking = False
@@ -1078,6 +1182,7 @@ class DataProcessorAgent(BaseAgent):
             ):
                 t = event["type"]
                 if t == "thinking":
+                    thinking_content += event.get("content", "")
                     yield event
                 elif t == "content":
                     content += event["content"]
@@ -1100,12 +1205,25 @@ class DataProcessorAgent(BaseAgent):
                     local_messages.append({"role": "assistant", "content": content})
                     local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
                     continue
-                if content:
-                    yield {"type": "content", "content": content}
+                # content 已在流式循环中逐块 yield，此处不再重复发送
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
             had_any_tool_calls = True
+
+            # 空轮次补充：LLM 直接调用工具但未输出推理/正文时，补一句提示让用户知道这轮做了什么
+            if not content:
+                _TOOL_LABELS = {
+                    "modify_script": "修改脚本", "run_script": "执行脚本",
+                    "modify_and_run": "修改并执行脚本", "save_connector": "保存连接器",
+                    "delete_connector": "删除连接器", "query_table_data": "查询数据",
+                    "get_table_schema": "获取表结构", "list_user_datasources": "列出数据源",
+                    "handoff_to_inspector": "交接检查", "save_llm_adapter": "保存模型适配器",
+                    "delete_llm_adapter": "删除模型适配器", "get_llm_config": "查询模型配置",
+                    "kb_search": "知识库检索", "save_file_to_link": "保存文件",
+                }
+                _labels = [_TOOL_LABELS.get(tc["function"]["name"], tc["function"]["name"]) for tc in tool_calls]
+                yield {"type": "content", "content": f"（执行操作：{' → '.join(_labels)}）"}
 
             # 卡死检测
             for tc in tool_calls:
@@ -1168,7 +1286,9 @@ class DataProcessorAgent(BaseAgent):
                                     or (rdata.get("error") and str(rdata.get("error")).strip())
                                     or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
                         _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
-                        if _is_fail and _err_msg:
+                        if _is_fail:
+                            if not _err_msg:
+                                _err_msg = "执行返回失败（success=False），无明确错误信息"
                             _sig = _err_msg[:100]
                             if _sig == _last_error_sig:
                                 _same_error_count += 1
@@ -1178,8 +1298,9 @@ class DataProcessorAgent(BaseAgent):
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
-                                    from app.api.v1.endpoints.skill import append_error_log
-                                    append_error_log(folder, script_name, "execution_error", _err_msg, {}, rdata.get("stdout", ""), "debug-chat")
+                                    from app.services import experience as _exp
+                                    _ctx_summary = f"工具: {tool_name}\n推理摘要: {thinking_content[:400]}\nAI输出: {content[:200]}"
+                                    _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=_ctx_summary)
                                 except Exception:
                                     pass
                             if _same_error_count >= 3:
@@ -1302,4 +1423,15 @@ class DataProcessorAgent(BaseAgent):
                 if event["type"] == "content":
                     full_content += event["content"]
         yield {"type": "give_up", "reason": full_content[:2000]}
+
+        # 将"无法修复"的原因分析存入经验库，下次调试可直接参考
+        folder = context.get("debug_folder")
+        if folder:
+            try:
+                from app.services import experience as _exp
+                _exp.write_lessons(folder, full_content.strip())
+                logger.info(f"已将 give_up 分析存入经验库: {folder}")
+            except Exception as e:
+                logger.warning(f"存储 give_up 经验失败: {e}")
+
         yield {"type": "done", "result": {"agent": self.name, "content": full_content}}

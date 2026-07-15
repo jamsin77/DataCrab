@@ -135,6 +135,7 @@ async def _run_skill(
         datasource_id=datasource_id,
         table_name=table_name,
         timeout=timeout,
+        user_id=str(user_id) if user_id else None,
     )
 
     skill.usage_count = (skill.usage_count or 0) + 1

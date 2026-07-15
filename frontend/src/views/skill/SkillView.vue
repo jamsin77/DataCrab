@@ -444,6 +444,14 @@
             >
               <el-icon><Share /></el-icon> 转为流程
             </el-button>
+            <el-button
+              size="small"
+              plain
+              :loading="expLoading"
+              @click="openExperience"
+            >
+              <el-icon><Document /></el-icon> 调试经验
+            </el-button>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onSkillListScroll">
             <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
@@ -540,6 +548,36 @@
             </el-button>
           </div>
         </div>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="showExperience" title="调试经验" width="680px">
+      <div v-loading="expLoading">
+        <el-tabs>
+          <el-tab-pane label="归纳原因">
+            <div v-if="experienceData.lessons" class="markdown-body" v-html="renderMarkdown(experienceData.lessons)"></div>
+            <el-empty v-else description="暂无归纳经验，调试失败后会自动存储原因分析" :image-size="80" />
+          </el-tab-pane>
+          <el-tab-pane :label="`历史错误 (${(experienceData.negative || []).length})`">
+            <div v-if="(experienceData.negative || []).length" style="max-height:400px;overflow-y:auto">
+              <div v-for="(err, i) in experienceData.negative" :key="i" class="exp-error-item">
+                <div class="exp-error-time">{{ err.timestamp }}</div>
+                <div class="exp-error-msg"><pre>{{ err.error_message }}</pre></div>
+                <div v-if="err.stdout_preview" class="exp-error-stdout"><pre>{{ err.stdout_preview }}</pre></div>
+              </div>
+            </div>
+            <el-empty v-else description="暂无错误记录" :image-size="80" />
+          </el-tab-pane>
+          <el-tab-pane :label="`成功记录 (${(experienceData.positive || []).length})`">
+            <div v-if="(experienceData.positive || []).length" style="max-height:400px;overflow-y:auto">
+              <div v-for="(pos, i) in experienceData.positive" :key="i" class="exp-positive-item">
+                <div class="exp-error-time">{{ pos.timestamp }}</div>
+                <div class="exp-error-msg">{{ pos.result_summary }}</div>
+              </div>
+            </div>
+            <el-empty v-else description="暂无成功记录" :image-size="80" />
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </el-dialog>
   </div>
@@ -694,6 +732,24 @@ function downloadSkill(skill: any) {
 // ==================== 转为流程（调试页面内，流式推理） ====================
 
 const convertingPipeline = ref(false)
+
+// 调试经验
+const showExperience = ref(false)
+const expLoading = ref(false)
+const experienceData = ref<any>({ lessons: '', negative: [], positive: [] })
+
+async function openExperience() {
+  if (!debugSkill.value) return
+  showExperience.value = true
+  expLoading.value = true
+  try {
+    experienceData.value = await api.get(`/skills/${debugSkill.value.id}/experience`)
+  } catch (e: any) {
+    ElMessage.error('加载经验失败')
+  } finally {
+    expLoading.value = false
+  }
+}
 
 async function convertToPipeline() {
   if (!debugSkill.value || convertingPipeline.value) return
@@ -2289,7 +2345,7 @@ async function handleDebugSend() {
             msg.thinkingOpen = true
             thinkingDone = true
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -2978,7 +3034,6 @@ onMounted(() => {
   min-width: 0;
 
   &.user {
-    align-self: flex-end;
     flex-direction: row-reverse;
 
     .debug-msg-user {
@@ -3194,6 +3249,52 @@ onMounted(() => {
 @keyframes typing {
   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
   40% { transform: scale(1); opacity: 1; }
+}
+
+.exp-error-item {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: #fef0f0;
+  border-radius: 6px;
+  border-left: 3px solid #f56c6c;
+
+  .exp-error-time {
+    font-size: 11px;
+    color: #909399;
+    margin-bottom: 4px;
+  }
+  .exp-error-msg pre {
+    margin: 0;
+    font-size: 12px;
+    color: #f56c6c;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .exp-error-stdout pre {
+    margin: 4px 0 0;
+    font-size: 11px;
+    color: #909399;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+}
+
+.exp-positive-item {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: #f0f9eb;
+  border-radius: 6px;
+  border-left: 3px solid #67c23a;
+
+  .exp-error-time {
+    font-size: 11px;
+    color: #909399;
+    margin-bottom: 4px;
+  }
+  .exp-error-msg {
+    font-size: 12px;
+    color: #67c23a;
+  }
 }
 </style>
 

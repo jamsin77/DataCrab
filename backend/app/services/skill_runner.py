@@ -43,6 +43,7 @@ ALLOWED_IMPORTS = {{"pd": pd, "json": json, "numpy": __import__("numpy") if "num
 INJECTED_DATA = {injected_data}
 INJECTED_PARAMS = {injected_params}
 USES_ARGPARSE = {uses_argparse}
+INJECTED_USER_ID = {user_id}
 
 def _get_input():
     if INJECTED_DATA is not None:
@@ -72,22 +73,6 @@ def _build_argv_from_params(params):
             argv.append(str(val))
     return argv
 
-def _run_async_query(script_code):
-    import subprocess, sys
-    proc = subprocess.run(
-        [sys.executable, "-c", script_code],
-        capture_output=True, text=True, timeout=30,
-        encoding="utf-8", errors="replace",
-        cwd=r"{cwd}"
-    )
-    output_lines = [l for l in proc.stdout.strip().split("\\n") if l.strip()]
-    if output_lines:
-        try:
-            return json.loads(output_lines[-1])
-        except:
-            pass
-    return None
-
 def _sanitize_nans(obj):
     import math
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
@@ -100,67 +85,41 @@ def _sanitize_nans(obj):
 
 def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_by=None):
     print(f"[SkillRunner] query_table: ds={{datasource_id}}, table={{table_name}}, limit={{limit}}")
-    code = (
-        "import asyncio, json, sys\\n"
-        "sys.path.insert(0, r'{backend_path}')\\n"
-        "from app.core.database import async_session\\n"
-        "from app.services.connectors import get_connector_manager\\n"
-        "\\n"
-        "async def _q():\\n"
-        "    async with async_session() as session:\\n"
-        "        mgr = get_connector_manager(session)\\n"
-        "        result = await mgr.query_table('{{ds_id}}', '{{tbl}}', {{lim}}, {{off}}, '{{ord}}')\\n"
-        "        if result is not None:\\n"
-        "            return result.to_dict(orient='records')\\n"
-        "    return None\\n"
-        "\\n"
-        "r = asyncio.run(_q())\\n"
-        "print(json.dumps(r or []))\\n"
-    ).format(ds_id=datasource_id, tbl=table_name, lim=limit, off=offset, ord=order_by or '')
-    data = _run_async_query(code)
-    if data:
-        return pd.DataFrame(data)
-    return pd.DataFrame()
+    import urllib.request
+    page = (offset // limit) + 1 if limit > 0 else 1
+    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/tables/{{table_name}}/data?page={{page}}&page_size={{limit}}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return pd.DataFrame(data.get("rows", []))
+    except Exception as e:
+        print(f"[SkillRunner] query failed: {{e}}")
+        return pd.DataFrame()
 
 def _dc_get_table_schema(datasource_id, table_name):
-    code = (
-        "import asyncio, json, sys\\n"
-        "sys.path.insert(0, r'{backend_path}')\\n"
-        "from app.core.database import async_session\\n"
-        "from app.services.connectors import get_connector_manager\\n"
-        "\\n"
-        "async def _q():\\n"
-        "    async with async_session() as session:\\n"
-        "        mgr = get_connector_manager(session)\\n"
-        "        return await mgr.get_table_schema('{{ds_id}}', '{{tbl}}')\\n"
-        "\\n"
-        "r = asyncio.run(_q())\\n"
-        "print(json.dumps(r or {{{{}}}}))\\n"
-    ).format(ds_id=datasource_id, tbl=table_name)
-    data = _run_async_query(code)
-    return data if data else {{"columns": [], "row_count": 0}}
+    import urllib.request
+    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{datasource_id}}/schema"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("tables", [])
+    except Exception as e:
+        print(f"[SkillRunner] schema failed: {{e}}")
+        return {{"columns": [], "row_count": 0}}
 
 def _dc_get_datasource_id_by_name(name):
-    code = (
-        "import asyncio, json, sys\\n"
-        "sys.path.insert(0, r'{backend_path}')\\n"
-        "from app.core.database import async_session\\n"
-        "from app.services.connectors import get_connector_manager\\n"
-        "\\n"
-        "async def _q():\\n"
-        "    async with async_session() as session:\\n"
-        "        mgr = get_connector_manager(session)\\n"
-        "        sources = await mgr.list_datasources()\\n"
-        "        for s in sources:\\n"
-        "            if s.get('name') == '{{nm}}' or s.get('display_name') == '{{nm}}':\\n"
-        "                return s.get('id')\\n"
-        "    return None\\n"
-        "\\n"
-        "r = asyncio.run(_q())\\n"
-        "print(json.dumps(r))\\n"
-    ).format(nm=name)
-    data = _run_async_query(code)
-    return data
+    import urllib.request
+    url = "http://localhost:8000/api/v1/datasources/internal/datasources"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            sources = json.loads(resp.read().decode("utf-8"))
+        for s in sources:
+            if s.get("name") == name:
+                return s.get("id")
+        return None
+    except Exception as e:
+        print(f"[SkillRunner] resolve datasource failed: {{e}}")
+        return None
 
 def get_table_data(datasource_id, table_name, limit=1000, offset=0):
     import re as _re
@@ -174,40 +133,22 @@ def get_table_data(datasource_id, table_name, limit=1000, offset=0):
 query_table_data = get_table_data
 
 def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
-    # 在技能脚本中直接调用平台大模型
+    # 在技能脚本中直接调用平台大模型（通过内部 HTTP 端点，自动使用当前用户的 LLM 配置）
     # prompt: 用户消息
     # system_prompt: 可选的系统提示词
     # temperature: 温度参数 (0.0-2.0)
     # max_tokens: 最大token数
     # 返回: 大模型的文本回复
-    import json as _json
-    _bp = r'{backend_path}'
-    _payload = _json.dumps({{"prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens)}}, ensure_ascii=False)
-    _runner = (
-        "import asyncio, json, sys\\n"
-        "sys.path.insert(0, r'" + _bp + "')\\n"
-        "from app.services.llm import llm_manager\\n"
-        "\\n"
-        "_payload = " + repr(_payload) + "\\n"
-        "_cfg = json.loads(_payload)\\n"
-        "\\n"
-        "async def _q():\\n"
-        "    await llm_manager.initialize()\\n"
-        "    messages = []\\n"
-        "    if _cfg['system_prompt']:\\n"
-        "        messages.append({{'role': 'system', 'content': _cfg['system_prompt']}})\\n"
-        "    messages.append({{'role': 'user', 'content': _cfg['prompt']}})\\n"
-        "    if len(messages) > 1:\\n"
-        "        return await llm_manager.chat_with_messages(messages, temperature=_cfg['temperature'], max_tokens=_cfg['max_tokens'])\\n"
-        "    return await llm_manager.chat(_cfg['prompt'], temperature=_cfg['temperature'], max_tokens=_cfg['max_tokens'])\\n"
-        "\\n"
-        "r = asyncio.run(_q())\\n"
-        "print(json.dumps(r, ensure_ascii=False))\\n"
-    )
-    result = _run_async_query(_runner)
-    if result is not None:
-        return result
-    return ""
+    import urllib.request
+    _payload = json.dumps({{"prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens), "user_id": INJECTED_USER_ID}}).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/llm/chat", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("content", "")
+    except Exception as e:
+        print(f"[SkillRunner] llm_chat failed: {{e}}")
+        return ""
 
 def write_table_data(datasource_id, table_name, records=None, data=None, if_table_exists="fail", table_remark="", column_remarks=None, **extra):
     import re as _re
@@ -216,9 +157,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
         if _resolved:
             datasource_id = _resolved
     _records = data if data is not None else records
-    import json as _json, subprocess, sys as _sys, tempfile as _tf, os as _os
-
-    # 将额外参数序列化，通过临时文件传递
+    import urllib.request
     _kwargs = {{}}
     if if_table_exists and if_table_exists != "fail":
         _kwargs["if_table_exists"] = if_table_exists
@@ -227,45 +166,15 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
     if column_remarks:
         _kwargs["column_remarks"] = column_remarks
     _kwargs.update(extra)
-    _extra = _json.dumps(_sanitize_nans(_kwargs), ensure_ascii=False)
-    _tmp = _tf.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
-    _tmp.write(_json.dumps(_sanitize_nans(_records), ensure_ascii=False))
-    _tmp.close()
-    _tmp_extra = _tf.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8')
-    _tmp_extra.write(_extra)
-    _tmp_extra.close()
+    _payload = json.dumps({{"records": _sanitize_nans(_records or []), **_kwargs}}).encode("utf-8")
+    _url = f"http://localhost:8000/api/v1/internal/datasources/{{datasource_id}}/tables/{{table_name}}/data"
+    _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
-        code = (
-            "import asyncio, json, sys, os\\n"
-            "sys.path.insert(0, r'{backend_path}')\\n"
-            "from app.core.database import async_session\\n"
-            "from app.services.connectors import get_connector_manager\\n"
-            "\\n"
-            "async def _q():\\n"
-            "    with open(r'{{tmp_path}}', encoding='utf-8') as _f:\\n"
-            "        _records = json.load(_f)\\n"
-            "    with open(r'{{tmp_extra}}', encoding='utf-8') as _f2:\\n"
-            "        _kwargs = json.load(_f2)\\n"
-            "    async with async_session() as session:\\n"
-            "        mgr = get_connector_manager(session)\\n"
-            "        return await mgr.write_table('{{ds_id}}', '{{tbl}}', _records, **_kwargs)\\n"
-            "\\n"
-            "result = asyncio.run(_q())\\n"
-            "print(json.dumps(result or {{{{}}}}))\\n"
-            "os.unlink(r'{{tmp_path}}')\\n"
-            "os.unlink(r'{{tmp_extra}}')\\n"
-        ).format(ds_id=datasource_id, tbl=table_name, tmp_path=_tmp.name.replace('\\\\', '/'), tmp_extra=_tmp_extra.name.replace('\\\\', '/'))
-        _result = _run_async_query(code)
-    finally:
-        try:
-            _os.unlink(_tmp.name)
-        except OSError:
-            pass
-        try:
-            _os.unlink(_tmp_extra.name)
-        except OSError:
-            pass
-    return _result if _result else {{"success": False, "message": "write failed"}}
+        with urllib.request.urlopen(_req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[SkillRunner] write_table_data failed: {{e}}")
+        return {{"success": False, "message": str(e)}}
 
 def log(level, message, *args):
     _lvl = str(level).upper() if level else "INFO"
@@ -320,6 +229,7 @@ def run_skill_script(
     table_name: str = None,
     datasource_name: str = None,
     timeout: int = None,
+    user_id: str = None,
 ) -> Dict[str, Any]:
     """在沙箱中执行 Skill 脚本"""
     timeout = timeout or settings.SKILL_RUNNER_TIMEOUT
@@ -389,17 +299,13 @@ def run_skill_script(
     params_literal = repr(parameters)
 
     backend_path = Path(__file__).resolve().parent.parent.parent
-    cwd = str(Path.cwd())
-    backend_path_str = str(backend_path).replace("\\", "/")
-    cwd_str = cwd.replace("\\", "/")
 
     runner_script = SKILL_RUNNER_TEMPLATE.format(
         injected_data=data_literal,
         injected_params=params_literal,
         function_name=function_name,
         uses_argparse=uses_argparse,
-        backend_path=backend_path_str,
-        cwd=cwd_str,
+        user_id=repr(str(user_id) if user_id else None),
     )
     runner_script = runner_script.replace("# __SCRIPT_CONTENT__", script_content)
 
@@ -481,6 +387,7 @@ async def run_skill_script_async(
     table_name: str = None,
     datasource_name: str = None,
     timeout: int = None,
+    user_id: str = None,
 ) -> Dict[str, Any]:
     """异步执行 Skill 脚本，委托给同步版本以避免 Windows 上的 NotImplementedError"""
     loop = asyncio.get_event_loop()
@@ -495,5 +402,6 @@ async def run_skill_script_async(
             table_name=table_name,
             datasource_name=datasource_name,
             timeout=timeout,
+            user_id=user_id,
         ),
     )

@@ -1136,70 +1136,287 @@ class SQLiteConnector(BaseConnector):
             self._connection = None
 
 
-CONNECTOR_REGISTRY: Dict[str, type] = {
-    "postgresql": PostgreSQLConnector,
-    "mysql": MySQLConnector,
-    "sqlite": SQLiteConnector,
-    "csv": CSVConnector,
-    "excel": ExcelConnector,
-    "obs": OBSConnector,
-    "hadoop": HadoopHDFSConnector,
-    "chroma": ChromaConnector,
+# ========== 统一连接器注册表 ==========
+# 所有连接器地位平等：启动时统一从 DB 加载、exec() 装载到本注册表。
+# 内置连接器的类定义保留在本文件作为源码来源，启动时用 inspect.getsource 提取源码 seed 进 DB。
+_connector_registry: Dict[str, type] = {}
+
+# 支持的数据源类型列表（启动时从注册表 in-place 填充，保持外部模块引用同步）
+SUPPORTED_DATASOURCE_TYPES: List[str] = []
+
+# 沙箱禁止 import 的危险模块（其余模块允许，以满足内置连接器对 os/glob/io/httpx 等的依赖）
+_DANGER_IMPORTS = {"subprocess", "shutil", "ctypes", "sys", "socket", "pickle", "threading", "multiprocessing"}
+
+# 内置连接器元信息：name → {display_name, description, config_template, class}
+_BUILTIN_CONNECTORS: Dict[str, Dict[str, Any]] = {
+    "postgresql": {
+        "display_name": "PostgreSQL",
+        "description": "基于 asyncpg 的异步 PostgreSQL 连接",
+        "class": PostgreSQLConnector,
+        "config_template": [
+            {"name": "host", "label": "主机地址", "type": "string", "required": True, "default": "localhost"},
+            {"name": "port", "label": "端口", "type": "number", "required": True, "default": 5432},
+            {"name": "database", "label": "数据库名", "type": "string", "required": True},
+            {"name": "user", "label": "用户名", "type": "string", "required": True},
+            {"name": "password", "label": "密码", "type": "password", "required": True},
+        ],
+    },
+    "mysql": {
+        "display_name": "MySQL",
+        "description": "基于 aiomysql 的异步 MySQL 连接",
+        "class": MySQLConnector,
+        "config_template": [
+            {"name": "host", "label": "主机地址", "type": "string", "required": True, "default": "localhost"},
+            {"name": "port", "label": "端口", "type": "number", "required": True, "default": 3306},
+            {"name": "database", "label": "数据库名", "type": "string", "required": True},
+            {"name": "user", "label": "用户名", "type": "string", "required": True},
+            {"name": "password", "label": "密码", "type": "password", "required": True},
+        ],
+    },
+    "sqlite": {
+        "display_name": "SQLite",
+        "description": "基于 aiosqlite 的 SQLite 连接",
+        "class": SQLiteConnector,
+        "config_template": [
+            {"name": "database", "label": "数据库文件路径", "type": "filepath", "required": True},
+        ],
+    },
+    "csv": {
+        "display_name": "CSV 文件",
+        "description": "本地 CSV 文件连接器",
+        "class": CSVConnector,
+        "config_template": [
+            {"name": "file_path", "label": "文件路径", "type": "filepath", "required": True},
+        ],
+    },
+    "excel": {
+        "display_name": "Excel 文件",
+        "description": "Excel 文件连接器，支持单文件、多文件、文件夹模式",
+        "class": ExcelConnector,
+        "config_template": [
+            {"name": "mode", "label": "模式", "type": "select", "required": True, "default": "file",
+             "options": [{"label": "单文件", "value": "file"}, {"label": "多文件", "value": "files"}, {"label": "文件夹", "value": "folder"}]},
+            {"name": "file_path", "label": "文件路径", "type": "filepath", "required": True, "depends_on": {"mode": "file"}},
+            {"name": "file_path", "label": "文件夹路径", "type": "folderpath", "required": True, "depends_on": {"mode": "folder"}},
+            {"name": "file_paths", "label": "文件列表", "type": "filepath_list", "required": True, "depends_on": {"mode": "files"}},
+        ],
+    },
+    "obs": {
+        "display_name": "OBS 华为云对象存储",
+        "description": "华为云 OBS / S3 兼容对象存储连接器",
+        "class": OBSConnector,
+        "config_template": [
+            {"name": "endpoint", "label": "Endpoint", "type": "string", "required": True},
+            {"name": "access_key", "label": "Access Key", "type": "string", "required": True},
+            {"name": "secret_key", "label": "Secret Key", "type": "password", "required": True},
+            {"name": "bucket", "label": "Bucket", "type": "string", "required": False},
+            {"name": "prefix", "label": "前缀", "type": "string", "required": False},
+            {"name": "secure", "label": "HTTPS", "type": "boolean", "default": True},
+            {"name": "region", "label": "Region", "type": "string", "required": False},
+        ],
+    },
+    "hadoop": {
+        "display_name": "Hadoop HDFS",
+        "description": "通过 WebHDFS REST API 访问 HDFS",
+        "class": HadoopHDFSConnector,
+        "config_template": [
+            {"name": "host", "label": "主机地址", "type": "string", "required": True, "default": "localhost"},
+            {"name": "port", "label": "端口", "type": "number", "required": True, "default": 9870},
+            {"name": "user", "label": "用户名", "type": "string", "required": True, "default": "hadoop"},
+            {"name": "base_path", "label": "基础路径", "type": "string", "required": False, "default": "/"},
+            {"name": "secure", "label": "HTTPS", "type": "boolean", "default": False},
+        ],
+    },
+    "chroma": {
+        "display_name": "ChromaDB 向量库",
+        "description": "ChromaDB 嵌入式向量库，集合（Collection）即数据表",
+        "class": ChromaConnector,
+        "config_template": [
+            {"name": "persist_directory", "label": "数据目录", "type": "folderpath", "required": True, "default": "d:/chroma-data"},
+        ],
+    },
 }
 
-SUPPORTED_DATASOURCE_TYPES = list(CONNECTOR_REGISTRY.keys())
 
-# 自定义连接器缓存：name → connector_class（运行时 exec() 加载）
-_custom_connector_cache: Dict[str, type] = {}
+def _build_exec_namespace() -> dict:
+    """构建连接器 exec 命名空间（提供内置连接器所需的模块与工具函数）"""
+    import pandas as _pd
+    import numpy as _np
+    return {
+        "BaseConnector": BaseConnector,
+        "pd": _pd, "numpy": _np, "np": _np,
+        "Any": Any, "Dict": Dict, "List": List, "Optional": Optional,
+        "os": os, "re": re, "io": io, "glob": glob, "asyncio": asyncio,
+        "httpx": httpx, "logger": logger, "urljoin": urljoin,
+        "json": __import__("json"), "datetime": __import__("datetime"),
+        "_validate_identifier": _validate_identifier,
+    }
 
 
-def _load_custom_connector(code: str, name: str) -> type:
-    """从 Python 源码动态加载连接器类（沙箱 exec）"""
+def _load_connector_class(code: str, name: str) -> type:
+    """从 Python 源码动态加载连接器类（沙箱 exec 统一加载 + 契约校验）"""
     import ast
-    # 安全校验：禁止危险调用
+    import inspect
     tree = ast.parse(code)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             module = node.module if isinstance(node, ast.ImportFrom) else node.names[0].name
-            _DANGER = {"os", "subprocess", "shutil", "ctypes", "sys"}
-            if module.split(".")[0] in _DANGER:
-                raise ValueError(f"自定义连接器禁止 import: {module}")
-
-    namespace = {
-        "BaseConnector": BaseConnector,
-        "pd": __import__("pandas"),
-        "Any": Any, "Dict": Dict, "List": List, "Optional": Optional,
-    }
+            if module and module.split(".")[0] in _DANGER_IMPORTS:
+                raise ValueError(f"连接器禁止 import: {module}")
+    namespace = _build_exec_namespace()
     exec(code, namespace)
-
-    # 找到 BaseConnector 的子类
+    cls = None
     for obj in namespace.values():
         if isinstance(obj, type) and issubclass(obj, BaseConnector) and obj is not BaseConnector:
-            return obj
-    raise ValueError(f"代码中未找到 BaseConnector 的子类: {name}")
+            cls = obj
+            break
+    if cls is None:
+        raise ValueError(f"代码中未找到 BaseConnector 的子类: {name}")
+
+    # 契约校验：6 个抽象方法必须存在且为 async def
+    _REQUIRED_ASYNC_METHODS = ("connect", "test_connection", "get_schema", "get_table_data", "get_table_stats", "close")
+    errors = []
+    for m in _REQUIRED_ASYNC_METHODS:
+        method = getattr(cls, m, None)
+        if method is None:
+            errors.append(f"缺少方法 {m}")
+        elif not inspect.iscoroutinefunction(method):
+            errors.append(f"方法 {m} 必须是 async def（当前是普通 def）")
+
+    # 签名校验：get_table_data 必须含 page 和 page_size 参数
+    gtd = getattr(cls, "get_table_data", None)
+    if gtd and inspect.iscoroutinefunction(gtd):
+        try:
+            sig = inspect.signature(gtd)
+            params = set(sig.parameters.keys())
+            if "page" not in params or "page_size" not in params:
+                errors.append("get_table_data 签名必须含 page 和 page_size 参数（如 async def get_table_data(self, table, page=1, page_size=20, filters=None, sort=None)）")
+        except (ValueError, TypeError):
+            pass
+
+    if errors:
+        raise ValueError(f"连接器 '{name}' 契约校验失败: {'; '.join(errors)}")
+
+    return cls
+
+
+def _sync_supported_types() -> None:
+    """同步 SUPPORTED_DATASOURCE_TYPES（in-place 更新以保持外部模块引用同步）"""
+    SUPPORTED_DATASOURCE_TYPES.clear()
+    SUPPORTED_DATASOURCE_TYPES.extend(_connector_registry.keys())
 
 
 def register_custom_connector(name: str, code: str) -> type:
-    """注册自定义连接器（测试通过后调用）"""
-    cls = _load_custom_connector(code, name)
-    _custom_connector_cache[name] = cls
-    logger.info(f"自定义连接器已注册: {name} → {cls.__name__}")
+    """注册连接器：验证代码 → 加入注册表（AI 生成/修改连接器后即时生效）"""
+    cls = _load_connector_class(code, name)
+    _connector_registry[name] = cls
+    _sync_supported_types()
+    logger.info(f"连接器已注册: {name} → {cls.__name__}")
     return cls
 
 
 def get_custom_connector_types() -> List[str]:
-    """获取所有已注册的自定义连接器类型名"""
-    return list(_custom_connector_cache.keys())
+    """获取所有已注册连接器类型名（兼容旧名）"""
+    return list(_connector_registry.keys())
+
+
+def get_all_connector_types() -> List[str]:
+    """获取所有已注册连接器类型名"""
+    return list(_connector_registry.keys())
+
+
+def _load_single_connector_from_db(name: str) -> Optional[type]:
+    """从 DB 按需加载单个连接器（同步，供子进程使用）"""
+    try:
+        import sqlite3
+        from app.core.config import settings
+        db_url = settings.DATABASE_URL
+        db_path = db_url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+        if not db_path:
+            return None
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT code FROM custom_connectors WHERE name=? AND is_active=1", (name,)).fetchone()
+        conn.close()
+        if row and row[0]:
+            cls = _load_connector_class(row[0], name)
+            _connector_registry[name] = cls
+            return cls
+    except Exception as e:
+        logger.warning(f"按需加载连接器 {name} 失败: {e}")
+    return None
 
 
 def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector:
-    """获取连接器实例（先查内置注册表，再查自定义缓存）"""
-    connector_class = CONNECTOR_REGISTRY.get(datasource_type)
+    """获取连接器实例（注册表 → 内置类 → 按需 DB 加载，兼容子进程）"""
+    connector_class = _connector_registry.get(datasource_type)
     if not connector_class:
-        connector_class = _custom_connector_cache.get(datasource_type)
+        # 降级 1：内置连接器直接用类（子进程中注册表为空时）
+        meta = _BUILTIN_CONNECTORS.get(datasource_type)
+        if meta:
+            connector_class = meta["class"]
+            _connector_registry[datasource_type] = connector_class
+    if not connector_class:
+        # 降级 2：从 DB 按需加载（自定义连接器，子进程中使用）
+        connector_class = _load_single_connector_from_db(datasource_type)
     if not connector_class:
         raise ValueError(f"不支持的数据源类型: {datasource_type}")
     return connector_class(config)
+
+
+async def load_connectors_from_db() -> None:
+    """启动时从 DB 加载所有连接器；内置连接器源码 seed 进 DB（地位平等）"""
+    import inspect
+    from app.core.database import async_session
+    from app.models.custom_extension import CustomConnector
+    from sqlalchemy import select as sa_select
+
+    async with async_session() as session:
+        # 查询超级管理员，作为内置连接器的 created_by（与用户创建的连接器无区别）
+        from app.models.user import User
+        admin = await session.execute(
+            sa_select(User).where(User.is_superuser == True, User.is_active == True).order_by(User.id).limit(1)
+        )
+        admin_user = admin.scalar_one_or_none()
+        admin_id = admin_user.id if admin_user else None
+
+        # seed 内置连接器（仅在 DB 无记录时写入；用户删除后不会复活）
+        for name, meta in _BUILTIN_CONNECTORS.items():
+            existing = await session.execute(
+                sa_select(CustomConnector).where(CustomConnector.name == name)
+            )
+            record = existing.scalar_one_or_none()
+            if not record:
+                source = inspect.getsource(meta["class"])
+                record = CustomConnector(
+                    name=name,
+                    display_name=meta["display_name"],
+                    description=meta["description"],
+                    code=source,
+                    config_template=meta["config_template"],
+                    created_by=admin_id,
+                    is_public=True,
+                )
+                session.add(record)
+            else:
+                # 已存在的内置连接器确保标记为公共
+                record.is_public = True
+        await session.commit()
+
+        # 加载所有活跃连接器到注册表（内置的直接用类，跳过 exec 提速）
+        result = await session.execute(
+            sa_select(CustomConnector).where(CustomConnector.is_active == True)
+        )
+        _connector_registry.clear()
+        for c in result.scalars().all():
+            try:
+                if c.name in _BUILTIN_CONNECTORS:
+                    _connector_registry[c.name] = _BUILTIN_CONNECTORS[c.name]["class"]
+                else:
+                    _connector_registry[c.name] = _load_connector_class(c.code, c.name)
+            except Exception as e:
+                logger.error(f"加载连接器 {c.name} 失败: {e}")
+        _sync_supported_types()
+        logger.info(f"已加载 {len(_connector_registry)} 个连接器: {list(_connector_registry.keys())}")
 
 
 class ConnectorManager:

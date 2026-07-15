@@ -68,7 +68,6 @@
                   <el-icon><CaretRight /></el-icon>
                   <span>推理过程</span>
                   <el-tag v-if="msg.model" size="small" type="info">{{ msg.model }}</el-tag>
-                  <el-tag size="small" type="info">{{ reasoningExpanded[msg.id] ? '点击折叠' : '点击展开' }}</el-tag>
                 </div>
                 <el-collapse-transition>
                   <div v-show="reasoningExpanded[msg.id]" class="reasoning-content">
@@ -93,14 +92,6 @@
                   @click="handleCopy(msg.content)"
                   title="复制"
                 />
-                <el-button
-                  v-if="msg.role === 'assistant' && msg.reasoning"
-                  class="toggle-reasoning-btn"
-                  size="small"
-                  @click="toggleReasoning(msg.id)"
-                >
-                  {{ reasoningExpanded[msg.id] ? '隐藏推理' : '显示推理' }}
-                </el-button>
               </div>
             </div>
           </div>
@@ -467,7 +458,7 @@ async function handleSessionCommand(command: string, sessionId: string) {
     opacity: 1;
   }
 
-  .copy-btn, .toggle-reasoning-btn {
+  .copy-btn {
     transition: opacity 0.2s;
   }
 

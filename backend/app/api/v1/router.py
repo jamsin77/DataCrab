@@ -47,5 +47,5 @@ api_router.include_router(agents.router, prefix="/agents", tags=["智能体"])
 # 知识库路由
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库"])
 
-# 自定义扩展路由（数据源连接器 + LLM 适配器）
-api_router.include_router(custom_extension.router, tags=["自定义扩展"])
+# 扩展路由（数据源连接器 + LLM 适配器）
+api_router.include_router(custom_extension.router, tags=["连接器与模型适配器"])

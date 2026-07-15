@@ -357,3 +357,123 @@ async def get_table_quality(
     except Exception as e:
         logger.error(f"获取数据质量分析异常: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/data")
+async def internal_get_table_data(
+    datasource_id: UUID,
+    table_name: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(1000, ge=1, le=10000),
+    db: AsyncSession = Depends(get_db),
+):
+    """内部查询端点（无认证，仅供技能执行器子进程本机调用）"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
+        df = await connector.get_table_data(table_name, page=page, page_size=page_size)
+        stats = await connector.get_table_stats(table_name)
+        await connector.close()
+        columns = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
+        rows = df.fillna("").to_dict(orient="records")
+        for r in rows:
+            for k, v in list(r.items()):
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                elif not isinstance(v, (str, int, float, bool, type(None))):
+                    r[k] = str(v)
+        return {"columns": columns, "rows": rows, "total": stats.get("row_count", len(rows))}
+    except Exception as e:
+        logger.error(f"内部查询异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/internal/datasources/{datasource_id}/schema")
+async def internal_get_schema(
+    datasource_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """内部获取表结构（无认证，仅供技能执行器子进程本机调用）"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        connector = _get_connector(datasource.type, datasource.connection_config or {})
+        schema = await connector.get_schema()
+        await connector.close()
+        return {"tables": schema}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/internal/datasources")
+async def internal_list_datasources(db: AsyncSession = Depends(get_db)):
+    """内部列出数据源（无认证，仅供技能执行器子进程本机调用）"""
+    result = await db.execute(select(DataSource).where(DataSource.is_active == True))
+    return [{"id": str(s.id), "name": s.name, "type": s.type} for s in result.scalars().all()]
+
+
+@router.post("/internal/datasources/{datasource_id}/tables/{table_name}/data")
+async def internal_write_table_data(
+    datasource_id: UUID,
+    table_name: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """内部写入端点（无认证，仅供技能执行器子进程本机调用）"""
+    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
+    datasource = result.scalar_one_or_none()
+    if not datasource:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    try:
+        from app.services.connectors import ConnectorManager
+        mgr = ConnectorManager(db)
+        kwargs = {}
+        if body.get("if_table_exists") and body["if_table_exists"] != "fail":
+            kwargs["if_table_exists"] = body["if_table_exists"]
+        if body.get("table_remark"):
+            kwargs["table_remark"] = body["table_remark"]
+        if body.get("column_remarks"):
+            kwargs["column_remarks"] = body["column_remarks"]
+        return await mgr.write_table(
+            str(datasource_id),
+            table_name,
+            body.get("records", []),
+            **kwargs,
+        )
+    except Exception as e:
+        logger.error(f"内部写入异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/internal/llm/chat")
+async def internal_llm_chat(body: dict):
+    """内部 LLM 对话端点（无认证，仅供技能执行器子进程本机调用）。
+    通过 user_id 加载用户级 LLM 配置（含私有 API Key），确保技能脚本中的
+    llm_chat() 使用用户自己的模型和额度。"""
+    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
+    user_id = body.get("user_id")
+    try:
+        if user_id:
+            await init_user_llm_context(user_id)
+        await llm_manager.initialize()
+        messages = []
+        system_prompt = body.get("system_prompt")
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": body.get("prompt", "")})
+        result = await llm_manager.chat_with_messages(
+            messages,
+            temperature=body.get("temperature", 0.7),
+            max_tokens=int(body.get("max_tokens", 2000)),
+        )
+        return {"content": result}
+    except Exception as e:
+        logger.error(f"内部 LLM 对话异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        reset_user_llm_config()

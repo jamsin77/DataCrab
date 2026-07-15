@@ -1315,7 +1315,7 @@ async function handleOpSend() {
             msg.thinkingOpen = true
             thinkingDone = true
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**\n\n${data.reason || ''}`
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -1641,7 +1641,6 @@ onMounted(() => {
   min-width: 0;
 
   &.user {
-    align-self: flex-end;
     flex-direction: row-reverse;
 
     .debug-msg-user {

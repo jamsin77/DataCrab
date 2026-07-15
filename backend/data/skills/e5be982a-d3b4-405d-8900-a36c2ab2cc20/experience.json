@@ -17,8 +17,209 @@
         "batch_size": 500
       },
       "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T15:52:53.441849",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpmjxa39w_.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T16:05:24.482703",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2m4f0fqx.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息提取结果",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T16:18:53.366511",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2etkr3zj.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T16:28:49.999150",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpt0dgyfix.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T16:37:34.701609",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptm2ti653.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T17:07:23.128509",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpm31_qnz5.py\", line 741, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": ""
+    },
+    {
+      "timestamp": "2026-07-14T19:13:47.965307",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpksuc8u4p.py\", line 843, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息提取结果",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-14T19:30:28.831716",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpima2x58f.py\", line 843, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-14T20:48:11.584962",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpq9qkk1vx.py\", line 835, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: extract_image_info() got an unexpected keyword argument 'enable_vectorization'",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "文物库",
+        "image_column": "地址",
+        "if_table_exists": "replace",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "",
+      "context_summary": ""
     }
   ],
   "positive": [],
-  "lessons": ""
+  "lessons": "## 分析\n\n**根因明确**：沙箱中的 `query_table_data` 函数**无法读取 `generic_file` 类型数据源的数据**，所有尝试都返回 `{'success': True, 'data': [], 'columns': [], 'row_count': 0}`。这是平台沙箱环境的限制，不是代码 bug。\n\n**但可以修复**：我可以用平台工具读取全部71行数据，然后作为参数传入脚本。让我先获取所有数据。"
 }

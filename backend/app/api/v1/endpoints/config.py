@@ -87,46 +87,64 @@ def _read_env_config() -> dict:
 
 
 @router.get("/llm", response_model=LLMConfigResponse)
-async def get_llm_config():
-    """获取LLM配置（公开接口，不需要认证）"""
+async def get_llm_config(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取当前用户的 LLM 配置（按用户隔离；未配置则回退全局）"""
     try:
-        from app.core.database import async_session
-        from app.models.custom_extension import LLMProvider
-        from app.core.crypto import decrypt
+        from app.models.custom_extension import UserLLMConfig, LLMProvider
         from sqlalchemy import select as sa_select
 
-        provider = llm_manager.provider or settings.LLM_PROVIDER
-        api_base = llm_manager.api_base or settings.OPENAI_API_BASE
-        model = llm_manager.model or settings.OPENAI_MODEL
-        embedding_model = llm_manager.embedding_model or settings.OPENAI_EMBEDDING_MODEL
+        result = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
+        rec = result.scalar_one_or_none()
 
-        # 从 DB 读取各 Provider 的 API Key 状态
-        async with async_session() as session:
-            result = await session.execute(
-                sa_select(LLMProvider).where(LLMProvider.is_active == True)
-            )
-            provider_key_map = {}
-            for p in result.scalars().all():
-                provider_key_map[p.provider_name] = bool(p.api_key_encrypted)
+        # 各 Provider 的公共 API Key 状态
+        providers = await db.execute(sa_select(LLMProvider).where(LLMProvider.is_active == True))
+        provider_key_map = {p.provider_name: bool(p.api_key_encrypted) for p in providers.scalars().all()}
 
-        api_key_set = provider_key_map.get(provider, False)
+        if rec:
+            provider = rec.provider
+            api_base = rec.api_base or ""
+            model = rec.model or ""
+            fast_model = rec.fast_model or ""
+            embedding_model = rec.embedding_model or ""
+            api_key_set = bool(rec.api_key_encrypted)
+            fb_items = [
+                FallbackModelItem(
+                    provider=f.get("provider") or "",
+                    api_base=f.get("api_base"),
+                    model=f.get("model") or "",
+                    fast_model=f.get("fast_model") or "",
+                    api_key_set=bool(f.get("api_key_encrypted")),
+                )
+                for f in (rec.fallback_models or [])
+            ]
+        else:
+            # 用户未配置，回退全局
+            provider = llm_manager.provider or settings.LLM_PROVIDER
+            api_base = llm_manager.api_base or settings.OPENAI_API_BASE
+            model = llm_manager.model or settings.OPENAI_MODEL
+            fast_model = getattr(settings, 'LLM_FAST_MODEL', '') or ''
+            embedding_model = llm_manager.embedding_model or settings.OPENAI_EMBEDDING_MODEL
+            api_key_set = provider_key_map.get(provider, False)
+            fb_items = [
+                FallbackModelItem(
+                    provider=f.get("provider") or "",
+                    api_base=f.get("api_base"),
+                    model=f.get("model") or "",
+                    fast_model=f.get("fast_model") or "",
+                    api_key_set=provider_key_map.get(f.get("provider", ""), False),
+                )
+                for f in (getattr(llm_manager, "fallback_models", []) or [])
+            ]
 
-        fb_items = [
-            FallbackModelItem(
-                provider=f.get("provider") or "",
-                api_base=f.get("api_base"),
-                model=f.get("model") or "",
-                fast_model=f.get("fast_model") or "",
-                api_key_set=provider_key_map.get(f.get("provider", ""), False),
-            )
-            for f in (getattr(llm_manager, "fallback_models", []) or [])
-        ]
         return LLMConfigResponse(
             provider=provider,
             api_key_set=api_key_set,
             api_base=api_base,
             model=model,
-            fast_model=getattr(settings, 'LLM_FAST_MODEL', '') or '',
+            fast_model=fast_model,
             embedding_model=embedding_model,
             is_configured=api_key_set,
             fallback_models=fb_items,
@@ -142,146 +160,66 @@ async def update_llm_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """更新LLM配置 — API Key 加密存数据库，其余配置存 .env"""
+    """更新当前用户的 LLM 配置 — API Key 加密存 UserLLMConfig（按用户隔离）"""
     try:
-        from app.core.crypto import encrypt, decrypt
-        from app.core.database import async_session
-        from app.models.custom_extension import LLMProvider
+        from app.core.crypto import encrypt
+        from app.models.custom_extension import UserLLMConfig
         from sqlalchemy import select as sa_select
 
-        # 1. API Key 加密存到 Provider 表
-        api_keys_to_save = {}  # provider_name -> encrypted_key
-        if config.api_key and config.api_key.strip():
-            api_keys_to_save[config.provider] = encrypt(config.api_key.strip())
+        # 降级链：每个 fb 的 api_key 加密内联存储
+        fallback_models = []
         if config.fallback_models:
             for f in config.fallback_models:
-                fb_provider = f.get("provider") or ""
-                fb_key = f.get("api_key") or ""
-                if fb_provider and fb_key.strip():
-                    api_keys_to_save[fb_provider] = encrypt(fb_key.strip())
-
-        if api_keys_to_save:
-            async with async_session() as save_session:
-                for pname, enc_key in api_keys_to_save.items():
-                    result = await save_session.execute(
-                        sa_select(LLMProvider).where(LLMProvider.provider_name == pname)
-                    )
-                    record = result.scalar_one_or_none()
-                    if record:
-                        record.api_key_encrypted = enc_key
-                    else:
-                        logger.warning(f"Provider {pname} 不在数据库中，API Key 未保存")
-                await save_session.commit()
-                logger.info(f"已加密保存 {len(api_keys_to_save)} 个 API Key")
-
-        # 2. 降级链（不再含 api_key 明文，只存 provider/model/fast_model/api_base）
-        if config.fallback_models is not None:
-            fallback_models = []
-            for f in config.fallback_models:
-                fallback_models.append({
+                fb_item = {
                     "provider": f.get("provider") or "",
                     "api_base": f.get("api_base"),
                     "model": f.get("model") or "",
                     "fast_model": f.get("fast_model") or "",
-                })
+                }
+                fb_key = f.get("api_key") or ""
+                if fb_key.strip():
+                    fb_item["api_key_encrypted"] = encrypt(fb_key.strip())
+                fallback_models.append(fb_item)
+
+        # upsert 当前用户的配置
+        result = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
+        rec = result.scalar_one_or_none()
+        api_key_encrypted = rec.api_key_encrypted if rec else None
+        if config.api_key and config.api_key.strip():
+            api_key_encrypted = encrypt(config.api_key.strip())
+
+        if rec:
+            rec.provider = config.provider
+            rec.api_key_encrypted = api_key_encrypted
+            rec.api_base = config.api_base or ""
+            rec.model = config.model
+            rec.fast_model = config.fast_model or ""
+            rec.embedding_model = config.embedding_model
+            rec.fallback_models = fallback_models
         else:
-            fallback_models = []
-        fallback_json = json.dumps(fallback_models or [], ensure_ascii=False)
-
-        # 3. 其余配置存 .env（不含 API Key）
-        env_path = _get_env_path()
-        env_lines = []
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                env_lines = f.readlines()
-        except FileNotFoundError:
-            env_lines = []
-
-        config_map = {
-            "LLM_PROVIDER": config.provider,
-            "OPENAI_MODEL": config.model,
-            "LLM_FAST_MODEL": config.fast_model or "",
-            "OPENAI_EMBEDDING_MODEL": config.embedding_model,
-            "LLM_FALLBACK_MODELS": fallback_json,
-        }
-        if config.api_base and config.api_base.strip():
-            config_map["OPENAI_API_BASE"] = config.api_base
-
-        updated_keys = set()
-        new_lines = []
-        for line in env_lines:
-            if "=" in line and not line.startswith("#"):
-                key = line.split("=")[0].strip()
-                if key in config_map:
-                    new_lines.append(f"{key}={config_map[key]}\n")
-                    updated_keys.add(key)
-                elif key == "OPENAI_API_KEY":
-                    # 不再在 .env 中存储明文 API Key，跳过
-                    continue
-                else:
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-
-        for key, value in config_map.items():
-            if key not in updated_keys:
-                new_lines.append(f"{key}={value}\n")
-
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-
-        # 4. 立即更新运行时 settings
-        settings.LLM_PROVIDER = config.provider
-        settings.OPENAI_MODEL = config.model
-        settings.LLM_FAST_MODEL = config.fast_model or ""
-        settings.OPENAI_EMBEDDING_MODEL = config.embedding_model
-        settings.LLM_FALLBACK_MODELS = fallback_json
-        if config.api_base and config.api_base.strip():
-            settings.OPENAI_API_BASE = config.api_base
-
-        # 5. 从 DB 读取解密后的 API Key，重新初始化 LLM 客户端
-        async with async_session() as key_session:
-            result = await key_session.execute(
-                sa_select(LLMProvider).where(LLMProvider.provider_name == config.provider)
+            rec = UserLLMConfig(
+                user_id=current_user.id,
+                provider=config.provider,
+                api_key_encrypted=api_key_encrypted,
+                api_base=config.api_base or "",
+                model=config.model,
+                fast_model=config.fast_model or "",
+                embedding_model=config.embedding_model,
+                fallback_models=fallback_models,
             )
-            provider_record = result.scalar_one_or_none()
-            current_api_key = ""
-            if provider_record and provider_record.api_key_encrypted:
-                current_api_key = decrypt(provider_record.api_key_encrypted)
+            db.add(rec)
+        await db.commit()
 
-            # 降级模型的 API Key 也从 DB 读取
-            fb_with_keys = []
-            for f in fallback_models:
-                fb_provider = f.get("provider", "")
-                fb_result = await key_session.execute(
-                    sa_select(LLMProvider).where(LLMProvider.provider_name == fb_provider)
-                )
-                fb_record = fb_result.scalar_one_or_none()
-                fb_key = decrypt(fb_record.api_key_encrypted) if fb_record and fb_record.api_key_encrypted else ""
-                fb_with_keys.append({**f, "api_key": fb_key})
+        # 立即生效：加载到当前请求的 contextvar
+        from app.services.llm import init_user_llm_context
+        await init_user_llm_context(current_user.id)
 
-        current_api_base = settings.OPENAI_API_BASE or llm_manager.api_base
-        if current_api_key:
-            try:
-                await llm_manager.reinitialize(
-                    provider=config.provider,
-                    api_key=current_api_key,
-                    api_base=current_api_base,
-                    model=config.model,
-                    embedding_model=config.embedding_model,
-                    fallback_models=fb_with_keys,
-                )
-            except Exception as e:
-                logger.warning(f"LLM客户端重新初始化失败（配置已保存）: {e}")
-
-        logger.info(f"LLM配置已更新 by user {current_user.username}")
-
+        logger.info(f"用户 {current_user.username} 的 LLM 配置已更新")
         return ConfigUpdateResult(
             success=True,
             message="配置已保存并生效（API Key 已加密存储）",
             restart_required=False,
         )
-
     except Exception as e:
         logger.error(f"配置更新失败: {e}")
         return ConfigUpdateResult(

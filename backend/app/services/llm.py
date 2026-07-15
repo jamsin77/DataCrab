@@ -9,12 +9,78 @@
 
 import json
 import time
+import contextvars
 from typing import Optional, AsyncGenerator, List, Dict, Any
 from app.core.config import settings
 from loguru import logger
 
 # 瞬态重试异常类型（仅对这些错误重试同一模型，其他直接降级）
 _TRANSIENT_ERRORS = None
+
+# 当前请求用户的 LLM 配置覆盖（contextvars，请求级隔离，线程/协程安全）
+# 设置后 LLMManager 的 _model_configs/fast_model/pick_model 优先使用用户配置（含其私有 API Key）
+_user_llm_config: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "_user_llm_config", default=None
+)
+
+
+def set_user_llm_config(cfg: Optional[Dict[str, Any]]) -> None:
+    """在请求开始时设置当前用户的 LLM 配置（含解密后的 api_key）"""
+    _user_llm_config.set(cfg)
+
+
+def get_user_llm_config() -> Optional[Dict[str, Any]]:
+    return _user_llm_config.get()
+
+
+def reset_user_llm_config() -> None:
+    """清除当前请求的用户配置覆盖（恢复全局）"""
+    _user_llm_config.set(None)
+
+
+async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
+    """从 DB 加载用户级 LLM 配置，解密 API Key，设置到 contextvars。
+    若用户未配置则清除覆盖（回退全局 llm_manager）。返回生效配置（或 None）。"""
+    from app.core.database import async_session
+    from app.models.custom_extension import UserLLMConfig
+    from app.core.crypto import decrypt
+    from sqlalchemy import select as sa_select
+
+    async with async_session() as session:
+        result = await session.execute(
+            sa_select(UserLLMConfig).where(UserLLMConfig.user_id == user_id)
+        )
+        rec = result.scalar_one_or_none()
+
+    if not rec:
+        set_user_llm_config(None)
+        return None
+
+    api_key = decrypt(rec.api_key_encrypted) if rec.api_key_encrypted else ""
+    fallback = []
+    for fb in (rec.fallback_models or []):
+        fb_key = decrypt(fb["api_key_encrypted"]) if fb.get("api_key_encrypted") else ""
+        if not fb_key:
+            continue
+        fallback.append({
+            "provider": fb.get("provider", ""),
+            "api_base": fb.get("api_base", ""),
+            "model": fb.get("model", ""),
+            "fast_model": fb.get("fast_model", ""),
+            "api_key": fb_key,
+        })
+
+    cfg = {
+        "provider": rec.provider,
+        "api_key": api_key,
+        "api_base": rec.api_base or "",
+        "model": rec.model or "",
+        "fast_model": rec.fast_model or "",
+        "embedding_model": rec.embedding_model or "",
+        "fallback_models": fallback,
+    }
+    set_user_llm_config(cfg)
+    return cfg
 
 def _get_transient_errors():
     """延迟导入 OpenAI 异常类型"""
@@ -90,7 +156,7 @@ async def load_providers_from_db():
     from sqlalchemy import select as sa_select
 
     async with async_session() as session:
-        # seed 预配置 Provider
+        # seed 预配置 Provider（内置公共）
         for name, info in _SEED_PROVIDERS.items():
             existing = await session.execute(
                 sa_select(LLMProvider).where(LLMProvider.provider_name == name)
@@ -108,10 +174,14 @@ async def load_providers_from_db():
                     default_model=info["default_model"],
                     fast_model=info["fast_model"],
                     code=None,
+                    is_public=True,
                     created_at=_seed_time,
                     updated_at=_seed_time,
                 )
                 session.add(record)
+            else:
+                # 已存在的内置 Provider 确保标记为公共
+                record.is_public = True
         await session.commit()
 
         # 加载所有 Provider 到内存
@@ -264,13 +334,23 @@ class LLMManager:
 
     @property
     def fast_model(self) -> str:
-        """快速模型名（系统内部任务 + 降级兜底）。"""
+        """快速模型名（系统内部任务 + 降级兜底）。用户配置优先。"""
+        cfg = get_user_llm_config()
+        if cfg and cfg.get("fast_model"):
+            return cfg["fast_model"]
         configured = getattr(settings, 'LLM_FAST_MODEL', '') or ''
         if configured.strip():
             return configured.strip()
-        info = _provider_registry.get(self.provider)
+        info = _provider_registry.get(cfg["provider"] if cfg else self.provider)
         if info and info.get("fast_model"):
             return info["fast_model"]
+        return cfg["model"] if cfg else self.model
+
+    def _eff_model(self) -> str:
+        """当前生效的深度模型名（用户配置优先，否则全局）"""
+        cfg = get_user_llm_config()
+        if cfg and cfg.get("model"):
+            return cfg["model"]
         return self.model
 
     # 任务关键词分类
@@ -296,15 +376,16 @@ class LLMManager:
         4. 简单关键词（运行/执行/解释） → 快速模型
         5. 不确定 → 深度模型（宁深不浅）
         """
+        deep = self._eff_model()
         if is_retry:
-            return self.model
+            return deep
 
         msg_lower = message.lower() if message else ""
 
         # 1. 复杂任务 → 深度
         for kw in self._COMPLEX_KEYWORDS:
             if kw in msg_lower or kw in message:
-                return self.model
+                return deep
 
         # 2. 上下文：最近 1 条 assistant 回复涉及代码修改 → 深度
         if history:
@@ -314,7 +395,7 @@ class LLMManager:
                 content = (h.get("content") or "").lower()
                 for kw in self._COMPLEX_KEYWORDS:
                     if kw in content:
-                        return self.model
+                        return deep
 
         # 3. 简单任务 → 快速
         for kw in self._SIMPLE_KEYWORDS:
@@ -322,20 +403,20 @@ class LLMManager:
                 return self.fast_model
 
         # 4. 不确定 → 深度（宁深不浅）
-        return self.model
+        return deep
 
     def _resolve_model(self, model: Optional[str]) -> str:
         """解析模型：指定则用指定，断路器熔断则降级到另一个模型。"""
-        target = model or self.model
+        target = model or self._eff_model()
         if _circuit.is_available(target):
             return target
-        fallback = self.fast_model if target != self.fast_model else self.model
+        fallback = self.fast_model if target != self.fast_model else self._eff_model()
         logger.warning(f"断路器降级: {target} 不可用，切换到 {fallback}")
         return fallback
 
     def _degradation_chain(self, target: str) -> List[str]:
         """构建降级链：目标模型 → 另一个模型，去重。"""
-        other = self.fast_model if target != self.fast_model else self.model
+        other = self.fast_model if target != self.fast_model else self._eff_model()
         chain = [target]
         if other != target:
             chain.append(other)
@@ -375,7 +456,19 @@ class LLMManager:
         return client
 
     def _model_configs(self) -> List[Dict[str, str]]:
-        """返回有序模型配置列表（主模型 + 有 key 的降级模型）"""
+        """返回有序模型配置列表（主模型 + 有 key 的降级模型）；用户配置优先"""
+        cfg = get_user_llm_config()
+        if cfg:
+            configs = [{
+                "provider": cfg.get("provider", ""),
+                "api_key": cfg.get("api_key", ""),
+                "api_base": cfg.get("api_base", ""),
+                "model": cfg.get("model", ""),
+            }]
+            for fb in (cfg.get("fallback_models") or []):
+                if fb.get("api_key"):
+                    configs.append(fb)
+            return configs
         configs = [{
             "provider": self.provider,
             "api_key": self.api_key,

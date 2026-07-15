@@ -1074,6 +1074,8 @@ async def debug_operator_chat(
 
     async def generate():
         import asyncio
+        from app.services.llm import init_user_llm_context
+        await init_user_llm_context(current_user.id)
         try:
             async for event in runtime.run("data_processor", message, context):
                 t = event.get("type")

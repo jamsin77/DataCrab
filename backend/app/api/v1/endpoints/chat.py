@@ -418,6 +418,10 @@ async def send_message(
         nl_svc = _get_nl_service()
         await nl_svc.skill_library.initialize()
 
+        # 设置当前用户的 LLM 配置（API Key 按用户隔离）
+        from app.services.llm import init_user_llm_context
+        await init_user_llm_context(current_user.id)
+
         # 初始化LLM
         await llm_manager.initialize()
 
@@ -560,6 +564,10 @@ async def stream_response(
             )
             db.add(user_message)
             await db.flush()
+
+            # 设置当前用户的 LLM 配置（API Key 按用户隔离，contextvars 请求级生效）
+            from app.services.llm import init_user_llm_context
+            await init_user_llm_context(current_user.id)
 
             await llm_manager.initialize()
 
@@ -765,6 +773,10 @@ async def process_data_streaming(
             import pandas as pd
             from app.services.nl_data_processor import nl_processor, DataProcessingRequest
             from app.services.skill_library import skill_library
+
+            # 设置当前用户的 LLM 配置（API Key 按用户隔离）
+            from app.services.llm import init_user_llm_context
+            await init_user_llm_context(current_user.id)
 
             # 初始化技能库
             await skill_library.initialize()

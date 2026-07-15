@@ -593,7 +593,9 @@ async def run_skill(
         if ds_obj:
             ds_name = ds_obj.name
 
-    exec_result = run_skill_script(
+    import asyncio as _asyncio
+    exec_result = await _asyncio.to_thread(
+        run_skill_script,
         skill_path=folder,
         script_name=request.script_name,
         parameters=request.parameters,
@@ -601,6 +603,7 @@ async def run_skill(
         datasource_id=request.datasource_id,
         datasource_name=ds_name,
         table_name=request.table_name,
+        user_id=str(current_user.id),
     )
 
     skill.usage_count = (skill.usage_count or 0) + 1
@@ -647,6 +650,7 @@ async def run_skill_stream(
                 datasource_id=request.datasource_id,
                 datasource_name=ds_name,
                 table_name=request.table_name,
+                user_id=str(current_user.id),
             )
 
             skill.usage_count = (skill.usage_count or 0) + 1
@@ -891,7 +895,9 @@ async def run_skill_nl(
             datasource_id = str(ds.id)
             ds_name = ds.name
 
-    exec_result = run_skill_script(
+    import asyncio as _asyncio2
+    exec_result = await _asyncio2.to_thread(
+        run_skill_script,
         skill_path=folder,
         script_name=request.script_name,
         parameters=parameters,
@@ -899,6 +905,7 @@ async def run_skill_nl(
         datasource_id=datasource_id,
         datasource_name=ds_name,
         table_name=inferred_table,
+        user_id=str(current_user.id),
     )
 
     skill.usage_count = (skill.usage_count or 0) + 1
@@ -1029,6 +1036,7 @@ async def run_skill_nl_stream(
                 datasource_id=datasource_id,
                 datasource_name=ds_name,
                 table_name=inferred_table,
+                user_id=str(current_user.id),
             )
 
             skill.usage_count = (skill.usage_count or 0) + 1
@@ -1225,6 +1233,8 @@ async def debug_skill_chat(
 
     async def generate():
         import asyncio
+        from app.services.llm import init_user_llm_context
+        await init_user_llm_context(current_user.id)
         try:
             async for event in runtime.run("data_processor", message, context):
                 t = event.get("type")
@@ -1343,6 +1353,29 @@ async def summarize_skill_errors(
         "message": f"已总结 {len(errors)} 条错误记录并更新 SKILL.md",
         "error_count": len(errors),
         "lessons": lessons_text.strip(),
+    }
+
+
+@router.get("/{skill_id}/experience")
+async def get_skill_experience(
+    skill_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取技能的调试经验（归纳原因 + 历史错误记录 + 成功记录）"""
+    result_row = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result_row.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    from app.services import experience
+    folder = Path(settings.SKILL_STORAGE_PATH) / str(skill_id)
+    data = experience.read_experience(folder)
+    return {
+        "lessons": data.get("lessons", ""),
+        "negative": (data.get("negative") or [])[-20:],  # 最近20条错误
+        "positive": (data.get("positive") or [])[-10:],  # 最近10条成功
+        "stats": experience.experience_stats(folder),
     }
 
 

@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_skills)
+        await conn.run_sync(_migrate_custom_extensions)
     logger.info("数据库表已创建")
     await _load_custom_extensions()
     await _init_llm_from_db()
@@ -31,8 +32,8 @@ async def lifespan(app: FastAPI):
 async def _load_custom_extensions():
     """启动时从数据库加载连接器和 LLM Provider"""
     from sqlalchemy import select as sa_select
-    from app.models.custom_extension import CustomConnector, LLMProvider
-    from app.services.connectors import register_custom_connector
+    from app.models.custom_extension import LLMProvider
+    from app.services.connectors import load_connectors_from_db
     from app.services.llm import load_providers_from_db, register_custom_adapter, llm_manager
     from app.core.crypto import decrypt
     from app.core.config import settings
@@ -51,16 +52,8 @@ async def _load_custom_extensions():
             except Exception as e:
                 logger.warning(f"加载 Provider 适配器 {p.provider_name} 失败: {e}")
 
-    # 加载连接器
-    async with async_session() as session:
-        result = await session.execute(
-            sa_select(CustomConnector).where(CustomConnector.is_active == True)
-        )
-        for c in result.scalars().all():
-            try:
-                register_custom_connector(c.name, c.code)
-            except Exception as e:
-                logger.warning(f"加载连接器 {c.name} 失败: {e}")
+    # 加载所有连接器（统一从 DB 装载，首次启动 seed 内置连接器）
+    await load_connectors_from_db()
 
 
 async def _init_llm_from_db():
@@ -119,6 +112,19 @@ def _migrate_skills(connection):
             logger.info("skills表已添加 skill_path 列")
     except Exception as e:
         logger.warning(f"Skills表迁移跳过: {e}")
+
+
+def _migrate_custom_extensions(connection):
+    from sqlalchemy import text
+    for table in ("custom_connectors", "llm_providers"):
+        try:
+            result = connection.execute(text(f"PRAGMA table_info({table})"))
+            columns = {row[1] for row in result.fetchall()}
+            if "is_public" not in columns:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN is_public BOOLEAN DEFAULT 0"))
+                logger.info(f"{table}表已添加 is_public 列")
+        except Exception as e:
+            logger.warning(f"{table}表迁移跳过: {e}")
 
 
 app = FastAPI(

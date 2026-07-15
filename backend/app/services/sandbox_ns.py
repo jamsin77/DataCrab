@@ -78,22 +78,27 @@ def build_operator_namespace(current_user_id):
         return result["id"]
 
     def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
-        """在算子脚本中直接调用大模型"""
-        from app.services.llm import llm_manager
+        """在算子脚本中直接调用大模型（自动使用当前用户的 LLM 配置）"""
+        from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
 
         async def _run():
-            await llm_manager.initialize()
-            if system_prompt:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ]
-                return await llm_manager.chat_with_messages(
-                    messages, temperature=temperature, max_tokens=max_tokens
+            if current_user_id:
+                await init_user_llm_context(current_user_id)
+            try:
+                await llm_manager.initialize()
+                if system_prompt:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ]
+                    return await llm_manager.chat_with_messages(
+                        messages, temperature=temperature, max_tokens=max_tokens
+                    )
+                return await llm_manager.chat(
+                    prompt, temperature=temperature, max_tokens=max_tokens
                 )
-            return await llm_manager.chat(
-                prompt, temperature=temperature, max_tokens=max_tokens
-            )
+            finally:
+                reset_user_llm_config()
 
         return run_async_in_thread(_run())
 

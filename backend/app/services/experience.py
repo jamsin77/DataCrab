@@ -56,8 +56,9 @@ def append_negative(
     parameters: Optional[Dict[str, Any]] = None,
     stdout: str = "",
     script_name: str = "",
+    context_summary: str = "",
 ) -> None:
-    """追加一条反例（失败记录）。"""
+    """追加一条反例（失败记录）。context_summary 记录推理过程中的关键信息。"""
     data = read_experience(base)
     entry = {
         "timestamp": datetime.now().isoformat(),
@@ -67,6 +68,7 @@ def append_negative(
         "error_message": (error_message or "")[:500],
         "parameters": parameters or {},
         "stdout_preview": (stdout or "")[:200],
+        "context_summary": (context_summary or "")[:800],
     }
     data["negative"].append(entry)
     if len(data["negative"]) > MAX_NEGATIVE:

@@ -7,7 +7,14 @@ from typing import List, Dict, Any, Optional
 
 
 class BaseConnector(ABC):
-    """数据源连接器基类"""
+    """数据源连接器基类
+
+    抽象方法（必须实现）：connect / test_connection / get_schema /
+    get_table_data / get_table_stats / close
+
+    非抽象方法（可选覆盖）：execute_query — 仅结构化数据库型连接器需要实现，
+    文件/对象存储等非结构化数据源无需查询，默认返回空 DataFrame。
+    """
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -36,18 +43,18 @@ class BaseConnector(ABC):
         page_size: int = 20,
         filters: Optional[Dict] = None,
         sort: Optional[Dict] = None,
-    ) -> pd.DataFrame:
+    ) -> "pd.DataFrame":
         """获取表数据"""
         pass
 
-    @abstractmethod
     async def execute_query(
         self,
         query: str,
         params: Optional[Dict] = None,
-    ) -> pd.DataFrame:
-        """执行查询"""
-        pass
+    ) -> "pd.DataFrame":
+        """执行查询（仅数据库型连接器需覆盖此方法；非结构化数据源默认不支持，返回空 DataFrame）"""
+        import pandas as pd
+        return pd.DataFrame()
 
     @abstractmethod
     async def get_table_stats(self, table: str) -> Dict[str, Any]:

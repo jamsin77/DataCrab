@@ -874,6 +874,37 @@
         "limit": 10000
       },
       "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-13T11:34:32.694340",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "address_province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
     }
   ],
   "lessons": ""

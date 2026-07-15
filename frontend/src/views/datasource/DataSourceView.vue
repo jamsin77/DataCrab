@@ -7,15 +7,15 @@
         </el-button>
       </div>
       <div class="toolbar-right">
-        <el-select v-model="typeFilter" placeholder="类型筛选" clearable @change="fetchDataSources" style="width: 140px;">
-          <el-option label="PostgreSQL" value="postgresql" />
-          <el-option label="MySQL" value="mysql" />
-          <el-option label="CSV" value="csv" />
-          <el-option label="Excel" value="excel" />
-          <el-option label="ChromaDB 向量库" value="chroma" />
-          <el-option label="OBS" value="obs" />
-          <el-option label="Hadoop" value="hadoop" />
+        <el-select v-model="typeFilter" placeholder="类型筛选" clearable @change="fetchDataSources" style="width: 160px;">
+          <el-option
+            v-for="c in connectors"
+            :key="c.name"
+            :label="c.display_name"
+            :value="c.name"
+          />
         </el-select>
+        <el-button :icon="Setting" @click="openConnectorManager">连接器管理</el-button>
       </div>
     </div>
 
@@ -51,25 +51,17 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="showCreateDialog" :title="editId ? '编辑数据源' : '新建数据源'" width="560px" @closed="resetForm">
-      <el-form :model="configForm" label-width="90px" ref="formRef">
+    <el-dialog v-model="showCreateDialog" :title="editId ? '编辑数据源' : '新建数据源'" width="600px" @closed="resetForm">
+      <el-form :model="configForm" label-width="auto" ref="formRef">
         <el-form-item label="名称" required>
           <el-input v-model="configForm.name" placeholder="请输入数据源名称" />
         </el-form-item>
         <el-form-item label="类型" required>
           <el-select v-model="configForm.type" @change="onTypeChange" style="width: 100%;">
-            <el-option label="PostgreSQL" value="postgresql" />
-            <el-option label="MySQL" value="mysql" />
-            <el-option label="SQLite" value="sqlite" />
-            <el-option label="CSV 文件" value="csv" />
-            <el-option label="Excel 文件" value="excel" />
-            <el-option label="ChromaDB 向量库" value="chroma" />
-            <el-option label="OBS 华为云对象存储" value="obs" />
-            <el-option label="Hadoop HDFS" value="hadoop" />
             <el-option
-              v-for="c in customConnectors"
+              v-for="c in connectors"
               :key="c.name"
-              :label="c.display_name + ' (自定义)'"
+              :label="c.display_name"
               :value="c.name"
             />
           </el-select>
@@ -77,117 +69,37 @@
 
         <el-divider content-position="left">连接配置</el-divider>
 
-        <template v-if="configForm.type === 'postgresql' || configForm.type === 'mysql'">
-          <el-form-item label="主机地址" required>
-            <el-input v-model="configForm.host" :placeholder="configForm.type === 'postgresql' ? 'localhost' : 'localhost'" />
-          </el-form-item>
-          <el-form-item label="端口" required>
-            <el-input-number v-model="configForm.port" :min="1" :max="65535" style="width: 100%;" />
-          </el-form-item>
-          <el-form-item label="数据库名" required>
-            <el-input v-model="configForm.database" placeholder="请输入数据库名" />
-          </el-form-item>
-          <el-form-item label="用户名" required>
-            <el-input v-model="configForm.user" placeholder="请输入用户名" />
-          </el-form-item>
-          <el-form-item label="密码" required>
-            <el-input v-model="configForm.password" type="password" show-password :placeholder="editId ? '留空则不修改密码' : '请输入密码'" />
-          </el-form-item>
-        </template>
-
-        <template v-if="configForm.type === 'csv'">
-          <el-form-item label="文件路径" required>
-            <el-input v-model="configForm.file_path" placeholder="D:/data/file.csv">
-              <template #prepend>
-                <el-button @click="openFsBrowser('file', '.csv')" :icon="Document" />
-              </template>
-            </el-input>
-          </el-form-item>
-        </template>
-
-        <template v-if="configForm.type === 'excel'">
-          <el-form-item label="数据模式">
-            <el-radio-group v-model="configForm.excel_mode">
-              <el-radio value="file">单文件</el-radio>
-              <el-radio value="folder">文件夹</el-radio>
-              <el-radio value="files">多文件</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item v-if="configForm.excel_mode === 'file'" label="文件路径" required>
-            <el-input v-model="configForm.file_path" placeholder="D:/data/file.xlsx">
-              <template #prepend>
-                <el-button @click="openFsBrowser('file', '.xlsx,.xls')" :icon="Document" />
-              </template>
-            </el-input>
-          </el-form-item>
-          <el-form-item v-if="configForm.excel_mode === 'folder'" label="文件夹路径" required>
-            <el-input v-model="configForm.file_path" placeholder="D:/data/ (该文件夹下所有 .xlsx/.xls 文件将自动作为数据集)">
-              <template #prepend>
-                <el-button @click="openFsBrowser('folder')" :icon="FolderOpened" />
-              </template>
-            </el-input>
-          </el-form-item>
-          <el-form-item v-if="configForm.excel_mode === 'files'" label="文件列表" required>
-            <div v-for="(fp, i) in configForm.file_paths" :key="i" class="multi-file-row">
-              <el-input :model-value="fp" @update:model-value="(v: string) => configForm.file_paths[i] = v" placeholder="D:/data/file.xlsx">
-                <template #prepend>
-                  <el-button @click="openFsBrowser('file', '.xlsx,.xls', i)" :icon="Document" />
-                </template>
+        <el-form-item
+          v-for="field in currentConfigTemplate"
+          :key="field.name + '-' + field.label"
+          :label="field.label"
+          :required="field.required"
+          v-show="isFieldVisible(field)"
+        >
+          <el-input v-if="field.type === 'string'" v-model="configValues[field.name]" :placeholder="field.placeholder || ''" />
+          <el-input-number v-else-if="field.type === 'number'" v-model="configValues[field.name]" :min="1" :max="65535" style="width: 100%;" />
+          <el-input v-else-if="field.type === 'password'" v-model="configValues[field.name]" type="password" show-password :placeholder="editId ? '留空则不修改' : '请输入'" />
+          <el-switch v-else-if="field.type === 'boolean'" v-model="configValues[field.name]" />
+          <el-select v-else-if="field.type === 'select'" v-model="configValues[field.name]" style="width: 100%;">
+            <el-option v-for="opt in (field.options || [])" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+          <el-input v-else-if="field.type === 'filepath'" v-model="configValues[field.name]">
+            <template #prepend><el-button @click="openFsBrowserForField(field.name, 'file')" :icon="Document" /></template>
+          </el-input>
+          <el-input v-else-if="field.type === 'folderpath'" v-model="configValues[field.name]">
+            <template #prepend><el-button @click="openFsBrowserForField(field.name, 'folder')" :icon="FolderOpened" /></template>
+          </el-input>
+          <div v-else-if="field.type === 'filepath_list'" style="width: 100%;">
+            <div v-for="(p, i) in (configValues[field.name] || [])" :key="i" class="multi-file-row">
+              <el-input v-model="configValues[field.name][i]" placeholder="文件路径">
+                <template #prepend><el-button @click="openFsBrowserForField(field.name, 'file', i)" :icon="Document" /></template>
               </el-input>
-              <el-button text type="danger" @click="configForm.file_paths.splice(i, 1)">删除</el-button>
+              <el-button text type="danger" :icon="Delete" @click="configValues[field.name].splice(i, 1)" />
             </div>
-            <el-button size="small" type="primary" plain @click="configForm.file_paths.push('')">+ 添加文件</el-button>
-          </el-form-item>
-          <el-form-item label="说明">
-            <span style="color:#909399;font-size:12px">多Sheet文件：第一个Sheet用文件名作为数据集名，其余Sheet用 文件名_Sheet名 命名</span>
-          </el-form-item>
-        </template>
-
-        <template v-if="configForm.type === 'obs'">
-          <el-form-item label="终端地址" required>
-            <el-input v-model="configForm.endpoint" placeholder="obs.cn-north-4.myhuaweicloud.com" />
-          </el-form-item>
-          <el-form-item label="Access Key" required>
-            <el-input v-model="configForm.access_key" placeholder="请输入 AK" />
-          </el-form-item>
-          <el-form-item label="Secret Key" required>
-            <el-input v-model="configForm.secret_key" type="password" show-password placeholder="请输入 SK" />
-          </el-form-item>
-          <el-form-item label="桶名称">
-            <el-input v-model="configForm.bucket" placeholder="my-bucket" />
-          </el-form-item>
-          <el-form-item label="HTTPS">
-            <el-switch v-model="configForm.secure" />
-          </el-form-item>
-        </template>
-
-        <template v-if="configForm.type === 'hadoop'">
-          <el-form-item label="主机地址" required>
-            <el-input v-model="configForm.host" placeholder="namenode-host" />
-          </el-form-item>
-          <el-form-item label="端口" required>
-            <el-input-number v-model="configForm.port" :min="1" :max="65535" style="width: 100%;" />
-          </el-form-item>
-          <el-form-item label="用户名" required>
-            <el-input v-model="configForm.user" placeholder="hadoop" />
-          </el-form-item>
-          <el-form-item label="基础路径">
-            <el-input v-model="configForm.base_path" placeholder="/user/data" />
-          </el-form-item>
-        </template>
-
-        <template v-if="configForm.type === 'chroma'">
-          <el-form-item label="数据目录" required>
-            <el-input v-model="configForm.file_path" placeholder="D:/chroma-data">
-              <template #prepend>
-                <el-button @click="openFsBrowser('folder')" :icon="FolderOpened" />
-              </template>
-            </el-input>
-          </el-form-item>
-          <el-form-item label="说明">
-            <span style="color:#909399;font-size:12px">ChromaDB 嵌入式向量库，数据持久化到本地目录。集合（Collection）即数据表。</span>
-          </el-form-item>
-        </template>
+            <el-button size="small" type="primary" plain @click="ensureList(field.name); configValues[field.name].push('')">+ 添加文件</el-button>
+          </div>
+          <el-input v-else v-model="configValues[field.name]" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
@@ -252,6 +164,58 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="showConnectorManager" title="连接器管理" width="720px">
+      <div style="margin-bottom: 12px;">
+        <el-button type="primary" size="small" @click="openConnectorCreate">
+          <el-icon><Plus /></el-icon> 新建连接器
+        </el-button>
+      </div>
+      <el-table :data="connectorList" stripe size="small">
+        <el-table-column prop="display_name" label="名称" width="160" />
+        <el-table-column prop="name" label="标识" width="140" />
+        <el-table-column prop="description" label="描述" show-overflow-tooltip />
+        <el-table-column label="共享" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.is_public ? 'success' : 'info'" size="small">{{ row.is_public ? '公开' : '私有' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="160">
+          <template #default="{ row }">
+            <el-button size="small" @click="openConnectorEdit(row)" :disabled="!row.can_edit">编辑</el-button>
+            <el-button size="small" type="danger" @click="deleteConnector(row)" :disabled="!row.can_edit">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? '编辑连接器' : '新建连接器'" width="680px">
+      <el-form label-width="100px">
+        <el-form-item label="标识" required>
+          <el-input v-model="connectorEditForm.name" :disabled="!!connectorEditForm.id" placeholder="英文小写，如 mongodb" />
+        </el-form-item>
+        <el-form-item label="显示名称">
+          <el-input v-model="connectorEditForm.display_name" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="connectorEditForm.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="连接器代码" required>
+          <el-input v-model="connectorEditForm.code" type="textarea" :rows="12" placeholder="继承 BaseConnector 的 Python 类代码" style="font-family: monospace; font-size: 12px;" />
+        </el-form-item>
+        <el-form-item label="配置模板">
+          <el-input v-model="connectorEditForm.config_template" type="textarea" :rows="6" placeholder='JSON 数组，如 [{"name":"host","label":"主机","type":"string","required":true}]' style="font-family: monospace; font-size: 12px;" />
+        </el-form-item>
+        <el-form-item label="公开共享">
+          <el-switch v-model="connectorEditForm.is_public" />
+          <span style="margin-left: 8px; color: #909399; font-size: 12px;">开启后所有用户可见可用</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showConnectorEditDialog = false">取消</el-button>
+        <el-button type="primary" :loading="connectorSaving" @click="saveConnector">保存</el-button>
+      </template>
+    </el-dialog>
+
     <FileSystemBrowser
       v-model="showFsBrowser"
       :mode="fsBrowserMode"
@@ -263,10 +227,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, FolderOpened, Refresh } from '@element-plus/icons-vue'
+import { Document, FolderOpened, Refresh, Setting, Delete } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 
 const dataSources = ref<any[]>([])
@@ -280,72 +244,94 @@ const browseTotal = ref(0)
 const selectedTable = ref('')
 const browseLoading = ref(false)
 const typeFilter = ref('')
-const customConnectors = ref<any[]>([])
+const connectors = ref<any[]>([])
 const editId = ref<string | null>(null)
 const saving = ref(false)
 const showFsBrowser = ref(false)
 const fsBrowserMode = ref<'file' | 'folder'>('file')
 const fsBrowserExt = ref('')
 const fsBrowserDefaultPath = ref('D:/')
+const fsBrowserField = ref('')
 const fsBrowserTargetIndex = ref(-1)
-
-const defaultPorts: Record<string, number> = {
-  postgresql: 5432,
-  mysql: 3306,
-  hadoop: 9870,
-}
 
 const configForm = reactive({
   name: '',
-  type: 'postgresql',
-  host: 'localhost',
-  port: 5432,
-  database: '',
-  user: '',
-  password: '',
-  file_path: '',
-  file_paths: [] as string[],
-  excel_mode: 'file',
-  sheet_name: '',
-  endpoint: '',
-  access_key: '',
-  secret_key: '',
-  bucket: '',
-  secure: true,
-  base_path: '/',
+  type: '',
+})
+const configValues = reactive<Record<string, any>>({})
+
+// 连接器类型管理
+const showConnectorManager = ref(false)
+const connectorList = ref<any[]>([])
+const showConnectorEditDialog = ref(false)
+const connectorSaving = ref(false)
+const connectorEditForm = reactive({
+  id: '',
+  name: '',
+  display_name: '',
+  description: '',
+  code: '',
+  config_template: '',
+  is_public: false,
+})
+
+const currentConfigTemplate = computed(() => {
+  const c = connectors.value.find(c => c.name === configForm.type)
+  return c?.config_template || []
 })
 
 onMounted(async () => {
+  await fetchConnectors()
   await fetchDataSources()
-  try {
-    customConnectors.value = await api.get('/connectors/custom')
-  } catch {}
 })
 
-function getTypeLabel(type: string): string {
-  const labels: Record<string, string> = {
-    postgresql: 'PostgreSQL',
-    mysql: 'MySQL',
-    csv: 'CSV',
-    excel: 'Excel',
-    chroma: 'ChromaDB',
-    obs: 'OBS',
-    hadoop: 'Hadoop',
-  }
-  return labels[type] || type
+async function fetchConnectors() {
+  try {
+    connectors.value = await api.get('/connectors/custom')
+  } catch {}
 }
 
+function getTypeLabel(type: string): string {
+  const c = connectors.value.find(c => c.name === type)
+  return c?.display_name || type
+}
+
+const TAG_PALETTE = ['', 'success', 'warning', 'danger', 'info']
 function getTypeTagType(type: string): string {
-  const tagTypes: Record<string, string> = {
-    postgresql: '',
-    mysql: 'warning',
-    csv: 'success',
-    excel: 'success',
-    chroma: 'danger',
-    obs: 'danger',
-    hadoop: 'info',
+  const idx = connectors.value.findIndex(c => c.name === type)
+  return idx >= 0 ? TAG_PALETTE[idx % TAG_PALETTE.length] : ''
+}
+
+function isFieldVisible(field: any): boolean {
+  if (!field.depends_on) return true
+  for (const [k, v] of Object.entries(field.depends_on)) {
+    const cur = configValues[k]
+    if (Array.isArray(v)) {
+      if (!v.includes(cur)) return false
+    } else if (cur !== v) {
+      return false
+    }
   }
-  return tagTypes[type] || ''
+  return true
+}
+
+function ensureList(fieldName: string) {
+  if (!Array.isArray(configValues[fieldName])) {
+    configValues[fieldName] = []
+  }
+}
+
+function applyTemplateDefaults() {
+  Object.keys(configValues).forEach(k => delete configValues[k])
+  for (const field of currentConfigTemplate.value) {
+    if (field.type === 'filepath_list') {
+      configValues[field.name] = field.default ? [...field.default] : []
+    } else if (field.type === 'boolean') {
+      configValues[field.name] = field.default !== undefined ? field.default : false
+    } else {
+      configValues[field.name] = field.default !== undefined ? field.default : ''
+    }
+  }
 }
 
 function formatDate(dateStr: string): string {
@@ -372,33 +358,21 @@ function extractError(e: any): string {
 }
 
 function onTypeChange() {
-  configForm.port = defaultPorts[configForm.type] || 0
+  applyTemplateDefaults()
 }
 
 function resetForm() {
   editId.value = null
   configForm.name = ''
-  configForm.type = 'postgresql'
-  configForm.host = 'localhost'
-  configForm.port = 5432
-  configForm.database = ''
-  configForm.user = ''
-  configForm.password = ''
-  configForm.file_path = ''
-  configForm.file_paths = []
-  configForm.excel_mode = 'file'
-  configForm.sheet_name = ''
-  configForm.endpoint = ''
-  configForm.access_key = ''
-  configForm.secret_key = ''
-  configForm.bucket = ''
-  configForm.secure = true
-  configForm.base_path = '/'
+  configForm.type = ''
+  Object.keys(configValues).forEach(k => delete configValues[k])
 }
 
 function openCreateDialog() {
   editId.value = null
   resetForm()
+  configForm.type = connectors.value[0]?.name || ''
+  onTypeChange()
   showCreateDialog.value = true
 }
 
@@ -406,87 +380,39 @@ function editDataSource(source: any) {
   editId.value = source.id
   configForm.name = source.name
   configForm.type = source.type
-
   const cfg = source.connection_config || {}
-
-  defaultSet('host', cfg.host || 'localhost')
-  defaultSet('port', cfg.port || defaultPorts[source.type] || 0)
-  defaultSet('database', cfg.database || '')
-  defaultSet('user', cfg.user || '')
-  defaultSet('password', '')
-  defaultSet('file_path', cfg.file_path || '')
-  defaultSet('file_paths', cfg.file_paths || [])
-  defaultSet('excel_mode', cfg.mode || 'file')
-  defaultSet('sheet_name', cfg.sheet_name || '')
-  defaultSet('endpoint', cfg.endpoint || '')
-  defaultSet('access_key', '')
-  defaultSet('secret_key', '')
-  defaultSet('bucket', cfg.bucket || '')
-  defaultSet('secure', cfg.secure !== undefined ? cfg.secure : true)
-  defaultSet('base_path', cfg.base_path || '/')
-
+  Object.keys(configValues).forEach(k => delete configValues[k])
+  for (const field of currentConfigTemplate.value) {
+    const val = cfg[field.name]
+    if (field.type === 'filepath_list') {
+      configValues[field.name] = Array.isArray(val) ? [...val] : []
+    } else if (field.type === 'boolean') {
+      configValues[field.name] = val !== undefined ? val : (field.default !== undefined ? field.default : false)
+    } else {
+      configValues[field.name] = val !== undefined ? val : (field.default !== undefined ? field.default : '')
+    }
+  }
   showCreateDialog.value = true
 }
 
-function defaultSet(key: string, value: any) {
-  ;(configForm as any)[key] = value
-}
-
 function buildConnectionConfig(): Record<string, any> {
-  const type = configForm.type
-  switch (type) {
-    case 'postgresql':
-    case 'mysql': {
-      const cfg: Record<string, any> = {
-        host: configForm.host,
-        port: configForm.port,
-        database: configForm.database,
-      }
-      if (configForm.user && configForm.user !== '***') {
-        cfg.user = configForm.user
-      }
-      if (configForm.password && configForm.password !== '***') {
-        cfg.password = configForm.password
-      }
-      return cfg
+  const cfg: Record<string, any> = {}
+  for (const field of currentConfigTemplate.value) {
+    if (!isFieldVisible(field)) continue
+    const val = configValues[field.name]
+    if (val === '***') continue // 未修改的敏感字段，后端保留旧值
+    if (field.type === 'filepath_list') {
+      cfg[field.name] = Array.isArray(val) ? val.filter((p: string) => p) : []
+      continue
     }
-    case 'csv':
-      return { file_path: configForm.file_path }
-    case 'excel': {
-      const mode = configForm.excel_mode
-      const cfg: Record<string, any> = { mode }
-      if (mode === 'folder') {
-        cfg.file_path = configForm.file_path
-      } else if (mode === 'files') {
-        cfg.file_paths = configForm.file_paths
-        cfg.file_path = configForm.file_paths[0] || ''
-      } else {
-        cfg.file_path = configForm.file_path
-      }
-      return cfg
+    if (field.type === 'boolean') {
+      cfg[field.name] = !!val
+      continue
     }
-    case 'chroma':
-      return { persist_directory: configForm.file_path || 'd:/chroma-data' }
-    case 'obs': {
-      const cfg: Record<string, any> = {
-        endpoint: configForm.endpoint,
-        bucket: configForm.bucket,
-        secure: configForm.secure,
-      }
-      if (configForm.access_key) cfg.access_key = configForm.access_key
-      if (configForm.secret_key) cfg.secret_key = configForm.secret_key
-      return cfg
-    }
-    case 'hadoop':
-      return {
-        host: configForm.host,
-        port: configForm.port,
-        user: configForm.user,
-        base_path: configForm.base_path,
-      }
-    default:
-      return {}
+    if (val === '' || val === null || val === undefined) continue
+    cfg[field.name] = val
   }
+  return cfg
 }
 
 async function fetchDataSources() {
@@ -638,19 +564,99 @@ async function syncMetadata(row: any) {
   }
 }
 
-function openFsBrowser(mode: 'file' | 'folder', ext = '', targetIndex = -1) {
+function openFsBrowserForField(fieldName: string, mode: 'file' | 'folder', index = -1) {
+  fsBrowserField.value = fieldName
   fsBrowserMode.value = mode
-  fsBrowserExt.value = ext
-  fsBrowserTargetIndex.value = targetIndex
-  fsBrowserDefaultPath.value = configForm.file_path || 'D:/'
+  fsBrowserTargetIndex.value = index
+  const cur = configValues[fieldName]
+  fsBrowserDefaultPath.value = (typeof cur === 'string' ? cur : (Array.isArray(cur) && cur[index] ? cur[index] : '')) || 'D:/'
   showFsBrowser.value = true
 }
 
 function onFsSelect(path: string) {
   if (fsBrowserTargetIndex.value >= 0) {
-    configForm.file_paths[fsBrowserTargetIndex.value] = path
+    ensureList(fsBrowserField.value)
+    configValues[fsBrowserField.value][fsBrowserTargetIndex.value] = path
   } else {
-    configForm.file_path = path
+    configValues[fsBrowserField.value] = path
+  }
+}
+
+// ========== 连接器类型管理 ==========
+async function openConnectorManager() {
+  showConnectorManager.value = true
+  try {
+    connectorList.value = await api.get('/connectors/custom')
+  } catch (e: any) {
+    ElMessage.error(extractError(e))
+  }
+}
+
+function openConnectorCreate() {
+  connectorEditForm.id = ''
+  connectorEditForm.name = ''
+  connectorEditForm.display_name = ''
+  connectorEditForm.description = ''
+  connectorEditForm.code = ''
+  connectorEditForm.config_template = ''
+  connectorEditForm.is_public = false
+  showConnectorEditDialog.value = true
+}
+
+function openConnectorEdit(c: any) {
+  connectorEditForm.id = c.id
+  connectorEditForm.name = c.name
+  connectorEditForm.display_name = c.display_name
+  connectorEditForm.description = c.description
+  connectorEditForm.code = c.code || ''
+  connectorEditForm.config_template = c.config_template ? JSON.stringify(c.config_template, null, 2) : ''
+  connectorEditForm.is_public = !!c.is_public
+  showConnectorEditDialog.value = true
+}
+
+async function saveConnector() {
+  if (!connectorEditForm.name.trim() || !connectorEditForm.code.trim()) {
+    ElMessage.warning('标识和代码必填')
+    return
+  }
+  connectorSaving.value = true
+  try {
+    let config_template: any = []
+    if (connectorEditForm.config_template.trim()) {
+      config_template = JSON.parse(connectorEditForm.config_template)
+    }
+    const payload = {
+      display_name: connectorEditForm.display_name || connectorEditForm.name,
+      description: connectorEditForm.description,
+      code: connectorEditForm.code,
+      config_template,
+      is_public: connectorEditForm.is_public,
+    }
+    if (connectorEditForm.id) {
+      await api.put(`/connectors/custom/${connectorEditForm.id}`, payload)
+    } else {
+      await api.post('/connectors/custom', { name: connectorEditForm.name.trim().toLowerCase(), ...payload })
+    }
+    ElMessage.success('保存成功')
+    showConnectorEditDialog.value = false
+    connectorList.value = await api.get('/connectors/custom')
+    await fetchConnectors()
+  } catch (e: any) {
+    ElMessage.error(extractError(e))
+  } finally {
+    connectorSaving.value = false
+  }
+}
+
+async function deleteConnector(c: any) {
+  try {
+    await ElMessageBox.confirm(`确定删除连接器「${c.display_name}」吗？已被数据源使用的连接器无法删除。`, '确认删除', { type: 'warning' })
+    await api.delete(`/connectors/custom/${c.id}`)
+    ElMessage.success('删除成功')
+    connectorList.value = await api.get('/connectors/custom')
+    await fetchConnectors()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(extractError(e))
   }
 }
 </script>

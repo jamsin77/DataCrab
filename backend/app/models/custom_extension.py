@@ -19,6 +19,7 @@ class CustomConnector(Base):
     description = Column(Text)
     code = Column(Text, nullable=False)
     config_template = Column(JSON, default=list)
+    is_public = Column(Boolean, default=False)  # 内置/公共连接器所有用户可见；用户创建默认私有
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -39,7 +40,25 @@ class LLMProvider(Base):
     fast_model = Column(String(100))
     api_key_encrypted = Column(Text)
     code = Column(Text)
+    is_public = Column(Boolean, default=False)  # 内置/公共 Provider 所有用户可见；用户创建默认私有
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+
+
+class UserLLMConfig(Base):
+    """用户级 LLM 配置 — 每个用户自己的 Provider/API Key/模型选择（API Key 加密存储）"""
+    __tablename__ = "user_llm_configs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    provider = Column(String(50), nullable=False)
+    api_key_encrypted = Column(Text)
+    api_base = Column(String(255))
+    model = Column(String(100))
+    fast_model = Column(String(100))
+    embedding_model = Column(String(100))
+    fallback_models = Column(JSON, default=list)  # [{provider, api_base, model, fast_model, api_key_encrypted}]
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

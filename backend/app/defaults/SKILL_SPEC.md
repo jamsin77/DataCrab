@@ -188,7 +188,7 @@ def _write_records(records, table_name, if_table_exists, batch_size=1000):
 - **不得访问平台系统表**（users, roles, permissions, data_sources 等）
 - **不得修改平台源代码、配置文件**
 - 如果用户要求修改平台本身，**明确拒绝**
-- 例外：用户可用自然语言添加自定义数据源连接器和自定义模型适配器（AI 生成代码，沙箱加载），这两项是唯一允许用户扩展的平台能力
+- 例外：用户可用自然语言添加和修改数据源连接器与模型适配器（AI 生成代码，沙箱加载）。所有连接器（含 PostgreSQL/MySQL/CSV/Excel 等标准类型）地位平等，均可通过 save_connector 修改其代码和配置项
 
 ## 7. 数据质量要求
 
