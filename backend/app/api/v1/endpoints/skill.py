@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
@@ -218,6 +218,7 @@ def _build_detail(skill: Skill) -> SkillDetailResponse:
 @router.get("", response_model=list[SkillDetailResponse])
 async def list_skills(
     category: str = None,
+    sort_by: str = Query("created", pattern="^(created|updated)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -232,7 +233,8 @@ async def list_skills(
     )
     if category:
         query = query.where(Skill.category == category)
-    query = query.order_by(Skill.updated_at.desc())
+    order_col = Skill.updated_at if sort_by == "updated" else Skill.created_at
+    query = query.order_by(order_col.desc())
     result = await db.execute(query)
     skills = result.scalars().all()
     return [_build_detail(s) for s in skills]
@@ -652,8 +654,14 @@ async def run_skill_stream(
                 user_id=str(current_user.id),
             )
 
-            skill.usage_count = (skill.usage_count or 0) + 1
-            await db.flush()
+            # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
+            from app.core.database import async_session as _new_session
+            async with _new_session() as _update_session:
+                _r = await _update_session.execute(select(Skill).where(Skill.id == skill_id))
+                _sk = _r.scalar_one_or_none()
+                if _sk:
+                    _sk.usage_count = (_sk.usage_count or 0) + 1
+                    await _update_session.commit()
 
             from app.services.data_harness import collect_experience
             collect_experience(
@@ -667,8 +675,8 @@ async def run_skill_stream(
             _inner_r = exec_result.get("result") if isinstance(exec_result.get("result"), dict) else {}
             _exec_success = exec_result.get("success") and _inner_r.get("success") is not False
             if _exec_success:
-                _target_ds_name = request.parameters.get("target_datasource_name") or request.parameters.get("source_datasource_name")
-                _target_table = request.parameters.get("target_table_name") or request.parameters.get("source_table_name") or request.table_name
+                _target_ds_name = request.parameters.get("target_datasource_name") or request.parameters.get("source_datasource_name") or ds_name
+                _target_table = request.parameters.get("target_table_name") or request.parameters.get("output_table_name") or request.parameters.get("source_table_name") or _inner_r.get("output_table") or request.table_name
                 if _target_ds_name and _target_table:
                     _target_ds_id = request.datasource_id
                     if request.parameters.get("target_datasource_name"):
@@ -708,11 +716,8 @@ async def run_skill_stream(
                                     _summary = _payload.get("summary", "")
                                     break
                                 elif _t == "done":
-                                    _r = _evt.get("result", {})
-                                    if _r.get("content"):
-                                        _summary = _r["content"][:500]
                                     break
-                                elif _t in ("thinking", "model", "clear_thinking"):
+                                elif _t in ("thinking", "model", "clear_thinking", "content"):
                                     yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
@@ -1036,11 +1041,14 @@ async def run_skill_nl_stream(
                 user_id=str(current_user.id),
             )
 
-            skill.usage_count = (skill.usage_count or 0) + 1
-            try:
-                await db.flush()
-            except Exception as db_err:
-                logger.warning(f"NL stream: db.flush failed: {db_err}")
+            # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
+            from app.core.database import async_session as _new_session
+            async with _new_session() as _update_session:
+                _r = await _update_session.execute(select(Skill).where(Skill.id == skill_id))
+                _sk = _r.scalar_one_or_none()
+                if _sk:
+                    _sk.usage_count = (_sk.usage_count or 0) + 1
+                    await _update_session.commit()
 
             from app.services.data_harness import collect_experience
             collect_experience(
@@ -1054,8 +1062,8 @@ async def run_skill_nl_stream(
             _inner_r = exec_result.get("result") if isinstance(exec_result.get("result"), dict) else {}
             _exec_success = exec_result.get("success") and _inner_r.get("success") is not False
             if _exec_success:
-                _target_ds_name = parameters.get("target_datasource_name") or parameters.get("source_datasource_name")
-                _target_table = parameters.get("target_table_name") or parameters.get("source_table_name") or inferred_table
+                _target_ds_name = parameters.get("target_datasource_name") or parameters.get("source_datasource_name") or ds_name
+                _target_table = parameters.get("target_table_name") or parameters.get("output_table_name") or parameters.get("source_table_name") or _inner_r.get("output_table") or inferred_table
                 if _target_ds_name and _target_table:
                     _target_ds_id = datasource_id
                     if parameters.get("target_datasource_name"):
@@ -1095,11 +1103,8 @@ async def run_skill_nl_stream(
                                     _summary = _payload.get("summary", "")
                                     break
                                 elif _t == "done":
-                                    _result = _evt.get("result", {})
-                                    if _result.get("content"):
-                                        _summary = _result["content"][:500]
                                     break
-                                elif _t in ("thinking", "model", "clear_thinking"):
+                                elif _t in ("thinking", "model", "clear_thinking", "content"):
                                     yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
@@ -1195,9 +1200,17 @@ async def debug_skill_chat(
 
     runtime = AgentRuntime(agent_registry, llm_manager)
 
-    history = []
-    for msg in request.history[-10:]:
-        history.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
+    # 智能选择历史：首条 + 末尾3条 + 中间用户消息优先
+    _raw_history = request.history
+    _selected = []
+    if _raw_history:
+        _selected.append(_raw_history[0])  # 首条（原始需求）
+        _middle = _raw_history[1:-3] if len(_raw_history) > 4 else []
+        _user_middle = [m for m in _middle if m.get("role") != "assistant"][:2]
+        _selected.extend(_user_middle)
+        if len(_raw_history) > 1:
+            _selected.extend(_raw_history[-3:])  # 末尾3条
+    history = [{"role": m.get("role", "user"), "content": m.get("content", "")[:500]} for m in _selected]
 
     context = {
         "debug_mode": True,
@@ -1218,6 +1231,12 @@ async def debug_skill_chat(
         "debug_max_rounds": 7,"debug_max_inspections": 7,
     }
 
+    # 加载历史调试记忆（Agent 长期记忆，跨会话保留）
+    from app.services import experience as _exp
+    _prev_history = _exp.read_debug_history(folder)
+    if _prev_history:
+        context["debug_session_log"] = f"[之前调试记录]\n{_prev_history}"
+
     message = AgentMessage(
         from_agent="user",
         to_agent="data_processor",
@@ -1233,6 +1252,9 @@ async def debug_skill_chat(
 
         runtime_gen = runtime.run("data_processor", message, context)
 
+        _inspector_active = False  # 跟踪当前是否在 DataInspector 阶段
+        _inspector_summary = ""    # 缓冲 warning_confirmation 的 summary
+        _inspector_content_sent = False  # 是否已转发过 DataInspector 的 content
         try:
             while True:
                 try:
@@ -1246,6 +1268,7 @@ async def debug_skill_chat(
                 t = event.get("type")
                 if t == "agent_switch":
                     agent = event.get("agent")
+                    _inspector_active = (agent == "data_inspector")
                     if agent == "data_inspector":
                         evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                     elif agent == "data_processor":
@@ -1255,6 +1278,18 @@ async def debug_skill_chat(
                     if evt:
                         yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
                 elif t == "done":
+                    # 如果 DataInspector 结束时还没有转发过 content，用缓冲的 summary 兜底
+                    if _inspector_active and _inspector_summary and not _inspector_content_sent:
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
+                    _inspector_active = False
+                elif _inspector_active and t == "warning_confirmation":
+                    _inspector_summary = event.get("summary", "")
+                elif _inspector_active and t == "content":
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    _inspector_content_sent = True
+                elif _inspector_active and t == "fatal":
+                    _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
+                elif _inspector_active and t == "tool_result":
                     pass
                 else:
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"

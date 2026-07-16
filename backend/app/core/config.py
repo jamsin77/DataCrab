@@ -65,7 +65,7 @@ class Settings(BaseSettings):
 
     # Skill存储配置
     SKILL_STORAGE_PATH: str = "data/skills"
-    SKILL_RUNNER_TIMEOUT: int = 120
+    SKILL_RUNNER_TIMEOUT: int = 300
 
     class Config:
         env_file = ".env"

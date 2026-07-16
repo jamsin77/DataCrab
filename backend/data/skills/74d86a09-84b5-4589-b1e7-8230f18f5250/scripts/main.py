@@ -1,8 +1,9 @@
 import re
 
-def _extract_target_names(source_df: pd.DataFrame, source_field: str, llm_batch_size: int = 20) -> Dict[int, Optional[str]]:
+
+def _extract_target_names(source_df, source_field, llm_batch_size=20):
     """从源数据的 source_field 列中提取目标实体名称，优先用正则，无法匹配的用 LLM"""
-    extracted: Dict[int, Optional[str]] = {}
+    extracted = {}
     unmatched_indices = []
 
     # 正则模式
@@ -89,10 +90,10 @@ def _extract_target_names(source_df: pd.DataFrame, source_field: str, llm_batch_
 
 
 def _fuzzy_match_names(
-    extracted_names: Dict[int, Optional[str]],
-    target_df: pd.DataFrame,
-    target_field: str
-) -> Dict[int, Optional[int]]:
+    extracted_names,
+    target_df,
+    target_field,
+):
     """将提取的名称与目标数据的 target_field 列进行模糊匹配（优化性能版）"""
     target_values = target_df[target_field].astype(str).str.strip().tolist()
     target_index_map = list(target_df.index)
@@ -107,7 +108,7 @@ def _fuzzy_match_names(
     # 预计算目标值的字符集合（用于 Jaccard 相似度）
     target_char_sets = [set(v) for v in target_values]
 
-    mapping: Dict[int, Optional[int]] = {}
+    mapping = {}
     for src_idx, name in extracted_names.items():
         if not name or not name.strip():
             mapping[src_idx] = None
@@ -151,3 +152,190 @@ def _fuzzy_match_names(
             mapping[src_idx] = None
 
     return mapping
+
+
+def main(input_data=None, **kwargs):
+    """主入口，系统注入用户参数"""
+    # 参数别名映射
+    param_aliases = {
+        'datasource_name': ['datasource_name', 'source_datasource_name', 'source_datasource', 'datasource', 'db', 'source_db'],
+        'table_name': ['table_name', 'source_table_name', 'source_table'],
+        'filter_condition': ['filter_condition', 'filter', 'condition'],
+        'merge_field': ['merge_field', 'match_field', 'field'],
+        'output_table_name': ['output_table_name', 'output_table', 'target_table'],
+        'if_table_exists': ['if_table_exists', 'write_strategy'],
+        'merge_strategy': ['merge_strategy', 'strategy'],
+        'batch_size': ['batch_size'],
+        'llm_batch_size': ['llm_batch_size'],
+    }
+
+    params = {}
+    for canonical, aliases in param_aliases.items():
+        for alias in aliases:
+            if alias in kwargs:
+                params[canonical] = kwargs[alias]
+                break
+
+    if isinstance(input_data, dict):
+        for canonical, aliases in param_aliases.items():
+            if canonical not in params:
+                for alias in aliases:
+                    if alias in input_data:
+                        params[canonical] = input_data[alias]
+                        break
+
+    datasource_name = params.get('datasource_name')
+    table_name = params.get('table_name')
+    filter_condition = params.get('filter_condition', '')
+    merge_field = params.get('merge_field', '备注')
+    output_table_name = params.get('output_table_name')
+    if_table_exists = params.get('if_table_exists', 'overwrite')
+    merge_strategy = params.get('merge_strategy', 'merge_fields')
+    batch_size = params.get('batch_size', 1000)
+    llm_batch_size = params.get('llm_batch_size', 20)
+
+    if not datasource_name:
+        return {"success": False, "error": "缺少必填参数: datasource_name", "message": "请提供数据源名称"}
+    if not table_name:
+        return {"success": False, "error": "缺少必填参数: table_name", "message": "请提供表名"}
+
+    # 判断是否已经是UUID，如果是则直接使用，否则通过名称查找
+    import re as _re
+    uuid_pattern = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', _re.IGNORECASE)
+    if uuid_pattern.match(str(datasource_name)):
+        ds_id = datasource_name
+        log("info", f"数据源参数为UUID，直接使用: {ds_id}")
+    else:
+        ds_id = get_datasource_id_by_name(datasource_name)
+        if not ds_id:
+            return {"success": False, "error": f"找不到数据源: {datasource_name}"}
+        log("info", f"通过名称找到数据源: {datasource_name} -> {ds_id}")
+
+    # 读取数据
+    result = query_table_data(ds_id, table_name, limit=5000)
+    if not result.get("success"):
+        return {"success": False, "error": f"读取数据失败: {result.get('error')}"}
+
+    df = pd.DataFrame(result["data"], columns=result["columns"])
+    if df.empty:
+        return {"success": True, "message": "无数据", "count": 0}
+
+    log("info", f"总数据量: {len(df)} 行")
+    log("info", f"列名: {list(df.columns)}")
+
+    # 解析筛选条件，支持 ==, !=, contains（含 | 分隔的多值OR）
+    source_mask = pd.Series([False] * len(df), index=df.index)
+    filter_used = False
+
+    if filter_condition:
+        if '==' in filter_condition:
+            col, val = filter_condition.split('==', 1)
+            col, val = col.strip(), val.strip()
+            if col in df.columns:
+                source_mask = df[col].astype(str) == val
+                filter_used = True
+            else:
+                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+        elif '!=' in filter_condition:
+            col, val = filter_condition.split('!=', 1)
+            col, val = col.strip(), val.strip()
+            if col in df.columns:
+                source_mask = df[col].astype(str) != val
+                filter_used = True
+            else:
+                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+        elif 'contains' in filter_condition:
+            parts = filter_condition.split('contains', 1)
+            col = parts[0].strip()
+            val = parts[1].strip()
+            if col in df.columns:
+                vals = [v.strip() for v in val.split('|')]
+                source_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
+                filter_used = True
+            else:
+                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+
+    if not filter_used:
+        # 关键词搜索：在所有文本列中搜索归并/合并相关关键词
+        keywords = ['归并', '合并', '归入', '并入']
+        log("info", f"在所有列中搜索关键词: {keywords}")
+        for col in df.columns:
+            try:
+                col_mask = df[col].astype(str).apply(lambda x: any(kw in str(x) for kw in keywords))
+                source_mask = source_mask | col_mask
+            except:
+                pass
+
+    source_df = df[source_mask].copy()
+    target_df = df[~source_mask].copy()
+    log("info", f"源数据(待归并): {len(source_df)} 行, 目标数据: {len(target_df)} 行")
+
+    if source_df.empty:
+        return {"success": True, "message": "无源数据需要归并", "count": len(df)}
+
+    # 确定归并字段（备注列）
+    actual_merge_field = merge_field
+    if actual_merge_field not in source_df.columns:
+        possible_cols = [c for c in source_df.columns if merge_field.lower() in str(c).lower() or str(c).lower() in merge_field.lower()]
+        if possible_cols:
+            actual_merge_field = possible_cols[0]
+            log("info", f"归并字段模糊匹配为: {actual_merge_field}")
+        else:
+            return {"success": False, "error": f"归并字段 '{merge_field}' 不存在，现有列: {list(source_df.columns)}"}
+
+    # 确定名称列（用于匹配目标记录，优先 name/名称）
+    name_col = None
+    for candidate in ['name', '名称', '标题', 'title', '文物名称', 'Name']:
+        if candidate in target_df.columns:
+            name_col = candidate
+            break
+    if not name_col:
+        for col in target_df.columns:
+            if target_df[col].dtype == object:
+                name_col = col
+                break
+    if not name_col:
+        name_col = actual_merge_field
+
+    log("info", f"使用 '{actual_merge_field}' 提取目标名称，用 '{name_col}' 匹配目标记录")
+
+    extracted = _extract_target_names(source_df, actual_merge_field, llm_batch_size)
+    matched = _fuzzy_match_names(extracted, target_df, name_col)
+
+    matched_count = sum(1 for v in matched.values() if v is not None)
+    log("info", f"匹配成功: {matched_count}/{len(source_df)}")
+
+    if merge_strategy == "merge_fields":
+        for src_idx, tgt_idx in matched.items():
+            if tgt_idx is not None:
+                for col in source_df.columns:
+                    if col in target_df.columns:
+                        tgt_val = target_df.loc[tgt_idx, col]
+                        src_val = source_df.loc[src_idx, col]
+                        if (pd.isna(tgt_val) or str(tgt_val).strip() == "") and not pd.isna(src_val):
+                            target_df.loc[tgt_idx, col] = src_val
+
+    output_table = output_table_name or f"{table_name}_merged"
+    records = target_df.to_dict(orient="records")
+
+    # 分批写入
+    clearing_strategies = {"overwrite", "replace", "truncate"}
+    for i in range(0, len(records), batch_size):
+        batch_num = i // batch_size + 1
+        batch = records[i:i + batch_size]
+        current_strategy = if_table_exists
+        if batch_num > 1 and if_table_exists in clearing_strategies:
+            current_strategy = "append"
+        write_result = write_table_data(ds_id, output_table, records=batch, if_table_exists=current_strategy)
+        if not write_result.get("success"):
+            return {"success": False, "error": f"写入失败: {write_result.get('message')}"}
+
+    log("info", f"归并完成: {len(df)} → {len(target_df)} 行，写入表: {output_table}")
+    return {
+        "success": True,
+        "original_count": len(df),
+        "source_count": len(source_df),
+        "merged_count": matched_count,
+        "final_count": len(target_df),
+        "output_table": output_table,
+    }

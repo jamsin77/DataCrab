@@ -84,16 +84,13 @@ HANDOFF_TOOL = {
     "type": "function",
     "function": {
         "name": "handoff_to_inspector",
-        "description": "将处理结果交接给数据检查智能体进行质量检查",
+        "description": "将处理结果交接给数据检查智能体进行质量检查。无需传参，自动使用当前调试的数据源和表",
         "parameters": {
             "type": "object",
             "properties": {
-                "datasource_id": {"type": "string", "description": "数据源ID"},
-                "table_name": {"type": "string", "description": "检查的表名"},
                 "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
                 "result_summary": {"type": "string", "description": "处理结果摘要"},
             },
-            "required": ["datasource_id", "table_name"],
         },
     },
 }
@@ -250,28 +247,30 @@ _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），正在调试一个脚本。
 
+## 核心规则（必须遵守）
+- **每一轮都必须调用 modify_and_run**，不调用任何工具的轮次会被立即终止
+- **可以同轮调用 get_table_schema / query_table_data 辅助定位问题，但必须同时调用 modify_and_run 修改并执行**——禁止只查询不修改
+- **根因分析放在推理过程（thinking）中**，不要输出为正文。正文只用于工具调用，不用于分析
+- **禁止输出"我需要重写""我来修复"等计划性文字而不跟工具调用**，直接调 modify_and_run
+- 修改脚本时只需输出修改的函数，系统会自动合并并做语法检查
+
 ## 你的能力（通过工具调用）
-1. **modify_and_run**（推荐）：修改脚本并立即执行，一步到位
-2. **modify_script**: 仅修改脚本（不执行），适用于需要多次修改后再执行的场景
-3. **run_script**: 执行脚本，获取结果
-4. **handoff_to_inspector**: 执行成功后交接给 DataInspector 进行数据质量检查
-5. **query_table_data / get_table_schema / write_table_data**: 查询/写入数据（通用数据处理工具）
+1. **modify_and_run**（每轮必用）：修改脚本并立即执行，一步到位
+2. **get_table_schema / query_table_data**（可选，辅助定位）：查看表结构和数据，但必须与 modify_and_run 同轮调用
+3. **handoff_to_inspector**: 执行成功后系统会自动调用，你不需要手动调用
 
 ## 工作流程
-1. 分析用户问题或错误信息
-2. **先在推理中分析错误根因**，确定修复方向后再改代码
-3. 用 modify_and_run 修改并执行（推荐，一步到位）
-4. 如果执行失败，根据错误信息和修复提示继续修改（自动重试，最多 {max_rounds} 轮）
-5. 执行成功后，用 handoff_to_inspector 交接质量检查
-6. 如果 DataInspector 发现问题，修改脚本修复后重新执行（最多 {max_inspections} 轮检查修复）
+1. 在推理中分析错误根因，确定修复方向（不要输出为正文）
+2. **立即调用 modify_and_run** 修改并执行（如需查数据可同轮调用 get_table_schema / query_table_data）
+3. 如果执行失败，根据错误信息继续 modify_and_run（总共 {max_rounds} 轮，跨检查修复共享）
+4. 执行成功后，系统**自动**交接 DataInspector 做质量检查（你不需要做任何事）
+5. 如果 DataInspector 发现问题，modify_and_run 修复后重新执行（总共 {max_inspections} 轮检查修复）
 
 ## 规则
-- **优先使用 modify_and_run**，减少不必要的对话轮次
-- 修改脚本时只需输出修改的函数，系统会自动合并并做语法检查
 - run_script 的 parameters 必须包含技能所需的关键参数，不能为空
 - 推理请简洁，直奔重点
 - 看到错误后先分析根因，不要盲目尝试
-- 执行成功后**必须**调用 handoff_to_inspector 交接质量检查
+- **每一轮都必须有 modify_and_run 工具调用**，只查询不修改的轮次会被立即终止
 
 ## 技能规范（脚本必须符合此规范）
 """ + _SKILL_SPEC
@@ -576,23 +575,147 @@ class DataProcessorAgent(BaseAgent):
                 func_args = json.loads(tc["function"]["arguments"])
             except json.JSONDecodeError:
                 func_args = {}
-            result = await self._execute_tool(tc["function"]["name"], func_args, db, user_id, context)
-            return {"tool_call_id": tc["id"], "content": result}
+            try:
+                result = await self._execute_tool(tc["function"]["name"], func_args, db, user_id, context)
+                return {"tool_call_id": tc["id"], "content": result}
+            except Exception as e:
+                logger.error(f"工具执行异常 {tc['function']['name']}: {e}")
+                return {"tool_call_id": tc["id"], "content": json.dumps({"success": False, "error": f"工具执行异常: {e}"}, ensure_ascii=False)}
 
         results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
         return list(results)
+
+    @staticmethod
+    def _extract_script_for_context(script: str, threshold: int = 3000) -> str:
+        """AST 智能提取脚本：保留所有函数签名+docstring，大函数缩略体。
+        语法错误时回退为原始截断（调试中的脚本可能有语法错误）。"""
+        if len(script) <= 50000:
+            return script
+        try:
+            import ast
+            tree = ast.parse(script)
+            lines = script.splitlines()
+            parts = []
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    parts.append(ast.get_source_segment(script, node) or "")
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    seg = ast.get_source_segment(script, node) or ""
+                    if len(seg) <= threshold:
+                        parts.append(seg)
+                    else:
+                        # 签名 + docstring + 前5行 + 后5行
+                        seg_lines = seg.splitlines()
+                        docstring = ast.get_docstring(node)
+                        header = "\n".join(seg_lines[:1])  # def 行
+                        body_start = 1
+                        if docstring:
+                            # 找 docstring 结束行
+                            for li, line in enumerate(seg_lines[1:], 1):
+                                if '"""' in line or "'''" in line:
+                                    body_start = li + 1
+                                    break
+                            header += "\n" + "\n".join(seg_lines[1:body_start])
+                        head_lines = seg_lines[body_start:body_start + 5]
+                        tail_lines = seg_lines[-5:]
+                        omitted = len(seg_lines) - body_start - 5 - 5
+                        parts.append(
+                            header + "\n" + "\n".join(head_lines) +
+                            f"\n    # ... （省略 {omitted} 行） ...\n" +
+                            "\n".join(tail_lines)
+                        )
+                elif isinstance(node, ast.Assign):
+                    parts.append(ast.get_source_segment(script, node) or "")
+                else:
+                    seg = ast.get_source_segment(script, node) or ""
+                    if len(seg) <= 2000:
+                        parts.append(seg)
+            result = "\n\n".join(p for p in parts if p)
+            return result if result else script[:50000]
+        except SyntaxError:
+            return script[:50000]  # 语法错误时回退
+
+    @staticmethod
+    def _save_session_log(local_messages: list, context: dict, inspection_round: int):
+        """从 local_messages 提取调试历史，保存到 context 供 DataInspector 回交后参考。"""
+        _session_entries = []
+        _round_num = 0
+        for _msg in local_messages:
+            if _msg["role"] == "assistant" and _msg.get("tool_calls"):
+                _round_num += 1
+                _names = [tc["function"]["name"] for tc in _msg["tool_calls"]]
+                _summary = (_msg.get("content") or "")[:200]
+                _session_entries.append(f"第{_round_num}轮: 调用 {' '.join(_names)}")
+                if _summary.strip():
+                    _session_entries.append(f"  说明: {_summary}")
+            elif _msg["role"] == "tool":
+                try:
+                    _td = json.loads(_msg["content"])
+                    if isinstance(_td, dict):
+                        if not _td.get("success"):
+                            _e = str(_td.get("error") or _td.get("message") or "")[:200]
+                            _session_entries.append(f"  结果: 失败 — {_e}")
+                        elif _td.get("modify") and _td.get("result"):
+                            _diff = _td.get("diff_summary") or []
+                            _diff_str = ", ".join(_diff[:5]) if _diff else "未知"
+                            _inner = _td.get("result", {})
+                            _ok = _inner.get("success", True) if isinstance(_inner, dict) else True
+                            _session_entries.append(f"  修改: {_diff_str}")
+                            _session_entries.append(f"  执行: {'成功' if _ok else '失败'}")
+                        elif _td.get("modify"):
+                            _session_entries.append(f"  结果: 脚本修改成功")
+                        elif _td.get("result") is not None:
+                            _session_entries.append(f"  结果: 执行成功")
+                except Exception:
+                    pass
+        _new_log = "\n".join(_session_entries[-20:])
+        _prev_log = context.get("debug_session_log", "")
+        context["debug_session_log"] = (_prev_log + f"\n[第{inspection_round+1}轮调试]\n" + _new_log)[-2000:]
+
+    @staticmethod
+    def _compress_tool_result(content: str) -> str:
+        """智能压缩工具结果：失败保留错误全量，成功保留摘要+前3行数据。"""
+        try:
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                return content[:3000]
+            is_fail = not data.get("success") or data.get("error")
+            # stdout: 失败保留首300+尾1000，成功保留首300+尾300
+            stdout = str(data.get("stdout", ""))
+            if is_fail and len(stdout) > 1300:
+                data["stdout"] = stdout[:300] + "\n... [省略中间部分] ...\n" + stdout[-1000:]
+            elif not is_fail and len(stdout) > 600:
+                data["stdout"] = stdout[:300] + "\n... [省略中间部分] ...\n" + stdout[-300:]
+            # result: 保留标量字段，截断大数组
+            result = data.get("result")
+            if isinstance(result, dict):
+                for k, v in list(result.items()):
+                    if isinstance(v, list) and len(v) > 3:
+                        result[k] = v[:3] + [f"... (共 {len(v)} 项)"]
+                    elif isinstance(v, str) and len(v) > 300:
+                        result[k] = v[:300] + "..."
+                    elif isinstance(v, dict) and len(str(v)) > 500:
+                        result[k] = "（大型对象已省略）"
+            # error: 始终完整保留
+            # diff_summary: 始终完整保留（已很紧凑）
+            return json.dumps(data, ensure_ascii=False, default=str)
+        except (json.JSONDecodeError, TypeError):
+            return content[:3000]
 
     async def _execute_tool(self, name: str, arguments: dict, db: AsyncSession, user_id, context: Dict) -> str:
         logger.info(f"DataProcessor执行工具: {name}")
 
         if name == "handoff_to_inspector":
+            # 优先从 context 取（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
+            ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id") or arguments.get("datasource_id", "")
+            tbl = context.get("debug_table_name") or context.get("current_table_name") or arguments.get("table_name", "")
             return json.dumps({
                 "_handoff": True,
                 "to": "data_inspector",
                 "reason": HandoffReason.INSPECT_RESULT.value,
                 "payload": {
-                    "datasource_id": arguments.get("datasource_id", ""),
-                    "table_name": arguments.get("table_name", ""),
+                    "datasource_id": ds_id,
+                    "table_name": tbl,
                     "operation_description": arguments.get("operation_description", ""),
                     "result_summary": arguments.get("result_summary", ""),
                 },
@@ -724,6 +847,7 @@ class DataProcessorAgent(BaseAgent):
                         skill_path=folder, script_name=script_name, parameters=parameters,
                         input_data=None, datasource_id=ds_id, datasource_name=ds_name, table_name=tbl,
                         user_id=str(user_id) if user_id else None,
+                        timeout=600,
                     )
                     _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
                     _failed = (not result.get("success")
@@ -1029,17 +1153,18 @@ class DataProcessorAgent(BaseAgent):
 
     # ==================== 调试模式 ====================
 
-    def build_debug_system_prompt(self, context: Dict[str, Any]) -> str:
+    def build_debug_system_prompt(self, context: Dict[str, Any], round_num: int = 1) -> str:
         """构建调试模式 system prompt"""
         max_rounds = context.get("debug_max_rounds", 7)
         max_inspections = context.get("debug_max_inspections", 7)
         prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_inspections}", str(max_inspections))
 
-        # 当前脚本
+        # 当前脚本（AST 智能提取：保留所有函数签名+docstring，大函数缩略体）
         script_content = context.get("debug_script_content", "")
         script_name = context.get("debug_script_name", "main.py")
         if script_content:
-            prompt += f"\n## 当前脚本（{script_name}）\n```python\n{script_content[:50000]}\n```\n"
+            _smart_script = self._extract_script_for_context(script_content)
+            prompt += f"\n## 当前脚本（{script_name}）\n```python\n{_smart_script}\n```\n"
 
         # SKILL.md 摘要
         skill_md = context.get("debug_skill_md", "")
@@ -1066,6 +1191,13 @@ class DataProcessorAgent(BaseAgent):
                 ctx_parts.append(f"- 命令行输入：{ctx['cmd_str']}")
             elif ctx.get("json_params"):
                 ctx_parts.append(f"- JSON参数：{ctx['json_params']}")
+            # 数据源和表名（从执行面板带入）
+            ctx_ds = ctx.get("datasource_name") or ""
+            ctx_tbl = ctx.get("table_name") or ""
+            if ctx_ds:
+                ctx_parts.append(f"- 数据源：{ctx_ds}")
+            if ctx_tbl:
+                ctx_parts.append(f"- 表名：{ctx_tbl}")
             if ctx_parts:
                 prompt += "\n## 用户调试输入\n" + "\n".join(ctx_parts) + "\n优先使用这些输入作为执行参数。"
 
@@ -1080,8 +1212,21 @@ class DataProcessorAgent(BaseAgent):
         if lessons:
             prompt += f"\n## 历史经验（修改脚本时参考）\n{lessons[:800]}\n"
 
-        # 工具能力表 + 反幻觉
-        prompt += "\n" + get_tool_guidance()
+        # 之前调试的修改历史（跨 handoff 保留，防止 AI 忘记之前改了什么）
+        session_log = context.get("debug_session_log", "")
+        if session_log:
+            prompt += f"\n## 之前修改历史（不要重复已失败的修改，在当前脚本基础上增量修改）\n{session_log}\n"
+
+        # 沙箱内置函数文档（始终保留——函数签名是必需的）
+        from app.services.prompt_docs import SANDBOX_TOOLS_DOC
+        prompt += "\n" + SANDBOX_TOOLS_DOC
+
+        # 渐进式注入：第1轮全量，第2轮起去掉工具能力表，第4轮起去掉反幻觉
+        if round_num < 4:
+            prompt += "\n" + get_tool_guidance()
+        if round_num < 2:
+            from app.services.prompt_docs import SAFETY_RULES_DOC
+            prompt += "\n" + SAFETY_RULES_DOC
         prompt += "\n" + get_anti_hallucination_section("standard")
 
         return prompt
@@ -1161,33 +1306,76 @@ class DataProcessorAgent(BaseAgent):
 
         stuck_detector = StuckDetector()
         max_iterations = context.get("debug_max_rounds", 7)
+        # 跨 handoff 共享的统一轮次预算（每次 run_debug 不重置）
+        _total_rounds = context.get("debug_total_rounds", 0)
         had_any_tool_calls = False
         _last_error_sig = None
         _same_error_count = 0
         _should_stop = False
         _run_succeeded = False  # run_script 成功过
+        _should_handoff = False  # 执行成功后自动 handoff 到 DataInspector
+        _handoff_output_table = None  # 执行结果中的目标表名（优先于源表）
         script_name = context.get("debug_script_name", "main.py")  # 供经验记录使用
         _error_counted_this_round = False  # 防止同轮多工具失败重复计数
+        _no_tool_redirects = 0
 
         yield {"type": "model", "content": llm_manager.pick_model(user_msg, history)}
 
         for i in range(max_iterations):
+            # 统一轮次预算：跨 handoff 共享，总轮次不超过 max_iterations
+            _total_rounds += 1
+            context["debug_total_rounds"] = _total_rounds
+            if _total_rounds > max_iterations:
+                yield {"type": "content", "content": f"\n已达到最大调试轮次（{max_iterations}轮），停止修复。"}
+                break
+
             # 每轮重建 system prompt（含最新脚本内容，让 AI 看到自己的修改）
-            local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context)}
+            local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _total_rounds)}
             _error_counted_this_round = False  # 每轮重置，防止同轮多工具重复计数
 
+            # 第4轮起：压缩旧轮次的 tool 消息（保留错误+traceback，成功只留摘要）
+            if i >= 3:
+                _tool_count = 0
+                for _mi in range(len(local_messages) - 1, -1, -1):
+                    if local_messages[_mi].get("role") == "tool":
+                        _tool_count += 1
+                        if _tool_count > 4:  # 保留最近4条tool消息（约2轮）
+                            _orig = local_messages[_mi].get("content", "")
+                            if len(_orig) > 300:
+                                try:
+                                    _td = json.loads(_orig)
+                                    _is_fail = not _td.get("success") or _td.get("error")
+                                    if _is_fail:
+                                        # 失败：保留 error + stdout 末尾 300 字符
+                                        _brief = json.dumps({
+                                            "success": _td.get("success"),
+                                            "error": str(_td.get("error", ""))[:500],
+                                            "stdout": str(_td.get("stdout", ""))[-300:],
+                                        }, ensure_ascii=False)
+                                    else:
+                                        # 成功：一句话摘要
+                                        _r = _td.get("result", {})
+                                        _summary = _r.get("output_table", "") if isinstance(_r, dict) else ""
+                                        _brief = f'[已压缩] ✅ 成功' + (f'，输出表={_summary}' if _summary else '')
+                                    local_messages[_mi]["content"] = _brief
+                                except Exception:
+                                    local_messages[_mi]["content"] = _orig[:300]
+
             # 第2轮起：yield 轮次事件（前端分轮展示）
-            if i > 0:
-                yield {"type": "round", "round": i + 1}
+            _round_yielded = False
+            if _total_rounds > 1:
+                yield {"type": "round", "round": _total_rounds}
+                _round_yielded = True
 
             # 流式 LLM 调用（推理 + 工具调用）
             content = ""
             thinking_content = ""
             tool_calls = []
             finish_reason = None
+            _cleared = False  # 本轮是否发生 clear_thinking
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=8000,
+                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=12000,
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -1201,25 +1389,35 @@ class DataProcessorAgent(BaseAgent):
                 elif t == "finish":
                     finish_reason = event["finish_reason"]
                 elif t == "clear_thinking":
-                    # 长度升级：清空已流式的内容/推理/工具调用，升级后的响应会继续流式输出
                     yield event
                     content = ""
                     thinking_content = ""
                     tool_calls = []
+                    _cleared = True
+
+            # clear_thinking 清空了 msg.content（含轮次标记），需要重新发送
+            if _cleared and _round_yielded:
+                yield {"type": "round", "round": _total_rounds}
 
             if not tool_calls:
-                # 无工具调用 → 检查反幻觉
-                if is_planning_only(content) and i == 0:
+                # 无工具调用（只规划/只结论）→ 重定向要求调工具，最多 2 次，再不调则终止
+                if _no_tool_redirects < 2:
+                    _no_tool_redirects += 1
                     local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
+                    local_messages.append({"role": "user", "content": "请直接调用 modify_and_run 修改并执行脚本（成功后调 handoff_to_inspector 交接检查），不要只描述计划或输出结论。"})
                     continue
-                # 如果之前做过工具调用，AI 输出纯文本 = 放弃修复
-                # → break 走 give_up 流程（分析原因 + 存经验），而非直接 return
-                if had_any_tool_calls:
-                    break
-                # 从未做过工具调用 → 直接结束
-                yield {"type": "done", "result": {"agent": self.name, "content": content}}
-                return
+                break
+
+            # 只查询不修改 → 重定向，最多 2 次（允许查询但必须同轮 modify_and_run）
+            _tool_names = [tc["function"]["name"] for tc in tool_calls]
+            _has_modify = any(n in ("modify_and_run", "modify_script", "run_script") for n in _tool_names)
+            if not _has_modify:
+                if _no_tool_redirects < 2:
+                    _no_tool_redirects += 1
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": "你只调用了查询工具，没有修改脚本。请调用 modify_and_run 修改并执行脚本。如需查询，请与 modify_and_run 同轮调用。"})
+                    continue
+                break
 
             had_any_tool_calls = True
 
@@ -1269,7 +1467,9 @@ class DataProcessorAgent(BaseAgent):
             # 执行工具
             results = await self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
             for r in results:
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                # 智能压缩工具结果（失败保留错误全量，成功保留摘要）
+                _compressed = self._compress_tool_result(r["content"])
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _compressed})
 
                 # 翻译工具结果为前端事件
                 tool_name = ""
@@ -1330,7 +1530,8 @@ class DataProcessorAgent(BaseAgent):
                             _last_error_sig = None
                             _same_error_count = 0
                             _run_succeeded = True
-                            local_messages.append({"role": "user", "content": "脚本执行成功！请调用 handoff_to_inspector 交接数据质量检查。"})
+                            _should_handoff = True  # 成功后自动交接 DataInspector
+                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
@@ -1384,12 +1585,12 @@ class DataProcessorAgent(BaseAgent):
                             elif _same_error_count >= 2:
                                 local_messages.append({"role": "user", "content": f"⚠️ 这个错误已连续出现 {_same_error_count} 次，说明你的修复方向可能不对。请尝试完全不同的修复策略，不要做微调。如果确实无法修复，请说明原因。"})
                         elif not _is_fail:
-                            # 成功 → 记录正例 + 停止重试
+                            # 成功 → 记录正例 + 自动交接 DataInspector
                             _last_error_sig = None
                             _same_error_count = 0
                             _run_succeeded = True
-                            # 不直接停止——让 LLM 在下一轮调 handoff_to_inspector 交接检查
-                            local_messages.append({"role": "user", "content": "脚本执行成功！请调用 handoff_to_inspector 交接数据质量检查。"})
+                            _should_handoff = True  # 成功后自动交接 DataInspector
+                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
@@ -1405,25 +1606,7 @@ class DataProcessorAgent(BaseAgent):
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        # 保存调试历史到 context（供 DataInspector 回交后参考）
-                        _session_entries = []
-                        for _msg in local_messages:
-                            if _msg["role"] == "tool":
-                                try:
-                                    _td = json.loads(_msg["content"])
-                                    if isinstance(_td, dict):
-                                        if not _td.get("success"):
-                                            _e = str(_td.get("error") or _td.get("message") or "")[:150]
-                                            _session_entries.append(f"  - 失败: {_e}")
-                                        elif _td.get("modify"):
-                                            _session_entries.append("  - 脚本修改成功")
-                                        elif _td.get("result") is not None:
-                                            _session_entries.append("  - 执行成功")
-                                except Exception:
-                                    pass
-                        _new_log = "\n".join(_session_entries[-10:])
-                        _prev_log = context.get("debug_session_log", "")
-                        context["debug_session_log"] = (_prev_log + f"\n[第{_inspection_round+1}轮调试]\n" + _new_log)[-2000:]
+                        self._save_session_log(local_messages, context, _inspection_round)
 
                         yield {
                             "type": "handoff",
@@ -1436,20 +1619,35 @@ class DataProcessorAgent(BaseAgent):
                 except (json.JSONDecodeError, AttributeError):
                     pass
 
-            # 重复错误或成功 → 跳出外层重试循环
+            # 重复错误 → 跳出外层重试循环
             if _should_stop:
                 break
 
-        # 成功且未被后续失败覆盖 → 直接结束（不做 give_up 分析）
-        if _run_succeeded and not _should_stop:
-            yield {"type": "done", "result": {"agent": self.name, "content": "执行成功"}}
-            return
+            # 执行成功 → 自动交接 DataInspector（不等 LLM 调用 handoff_to_inspector）
+            if _should_handoff:
+                self._save_session_log(local_messages, context, _inspection_round)
+
+                ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id", "")
+                tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
+                yield {
+                    "type": "handoff",
+                    "to": "data_inspector",
+                    "reason": HandoffReason.INSPECT_RESULT.value,
+                    "payload": {
+                        "datasource_id": ds_id,
+                        "table_name": tbl,
+                        "operation_description": "技能调试执行成功，自动交接质量检查",
+                        "result_summary": "执行成功",
+                    },
+                    "from": self.name,
+                }
+                return
 
         # 轮次耗尽或重复错误或 AI 主动放弃 → 让 AI 分析无法修复的原因
         if _same_error_count >= 3:
             _reason = f"连续 {_same_error_count} 次相同错误"
         elif had_any_tool_calls and not _should_stop:
-            _reason = f"AI 在第 {i+1} 轮主动停止修复"
+            _reason = f"AI 在第 {_total_rounds} 轮主动停止修复"
         else:
             _reason = f"已达到最大调试轮次（{max_iterations}）"
         feedback_msg = (
@@ -1483,6 +1681,9 @@ class DataProcessorAgent(BaseAgent):
             try:
                 from app.services import experience as _exp
                 _exp.write_lessons(folder, full_content.strip())
+                # 持久化本次调试记忆（含修改历史 + give_up 分析）
+                _session_log = context.get("debug_session_log", "")
+                _exp.append_debug_history(folder, session_log=_session_log + f"\n\n[give_up 分析]\n{full_content[:1000]}")
                 logger.info(f"已将 give_up 分析存入经验库: {folder}")
             except Exception as e:
                 logger.warning(f"存储 give_up 经验失败: {e}")

@@ -29,6 +29,31 @@ from app.services.agent_utils import (
     get_anti_hallucination_section,
 )
 
+
+def _collect_severe_issues(local_messages):
+    """从工具结果中收集 error/critical 级问题；存在 fatal 时不强制交接（按指令应停止）。"""
+    severe = []
+    has_fatal = False
+    for m in local_messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            data = json.loads(m.get("content", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for issue in data.get("issues", []) or []:
+            sev = str(issue.get("severity", "")).lower()
+            if sev == "fatal":
+                has_fatal = True
+            elif sev in ("error", "critical"):
+                severe.append(issue)
+    if has_fatal:
+        return []
+    return severe
+
+
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（DataInspector），一位数据质量专家。
 
 ## 核心能力
@@ -36,12 +61,13 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（Data
 - 能对数据进行三维度检查：标准合规、质量评估、安全审计
 
 ## 工作准则
-1. 检查时优先使用 profile_data 获取数据概览，再针对性检查
-2. 发现问题必须给出：问题描述、严重等级、影响范围、修复建议
-3. 对修复后的数据必须再次检查确认
-4. 严重等级：info < warning < error < critical < fatal
-5. 检查依据下方「数据标准库」和「数据质量库」，命中后在问题中标注对应 STD-xxx / DQ-xxx 编号
-6. 格式类标准（正则/校验位）用确定性逻辑执行；跨表/ETL 对数用 SQL 聚合；语义类用 LLM 判断
+1. 检查对象是数据处理后的目标表（结果表），不是源表。系统已自动传入目标表信息，直接检查即可
+2. 检查时优先使用 profile_data 获取数据概览，再针对性检查
+3. 发现问题必须给出：问题描述、严重等级、影响范围、修复建议
+4. 对修复后的数据必须再次检查确认
+5. 严重等级：info < warning < error < critical < fatal
+6. 检查依据下方「数据标准库」和「数据质量库」，命中后在问题中标注对应 STD-xxx / DQ-xxx 编号
+7. 格式类标准（正则/校验位）用确定性逻辑执行；跨表/ETL 对数用 SQL 聚合；语义类用 LLM 判断
 
 ## 检查维度
 - **标准检查**：字段命名规范、类型一致性、编码规范
@@ -302,8 +328,21 @@ class DataInspectorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                if content:
-                    yield {"type": "content", "content": content}
+                # 强制交接：检查工具发现 error/critical 但 LLM 未调 handoff_to_processor
+                if had_any_tool_calls and i < max_iterations - 1:
+                    _severe = _collect_severe_issues(local_messages)
+                    if _severe:
+                        local_messages.append({"role": "assistant", "content": content})
+                        _redirect = (
+                            "检查工具发现了 error/critical 级问题，但你没有调用 handoff_to_processor 交接修复。"
+                            "请立即调用 handoff_to_processor 工具，将下列问题通过 issues 参数传入"
+                            "（每项含 description/severity/column/suggestion），让 DataProcessor 自动修复：\n"
+                            + json.dumps(_severe, ensure_ascii=False, default=str)
+                        )
+                        local_messages.append({"role": "user", "content": _redirect})
+                        continue
+
+                # content 已在流式阶段逐 token 输出，不再重复 yield 全量
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
@@ -341,14 +380,12 @@ class DataInspectorAgent(BaseAgent):
                         if has_fatal:
                             fatal_issues = [i for i in issues if i.get("severity") == "fatal"]
                             yield {"type": "fatal", "issues": fatal_issues, "summary": summary}
-                            if content:
-                                yield {"type": "content", "content": content}
+                            # content 已在流式阶段逐 token 输出，不再重复 yield
                             yield {"type": "done", "result": {"agent": self.name, "content": "发现致命问题（违反法律法规），已停止处理"}}
                             return
                         elif not has_auto_fix:
                             yield {"type": "warning_confirmation", "issues": issues, "summary": summary}
-                            if content:
-                                yield {"type": "content", "content": content}
+                            # content 已在流式阶段逐 token 输出，不再重复 yield
                             yield {"type": "done", "result": {"agent": self.name, "content": "仅发现警告问题，等待用户确认是否修复"}}
                             return
                         else:
@@ -392,10 +429,28 @@ class DataInspectorAgent(BaseAgent):
         logger.info(f"DataInspector执行工具: {name}")
 
         # 自动从 context 填充数据源和表名（LLM 无需手动传参，避免中文表名复制错误）
-        ds_id = arguments.get("datasource_id") or context.get("current_datasource_id", "")
-        tbl = arguments.get("table_name") or context.get("current_table_name", "")
+        # 优先用 context 值（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
+        ds_id = context.get("current_datasource_id", "") or arguments.get("datasource_id", "")
+        tbl = context.get("current_table_name", "") or arguments.get("table_name", "")
         if not ds_id or not tbl:
             return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
+
+        # 如果 ds_id 不是合法 UUID，尝试按数据源名称解析
+        try:
+            import uuid as _uuid
+            _uuid.UUID(str(ds_id))
+        except (ValueError, AttributeError):
+            try:
+                from app.models.datasource import DataSource as _DS
+                from sqlalchemy import select as _select
+                _r = await db.execute(_select(_DS).where(_DS.name == str(ds_id)))
+                _ds = _r.scalar_one_or_none()
+                if _ds:
+                    ds_id = str(_ds.id)
+                else:
+                    return json.dumps({"error": f"数据源 '{ds_id}' 不存在或不是有效的UUID"}, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"error": f"数据源ID格式错误: {ds_id}，解析失败: {e}"}, ensure_ascii=False)
 
         if name == "profile_data":
             result = await inspector_tools.profile_data(ds_id, tbl, db)
