@@ -2645,6 +2645,114 @@ A new "Data Inspection" page where users can actively select a data source and t
 | **Phase 5** | Event store and lineage | ✅ Done |
 | **Phase 6** | Expansion: DataGovernor / DataSentinel and other new agents | ⬜ TODO |
 
+#### 2.7.16 Debug Pages Integrated with Multi-Agent (Completed)
+
+##### Background
+
+Before the refactor, multi-agent collaboration (DataProcessor → DataInspector) was **only triggered in the main chat flow (`/chat/stream`)**. The debug assistants (debug-chat) for skills/operators/pipelines took a completely separate path: a hand-written LLM loop + regex-parsed actions + execution, bypassing the multi-agent framework.
+
+| Entry | Before | After |
+|------|--------|--------|
+| Chat page | ✅ AgentRuntime → DataProcessor → DataInspector | unchanged |
+| Skill debug | ❌ hand-written LLM loop | ✅ AgentRuntime → DataProcessor → DataInspector |
+| Operator debug | ❌ hand-written LLM loop | ✅ AgentRuntime → DataProcessor → DataInspector |
+| Pipeline debug | ❌ hand-written LLM loop | ✅ AgentRuntime → DataProcessor → DataInspector |
+
+##### Architecture: Orchestrator-Worker Pattern
+
+Adopts the mainstream Orchestrator-Worker pattern (same as Claude Code / OpenAI Agents SDK / Google ADK):
+
+```
+DataProcessor (Orchestrator + lightweight tools)
+    ├── directly calls modify_script (Tool) — simple op, no separate LLM loop
+    ├── directly calls run_script (Tool) — simple op
+    ├── directly calls query_table_data / write_table_data, etc. (shared Tools)
+    └── delegate → DataInspector (Worker Agent) — complex task, independent LLM loop
+                     ├── profile_data
+                     ├── check_data_standards
+                     ├── check_data_quality
+                     ├── check_data_security
+                     └── handoff_back → DataProcessor to repair
+```
+
+**Granularity principle**: Agents for complex reasoning, Tools for simple operations.
+- `modify_script` (code merge) / `run_script` (sandbox execution) are simple ops → Tool, no separate Agent needed
+- Data quality inspection is complex reasoning (decide what to check, interpret results, judge severity) → Agent (Worker)
+- Making simple ops into separate Workers would add 2 agent hops + 2 extra LLM calls per modify+run, doubling latency
+
+##### Key Technique: Streaming Tool Calls + Reasoning
+
+Before the refactor, DataProcessor used `chat_with_tools()` (non-streaming, no reasoning) and the debug assistant used `chat_stream_with_thinking()` (streaming reasoning, no tool calls). The two were incompatible.
+
+Added `chat_stream_with_tools_and_thinking()` (`llm.py`), a 3-in-1 method:
+
+| Capability | Source | Implementation |
+|------|------|------|
+| Streaming reasoning (thinking) | chat_stream_with_thinking | yield reasoning_content chunk by chunk |
+| Streaming content | chat_stream_with_thinking | yield content chunk by chunk |
+| Tool calls (tool_calls) | chat_with_tools | accumulate tool_call deltas, yield once after the stream ends |
+| Length escalation | chat_stream_with_thinking | finish_reason=length → clear_thinking → double max_tokens and retry |
+| Circuit-breaker fallback | chat_stream_with_thinking | model failure → switch to the fallback chain |
+
+##### DataProcessor Debug Mode
+
+DataProcessor adds a `run_debug()` method, dispatched in `run()` when `context["debug_mode"]` is detected:
+
+| Feature | run() (main chat flow) | run_debug() (debug assistant) |
+|------|-------------------|------------------------|
+| LLM call | chat_with_tools() (non-streaming) | chat_stream_with_tools_and_thinking() (streaming) |
+| Toolset | shared tools + handoff_to_inspector | shared tools + handoff + modify_script + run_script |
+| system prompt | general data-processing instructions | debug-specific instructions (script content, sandbox function list, parameter memory) |
+| Self-healing | handoff back-and-forth (DataInspector ↔ DataProcessor) | autonomous within the tool-call loop (run_script fails → LLM sees error → auto modify → run again) |
+
+##### New Tools
+
+| Tool | Type | Description |
+|------|------|------|
+| `modify_script` | Tool | Modify script code (function-level merge via apply_partial_code); supports skill (file) / operator (DB) / pipeline (DB) modes |
+| `run_script` | Tool | Sandbox-execute the script; skill uses subprocess, operator uses exec(), pipeline does not support direct execution |
+| `handoff_to_inspector` | Tool | Hand off to DataInspector for quality inspection (existing, also available in debug mode) |
+
+##### Code Volume Before/After
+
+| Endpoint | Before | After | Notes |
+|------|--------|--------|------|
+| `skill.py` debug-chat | ~300 lines hand-written loop | ~120 lines AgentRuntime call | -180 lines |
+| `operator.py` debug-chat | ~180 lines | ~90 lines | -90 lines |
+| `pipeline.py` debug-chat | ~85 lines | ~95 lines | +10 lines (added event translation) |
+
+##### SSE Event Flow
+
+```
+user message → DataProcessor.run_debug()
+    ↓
+model / thinking / content (streaming reasoning + content)
+    ↓
+tool_calls → modify_script → script_updated event
+    ↓
+tool_calls → run_script → executing + run_result events
+    ↓
+tool_calls → handoff_to_inspector → agent_switch event
+    ↓ (AgentRuntime auto-switch)
+inspecting event → DataInspector.run()
+    ↓
+thinking / content / tool_result (inspection reasoning + results)
+    ↓
+handoff_back → agent_switch → retry event → DataProcessor repair
+    ↓
+done event
+```
+
+Frontend adds event handling: `inspecting` (🔍 DataInspector inspecting), `retry` (🔄 repair retry), `give_up` (⚠ cannot repair).
+
+##### Supported Debug Types
+
+| Type | debug_type | Script storage | Execution | modify_script | run_script |
+|------|-----------|----------|----------|:---:|:---:|
+| Skill | (default) | file (folder/scripts/) | subprocess sandbox | ✅ file write | ✅ skill_runner |
+| Operator | "operator" | DB (Operator.script_content) | exec() sandbox | ✅ DB update | ✅ exec() + _build_operator_namespace |
+| Pipeline | "pipeline" | DB (Pipeline.main_code) | direct execution not supported | ✅ DB update | ❌ returns "please use the pipeline execution feature" |
+
 ### 2.8 Intelligent Code Generation Module (Deprecated)
 
 > **Deprecated**: This module was based on the DAG node/edge ComposedCode model; all code has been removed (codegen.py, code.py model/schema/endpoint, composed_codes table). Functionality is replaced by §2.6 Pipeline (Python main function) and §2.7 Multi-Agent Collaboration Framework. The following is historical reference only.
@@ -4025,3 +4133,290 @@ This rule is written into:
 ### 10.4 Extensibility Risk
 - **Risk**: difficulty scaling the system
 - **Mitigation**: modular design, plugin mechanism, microservice architecture
+
+## 11. Engineering Improvement Records (inspired by DeepAnalyze)
+
+This section records engineering improvements made to DataCrab after drawing on the design ideas of DeepAnalyze, a general-purpose Agent platform. Each improvement notes the corresponding file and the design-philosophy source.
+
+### 11.1 Tool System Improvements
+
+#### Tool Deduplication (shared_tools.py)
+- **Problem**: `agent.py` and `data_processor_agent.py` had 5 tools whose schema and implementation were fully copy-pasted
+- **Improvement**: extracted `shared_tools.py`, unifying the schema + implementation of 7 shared tools; both Agents import it
+- **Philosophy**: inspired by DeepAnalyze's ToolRegistry unified-management idea
+
+#### Tool Result Truncation (agent_utils.py → truncate_tool_result)
+- **Problem**: `query_table_data` returned 100 rows of full JSON by default, bloating context over multiple rounds
+- **Improvement**: when a tool's returned JSON exceeds 8000 chars, auto-truncate to the first 5 rows + column names + total row count + a truncation notice
+- **Philosophy**: inspired by DeepAnalyze's Micro-Compact strategy
+
+#### Tool Honesty Capability Table (tool_guidance.py)
+- **Problem**: tool descriptions only said what they could do, not what they couldn't, leading to model misuse
+- **Improvement**: annotated each tool with coverage/precision/known limitations and injected the capability table into the system prompt
+- **Philosophy**: inspired by DeepAnalyze's "tool honesty" principle—write tool weaknesses truthfully so the model can compose tools correctly
+
+### 11.2 Agent Loop Improvements
+
+#### Stuck Detection (agent_utils.py → StuckDetector)
+- **Problem**: the Agent loop had only a hard `MAX_AGENT_ITERATIONS=12` cap, with no detection of going in circles
+- **Improvement**: detect repeated calls (2 consecutive rounds with the same tool+args) and idling (3 consecutive rounds with no tool call), injecting a strategy-switch hint
+- **Philosophy**: inspired by DeepAnalyze's StuckDetector (four stuck modes; DataCrab adopts two)
+
+#### Anti-Hallucination Checks (agent_utils.py → is_planning_only / should_warn_ungrounded_claim)
+- **Problem**: the Agent might "only plan without executing" or emit data claims unsupported by tools (a past "AI fabricates data" bug)
+- **Improvement**:
+  - before finishing, check whether the output is merely planning text ("I will... then..."); if so, refuse to end
+  - tool results carry a `_source` origin marker (datasource:xxx/table:yyy)
+- **Philosophy**: inspired by DeepAnalyze's "prevent plan-only" and zero-hallucination six-layer defense
+
+#### Handoff Convergence Detection (data_harness.py → ConvergenceGuard)
+- **Problem**: processor↔inspector could ping-pong the same issue, wasting 10×12=120 API calls
+- **Improvement**: `ConvergenceGuard` non-intrusive component; `record()` logs handoff signatures (to_agent, datasource_id, table_name), `is_diverged()` terminates after 4 consecutive back-and-forths on the same table; multi_agent.py calls only 3 lines instead of inline signature tracking
+- **Philosophy**: inspired by DeepAnalyze's convergence-detection idea; the flow-layer Harness is non-intrusive, business code is unaware of detection details
+
+### 11.3 Context Management Improvements
+
+#### CJK-aware Token Estimation (agent_utils.py → estimate_tokens)
+- **Problem**: `_compress_history` used character count (`len()`) as the trigger, with large error in Chinese scenarios
+- **Improvement**: estimate tokens as CJK chars ×1.5, non-ASCII ×0.5, ASCII ×0.25
+- **Philosophy**: inspired by DeepAnalyze's CJK-aware token estimation
+
+#### Compression Identifier Protection (agent_utils.py → extract_identifiers / build_identifier_hint)
+- **Problem**: after history summarization the Agent forgot which tables/datasources it had queried and repeated searches
+- **Improvement**: mechanically extract UUIDs/table names/datasource IDs during compression and require the summary prompt to preserve these identifiers
+- **Philosophy**: inspired by DeepAnalyze's identifier-protection principle
+
+### 11.4 LLM Call Improvements
+
+#### Transient Retries (llm.py → _acreate_with_retry)
+- **Problem**: 429 rate-limit/network timeout directly switched models without retrying the same model; tenacity was declared but unused
+- **Improvement**: up to 2 exponential-backoff retries (2s→4s) for RateLimitError/APITimeoutError/APIConnectionError/InternalServerError, then fall back through the model chain after retries are exhausted
+- **Philosophy**: inspired by DeepAnalyze's four-level error-recovery chain, first level
+
+### 11.5 Routing Improvements
+
+#### Unified Routing + Agent-autonomous Handoff (chat.py)
+- **Problem**: `_route_to_agent` pre-judged routing via keyword matching ("check/quality"→inspector), misjudging edge cases
+- **Improvement**: always start from DataProcessorAgent; the Agent autonomously decides whether to hand off to inspector; `_route_to_agent` was deleted
+- **Philosophy**: inspired by DeepAnalyze's "Agent autonomy" principle—the system gives signals, not constraints
+
+### 11.6 Experience Library Improvements
+
+#### Cross-operator Experience Aggregation (experience.py → distill_cross_patterns)
+- **Problem**: experience accumulated per operator/skill independently, lacking cross-operator general-pattern discovery
+- **Improvement**: `distill_cross_patterns()` collects all operators'/skills' lessons and uses the LLM to distill general data-processing patterns, stored in `global_lessons.md`
+- **Philosophy**: inspired by DeepAnalyze's AutoDream cross-session experience integration
+
+### 11.7 Engineering Hygiene
+
+#### Test Coverage (tests/)
+- **Problem**: `backend/tests/` was completely empty, zero coverage
+- **Improvement**: wrote unit tests for the pure functions of `agent_utils.py`, `experience.py`, `shared_tools.py` (64 test cases)
+- **Coverage**: token estimation, result truncation, stuck detection, identifier extraction, anti-hallucination checks, dynamic turn budget, context pressure alerts, three-level anti-hallucination, search saturation detection, tool result cache, experience read/write, tool schema validation
+
+#### Cleaning Unused Dependencies (pyproject.toml)
+- **Problem**: `redis`, `celery`, `minio`, `elasticsearch` were declared but unused in code
+- **Improvement**: removed the 4 unused dependencies from `pyproject.toml`
+
+#### CLAUDE.md
+- **Problem**: the project had no AI-collaboration config file
+- **Improvement**: created `CLAUDE.md` recording the tech stack, key-file navigation, run commands, and coding standards
+
+### 11.8 New File List
+
+| File | Description |
+|------|------|
+| `backend/app/services/agent_utils.py` | Agent engineering utility functions (token estimation, truncation, stuck detection, identifier extraction, anti-hallucination, dynamic turn budget, context pressure alerts, three-level anti-hallucination, search saturation detection, tool result cache) |
+| `backend/app/services/shared_tools.py` | unified schema + implementation of 7 shared tools (with LRU cache) |
+| `backend/app/services/tool_guidance.py` | tool honesty capability table |
+| `backend/tests/test_agent_utils.py` | agent_utils unit tests |
+| `backend/tests/test_experience.py` | experience unit tests |
+| `backend/tests/test_shared_tools.py` | shared_tools + tool_guidance unit tests |
+| `CLAUDE.md` | project-level AI collaboration config |
+
+### 11.9 Reasoning Truncation Fix
+
+#### Problem
+The AI reasoning process (thinking) of the skill/operator/pipeline debug assistant was truncated; users saw reasoning cut off mid-way.
+
+#### Root Cause
+The round-4 "prevent infinitely long reasoning chains" optimization introduced two issues:
+1. `llm.py:544` escalation-recovery condition included a `not has_content` guard—when reasoning was long but had some content, it **did not escalate-retry**, leaving reasoning cut off
+2. `max_tokens=4000` was too tight for reasoning models like GLM-5.2 (reasoning + content share the budget)
+3. the `clear_thinking` event cleared only reasoning, not content—even after escalation-retry the content repeated
+
+#### Improvement
+| File | Change |
+|------|------|
+| `llm.py:544` | removed the `not has_content` guard; any `finish_reason=length` escalates-retries (4K→8K→16K) |
+| `skill.py:1158` | debug-chat `max_tokens` 4000→8000, giving reasoning models enough budget |
+| `SkillView.vue` / `OperatorView.vue` / `PipelineView.vue` | `clear_thinking` also clears `content` + resets `thinkingDone`, preventing content repetition on retry |
+
+### 11.10 debug-chat `{{}}` Bug Fix
+
+#### Problem
+After the skill debug assistant's AI modified the script, the `script_updated` event didn't fire, the script wasn't written back to disk, and it reported `unhashable type: 'dict'`.
+
+#### Root Cause
+`skill.py:1186-1194` had an f-string escape residue: `{{}}` was actually `{ {} }` (a set containing an empty dict), which raised `TypeError: unhashable type: 'dict'` at runtime. This line executed before modify_script processing, so the AI's modified code was never written back to disk.
+
+#### Improvement
+`skill.py`: `{{}}` → `{}`, `{{"action": "run", ...}}` → `{"action": "run", ...}` (3 places)
+
+### 11.11 Execution Parameter Memory
+
+#### Problem
+In the skill debug assistant, the user said "the ID and timestamp weren't written in" (without naming a datasource); after the AI modified the script, the run action passed empty params `{}`, and the skill reported "missing required migration parameter". The experience library `experience.json` recorded successful params in `positive` but **never fed them back to the AI**.
+
+#### Root Cause
+DataCrab's debug-assistant memory has 4 layers, but with a key breakpoint:
+- **Layer 1 conversation history**: `history[-10:]`, each truncated to 500 chars, excluding execution params
+- **Layer 2 execution context**: reflects only the current input-box values, not historical params
+- **Layer 3 experience library**: `positive` recorded successful params, but `read_lessons()` reads only text summaries, not concrete params
+- **Layer 4 error logs**: used only for LLM lesson distillation
+
+#### Improvement
+| File | Change |
+|------|------|
+| `skill.py` | debug-chat system prompt injects the most recent successful execution params (taken from `experience.json`'s `positive`, filtering entries with `success: True`) |
+| `skill.py` | fallback: when the run action's params are empty, auto-fill from the most recent successful record |
+
+### 11.12 Sandbox Function Completion
+
+#### Problem
+The AI debug assistant used a `log("info", ...)` function when modifying scripts, but the skill_runner sandbox didn't inject `log`, causing `NameError: builtin function 'log' does not exist`.
+
+#### Root Cause
+1. The debug-assistant system prompt **did not declare the sandbox's available function list**, so the AI didn't know `log` was unavailable
+2. `get_datasource_id_by_name` / `get_table_schema` only had `_dc_`-prefixed versions; skills calling them directly (not via `_get_builtin_func`) couldn't find them
+
+#### Improvement
+| File | Change |
+|------|------|
+| `skill_runner.py` | sandbox adds `log(level, message)` → `print(f"[{LEVEL}] {message}")`; `get_datasource_id_by_name`, `get_table_schema` injected into builtins |
+| `skill.py` | debug-chat system prompt references the shared `SANDBOX_TOOLS_DOC` (prompt_docs.py) instead of inline descriptions; `SANDBOX_TOOLS_DOC` annotates all function return types (e.g. `get_table_data` returns a dict, not a DataFrame), fixing AI misuse causing `'dict' object has no attribute 'columns'` |
+
+### 11.13 Self-Healing Loop
+
+#### Problem
+After a debug-assistant execution failure, it retried only once (`range(2)`) before giving up, without continuing to repair.
+
+#### Improvement
+| File | Change |
+|------|------|
+| `skill.py` | `range(2)` → `range(5)`: up to 5 self-healing rounds (initial + 4 retries), each failure auto-feeds the error to the AI to keep fixing |
+| `skill.py` | after all 5 rounds fail, let the AI analyze why it can't be fixed and emit a `give_up` event |
+| `SkillView.vue` | added `retry` event handling (showing a "🔄 Nth repair attempt" separator) and `give_up` event handling (showing the "⚠ cannot repair" reason) |
+
+### 11.14 Failure Detection Fix
+
+#### Problem
+When a skill returned `{"success": False, "error": "missing required migration parameter"}`, the debug assistant judged it as **success** (because `run_skill_script`'s `success` only means "the script didn't crash"; the skill's own `success` is nested in the `result` field and wasn't checked). So failures didn't trigger self-healing retries and were even mis-stored as positive examples.
+
+#### Root Cause
+`run_skill_script` return structure:
+```python
+{"success": True,           # script exit code 0 (didn't crash)
+ "result": {"success": False, "error": "xxx"},  # the skill's own return (nested)
+ "error": None}             # runner has no error
+```
+The old code `if not exec_result.get("success"):` checked only the outer layer, missing skill-level failures.
+
+#### Improvement
+| File | Change |
+|------|------|
+| `skill.py` | failure judgment changed to a two-layer check: runner-level (`not success` / has error) + skill-level (`result.success is False` / `result.error` non-empty) |
+| `SkillView.vue` | `run_result` display also checks the inner `result.success` / `result.error` |
+
+### 11.15 Debug Pages Integrated with Multi-Agent (Completed)
+
+#### Goal
+All debug pages (skill/operator/pipeline) use the same DataProcessor + DataInspector multi-agent architecture as the chat page.
+
+#### Implementation
+See §2.7.16. Adopts the Orchestrator-Worker pattern:
+
+| Change | File | Description |
+|------|------|------|
+| Streaming tool-call method | llm.py | added `chat_stream_with_tools_and_thinking()`, 3-in-1 streaming reasoning + tool calls + length escalation |
+| DataProcessor debug mode | data_processor_agent.py | added `modify_script`/`run_script` tools + `run_debug()` streaming method + debug-mode system prompt + `_execute_tool` supports skill/operator/pipeline types |
+| Skill debug-chat | skill.py | hand-written LLM loop → AgentRuntime call (-180 lines) |
+| Operator debug-chat | operator.py | same (-90 lines) |
+| Pipeline debug-chat | pipeline.py | same |
+| Frontend event handling | SkillView/OperatorView/PipelineView.vue | added `inspecting`/`retry`/`give_up` event handling |
+
+#### Architecture Change
+```
+Before: debug page → hand-written LLM loop (regex-parse action) → execute → end
+After:  all pages → AgentRuntime → DataProcessor (streaming reasoning + tool calls) → DataInspector
+```
+
+### 11.16 Orchestrator-Worker Granularity Design
+
+#### Design Principle
+Agents for complex reasoning, Tools for simple operations.
+
+| Operation | Complexity | Form | Reason |
+|------|--------|------|------|
+| modify_script | low (code merge) | Tool | one function call, no LLM reasoning needed |
+| run_script | low (sandbox execution) | Tool | execute script and return result, no LLM reasoning needed |
+| Data quality inspection | high (multi-round reasoning) | Agent (Worker) | decide what to check, interpret results, judge severity |
+
+#### Reference Frameworks
+- Claude Code: the main Agent has simple tools directly (Read/Write/Bash); only complex tasks spawn a subagent
+- OpenAI Agents SDK: Agent = instructions + tools + handoff; simple ops use tools, don't reuse an Agent
+- DataCrab: DataProcessor has modify_script/run_script directly; complex inspection delegates to DataInspector
+
+### 11.17 Non-Intrusive Harness Architecture (data_harness.py)
+
+#### Problem
+Flow-layer Harness logic (convergence detection, experience collection) was scattered across business code; skill.py / operator.py each had inline implementations, ~50 lines of duplicated code, and doc drift caused bugs.
+
+#### Design Principle
+The data-layer Harness stays intrusive (must see data content); the flow-layer Harness is non-intrusive (business code calls one line).
+
+| Layer | Component | Intrusiveness | Reason |
+|----|------|--------|------|
+| Data layer | `get_table_data` / `write_table_data` / `inspector_tools` | intrusive | must access data content, intercept writes |
+| Flow layer | `ConvergenceGuard` / `collect_experience` | non-intrusive | only needs execution results, not data details |
+
+#### Components
+
+##### ConvergenceGuard
+```python
+guard = ConvergenceGuard(threshold=4)
+guard.record(to_agent, datasource_id, table_name)
+if guard.is_diverged():  # 4 consecutive same-table back-and-forths
+    terminate()
+```
+multi_agent.py went from 13 lines of inline signature tracking → 3 lines of calls.
+
+##### collect_experience
+```python
+collect_experience(base, source="debug", exec_result=result, parameters=params, script_name=name)
+# internally decides: failure → record negative example; success + has historical failure → record positive example
+```
+skill.py / operator.py went from 4 places ~50 lines of inline collection → 6 lines each.
+
+#### Philosophy
+Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps outside the code, and the code under test is unaware of the harness. Data-scenario specialization: the data layer must be intrusive (state + side effects + content dependence), the flow layer can be non-intrusive.
+
+### 11.18 Scheduling System Landing + Dead-Code Cleanup + EP Localization
+
+| Improvement | File | Description |
+|------|------|------|
+| Scheduling background execution | task_runner.py (new) + schedule.py | `execute_task()` dispatches by task_type to skill (to_thread) / operator (exec+func) / pipeline (await execute_pipeline); the trigger endpoint hooks into BackgroundTasks for actual execution; updates TaskExecution + Schedule records |
+| Scheduled scan worker | task_runner.py + main.py | 30s interval scans active schedules with `next_run_at <= now()`; concurrency control (concurrent_runs) + next_run_at recompute to prevent duplicate triggers; lifespan start/stop (start_scheduler/stop_scheduler) |
+| Sandbox namespace extraction | sandbox_ns.py (new) + operator.py | `build_operator_namespace` + `run_async_in_thread` moved from the operator.py endpoint to the service layer, eliminating the API→service reverse dependency |
+| Element Plus localization | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
+| Dead-code cleanup | multiple | deleted the entire CodeView/ExploreView/Notebook set (frontend + backend + model + schema + routes, net -1159 lines); skill_executor.py slimmed to 2 dataclasses (333→37 lines) |
+
+### 11.19 Debug Loop Strengthening — In Progress
+
+| Improvement | File | Description |
+|------|------|------|
+| Enforce per-round execution | data_processor_agent.py | DEBUG_INSTRUCTIONS rewritten: every round must call modify_and_run; root-cause analysis goes in thinking, not the body; forbid "plan-only" text output without tool calls |
+| AST smart script compression | data_processor_agent.py | `_extract_script_for_context`: scripts over 50k chars use AST to keep all function signatures + docstrings, large functions abbreviated to first/last 5 lines + omission marker; falls back to raw truncation on syntax errors |
+| Smart tool-result compression | data_processor_agent.py | `_compress_tool_result`: failures keep full error info, successes keep only a summary + a few data rows, reducing context usage |
+| handoff param simplification | data_processor_agent.py | `handoff_to_inspector` no longer requires datasource_id/table_name; auto-uses the current debug context's datasource and table |
+| Tool-exception fallback | data_processor_agent.py | `_safe_execute` catches tool-execution exceptions and returns a structured JSON error, preventing a single tool exception from crashing the whole gather |
