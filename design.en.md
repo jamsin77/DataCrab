@@ -249,35 +249,6 @@ AI: Creating the pipeline...
 - Data table preview + export
 - Chart visualization - streaming response (typewriter effect)
 
-#### 2.1.3 Notebook Data Analysis Environment (Removed)
-
-> **Removed**: The Notebook module (frontend + backend + model + schema + routes) has been completely deleted. Data analysis is handled by the chat interface (Chat) and operator/skill execution.
-
-##### Layout
-```
-┌───────────────────────────────────────────────────────────────────┐
-│Toolbar: [Add Code] [Add MD] | [Run All] [Restart] [Save] [Share]  │
-├───────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│ ┌───────────────────────────────────────────────────────────────┐ │
-│ │Cell 1: Code cell                                              │ │
-│ │import pandas as pd                                            │ │
-│ │df = pd.read_csv('data.csv')                                   │ │
-│ │[Run]                                                          │ │
-│ ├───────────────────────────────────────────────────────────────┤ │
-│ │Output:                                                        │ │
-│ │DataFrame loaded, shape: (1000, 5)                             │ │
-│ └───────────────────────────────────────────────────────────────┘ │
-│                                                                   │
-│ ┌───────────────────────────────────────────────────────────────┐ │
-│ │Cell 2: Markdown cell                                          │ │
-│ │## Data Analysis                                               │ │
-│ │Perform statistical analysis on sales data                     │ │
-│ └───────────────────────────────────────────────────────────────┘ │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
-```
-
 #### 2.1.4 Data Exploration Panel Design
 
 The data exploration panel provides data source connection, table structure viewing, and data preview.
@@ -2753,48 +2724,6 @@ Frontend adds event handling: `inspecting` (🔍 DataInspector inspecting), `ret
 | Operator | "operator" | DB (Operator.script_content) | exec() sandbox | ✅ DB update | ✅ exec() + _build_operator_namespace |
 | Pipeline | "pipeline" | DB (Pipeline.main_code) | direct execution not supported | ✅ DB update | ❌ returns "please use the pipeline execution feature" |
 
-### 2.8 Intelligent Code Generation Module (Deprecated)
-
-> **Deprecated**: This module was based on the DAG node/edge ComposedCode model; all code has been removed (codegen.py, code.py model/schema/endpoint, composed_codes table). Functionality is replaced by §2.6 Pipeline (Python main function) and §2.7 Multi-Agent Collaboration Framework. The following is historical reference only.
-
-#### 2.8.1 Module Architecture (Deprecated)
-```
-┌───────────────────────────────────────────────┐
-│          Intelligent Code Generator           │
-├───────────────────────────────────────────────┤
-│   ┌───────────────────────────────────────┐   │
-│   │  NL Code Parser                       │   │
-│   │  - Natural-language parsing           │   │
-│   │  - Intent recognition                 │   │
-│   │  - Entity extraction                  │   │
-│   │  - Code structure generation          │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Skill Composition Engine             │   │
-│   │  - Skill matching                     │   │
-│   │  - Skill composition                  │   │
-│   │  - Parameter inference                │   │
-│   │  - Code optimization                  │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Code Validator                       │   │
-│   │  - Code validation                    │   │
-│   │  - Syntax check                       │   │
-│   │  - Parameter validation               │   │
-│   │  - Executability analysis             │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Code Executor                        │   │
-│   │  - Dynamic operator loading           │   │
-│   │  - Code execution                     │   │
-│   │  - Result collection                  │   │
-│   │  - Error handling                     │   │
-│   └───────────────────────────────────────┘   │
-└───────────────────────────────────────────────┘
-```
-
-(The NLCodeGenerator / SkillCompositionEngine / DynamicCodeExecutor / ComposedCode classes are deprecated and omitted here; see git history if needed.)
-
 ### 2.9 Scheduling System Module
 
 #### 2.9.1 Scheduling Architecture
@@ -3357,164 +3286,6 @@ class PermissionChecker:
         return False
 ```
 
-### 2.12 Code Generation Module (Deprecated)
-
-> **Deprecated**: The AST + Jinja2-based code generation module has been replaced by LLM-direct script generation (operator generation, skill generation). The following is historical reference only.
-
-#### 2.12.1 Code Generation Flow (Deprecated)
-```
-Code Definition (JSON)
-    → AST parsing & transformation
-    → Code template rendering
-    → Python code generation
-    → Code optimization & formatting
-    → Executable Python script
-```
-
-#### 2.12.2 Code Generator
-```python
-class CodeGenerator:
-    """Code generator"""
-    
-    def generate_python_code(
-        self, 
-        code: Code
-    ) -> str:
-        """Generate Python code"""
-        
-        # 1. Parse the flow definition
-        dag = self.parse_dag(code.definition)
-        
-        # 2. Generate import statements
-        imports = self.generate_imports(dag)
-        
-        # 3. Generate data source connection code
-        connections = self.generate_connections(dag)
-        
-        # 4. Generate operator execution code
-        operations = self.generate_operations(dag)
-        
-        # 5. Generate the main function
-        main_function = self.generate_main_function(dag)
-        
-        # 6. Assemble the full code
-        code = f"""
-{imports}
-
-{connections}
-
-{operations}
-
-{main_function}
-
-if __name__ == "__main__":
-    main()
-"""
-        
-        # 7. Format the code
-        formatted_code = self.format_code(code)
-        
-        return formatted_code
-```
-
-#### 2.12.3 Code Template Example
-```python
-# Data source connection template
-DATASOURCE_TEMPLATE = """
-def connect_{name}():
-    """Connect to data source {display_name}"""
-    import {driver}
-    
-    connection = {driver}.connect(
-        {connection_params}
-    )
-    return connection
-"""
-
-# Operator execution template
-OPERATOR_TEMPLATE = """
-def {operator_name}({inputs}):
-    \"\"\"Execute operator: {display_name}
-    
-    Args:
-        {params_doc}
-    
-    Returns:
-        DataFrame: processing result
-    \"\"\"
-    {operator_logic}
-    
-    return result
-"""
-```
-
-### 2.13 Environment Management Module (Deprecated)
-
-> **Deprecated**: Environment isolation and migration is not implemented; no current plan. The following is historical reference only.
-
-#### 2.13.1 Environment Isolation Architecture (Deprecated)
-```
-┌───────────────────────────────────────────────┐
-│              Environment Manager              │
-├───────────────────────────────────────────────┤
-│   ┌───────────────────────────────────────┐   │
-│   │  Development Environment              │   │
-│   │  - Dev/test                           │   │
-│   │  - Sandbox data                       │   │
-│   │  - Debug mode                         │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Testing Environment                  │   │
-│   │  - Integration test                   │   │
-│   │  - Test data                          │   │
-│   │  - Performance test                   │   │
-│   └───────────────────────────────────────┘   │
-│   ┌───────────────────────────────────────┐   │
-│   │  Production Environment               │   │
-│   │  - Production run                     │   │
-│   │  - Real data                          │   │
-│   │  - High-availability deployment       │   │
-│   └───────────────────────────────────────┘   │
-└───────────────────────────────────────────────┘
-```
-
-#### 2.13.2 Environment Migration Mechanism
-```python
-class EnvironmentMigrator:
-    """Environment migration mechanism"""
-    
-    async def migrate_code(
-        self,
-        code_id: UUID,
-        source_env: str,
-        target_env: str
-    ) -> MigrationResult:
-        """Migrate a flow"""
-        
-        # 1. Validate source-env flow
-        code = await self.validate_code(code_id, source_env)
-        
-        # 2. Check dependencies
-        dependencies = await self.check_dependencies(code)
-        
-        # 3. Migrate data source config
-        await self.migrate_datasources(dependencies.datasources)
-        
-        # 4. Migrate operators
-        await self.migrate_operators(dependencies.operators, target_env)
-        
-        # 5. Create target-env flow
-        new_code = await self.create_code(code, target_env)
-        
-        # 6. Validate migration result
-        await self.validate_migration(new_code, target_env)
-        
-        return MigrationResult(
-            success=True,
-            new_code_id=new_code.id
-        )
-```
-
 ### 2.14 Data Standards / Quality / Security Rule Libraries
 
 Three Markdown rule libraries serve as DataInspector's inspection basis, viewable/editable on the system settings page.
@@ -3809,15 +3580,6 @@ DELETE /api/v1/operators/{id}           # Delete operator
 GET    /api/v1/operators/categories     # Get operator categories
 ```
 
-#### Pipeline Management API (Deprecated)
-> **Deprecated**: `/codes` endpoints have been removed, replaced by the `/pipelines` endpoints in §2.6.
-```
-# Deprecated, no longer used
-# POST   /api/v1/codes                # Create code
-# GET    /api/v1/codes                # Get code list
-# ...etc
-```
-
 #### Schedule Management API
 ```
 POST   /api/v1/schedules                # Create schedule
@@ -3832,15 +3594,6 @@ GET    /api/v1/schedules/{id}/executions # Get execution history
 GET    /api/v1/schedules/executions/{exec_id} # Get execution detail
 POST   /api/v1/schedules/validate-cron  # Cron expression validation
 GET    /api/v1/schedules/stats/overview # Schedule stats overview
-```
-
-#### Natural Language Processing API (Deprecated)
-> **Deprecated**: `/nl` endpoints have been removed; NL processing is replaced by the chat service (`/chat`) and the multi-agent framework.
-```
-# Deprecated, no longer used
-# POST   /api/v1/nl/process               # Process natural language
-# POST   /api/v1/nl/skills/search         # Search similar skills
-# POST   /api/v1/nl/skills/register       # Register a skill
 ```
 
 #### Skill Management API
@@ -3868,14 +3621,6 @@ POST   /api/v1/skills/from-nl            # Create skill from natural language
 # Skill templates
 GET    /api/v1/skills/templates          # Get skill template list
 POST   /api/v1/skills/templates/{id}/apply # Apply a skill template
-```
-
-#### Skill Pipeline API (Deprecated)
-> **Deprecated**: `/skill-pipelines` endpoints have been removed, replaced by the `/pipelines` endpoints in §2.6.
-```
-# Deprecated, no longer used
-# POST   /api/v1/skill-pipelines           # Create a Pipeline
-# ...etc
 ```
 
 #### Skill & Pipeline API Detailed Description
@@ -3960,10 +3705,6 @@ Response:
     "validation_passed": true
 }
 ```
-
-### 4.2 WebSocket Interface (Deprecated)
-
-> **Deprecated**: Real-time communication switched to SSE (Server-Sent Events); WebSocket is no longer used.
 
 ## 5. Deployment Architecture
 
