@@ -245,10 +245,33 @@ EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, DELETE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
 _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
+# 意图检测：分析模式 vs 修复模式
+_ANALYZE_KEYWORDS = [
+    '看一看', '看看', '看下', '看一下', '分析', '检查下', '检查一', '找找', '找问题',
+    '什么问题', '哪里', '为什么', '怎么回事', '诊断', '查看', '排查', '看看有',
+    '看下有', '有什么问题', '存在什么', '是否存在', '看眼', '瞅瞅',
+]
+_FIX_KEYWORDS = [
+    '修复', '修改', '改正', '搞好', '修好', '修一下', '改一下', '修复下',
+    '修改下', '改正下', 'fix', '优化', '调整', '重写', '重新写', '改好',
+    '改正一下', '修改一下', '修复一下', '搞定',
+]
+
+
+def _is_analyze_only_request(msg: str) -> bool:
+    """判断用户消息是否为分析-only 请求（只看不改）。有修复关键词则走修复模式。"""
+    if not msg:
+        return False
+    has_fix = any(kw in msg.lower() for kw in _FIX_KEYWORDS)
+    if has_fix:
+        return False
+    return any(kw in msg for kw in _ANALYZE_KEYWORDS)
+
 DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），正在调试一个脚本。
 
 ## 核心规则（必须遵守）
 - **每一轮都必须调用 modify_and_run**，不调用任何工具的轮次会被立即终止
+- **推理过程（thinking）控制在5句话以内**，只写根因和修复方向，不要长篇分析。长推理会超出token限制导致工具调用丢失
 - **可以同轮调用 get_table_schema / query_table_data 辅助定位问题，但必须同时调用 modify_and_run 修改并执行**——禁止只查询不修改
 - **根因分析放在推理过程（thinking）中**，不要输出为正文。正文只用于工具调用，不用于分析
 - **禁止输出"我需要重写""我来修复"等计划性文字而不跟工具调用**，直接调 modify_and_run
@@ -271,6 +294,30 @@ DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor �
 - 推理请简洁，直奔重点
 - 看到错误后先分析根因，不要盲目尝试
 - **每一轮都必须有 modify_and_run 工具调用**，只查询不修改的轮次会被立即终止
+
+## 技能规范（脚本必须符合此规范）
+""" + _SKILL_SPEC
+
+ANALYZE_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），用户要求你**只分析问题，不修改代码**。
+
+## 核心规则
+- **禁止调用 modify_and_run / modify_script / run_script**，本轮只分析不修改
+- 可以调用 get_table_schema / query_table_data / execute_sql 查看表结构和数据，辅助分析
+- 分析完成后，在回复中说明：发现的问题、错误原因、修复建议
+- 推理请简洁，直奔重点
+
+## 你的能力（通过工具调用）
+1. **get_table_schema**: 查看表结构
+2. **query_table_data**: 查看表数据
+3. **execute_sql**: 执行 SQL 查询
+4. **list_user_datasources**: 列出数据源
+
+## 输出要求
+- 逐条列出发现的问题（如有），标注严重程度（info/warning/error）
+- 说明每个问题的根因
+- 给出修复建议（但不要执行修复）
+- 如果脚本没有明显问题，说明"未发现明显问题"
+- 如需修复，请用户说"修复下"或"修改下"触发修复模式
 
 ## 技能规范（脚本必须符合此规范）
 """ + _SKILL_SPEC
@@ -589,7 +636,7 @@ class DataProcessorAgent(BaseAgent):
     def _extract_script_for_context(script: str, threshold: int = 3000) -> str:
         """AST 智能提取脚本：保留所有函数签名+docstring，大函数缩略体。
         语法错误时回退为原始截断（调试中的脚本可能有语法错误）。"""
-        if len(script) <= 50000:
+        if len(script) <= 8000:
             return script
         try:
             import ast
@@ -708,7 +755,7 @@ class DataProcessorAgent(BaseAgent):
         if name == "handoff_to_inspector":
             # 优先从 context 取（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
             ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id") or arguments.get("datasource_id", "")
-            tbl = context.get("debug_table_name") or context.get("current_table_name") or arguments.get("table_name", "")
+            tbl = context.get("debug_output_table") or context.get("debug_table_name") or context.get("current_table_name", "")
             return json.dumps({
                 "_handoff": True,
                 "to": "data_inspector",
@@ -1157,7 +1204,10 @@ class DataProcessorAgent(BaseAgent):
         """构建调试模式 system prompt"""
         max_rounds = context.get("debug_max_rounds", 7)
         max_inspections = context.get("debug_max_inspections", 7)
-        prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_inspections}", str(max_inspections))
+        if context.get("debug_analyze_only"):
+            prompt = ANALYZE_INSTRUCTIONS
+        else:
+            prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_inspections}", str(max_inspections))
 
         # 当前脚本（AST 智能提取：保留所有函数签名+docstring，大函数缩略体）
         script_content = context.get("debug_script_content", "")
@@ -1252,6 +1302,13 @@ class DataProcessorAgent(BaseAgent):
 
         await llm_manager.initialize()
 
+        # 意图检测：用户说"看一看/分析下/检查下" → 分析模式（不修改代码，不跑7轮循环）
+        # 用户说"修复下/修改下/改正下" → 修复模式（正常7轮循环）
+        if message.reason != HandoffReason.FIX_REQUIRED:
+            _user_msg_raw = message.payload.get("user_message", message.payload.get("content", ""))
+            if _is_analyze_only_request(_user_msg_raw):
+                context["debug_analyze_only"] = True
+
         system_prompt = self.build_debug_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
 
@@ -1301,11 +1358,14 @@ class DataProcessorAgent(BaseAgent):
                 return
             local_messages.append({"role": "user", "content": user_msg})
 
-        # 调试模式工具 = 通用工具 + handoff + 调试工具
-        debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
+        # 调试模式工具：分析模式只给查询工具，修复模式给全套
+        if context.get("debug_analyze_only"):
+            debug_tools = SHARED_TOOL_SCHEMAS
+        else:
+            debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
 
         stuck_detector = StuckDetector()
-        max_iterations = context.get("debug_max_rounds", 7)
+        max_iterations = 3 if context.get("debug_analyze_only") else context.get("debug_max_rounds", 7)
         # 跨 handoff 共享的统一轮次预算（每次 run_debug 不重置）
         _total_rounds = context.get("debug_total_rounds", 0)
         had_any_tool_calls = False
@@ -1400,24 +1460,34 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "round", "round": _total_rounds}
 
             if not tool_calls:
-                # 无工具调用（只规划/只结论）→ 重定向要求调工具，最多 2 次，再不调则终止
+                # 分析模式：无工具调用 = 分析完成，直接输出结论
+                if context.get("debug_analyze_only"):
+                    yield {"type": "done", "result": {"agent": self.name, "content": content}}
+                    return
+                # 修复模式：无工具调用 → 重定向要求调工具，最多 2 次，再不调则终止
                 if _no_tool_redirects < 2:
                     _no_tool_redirects += 1
                     local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请直接调用 modify_and_run 修改并执行脚本（成功后调 handoff_to_inspector 交接检查），不要只描述计划或输出结论。"})
+                    if finish_reason == "length":
+                        _redirect_msg = "推理过程过长被截断，未生成工具调用。请直接调用 modify_and_run 修改并执行脚本，推理控制在3句话以内，不要长篇分析。"
+                    else:
+                        _redirect_msg = "请直接调用 modify_and_run 修改并执行脚本（成功后调 handoff_to_inspector 交接检查），不要只描述计划或输出结论。"
+                    yield {"type": "content", "content": f"\n\n⚠️ {_redirect_msg}"}
+                    local_messages.append({"role": "user", "content": _redirect_msg})
                     continue
                 break
 
-            # 只查询不修改 → 重定向，最多 2 次（允许查询但必须同轮 modify_and_run）
-            _tool_names = [tc["function"]["name"] for tc in tool_calls]
-            _has_modify = any(n in ("modify_and_run", "modify_script", "run_script") for n in _tool_names)
-            if not _has_modify:
-                if _no_tool_redirects < 2:
-                    _no_tool_redirects += 1
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "你只调用了查询工具，没有修改脚本。请调用 modify_and_run 修改并执行脚本。如需查询，请与 modify_and_run 同轮调用。"})
-                    continue
-                break
+            # 只查询不修改 → 重定向（仅修复模式；分析模式允许只查询）
+            if not context.get("debug_analyze_only"):
+                _tool_names = [tc["function"]["name"] for tc in tool_calls]
+                _has_modify = any(n in ("modify_and_run", "modify_script", "run_script") for n in _tool_names)
+                if not _has_modify:
+                    if _no_tool_redirects < 2:
+                        _no_tool_redirects += 1
+                        local_messages.append({"role": "assistant", "content": content})
+                        local_messages.append({"role": "user", "content": "你只调用了查询工具，没有修改脚本。请调用 modify_and_run 修改并执行脚本。如需查询，请与 modify_and_run 同轮调用。"})
+                        continue
+                    break
 
             had_any_tool_calls = True
 
@@ -1532,6 +1602,7 @@ class DataProcessorAgent(BaseAgent):
                             _run_succeeded = True
                             _should_handoff = True  # 成功后自动交接 DataInspector
                             _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
+                            context["debug_output_table"] = _handoff_output_table
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
@@ -1591,6 +1662,7 @@ class DataProcessorAgent(BaseAgent):
                             _run_succeeded = True
                             _should_handoff = True  # 成功后自动交接 DataInspector
                             _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
+                            context["debug_output_table"] = _handoff_output_table
                             folder = context.get("debug_folder")
                             if folder:
                                 try:
@@ -1623,8 +1695,8 @@ class DataProcessorAgent(BaseAgent):
             if _should_stop:
                 break
 
-            # 执行成功 → 自动交接 DataInspector（不等 LLM 调用 handoff_to_inspector）
-            if _should_handoff:
+            # 执行成功 → 自动交接 DataInspector（仅修复模式；分析模式不 handoff）
+            if _should_handoff and not context.get("debug_analyze_only"):
                 self._save_session_log(local_messages, context, _inspection_round)
 
                 ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id", "")
@@ -1642,6 +1714,11 @@ class DataProcessorAgent(BaseAgent):
                     "from": self.name,
                 }
                 return
+
+        # 分析模式：轮次耗尽直接输出已有内容，不走修复失败逻辑
+        if context.get("debug_analyze_only"):
+            yield {"type": "done", "result": {"agent": self.name, "content": content or "分析完成"}}
+            return
 
         # 轮次耗尽或重复错误或 AI 主动放弃 → 让 AI 分析无法修复的原因
         if _same_error_count >= 3:

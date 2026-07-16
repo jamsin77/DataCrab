@@ -824,16 +824,14 @@ async def run_skill_nl(
                 "2. **参数类型必须严格匹配**：string→字符串，int→整数，bool→true/false，"
                 "dict→JSON对象(如 {\"key\":\"value\"})，list→JSON数组。dict 类型绝不能输出为数组\n"
                 "3. **只输出 SKILL.md 中定义的参数**，不要添加定义之外的参数\n"
-                "4. **不要输出以下系统自动注入的参数**：datasource_id、datasource_name、datasource、"
-                "table_name、table_names、tables、table —— 这些由系统自动注入，重复传入会导致冲突\n"
-                "5. **仔细区分数据源名和表名**：数据源名(DataSource)是连接名称，表名(Table)是数据源中的表；"
+                "4. **仔细区分数据源名和表名**：数据源名(DataSource)是连接名称，表名(Table)是数据源中的表；"
                 "用户说\"从X数据源\"时X是数据源名，说\"把Y这张表\"时Y是表名，切勿混淆\n"
-                "6. 对于 add_columns 等 dict 类型参数，格式为 {\"列名\": 值}，"
+                "5. 对于 add_columns 等 dict 类型参数，格式为 {\"列名\": 值}，"
                 "不要用 [{\"name\":..., \"value\":...}] 列表格式\n\n"
                 "## 输出格式\n"
                 "只输出一个 JSON 对象，不要输出任何解释。格式：\n"
-                '{"parameters": {"参数名": 值, ...}, "table_name": "表名(如有)"}\n'
-                "注意：table_name 仅在用户明确提到表名时输出，不要把数据源名放到 table_name 中。"
+                '{"parameters": {"参数名": 值, ...}, "datasource_name": "数据源名(如有)", "table_name": "表名(如有)"}\n'
+                "注意：datasource_name 和 table_name 仅在用户明确提到时输出，不要把数据源名放到 table_name 中。"
             ),
         },
         {
@@ -872,10 +870,13 @@ async def run_skill_nl(
         parsed = {"parameters": {}}
 
     parameters = parsed.get("parameters", {})
+    # 在剥离前捕获 LLM 推断的 datasource_name 和 table_name
+    _llm_ds_name = parameters.get("datasource_name") or parameters.get("datasource") or parsed.get("datasource_name")
+    _llm_table = parameters.get("table_name") or parameters.get("table") or parsed.get("table_name")
     for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
         parameters.pop(key, None)
 
-    inferred_table = parsed.get("table_name") or request.table_name
+    inferred_table = _llm_table or request.table_name
     datasource_id = request.datasource_id
     ds_name = None
 
@@ -886,11 +887,11 @@ async def run_skill_nl(
         if ds_obj:
             ds_name = ds_obj.name
 
-    if not datasource_id and parsed.get("datasource_name"):
+    if not datasource_id and _llm_ds_name:
         from sqlalchemy import select as sa_select
         from app.models.datasource import DataSource
         ds_result = await db.execute(
-            sa_select(DataSource).where(DataSource.name == parsed["datasource_name"])
+            sa_select(DataSource).where(DataSource.name == _llm_ds_name)
         )
         ds = ds_result.scalar_one_or_none()
         if ds:
@@ -960,7 +961,8 @@ async def run_skill_nl_stream(
                 "规则：\n"
                 "- 参数名必须与参数规范完全一致\n"
                 "- 区分数据源名(DataSource)和表名(Table)\n"
-                "- 不要输出 datasource/table_name 等系统注入参数\n\n"
+                "- 用户说\"从X数据源\"时，输出 datasource_name: \"X\"\n"
+                "- 用户说\"把Y这张表\"时，输出 table_name: \"Y\"\n\n"
                 '输出格式：{"parameters": {"参数名": 值}}'
             ),
         },
@@ -1001,10 +1003,13 @@ async def run_skill_nl_stream(
                 parsed = {"parameters": {}}
 
             parameters = parsed.get("parameters", {})
+            # 在剥离前捕获 LLM 推断的 datasource_name 和 table_name
+            _llm_ds_name = parameters.get("datasource_name") or parameters.get("datasource")
+            _llm_table = parameters.get("table_name") or parameters.get("table")
             for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
                 parameters.pop(key, None)
 
-            inferred_table = parsed.get("table_name") or request.table_name
+            inferred_table = _llm_table or parsed.get("table_name") or request.table_name
             datasource_id = request.datasource_id
             ds_name = None
 
@@ -1015,11 +1020,12 @@ async def run_skill_nl_stream(
                 if ds_obj:
                     ds_name = ds_obj.name
 
-            if not datasource_id and parsed.get("datasource_name"):
+            if not datasource_id and (_llm_ds_name or parsed.get("datasource_name")):
                 from sqlalchemy import select as sa_select
                 from app.models.datasource import DataSource
+                _ds_name_to_resolve = _llm_ds_name or parsed.get("datasource_name")
                 ds_result = await db.execute(
-                    sa_select(DataSource).where(DataSource.name == parsed["datasource_name"])
+                    sa_select(DataSource).where(DataSource.name == _ds_name_to_resolve)
                 )
                 ds = ds_result.scalar_one_or_none()
                 if ds:

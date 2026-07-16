@@ -431,7 +431,7 @@ class DataInspectorAgent(BaseAgent):
         # 自动从 context 填充数据源和表名（LLM 无需手动传参，避免中文表名复制错误）
         # 优先用 context 值（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
         ds_id = context.get("current_datasource_id", "") or arguments.get("datasource_id", "")
-        tbl = context.get("current_table_name", "") or arguments.get("table_name", "")
+        tbl = context.get("current_table_name", "")
         if not ds_id or not tbl:
             return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
 
