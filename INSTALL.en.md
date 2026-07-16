@@ -57,11 +57,11 @@ The backend config file is at `backend/.env`; modify it as needed:
 # Database (SQLite by default; no extra setup needed)
 DATABASE_URL=sqlite+aiosqlite:///./datacrab.db
 
-# LLM config
+# LLM config (can also be configured on the frontend "Settings" page after startup)
 LLM_PROVIDER=glm
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=glm-5.2
-OPENAI_API_BASE=https://open.bigmodel.cn/api/coding/paas/v4
+OPENAI_API_BASE=https://open.bigmodel.cn/api/paas/v4
 ```
 
 ## 4. Start the Dev Server

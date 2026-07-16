@@ -23,7 +23,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime / Handoff） |
 | `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成 |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查 |
-| `shared_tools.py` | **6 个公共工具的 schema + 实现（去重后统一入口 + LRU 缓存）** |
+| `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、搜索饱和检测、工具结果缓存** |
 | `tool_guidance.py` | **工具诚实能力表（注入 system prompt）** |
 | `llm.py` | LLM 管理器（多模型降级 + 瞬态重试 + finish_reason 透传） |
@@ -40,12 +40,14 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `personal.md` | 助手人格与安全红线定义 |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-17 个端点文件，主要：
+16 个端点文件、共 177 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
-- `skill.py` — 技能 CRUD + AI 生成/调试
+- `skill.py` — 技能 CRUD + AI 生成/调试（28 路由，最多）
 - `operator.py` — 算子 CRUD + 执行
+- `datasource.py` — 数据源 + 12 个 `/internal/*` 无认证沙箱端点（SQL/文件 I/O/LLM 对话/视觉/分块读取）
 - `knowledge.py` — 文档知识库 RAG
+- `custom_extension.py` — 自定义数据源连接器 + LLM Provider 适配器（AI 生成代码，沙箱加载）
 
 ### 前端（`frontend/src/`）
 - `views/chat/` — 主对话界面
@@ -60,7 +62,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 npm run dev
 
 # 后端单独
-cd backend && poetry install && uvicorn app.main:app --reload --port 8000
+cd backend && pip install -e . && python -m uvicorn app.main:app --reload --port 8000
 
 # 前端单独
 cd frontend && npm install && npm run dev
@@ -101,7 +103,7 @@ DataProcessorAgent（统一入口）
 
 | 改进 | 文件 | 说明 |
 |------|------|------|
-| 工具去重 | shared_tools.py | 6 个公共工具统一定义和实现 |
+| 工具去重 | shared_tools.py | 7 个公共工具统一定义和实现 |
 | 结果截断 | agent_utils.py | 工具返回超 8000 字符自动截断 |
 | 卡死检测 | agent_utils.py | StuckDetector 检测重复调用和空转 |
 | token 估算 | agent_utils.py | CJK 感知（1.5 token/字 vs 0.25） |
@@ -192,3 +194,13 @@ DataProcessorAgent（统一入口）
 | **沙箱命名空间抽出** | sandbox_ns.py（新增）+ operator.py | `build_operator_namespace` + `run_async_in_thread` 从 operator.py 端点移至 service 层，消除 API→service 反向依赖；operator.py 删除 2 个函数 + 2 个死 import（asyncio/threading） |
 | **Element Plus 中文化** | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
 | **死代码清理** | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行） |
+
+### 第八轮（调试 Loop 强化：上下文压缩 + 强制执行 + handoff 简化）——进行中
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **强制每轮执行** | data_processor_agent.py | DEBUG_INSTRUCTIONS 重写：每轮必须调用 modify_and_run，根因分析放 thinking 不放正文，禁止"只规划不执行"的纯文字输出 |
+| **AST 脚本智能压缩** | data_processor_agent.py | `_extract_script_for_context`：超 5 万字符脚本用 AST 保留所有函数签名+docstring，大函数缩略为首尾 5 行+省略标注；语法错误时回退原始截断（调试中脚本可能有语法错误） |
+| **工具结果智能压缩** | data_processor_agent.py | `_compress_tool_result`：失败保留全量错误信息，成功只保留摘要+少量数据行，降低上下文占用 |
+| **handoff 参数简化** | data_processor_agent.py | `handoff_to_inspector` 去掉 datasource_id/table_name 必填，自动使用当前调试上下文的数据源与表，降低 Agent 调用门槛 |
+| **工具异常兜底** | data_processor_agent.py | `_safe_execute` 捕获工具执行异常返回结构化 JSON 错误，避免单工具异常导致整个 gather 崩溃 |

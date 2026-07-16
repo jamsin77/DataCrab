@@ -158,9 +158,10 @@ assets/           # 静态资源
 | 提供商 | 说明 |
 |--------|------|
 | 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash 等 |
-| 阿里百炼 | Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4 等 |
-| 硅基流动 | DeepSeek-V3 / Qwen2.5-72B / Qwen2.5-Coder 等 |
-| 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等） |
+| 阿里百炼 | Qwen3.7-Max（默认深度）/ Qwen3.6-Flash（快速）等 |
+| 硅基流动 | DeepSeek-V3（默认）/ Qwen2.5-7B-Instruct（快速）等 |
+| Azure OpenAI | 客户端支持（配置 azure_endpoint + api_version） |
+| 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等），可上传适配器代码 |
 
 - 运行时动态切换模型提供商/密钥/模型
 - 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
@@ -220,8 +221,8 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（17 个资源组）
-│   │   ├── models/            # ORM 模型（9 个模型）
+│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，177 条路由）
+│   │   ├── models/            # ORM 模型（18 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
 │   │       ├── llm.py         # LLM 管理器（多提供商、流式、工具调用）
@@ -239,14 +240,16 @@ DataCrab/
 │   │       ├── pipeline_builder.py  # 流程生成器
 │   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 8 种数据源连接器
-│   │       ├── shared_tools.py  # 6 个公共工具统一入口（LRU 缓存）
+│   │       ├── shared_tools.py  # 7 个公共工具统一入口（LRU 缓存）
 │   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警等）
 │   │       ├── tool_guidance.py # 工具诚实能力表
+│   │       ├── data_harness.py # 非侵入式流程层 Harness（收敛检测+经验采集）
+│   │       ├── experience.py   # 自我进化经验库（正反例+归纳）
 │   │       └── operator_parser.py # Python AST 脚本解析器
 │   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
 │   ├── src/
-│   │   ├── views/             # 11 个页面视图
+│   │   ├── views/             # 16 个页面组件（11 条路由）
 │   │   ├── router/            # 路由配置
 │   │   ├── stores/            # Pinia 状态管理
 │   │   ├── api/               # Axios API 客户端
@@ -310,10 +313,12 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 | `/metadata` | 元数据管理、AI 补充业务元数据 |
 | `/filelinks` | 文件链接 CRUD |
 | `/llm` | 文本嵌入向量 |
-| `/config` | LLM 提供商运行时配置 |
-| `/agents` | 智能体列表、运行智能体、数据检查 |
-| `/permissions` | 权限管理 |
+| `/config` | LLM 配置、Agent 人格、数据标准/质量/安全规则库、可用模型列表 |
+| `/agents` | 智能体列表、运行智能体、数据检查、事件/血缘 |
+| `/knowledge` | 文档知识库 RAG（上传/切片/嵌入/语义检索） |
+| `/permissions` | 权限管理（RBAC：用户/角色/权限） |
 | `/filesystem` | 文件系统浏览 |
+| `/connectors`, `/providers` | 自定义数据源连接器 + LLM Provider 适配器管理 |
 
 ---
 

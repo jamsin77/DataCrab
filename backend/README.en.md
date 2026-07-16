@@ -13,19 +13,21 @@ Process data through conversation, accumulate data-processing Skills, form a dat
 
 ## Features
 
-- Natural-language processing and intent recognition
-- Intelligent skill matching and recommendation
-- Vector search system
-- Data source management
-- Pipeline orchestration
+- Conversational data interaction (SSE streaming) + multi-agent collaboration (DataProcessor → DataInspector handoff)
+- 8 data-source connectors (PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma) + custom connectors (AI-generated code, sandboxed)
+- Full skill/operator/pipeline lifecycle (CRUD + AI generate/debug + self-healing loop + experience library)
+- 7 write-table strategies + scheduling system (Cron/interval/manual + 30s scan worker)
+- Document knowledge base RAG + metadata management (auto technical sync + AI business enrichment)
+- RBAC permissions (user/role/permission, view/use/manage levels)
 
 ## Tech Stack
 
-- FastAPI
-- SQLAlchemy
-- OpenAI API
-- Redis
-- SQLite/PostgreSQL
+- FastAPI + Uvicorn
+- SQLAlchemy 2.0 (async)
+- pandas / numpy
+- Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible (deep + fast dual-model architecture)
+- SQLite (development) / PostgreSQL 14+ (production)
+- ChromaDB (knowledge base vector store)
 
 ## Install
 

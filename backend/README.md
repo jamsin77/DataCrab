@@ -13,19 +13,21 @@ DataCrab 数据工程智能体后端服务
 
 ## 功能特性
 
-- 自然语言处理和意图识别
-- 智能技能匹配和推荐
-- 向量搜索系统
-- 数据源管理
-- 流程编排
+- 对话式数据交互（SSE 流式）+ 多智能体协作（DataProcessor → DataInspector handoff）
+- 8 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载）
+- 技能/算子/流程全生命周期（CRUD + AI 生成/调试 + 自愈循环 + 经验库）
+- 7 种写表策略 + 调度系统（Cron/间隔/手动 + 30s 定时扫描器）
+- 文档知识库 RAG + 元数据管理（技术元数据自动同步 + 业务元数据 AI 补充）
+- RBAC 权限（用户/角色/权限，view/use/manage 三级）
 
 ## 技术栈
 
-- FastAPI
-- SQLAlchemy
-- 智谱 GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
-- Redis
-- SQLite/PostgreSQL
+- FastAPI + Uvicorn
+- SQLAlchemy 2.0（async）
+- pandas / numpy
+- 智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容（深度+快速双模型架构）
+- SQLite（开发）/ PostgreSQL 14+（生产）
+- ChromaDB（文档知识库向量库）
 
 ## 安装
 

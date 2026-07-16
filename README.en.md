@@ -31,15 +31,19 @@ These four stages constitute DataCrab's evolution path—from "humans driving da
 
 ### 2. Multi-Agent Collaboration Framework
 
-DataCrab adopts a multi-agent collaboration architecture where each agent has clear responsibilities and hands off work via a Handoff mechanism:
+DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architecture (inspired by Claude Code / OpenAI Agents SDK); all entry points go through a unified AgentRuntime:
 
-| Agent | Responsibility |
-|--------|------|
-| **DataProcessor** | Understands user intent, generates/modifies operators and skills, schedules execution, traces and repairs |
-| **DataInspector** | Performs standard, quality, and security inspections on processed data |
+| Agent | Responsibility | Trigger |
+|--------|------|----------|
+| **DataProcessor** (Orchestrator) | Understands user intent, modifies/executes scripts, schedules data processing, hands off to inspection | Chat page + skill/operator/pipeline debug assistants |
+| **DataInspector** (Worker) | Performs standard, quality, and security inspections on processed data | Auto-handoff after DataProcessor succeeds |
 
+- **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the DataProcessor → DataInspector multi-agent flow
+- **Orchestrator-Worker granularity**: simple operations (modify_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
+- **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together (3-in-1)
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
 - Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
+- Convergence detection: `ConvergenceGuard` non-intrusive component — 4 back-and-forth handoffs on the same table → terminate
 - Supports parallel tool calls
 - SSE streaming of reasoning process and execution results
 
@@ -150,13 +154,14 @@ The platform exposes underlying LLM capabilities as a RESTful API:
 
 | Provider | Description |
 |--------|------|
-| Zhipu GLM | Zhipu AI (default) |
-| OpenAI | GPT series |
-| Azure OpenAI | Azure-hosted OpenAI service |
-| Tongyi Qianwen | Alibaba Cloud DashScope |
-| Custom endpoint | Any OpenAI-API-compatible endpoint |
+| Zhipu GLM | Zhipu AI (default), GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash, etc. |
+| Alibaba Bailian | Qwen3.7-Max (default deep) / Qwen3.6-Flash (fast), etc. |
+| SiliconFlow | DeepSeek-V3 (default) / Qwen2.5-7B-Instruct (fast), etc. |
+| Azure OpenAI | Client support (configure azure_endpoint + api_version) |
+| Custom endpoint | Any OpenAI-API-compatible endpoint (vLLM, Ollama, etc.); adapter code can be uploaded |
 
 - Dynamically switch provider/key/model at runtime
+- **Deep + fast dual-model architecture**: the deep model (e.g. GLM-5.2) is used for generation/modification/flow generation and other deep-reasoning scenarios; the fast model (e.g. GLM-4-Flash) for debug conversations and other lightweight scenarios. The debug assistant auto-selects by message content (modify/fix/error keywords → deep model; run/execute/explain → fast model); configurable separately
 - Streaming output supports chain-of-thought / reasoning content
 - Function Calling support
 
@@ -212,8 +217,8 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, types)
-│   │   ├── api/v1/endpoints/  # API endpoints (17 resource groups)
-│   │   ├── models/            # ORM models (9 models)
+│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 177 routes)
+│   │   ├── models/            # ORM models (18 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
 │   │       ├── llm.py         # LLM manager (multi-provider, streaming, tool calls)
@@ -230,12 +235,17 @@ DataCrab/
 │   │       ├── task_runner.py    # Scheduled task background executor + scan worker
 │   │       ├── pipeline_builder.py  # Pipeline generator
 │   │       ├── pipeline_executor.py # Pipeline execution engine
-│   │       ├── connectors.py    # 6 data-source connectors
+│   │       ├── connectors.py    # 8 data-source connectors
+│   │       ├── shared_tools.py  # 7 shared tools unified entry (LRU cache)
+│   │       ├── agent_utils.py   # Agent engineering utils (anti-hallucination/turn budget/pressure alerts)
+│   │       ├── tool_guidance.py # Tool honesty capability table
+│   │       ├── data_harness.py  # Non-intrusive flow-layer Harness (convergence + experience collection)
+│   │       ├── experience.py   # Self-evolving experience library (positive/negative examples + distillation)
 │   │       └── operator_parser.py # Python AST script parser
 │   └── data/skills/           # Skill package on-disk storage
 ├── frontend/                   # Frontend app
 │   ├── src/
-│   │   ├── views/             # 11 page views
+│   │   ├── views/             # 16 page components (11 routes)
 │   │   ├── router/            # Routing config
 │   │   ├── stores/            # Pinia state management
 │   │   ├── api/               # Axios API client
@@ -299,10 +309,12 @@ All API routes are prefixed with `/api/v1/`:
 | `/metadata` | Metadata management, AI-enriched business metadata |
 | `/filelinks` | File link CRUD |
 | `/llm` | Text embedding vectors |
-| `/config` | LLM provider runtime config |
-| `/agents` | Agent list, run agent, data inspection |
-| `/permissions` | Permission management |
+| `/config` | LLM config, agent persona, data standards/quality/security rule libraries, available model list |
+| `/agents` | Agent list, run agent, data inspection, events/lineage |
+| `/knowledge` | Document knowledge base RAG (upload/chunk/embed/semantic search) |
+| `/permissions` | Permission management (RBAC: user/role/permission) |
 | `/filesystem` | Filesystem browsing |
+| `/connectors`, `/providers` | Custom data-source connector + LLM Provider adapter management |
 
 ---
 

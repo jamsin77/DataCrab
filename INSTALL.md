@@ -57,11 +57,11 @@ cd ..
 # 数据库（默认 SQLite，无需额外配置）
 DATABASE_URL=sqlite+aiosqlite:///./datacrab.db
 
-# LLM 配置
+# LLM 配置（也可启动后在前端「系统设置」页面配置）
 LLM_PROVIDER=glm
 OPENAI_API_KEY=你的API密钥
 OPENAI_MODEL=glm-5.2
-OPENAI_API_BASE=https://open.bigmodel.cn/api/coding/paas/v4
+OPENAI_API_BASE=https://open.bigmodel.cn/api/paas/v4
 ```
 
 ## 4. 启动开发服务器

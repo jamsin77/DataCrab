@@ -10,8 +10,8 @@ DataCrab is an LLM-powered data engineering agent that delivers a ChatGPT-style 
 |------|------|---------|
 | Conversation as Processing | Replace coding with natural language; the LLM understands intent, matches Skills, generates code | Conversational Data Processing, Agentic UI |
 | Accumulation as Asset | Each processing run accumulates as a reusable Skill, getting smarter with use | Skill-based Agent, Compound AI System |
-| Ecosystem as Loop | Accumulated Skills form an ecosystem; dual-agent collaboration loop | Multi-Agent Collaboration |
-| Loop-ification | AI understands → executes → inspects → self-repairs, no human intervention | Self-healing Pipeline, Full-loop Automation, Deep Agents |
+| Ecosystem as Loop | Accumulated Skills form an ecosystem; dual-agent collaboration closes the loop | Multi-Agent Collaboration |
+| Loop-ification | AI understands → executes → inspects → self-repairs, with no human intervention | Self-healing Pipeline, Full-loop Automation, Deep Agents |
 
 ---
 
@@ -23,38 +23,43 @@ DataCrab is an LLM-powered data engineering agent that delivers a ChatGPT-style 
 - Session management: create, list, rename, delete, search
 - Multi-turn dialogue: keeps the latest 20 messages as context
 - Data-source context injection: when a user mentions a data source, the system automatically queries real data and injects it into the LLM prompt
-- Complex query parsing: sort, filter, paginate, aggregate; supports Chinese-dynasty sorting (a cultural-relics data specialty)
-- Supports stopping generation
+- Streaming reasoning display; supports stopping generation
 
-### 2. Agent System (Tool Calling)
+### 2. Multi-Agent Collaboration Framework
 
-The LLM can autonomously call tools to perform data operations, supporting an Agent loop of up to 5 iterations:
+Adopts an Orchestrator-Worker pattern (inspired by Claude Code / OpenAI Agents SDK); all entry points go through a unified AgentRuntime:
 
-| Tool | Function |
-|------|------|
-| `query_table_data` | Query table data in a data source (supports filter, sort, paginate) |
-| `get_table_schema` | View table structure |
-| `list_user_datasources` | List connected data sources |
-| `list_user_file_links` | List mounted file directories |
-| `save_file_to_link` | Save a file to a user directory |
+| Agent | Responsibility | Trigger |
+|--------|------|----------|
+| DataProcessor (Orchestrator) | Understands user intent, modifies/executes scripts, schedules data processing, hands off to inspection | Chat page + skill/operator/pipeline debug assistants |
+| DataInspector (Worker) | Performs standard, quality, and security inspections on processed data | Auto-handoff after DataProcessor succeeds |
+
+- Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
+- Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
+- Convergence detection: ConvergenceGuard — 4 back-and-forth handoffs on the same table → terminate
+- 7 shared tools: query_table_data / get_table_schema / list_user_datasources / list_user_file_links / save_file_to_link / kb_search / execute_sql
+- Supports parallel tool calls; SSE streaming of reasoning and execution results
 
 ### 3. Data Source Management
 
-- Pluggable connector architecture supporting 6 data sources:
+- Pluggable connector architecture supporting 8 data sources:
 
 | Connector | Description |
 |--------|------|
 | PostgreSQL | Async connection based on asyncpg |
 | MySQL | Async connection based on aiomysql |
+| SQLite | Async connection based on aiosqlite |
 | CSV | Local CSV files |
-| Excel | Multi-sheet support |
+| Excel | Multi-sheet support (longest-prefix table name matching) |
 | OBS/S3 | Huawei Cloud OBS object storage |
 | HDFS | Hadoop HDFS (WebHDFS REST API) |
+| ChromaDB | Vector database |
 
 - Connection testing, schema discovery, paginated table data browsing
+- Data writes support 7 strategies: fail / append / replace / overwrite / truncate / delete_rows / upsert (PostgreSQL/MySQL/SQLite; supports table/column remarks)
 - Data quality analysis (completeness, missing values, outlier detection)
 - Table statistics (row count, column count, size)
-- Metadata management (technical metadata + business metadata)
+- Custom data-source connectors (AI-generated code, sandboxed)
 
 ### 4. Operator Management
 
@@ -62,12 +67,12 @@ Operators are Python scripts stored in the database, supporting:
 
 - **Upload**: upload a `.py` file; the AST parser auto-extracts function names, parameters, and docs
 - **AI generation**: natural-language description → LLM generates a Python script → auto-parse and create
-- **AI modification**: natural-language instructions modify an existing operator script
+- **AI modification**: natural-language instructions modify an existing operator script, with auto-verification
 - **Clone**: copy an operator and its script
-- **Debug/Execute**: run the operator in a sandboxed namespace with injected tool functions
+- **Debug/Execute**: run the operator in a sandboxed namespace with injected tool functions (query_table_data, llm_chat, etc.)
+- **AI debug assistant**: chat-style interactive debugging; the AI modifies scripts and auto-executes to verify; results shown in the message stream
 - **Download**: export as a `.py` file
-
-Built-in categories: transform, aggregate, filter, join, cleaning, analysis, ai_generated
+- **Self-evolving experience library**: failures record negative examples; successes after a fix record positive examples; the LLM distills lessons injected into subsequent prompts
 
 ### 5. Skill Management
 
@@ -82,80 +87,95 @@ assets/           # Static assets
 
 - **Full lifecycle**: create, read, update, delete
 - **Upload/Download**: `.zip` upload auto-extracts and parses; export as `.zip`
-- **AI generation (skill creator)**: natural-language description → LLM generates a complete skill package
-- **AI modification**: natural-language instructions modify SKILL.md content
-- **Run**: execute scripts in a subprocess sandbox with timeout control
-- **Natural-language execution**: the LLM infers execution parameters, then runs the skill
-- Skill scripts auto-sync to the operator table
+- **AI generation**: natural-language description → LLM generates a complete skill package
+- **AI modification**: natural-language instructions modify SKILL.md content (SSE streaming, showing the thinking process)
+- **Execution**: run scripts in a subprocess sandbox with timeout control and SSE streaming status
+- **Natural-language execution**: the LLM infers execution parameters (with reasoning shown), then runs the skill
+- **AI debug assistant**: chat-style interactive debugging; one-click "convert to pipeline" in the debug dialog
+- **Skill self-evolution**: failures record negative examples; successes after a fix record positive examples; the LLM distills lessons into SKILL.md; shares a unified experience library with operators
 
 ### 6. Skill Library & Semantic Search
 
-- Vector semantic search based on OpenAI Embeddings
+- Embedding-based vector semantic search (numpy + disk persistence: .npy + JSON)
 - Keyword matching as a fallback
-- 10 built-in skills: select, filter, sort, groupby, aggregate, join, fillna, dropna, rename, stats
+- Skill vector index persists across restarts
 
-### 7. Natural-Language Processing Pipeline
+### 7. Pipeline
 
-- **Intent recognition**: keyword-based 8-class classification (data cleaning, data transformation, data aggregation, data analysis, data fusion, data export, create operator, create skill)
-- **Entity extraction**: reserved LLM-based extraction interface
-- **Skill matching**: combined vector search + keyword matching strategy
+A pipeline is DataCrab's core orchestration concept—**each pipeline is a Python main function**:
 
-### 8. Pipeline Orchestration
+- One pipeline = one Python main function + the Skill scripts it calls
+- One-click conversion from a Skill into a standalone Python main function (triggered in the skill debug assistant)
+- Code visualization: shows the main function source + call graph
+- Debug panel: shows the real function signature and parameter descriptions, auto-generates parameter examples
+- Direct execution: no DAG engine needed; just run the main function
+- SSE streaming generation and execution
 
-- Define multi-step data-processing pipelines
-- Steps reference skills/operators, supporting parameter definitions and dependencies (DAG structure)
-- Full pipeline: intent recognition → skill matching → skill composition → parameter inference → validation
+### 8. Scheduling System
 
-### 9. Scheduling System
-
-- Supports scheduled execution of operators, skills, and workflows
+- Supports scheduled execution of operators, skills, and pipelines
 - **Schedule types**: Cron expression, fixed interval (seconds), manual trigger
 - Cron expression validation and next-run preview
 - Pause/resume schedules
+- **Background execution**: task_runner.py dispatches to skill/operator/pipeline executors
+- **Scheduled scan worker**: 30-second interval auto-scan for due schedules, concurrency control + next_run_at recompute to prevent duplicate triggers
 - Task execution tracking: status, duration, logs, retry count
-- Execution statistics dashboard
 
-### 10. Notebook Environment
+### 9. Document Knowledge Base (RAG)
 
-- Jupyter-like code notebooks
-- Code cells and Markdown cells
-- Kernel management (Python/SQL)
-- Version history
-- Save/share/export
+- Upload documents auto-parsed, chunked, and embedded (PDF/DOCX/TXT/MD)
+- Semantic search with evidence chain (returns matched document chunks)
+- Vectors stored in ChromaDB
 
-### 11. Data Exploration Panel
+### 10. Metadata Management
 
-- Browse the data-source tree
-- View table schema and sample data
-- Metadata search
+- **Technical metadata**: one-click auto-sync when configuring a data source (table structure, row count, field stats, sample data)
+- **Business metadata**: auto-enriched via LLM analysis of sample data (business name, description, tags, data domain, security level)
+- Manual editing of business metadata
+- Metadata search and statistical overview
 
-### 12. File Link Management
+### 11. File Link Management
 
 - Mount local file/directory paths
 - Access control (public/private, allowed file extensions)
-- File metadata tracking
 - Agents can write files to linked directories
 
-### 13. Authentication & Authorization
+### 12. Authentication & Permission Management
 
 - JWT authentication (Access Token + Refresh Token)
 - RBAC role-based permissions: user → role → permission
 - Permission levels: view, use, manage
-- Resource-level permission control (operators, skills, data sources, schedules)
+- Resource-level permission control (operators, skills, data sources, schedules, pipelines, etc.)
+- Permission management API: role CRUD, permission assignment and checking
 
-### 14. Multi-Model LLM Support
+### 13. Multi-Model LLM Support
 
 | Provider | Description |
 |--------|------|
-| OpenAI | GPT series |
-| Azure OpenAI | Azure-hosted OpenAI service |
-| Tongyi Qianwen | Alibaba Cloud DashScope |
-| Zhipu GLM | Zhipu AI |
-| Custom endpoint | Any OpenAI-API-compatible endpoint |
+| Zhipu GLM | Zhipu AI (default), GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash, etc. |
+| Alibaba Bailian | Qwen3.7-Max (default deep) / Qwen3.6-Flash (fast), etc. |
+| SiliconFlow | DeepSeek-V3 (default) / Qwen2.5-7B-Instruct (fast), etc. |
+| Azure OpenAI | Client support (configure azure_endpoint + api_version) |
+| Custom endpoint | Any OpenAI-API-compatible endpoint (vLLM, Ollama, etc.); adapter code can be uploaded |
 
 - Dynamically switch provider/key/model at runtime
+- Selecting a provider auto-fills the official API base; the model list is filtered to that provider
+- **Deep + fast dual-model architecture**: the deep model is used for generation/modification; the fast model for debug conversations; auto-selected
 - Streaming output supports chain-of-thought / reasoning content
 - Function Calling support
+
+### 14. Data Standards / Quality / Security Rule Libraries
+
+Three Markdown rule libraries, viewable/editable on the "System Settings" page; DataInspector references the corresponding IDs when inspecting:
+
+| Library | Content | ID |
+|--------|------|------|
+| Data Standards | field-level format/constraints (ID card/phone/email/amount/date/enum/industry-specific) | `STD-xxx` |
+| Data Quality | DAMA 6 dimensions + ETL process quality (completeness/uniqueness/reconciliation/volume drift) | `DQ-xxx` |
+| Data Security | PII detection / credential leak / sensitive business data / classification / masking / compliance | `SEC-xxx` |
+
+- MD editable with "restore defaults"; backend `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
+- DataInspector injects all three libraries into its prompt; check tools deterministically execute regex/aggregation, tagging issues with `STD/DQ/SEC` IDs; semantic checks by LLM
 
 ---
 
@@ -163,15 +183,12 @@ assets/           # Static assets
 
 ### Backend
 
-- **Language**: Python 3.9+
+- **Language**: Python 3.11+
 - **Web framework**: FastAPI + Uvicorn
 - **ORM**: SQLAlchemy 2.0 (async, supports SQLite / PostgreSQL)
-- **Task queue**: Celery + Redis
 - **Data processing**: pandas, numpy
-- **LLM integration**: OpenAI API
-- **Object storage**: MinIO
-- **Search engine**: Elasticsearch
-- **Database migration**: Alembic
+- **LLM integration**: Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible
+- **Vector store**: ChromaDB (knowledge base RAG)
 
 ### Frontend
 
@@ -183,14 +200,13 @@ assets/           # Static assets
 - **Charts**: ECharts 5
 - **Code editor**: Monaco Editor
 - **Markdown rendering**: markdown-it + highlight.js
+- **Flow editing**: Vue Flow
 
 ### Infrastructure
 
-- **Containerization**: Docker + Docker Compose
-- **Reverse proxy**: Nginx
-- **Database**: SQLite (development) / PostgreSQL 14 (production)
-- **Cache**: Redis 7
-- **Object storage**: MinIO
+- **Containerization**: Docker + Docker Compose (optional)
+- **Reverse proxy**: Nginx (production)
+- **Database**: SQLite (development) / PostgreSQL 14+ (production)
 
 ---
 
@@ -201,34 +217,32 @@ DataCrab/
 ├── backend/                    # Backend service
 │   ├── app/
 │   │   ├── main.py            # FastAPI entry
-│   │   ├── core/              # Core config (database, security, types)
-│   │   ├── api/v1/endpoints/  # API endpoints (10 resource groups)
-│   │   ├── models/            # ORM models (9 models)
+│   │   ├── core/              # Core config (database, security, crypto, types)
+│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 177 routes)
+│   │   ├── models/            # ORM models (18 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
 │   │       ├── llm.py         # LLM manager (multi-provider, streaming, tool calls)
-│   │       ├── agent.py       # Agent service (tool-call loop)
-│   │       ├── nl_service.py  # Natural-language intent recognition
-│   │       ├── skill_library.py # Vector index + semantic search
-│   │       ├── skill_parser.py  # SKILL.md parser
+│   │       ├── multi_agent.py # Multi-agent runtime (Handoff, AgentRegistry)
+│   │       ├── data_processor_agent.py  # DataProcessor agent
+│   │       ├── data_inspector_agent.py  # DataInspector agent
+│   │       ├── connectors.py    # 8 data-source connectors
+│   │       ├── shared_tools.py  # 7 shared tools unified entry (LRU cache)
 │   │       ├── skill_runner.py  # Subprocess sandbox executor
-│   │       ├── skill_creator.py # AI skill-package generator
-│   │       ├── connectors.py    # 6 data-source connectors
-│   │       └── operator_parser.py # Python AST script parser
+│   │       ├── task_runner.py   # Scheduled task background executor + scan worker
+│   │       └── pipeline_builder.py  # Pipeline generator
 │   ├── data/skills/           # Skill package on-disk storage
-│   ├── alembic/               # Database migrations
-│   └── pyproject.toml         # Poetry project definition
+│   └── pyproject.toml         # Project definition
 ├── frontend/                   # Frontend app
 │   ├── src/
-│   │   ├── views/             # 11 page views
+│   │   ├── views/             # 16 page components (11 routes)
 │   │   ├── router/            # Routing config
 │   │   ├── stores/            # Pinia state management
-│   │   ├── api/               # Axios API client
-│   │   └── composables/       # Vue composables
+│   │   └── api/               # Axios API client
 │   └── package.json
-├── nginx/                      # Nginx reverse-proxy config
+├── nginx/                      # Nginx reverse proxy config
 ├── docker-compose.yml          # Full-stack deployment config
-└── skills/                     # Example skills (cultural-relics expert)
+└── design.md                  # Technical architecture design document
 ```
 
 ---
@@ -237,23 +251,22 @@ DataCrab/
 
 ### Requirements
 
-- Python 3.9+
+- Python 3.11+
 - Node.js 16+
-- Redis (for the Celery task queue)
 
-### Backend Start
+### Backend
 
 ```bash
 cd backend
 pip install -e .
 
-# Configure environment variables (copy .env.example to .env)
-# Required: OPENAI_API_KEY
+# Configure env vars (copy .env.example to .env)
+# Required: OPENAI_API_KEY (or enter it on the frontend config page)
 
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Frontend Start
+### Frontend
 
 ```bash
 cd frontend
@@ -261,13 +274,18 @@ npm install
 npm run dev    # Vite dev server, default port 5173
 ```
 
-### Docker Full-Stack Deployment
+### One-click Start (frontend + backend)
+
+```bash
+npm install
+npm run dev
+```
+
+### Docker Full-stack Deployment
 
 ```bash
 docker-compose up
 ```
-
-Services started: PostgreSQL, Redis, MinIO, backend, Celery worker, frontend, Nginx.
 
 ---
 
@@ -279,26 +297,31 @@ All API routes are prefixed with `/api/v1/`:
 |------|------|
 | `/auth` | Login, register, token refresh |
 | `/chat` | Session management, messages, streaming chat, natural-language data processing |
-| `/datasources` | Data source CRUD, connection test, table data/stats/quality |
-| `/skills` | Skill full lifecycle, upload/download, run, AI generate/modify |
+| `/datasources` | Data source CRUD, connection test, table data/stats/quality + 12 `/internal/*` sandbox endpoints |
+| `/skills` | Skill full lifecycle, upload/download, run, AI generate/modify/debug |
 | `/operators` | Operator CRUD, upload, generate, modify, debug, clone |
-| `/codes` | Pipeline CRUD, execution |
+| `/pipelines` | Pipeline CRUD, generate from Skill, execute, clone |
 | `/schedules` | Schedule CRUD, pause/resume, trigger, stats |
-| `/notebooks` | Notebook CRUD, execute cells |
+| `/metadata` | Metadata management, AI-enriched business metadata |
 | `/filelinks` | File link CRUD |
-| `/config` | LLM provider runtime config |
+| `/llm` | Text embedding vectors |
+| `/config` | LLM config, agent persona, data standards/quality/security rule libraries |
+| `/agents` | Agent list, run agent, data inspection, events/lineage |
+| `/knowledge` | Document knowledge base RAG |
+| `/permissions` | Permission management (RBAC) |
+| `/filesystem` | Filesystem browsing |
+| `/connectors`, `/providers` | Custom connector + LLM Provider adapter management |
 
 ---
 
 ## Architecture Highlights
 
-1. **Pluggable connectors**: `BaseConnector` abstract class + registry pattern for easily extending new data source types
-2. **Agent tool-call loop**: the LLM autonomously decides which tools to call, enabling data operations without explicit instructions
+1. **Multi-agent collaboration loop**: DataProcessor + DataInspector dual agents with automatic Handoff, forming a self-healing processing+inspection loop
+2. **Pluggable connectors**: BaseConnector abstract class + registry pattern for easily extending new data source types
 3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable
-4. **Dual search strategy**: vector semantic search + keyword-matching fallback to ensure search availability
-5. **Subprocess sandbox**: skill scripts execute in an isolated subprocess with timeout control
-6. **Skill-operator auto-sync**: skill script changes auto-sync to the operator table, bridging the two execution systems
-7. **LLM provider abstraction**: a unified interface supports multiple LLM providers with runtime switching
-8. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback
-9. **AST script introspection**: Python AST parsing auto-extracts function signatures and docs, registering operators with zero config
-10. **Cultural-relics domain specialization**: built-in Chinese dynasty/era mapping for intelligent sorting and filtering of historical data
+4. **Pipeline = Python main function**: discards the DAG model; each pipeline is a standalone runnable Python function
+5. **Self-evolving experience library**: operators and skills share a unified experience.json, closing the execute→record→distill→inject loop
+6. **LLM capability injection**: the llm_chat() function can be called directly inside operator and skill scripts
+7. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback
+8. **AST script introspection**: Python AST parsing auto-extracts function signatures and docs, registering operators with zero config
+9. **AI debug assistant**: chat-style interactive debugging with visible AI reasoning; on execution failure, error stack traces are automatically fed back to the AI for repair (a Loop Engineering practice)

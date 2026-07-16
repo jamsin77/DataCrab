@@ -1,13 +1,13 @@
 # DataCrab 借鉴 DeepAnalyze 优化进度跟踪
 
 > 参考文档：`d:\doc\DeepAnalyze-系统介绍.html`
-> 最后更新：2026-07-02
+> 最后更新：2026-07-16
 
 ## 一、已完成（第一轮 12 项，均已实现并集成）
 
 | # | 优化项 | 文件 | 状态 | 验证 |
 |---|--------|------|------|------|
-| 1 | 工具去重 | `shared_tools.py` | ✅ 已完成 | 6 个公共工具统一 schema + 实现 |
+| 1 | 工具去重 | `shared_tools.py` | ✅ 已完成 | 7 个公共工具统一 schema + 实现 |
 | 2 | 结果截断 | `agent_utils.py` | ✅ 已完成 | `truncate_tool_result` 8000 字符截断，shared_tools 内调用 |
 | 3 | 卡死检测 | `agent_utils.py` | ✅ 已完成 | `StuckDetector` 已接入 agent.py / data_processor / data_inspector |
 | 4 | token 估算 | `agent_utils.py` | ✅ 已完成 | CJK 感知 `estimate_tokens`，chat.py 压缩使用 |
@@ -106,3 +106,17 @@
 - 审计确认第一轮 12 项全部已实现并集成
 - 发现 `should_warn_ungrounded_claim` 已定义但未接入执行循环（gap）
 - 制定第二轮 7 项深度优化计划
+
+## 五、第四轮及以后（详见 `CLAUDE.md` 工程改进记录）
+
+> 第三轮（P0/P1/P2 修复）已记录在上方；第四轮起改由 `CLAUDE.md` 的「工程改进记录」表统一维护，此处仅保留摘要索引。
+
+| 轮次 | 主题 | 关键改进 |
+|------|------|----------|
+| 第四轮 | LLM 双模型 + 写表策略 + 调试自执行 + UI 优化 | 深度/快速双模型（pick_model）；write_table_data 7 种策略；算子/技能 debug-chat 自动执行；技能转流程移至调试页；max_tokens 限制 |
+| 第五轮 | 推理截断修复 + 参数记忆 + 自愈循环 + 沙箱补全 + 失败检测 + 多智能体架构统一 | 推理截断修复；debug-chat `{{}}` bug；执行参数记忆；沙箱 log 函数；自愈循环 5 轮；失败检测两层；流式工具调用方法；DataProcessor 调试模式；调试页面统一 AgentRuntime |
+| 第六轮 | 非侵入式 Harness 重构 + 沙箱文档统一 + UI 修复 | data_harness.py 抽出（ConvergenceGuard + collect_experience）；SANDBOX_TOOLS_DOC 统一；数据源刷新只刷当前表；对话推理自动滚动 |
+| 第七轮 | 调度系统落地 + 死代码清理 + EP 中文化 | task_runner.py 后台执行 + 30s 扫描器；sandbox_ns.py 抽出；Element Plus 中文化；删除 CodeView/ExploreView/Notebook 全套（净减 1159 行） |
+| 第八轮 | 调试 Loop 强化（进行中） | 强制每轮执行；AST 脚本智能压缩；工具结果智能压缩；handoff 参数简化；工具异常兜底 |
+
+- 当前测试：84 个单元测试全部通过（`backend/tests/`）

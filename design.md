@@ -4621,7 +4621,7 @@ volumes:
 
 #### 工具去重（shared_tools.py）
 - **问题**：`agent.py` 和 `data_processor_agent.py` 有 5 个工具的 schema 和实现完全 copy-paste
-- **改进**：提取 `shared_tools.py`，统一定义 6 个公共工具的 schema + 实现，两个 Agent 各自 import
+- **改进**：提取 `shared_tools.py`，统一定义 7 个公共工具的 schema + 实现，两个 Agent 各自 import
 - **理念**：借鉴 DeepAnalyze 的 ToolRegistry 统一管理思想
 
 #### 工具结果截断（agent_utils.py → truncate_tool_result）
@@ -4706,7 +4706,7 @@ volumes:
 | 文件 | 说明 |
 |------|------|
 | `backend/app/services/agent_utils.py` | Agent 工程工具函数（token 估算、截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉、搜索饱和检测、工具结果缓存） |
-| `backend/app/services/shared_tools.py` | 6 个公共工具的统一 schema + 实现（含 LRU 缓存） |
+| `backend/app/services/shared_tools.py` | 7 个公共工具的统一 schema + 实现（含 LRU 缓存） |
 | `backend/app/services/tool_guidance.py` | 工具诚实能力表 |
 | `backend/tests/test_agent_utils.py` | agent_utils 单元测试 |
 | `backend/tests/test_experience.py` | experience 单元测试 |
@@ -4879,3 +4879,23 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 
 #### 理念
 借鉴 Vibe Coding 的 test harness 非侵入模式：harness 包裹在代码外部，被测代码不感知 harness 存在。数据场景特化：数据层必须侵入（状态+副作用+内容依赖），流程层可以非侵入。
+
+### 11.18 调度系统落地 + 死代码清理 + EP 中文化
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 调度系统后台执行 | task_runner.py（新增）+ schedule.py | `execute_task()` 按 task_type 分派到 skill（to_thread）/ operator（exec+func）/ pipeline（await execute_pipeline）；trigger 端点接入 BackgroundTasks 实际执行；更新 TaskExecution + Schedule 记录 |
+| 定时调度扫描器 | task_runner.py + main.py | 30s 间隔扫描 `next_run_at <= now()` 的 active 调度；并发控制（concurrent_runs）+ next_run_at 重算防重复触发；lifespan 启停（start_scheduler/stop_scheduler） |
+| 沙箱命名空间抽出 | sandbox_ns.py（新增）+ operator.py | `build_operator_namespace` + `run_async_in_thread` 从 operator.py 端点移至 service 层，消除 API→service 反向依赖 |
+| Element Plus 中文化 | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
+| 死代码清理 | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行） |
+
+### 11.19 调试 Loop 强化——进行中
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 强制每轮执行 | data_processor_agent.py | DEBUG_INSTRUCTIONS 重写：每轮必须调用 modify_and_run，根因分析放 thinking 不放正文，禁止"只规划不执行"的纯文字输出 |
+| AST 脚本智能压缩 | data_processor_agent.py | `_extract_script_for_context`：超 5 万字符脚本用 AST 保留所有函数签名+docstring，大函数缩略为首尾 5 行+省略标注；语法错误时回退原始截断 |
+| 工具结果智能压缩 | data_processor_agent.py | `_compress_tool_result`：失败保留全量错误信息，成功只保留摘要+少量数据行，降低上下文占用 |
+| handoff 参数简化 | data_processor_agent.py | `handoff_to_inspector` 去掉 datasource_id/table_name 必填，自动使用当前调试上下文的数据源与表 |
+| 工具异常兜底 | data_processor_agent.py | `_safe_execute` 捕获工具执行异常返回结构化 JSON 错误，避免单工具异常导致整个 gather 崩溃 |
