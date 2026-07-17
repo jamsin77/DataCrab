@@ -49,6 +49,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 3. **修改后必验证**：每次修改数据后必须验证结果
 4. **交接检查**：数据处理完成后，应交接给 DataInspector 进行质量检查
 5. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
+6. **翻译优先用算子**：涉及文本翻译（如中英文互译、列翻译、表名/列名翻译）时，优先调用「文本翻译」算子完成，不要在脚本中自行编写 LLM 翻译逻辑
 
 ## 扩展能力（允许用户扩展平台的数据源连接器与大模型适配器）
 当用户要求添加或删除数据源类型、大模型厂商时，你可以生成代码并调用工具注册或删除：
@@ -754,7 +755,7 @@ class DataProcessorAgent(BaseAgent):
 
         if name == "handoff_to_inspector":
             # 优先从 context 取（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
-            ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id") or arguments.get("datasource_id", "")
+            ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id") or arguments.get("datasource_id", "")
             tbl = context.get("debug_output_table") or context.get("debug_table_name") or context.get("current_table_name", "")
             return json.dumps({
                 "_handoff": True,
@@ -1601,7 +1602,13 @@ class DataProcessorAgent(BaseAgent):
                             _same_error_count = 0
                             _run_succeeded = True
                             _should_handoff = True  # 成功后自动交接 DataInspector
-                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
+                            # 优先从 written_tables 获取实际写入的表名（不依赖 result 类型）
+                            _wt = rdata.get("written_tables")
+                            if _wt:
+                                _handoff_output_table = _wt[-1].get("table_name")
+                                context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
+                            else:
+                                _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
                             context["debug_output_table"] = _handoff_output_table
                             folder = context.get("debug_folder")
                             if folder:
@@ -1661,7 +1668,13 @@ class DataProcessorAgent(BaseAgent):
                             _same_error_count = 0
                             _run_succeeded = True
                             _should_handoff = True  # 成功后自动交接 DataInspector
-                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
+                            # 优先从 written_tables 获取实际写入的表名（不依赖 result 类型）
+                            _wt = rdata.get("written_tables")
+                            if _wt:
+                                _handoff_output_table = _wt[-1].get("table_name")
+                                context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
+                            else:
+                                _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
                             context["debug_output_table"] = _handoff_output_table
                             folder = context.get("debug_folder")
                             if folder:
@@ -1699,16 +1712,17 @@ class DataProcessorAgent(BaseAgent):
             if _should_handoff and not context.get("debug_analyze_only"):
                 self._save_session_log(local_messages, context, _inspection_round)
 
-                ds_id = context.get("debug_datasource_id") or context.get("current_datasource_id", "")
+                ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
+                _is_recheck = _inspection_round > 0
                 yield {
                     "type": "handoff",
                     "to": "data_inspector",
-                    "reason": HandoffReason.INSPECT_RESULT.value,
+                    "reason": HandoffReason.FIX_COMPLETED.value if _is_recheck else HandoffReason.INSPECT_RESULT.value,
                     "payload": {
                         "datasource_id": ds_id,
                         "table_name": tbl,
-                        "operation_description": "技能调试执行成功，自动交接质量检查",
+                        "operation_description": f"第 {_inspection_round} 轮修复后复查" if _is_recheck else "技能调试执行成功，自动交接质量检查",
                         "result_summary": "执行成功",
                     },
                     "from": self.name,
