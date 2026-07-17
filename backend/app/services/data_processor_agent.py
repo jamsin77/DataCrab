@@ -101,12 +101,13 @@ MODIFY_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "modify_script",
-        "description": "修改当前调试的脚本（不执行）。提供修改后的函数代码，系统自动合并到现有脚本（函数级合并）并做语法检查。只需输出修改的函数，不用输出整个脚本。适用于需要多次修改后再执行的场景。",
+        "description": "修改当前调试的技能/脚本（不执行）。提供修改后的函数代码，系统自动合并到现有脚本（函数级合并）并做语法检查，只需输出修改的函数。技能调试时若需更新参数规范/描述等技能元信息，可通过 skill_md 一并提供更新后的完整 SKILL.md 全文，系统会同步写入。",
         "parameters": {
             "type": "object",
             "properties": {
                 "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
                 "code": {"type": "string", "description": "修改后的函数代码（Python 代码，含 def 定义）"},
+                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。当需要新增/修改参数规范、描述等技能元信息时提供。修改函数签名（增减参数）时务必同步更新此处的参数规范表。算子/流程调试无需此参数。"},
             },
             "required": ["code"],
         },
@@ -117,12 +118,12 @@ RUN_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "run_script",
-        "description": "在沙箱中执行当前调试的脚本，返回执行结果。执行失败时会返回错误信息和修复提示。",
+        "description": "运行当前调试的技能/脚本（在沙箱中执行），返回执行结果。技能调试时参数须符合 SKILL.md 参数规范表（必选参数不可缺失）。执行失败时会返回错误信息和修复提示。",
         "parameters": {
             "type": "object",
             "properties": {
                 "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等）"},
+                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
             },
             "required": [],
         },
@@ -133,13 +134,14 @@ MODIFY_AND_RUN_TOOL = {
     "type": "function",
     "function": {
         "name": "modify_and_run",
-        "description": "修改脚本并立即执行（推荐优先使用）。一步完成：合并代码 → 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。",
+        "description": "修改技能/脚本并立即执行（推荐优先使用）。一步完成：合并代码（+ 可选更新 SKILL.md）→ 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。技能调试时可通过 skill_md 同步更新技能规范。",
         "parameters": {
             "type": "object",
             "properties": {
                 "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
                 "code": {"type": "string", "description": "修改后的函数代码（Python 代码，含 def 定义）"},
-                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等）"},
+                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。需要新增/修改参数规范、描述等技能元信息时提供。算子/流程调试无需此参数。"},
+                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
             },
             "required": ["code"],
         },
@@ -298,6 +300,17 @@ DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor �
 
 ## 技能规范（脚本必须符合此规范）
 """ + _SKILL_SPEC
+
+# 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
+SKILL_DEBUG_EXTRA = """
+
+## 技能级操作说明（你正在调试技能，不是孤立脚本）
+技能 = SKILL.md 规范（参数定义/描述/处理类型）+ scripts/main.py 脚本。你的修改和运行都应面向技能整体：
+- **修改技能**：通过 `code` 修改脚本函数（函数级合并）；若需新增/修改参数规范、描述等技能元信息，通过 `skill_md` 提供**更新后的完整 SKILL.md 全文**，系统会一并写入。两者可在同一次 modify_and_run 调用中同时提供。
+- **运行技能**：`run_script` 的 parameters 必须符合 SKILL.md 参数规范表（必选参数不可缺失，系统会校验并告警）。
+- **保持一致**：修改函数签名（增减参数）时，务必同步更新 SKILL.md 的参数规范表，使脚本与技能规范一致。
+- SKILL.md 全文已在下方展示，需要修改时输出完整新版本到 skill_md 参数。
+"""
 
 ANALYZE_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），用户要求你**只分析问题，不修改代码**。
 
@@ -684,6 +697,58 @@ class DataProcessorAgent(BaseAgent):
             return script[:50000]  # 语法错误时回退
 
     @staticmethod
+    def _check_required_params(context: Dict[str, Any], parameters: Dict[str, Any]) -> str:
+        """按 SKILL.md 参数规范表校验必选参数是否缺失。返回告警字符串（无缺失返回空串）。
+
+        技能级运行的语义：参数须符合技能规范，而非随意填脚本函数。非阻断，仅告警。
+        识别两种必选标记：✅（必选列）/ ❌（可选），或行内含「必选/必填」文字。
+        """
+        if context.get("debug_type") not in (None, "skill"):
+            return ""
+        skill_md = context.get("debug_skill_md_full") or context.get("debug_skill_md") or ""
+        if not skill_md:
+            return ""
+        required = []
+        in_table = False
+        req_col = -1  # 「必选」列在 cells 中的索引
+        for line in skill_md.split("\n"):
+            s = line.strip()
+            if "参数" in s and ("说明" in s or "类型" in s or "描述" in s):
+                in_table = True
+                req_col = -1
+                cells = [c.strip() for c in s.split("|")[1:-1]]
+                for idx, c in enumerate(cells):
+                    if "必选" in c or "必填" in c or "required" in c.lower():
+                        req_col = idx
+                        break
+                continue
+            if in_table and s.startswith("|") and not s.startswith("|--") and not s.startswith("| ---"):
+                cells = [c.strip() for c in s.split("|")[1:-1]]
+                if len(cells) >= 2 and cells[0] and cells[0] not in ("参数", "Parameter", "---"):
+                    pname = cells[0].strip().strip("`")
+                    if not pname:
+                        continue
+                    is_req = False
+                    if req_col >= 0 and req_col < len(cells):
+                        cell = cells[req_col]
+                        is_req = ("✅" in cell or cell == "是" or "必选" in cell
+                                  or "必填" in cell or "true" in cell.lower() or cell == "Y")
+                    if not is_req and ("必选" in s or "必填" in s):
+                        is_req = True
+                    if is_req:
+                        required.append(pname)
+            elif in_table and s and not s.startswith("|"):
+                in_table = False
+        if not required:
+            return ""
+        # 排除运行时自动注入的参数（datasource/table 等），避免误报
+        _auto = ("datasource", "table_name", "table", "tables", "table_names", "datasource_id", "datasource_name")
+        missing = [p for p in required if p not in parameters and not any(a in p for a in _auto)]
+        if not missing:
+            return ""
+        return f"SKILL.md 规范要求必选参数 {required}，当前缺失：{missing}。请补齐后运行。"
+
+    @staticmethod
     def _save_session_log(local_messages: list, context: dict, inspection_round: int):
         """从 local_messages 提取调试历史，保存到 context 供 DataInspector 回交后参考。"""
         _session_entries = []
@@ -818,6 +883,19 @@ class DataProcessorAgent(BaseAgent):
                         from app.services.skill_parser import write_skill_script
                         write_skill_script(folder, script_name, merged)
 
+                _skill_md_updated = False
+                # 技能级修改：若提供了 skill_md，同步更新 SKILL.md（技能规范），保持脚本与规范一致
+                _new_md = (arguments.get("skill_md") or "").strip()
+                if _new_md and context.get("debug_type") in (None, "skill"):
+                    folder = context.get("debug_folder")
+                    if folder:
+                        from app.services.skill_parser import write_skill_md as _wsm
+                        _wsm(folder, _new_md)
+                        context["debug_skill_md_full"] = _new_md
+                        context["debug_skill_md"] = _new_md[:1200]
+                        _skill_md_updated = True
+                        logger.info(f"debug modify_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
+
                 logger.info(f"debug modify_script: {script_name} 已更新 ({len(merged)} 字符)")
 
                 # AST 语法预检
@@ -839,7 +917,8 @@ class DataProcessorAgent(BaseAgent):
                 return json.dumps({
                     "success": True,
                     "script_name": script_name,
-                    "message": "脚本已更新，语法检查通过",
+                    "message": "技能已更新，语法检查通过" if _skill_md_updated else "脚本已更新，语法检查通过",
+                    "skill_md_updated": _skill_md_updated,
                     "merged_preview": merged[:8000],
                     "changed_lines": diff_lines,
                 }, ensure_ascii=False)
@@ -891,12 +970,16 @@ class DataProcessorAgent(BaseAgent):
                     ds_id = context.get("debug_datasource_id")
                     ds_name = context.get("debug_datasource_name")
                     tbl = context.get("debug_table_name")
+                    # 技能级运行：按 SKILL.md 参数规范校验必选参数（非阻断，仅告警）
+                    _param_warning = self._check_required_params(context, parameters)
                     result = await run_skill_script_async(
                         skill_path=folder, script_name=script_name, parameters=parameters,
                         input_data=None, datasource_id=ds_id, datasource_name=ds_name, table_name=tbl,
                         user_id=str(user_id) if user_id else None,
                         timeout=600,
                     )
+                    if _param_warning:
+                        result["param_warning"] = _param_warning
                     _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
                     _failed = (not result.get("success")
                                or ("success" in _inner and not _inner["success"])
@@ -921,6 +1004,7 @@ class DataProcessorAgent(BaseAgent):
             _modify_result = await self._execute_tool("modify_script", {
                 "code": arguments.get("code", ""),
                 "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
+                "skill_md": arguments.get("skill_md", ""),
             }, db, user_id, context)
             try:
                 _mdata = json.loads(_modify_result)
@@ -1205,10 +1289,17 @@ class DataProcessorAgent(BaseAgent):
         """构建调试模式 system prompt"""
         max_rounds = context.get("debug_max_rounds", 7)
         max_inspections = context.get("debug_max_inspections", 7)
+        _is_skill = context.get("debug_type") in (None, "skill")
         if context.get("debug_analyze_only"):
             prompt = ANALYZE_INSTRUCTIONS
+            if _is_skill:
+                prompt = prompt.replace("正在调试一个脚本", "正在调试一个技能（SKILL.md 规范 + scripts/main.py 脚本）")
         else:
             prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_inspections}", str(max_inspections))
+            if _is_skill:
+                # 技能调试：把「脚本」框架提升为「技能」，并附加技能级操作说明
+                prompt = prompt.replace("正在调试一个脚本", "正在调试一个技能（由 SKILL.md 规范 + scripts/main.py 脚本组成）")
+                prompt += SKILL_DEBUG_EXTRA
 
         # 当前脚本（AST 智能提取：保留所有函数签名+docstring，大函数缩略体）
         script_content = context.get("debug_script_content", "")
@@ -1217,10 +1308,15 @@ class DataProcessorAgent(BaseAgent):
             _smart_script = self._extract_script_for_context(script_content)
             prompt += f"\n## 当前脚本（{script_name}）\n```python\n{_smart_script}\n```\n"
 
-        # SKILL.md 摘要
-        skill_md = context.get("debug_skill_md", "")
-        if skill_md:
-            prompt += f"\n## SKILL.md（摘要）\n```\n{skill_md[:1000]}\n```\n"
+        # SKILL.md：技能调试展示完整内容（供 AI 通过 skill_md 参数修改）；其他场景展示摘要
+        if _is_skill:
+            skill_md_full = context.get("debug_skill_md_full") or context.get("debug_skill_md") or ""
+            if skill_md_full:
+                prompt += f"\n## 当前 SKILL.md（完整，可通过 skill_md 参数修改全文）\n```markdown\n{skill_md_full[:4000]}\n```\n"
+        else:
+            skill_md = context.get("debug_skill_md", "")
+            if skill_md:
+                prompt += f"\n## SKILL.md（摘要）\n```\n{skill_md[:1000]}\n```\n"
 
         # 参数规范
         params_section = context.get("debug_params_section", "")
@@ -1554,6 +1650,8 @@ class DataProcessorAgent(BaseAgent):
                         rdata = json.loads(r["content"])
                         if rdata.get("success"):
                             yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                            if rdata.get("skill_md_updated"):
+                                yield {"type": "skill_md_updated"}
                     except Exception:
                         pass
 
@@ -1564,6 +1662,8 @@ class DataProcessorAgent(BaseAgent):
                         _mdata = rdata.get("modify", {})
                         if _mdata.get("success"):
                             yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                            if _mdata.get("skill_md_updated"):
+                                yield {"type": "skill_md_updated"}
                         # 执行结果 → yield run_result + 失败检测（同 run_script 逻辑）
                         yield {"type": "run_result", "result": rdata}
                         _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}

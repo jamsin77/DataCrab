@@ -674,12 +674,15 @@ async def run_skill_stream(
             # 执行成功后 → 触发 DataInspector 质量检查（报告型，不自动修复）
             _inner_r = exec_result.get("result") if isinstance(exec_result.get("result"), dict) else {}
             _exec_success = exec_result.get("success") and _inner_r.get("success") is not False
+            _wt = exec_result.get("written_tables")
+            _wt_table = _wt[-1].get("table_name") if _wt else None
+            _wt_ds_id = _wt[-1].get("datasource_id") if _wt else None
             if _exec_success:
-                _target_ds_name = request.parameters.get("target_datasource_name") or request.parameters.get("source_datasource_name") or ds_name
-                _target_table = request.parameters.get("target_table_name") or request.parameters.get("output_table_name") or request.parameters.get("source_table_name") or _inner_r.get("output_table") or request.table_name
+                _target_ds_name = request.parameters.get("target_datasource_name") or ds_name
+                _target_table = _wt_table or _inner_r.get("output_table") or request.parameters.get("target_table_name") or request.parameters.get("output_table_name") or request.table_name
                 if _target_ds_name and _target_table:
-                    _target_ds_id = request.datasource_id
-                    if request.parameters.get("target_datasource_name"):
+                    _target_ds_id = _wt_ds_id or _inner_r.get("output_datasource_id") or request.datasource_id
+                    if not _target_ds_id and request.parameters.get("target_datasource_name"):
                         from sqlalchemy import select as sa_select
                         from app.models.datasource import DataSource
                         _ds_r = await db.execute(sa_select(DataSource).where(DataSource.name == request.parameters["target_datasource_name"]))
@@ -690,10 +693,17 @@ async def run_skill_stream(
                         yield f"data: {json_mod.dumps({'type': 'inspecting', 'message': '执行成功，DataInspector 正在检查数据质量...'}, ensure_ascii=False)}\n\n"
                         try:
                             from app.services.data_inspector_agent import DataInspectorAgent
+                            from app.services.data_processor_agent import DataProcessorAgent
                             from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
                             if not agent_registry.get("data_inspector"):
                                 agent_registry.register(DataInspectorAgent())
+                            if not agent_registry.get("data_processor"):
+                                agent_registry.register(DataProcessorAgent())
                             _inspector = agent_registry.get("data_inspector")
+                            _processor = agent_registry.get("data_processor")
+                            _inspect_ctx = {"db": db, "user_id": current_user.id}
+                            _issues = []
+                            _summary = ""
                             _inspect_msg = AgentMessage(
                                 from_agent="runner",
                                 to_agent="data_inspector",
@@ -705,20 +715,50 @@ async def run_skill_stream(
                                     "result_summary": str(_inner_r)[:500],
                                 },
                             )
-                            _inspect_ctx = {"db": db, "user_id": current_user.id}
-                            _issues = []
-                            _summary = ""
-                            async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
-                                _t = _evt.get("type")
-                                if _t == "handoff":
-                                    _payload = _evt.get("payload", {})
-                                    _issues = _payload.get("issues", [])
-                                    _summary = _payload.get("summary", "")
+                            for _inspection_round in range(4):
+                                _issues = []
+                                _summary = ""
+                                _handoff_to_processor = False
+                                async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
+                                    _t = _evt.get("type")
+                                    if _t == "handoff":
+                                        _payload = _evt.get("payload", {})
+                                        _issues = _payload.get("issues", [])
+                                        _summary = _payload.get("summary", "")
+                                        _handoff_to_processor = True
+                                    elif _t == "done":
+                                        break
+                                    elif _t in ("thinking", "model", "clear_thinking", "content", "tool_result", "warning_confirmation", "fatal"):
+                                        yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                                _has_auto_fix = any(i.get("severity") in ("error", "critical") for i in _issues)
+                                if not _handoff_to_processor or not _has_auto_fix:
                                     break
-                                elif _t == "done":
+                                yield f"data: {json_mod.dumps({'type': 'fixing', 'message': f'DataInspector 发现 {len(_issues)} 个问题，DataProcessor 正在自动修复...'}, ensure_ascii=False)}\n\n"
+                                _fix_msg = AgentMessage(
+                                    from_agent="data_inspector",
+                                    to_agent="data_processor",
+                                    reason=HandoffReason.FIX_REQUIRED,
+                                    payload={"issues": _issues, "summary": _summary,
+                                             "datasource_id": str(_target_ds_id), "table_name": _target_table},
+                                )
+                                _fix_handoff_back = False
+                                async for _fix_evt in _processor.run(_fix_msg, _inspect_ctx):
+                                    _ft = _fix_evt.get("type")
+                                    if _ft == "handoff":
+                                        _fix_handoff_back = True
+                                    elif _ft == "done":
+                                        break
+                                    elif _ft in ("thinking", "model", "clear_thinking", "content", "tool_result"):
+                                        yield f"data: {json_mod.dumps(_fix_evt, ensure_ascii=False, default=str)}\n\n"
+                                if not _fix_handoff_back:
                                     break
-                                elif _t in ("thinking", "model", "clear_thinking", "content"):
-                                    yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                                _inspect_msg = AgentMessage(
+                                    from_agent="data_processor",
+                                    to_agent="data_inspector",
+                                    reason=HandoffReason.FIX_COMPLETED,
+                                    payload={"datasource_id": str(_target_ds_id), "table_name": _target_table},
+                                )
+                                yield f"data: {json_mod.dumps({'type': 'inspecting', 'message': '修复完成，DataInspector 正在复查...'}, ensure_ascii=False)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
                             yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': _sanitize_nans(_inspection)}, ensure_ascii=False, default=str)}\n\n"
@@ -1067,12 +1107,15 @@ async def run_skill_nl_stream(
             # 执行成功后 → 触发 DataInspector 质量检查（报告型，不自动修复）
             _inner_r = exec_result.get("result") if isinstance(exec_result.get("result"), dict) else {}
             _exec_success = exec_result.get("success") and _inner_r.get("success") is not False
+            _wt = exec_result.get("written_tables")
+            _wt_table = _wt[-1].get("table_name") if _wt else None
+            _wt_ds_id = _wt[-1].get("datasource_id") if _wt else None
             if _exec_success:
-                _target_ds_name = parameters.get("target_datasource_name") or parameters.get("source_datasource_name") or ds_name
-                _target_table = parameters.get("target_table_name") or parameters.get("output_table_name") or parameters.get("source_table_name") or _inner_r.get("output_table") or inferred_table
+                _target_ds_name = parameters.get("target_datasource_name") or ds_name
+                _target_table = _wt_table or _inner_r.get("output_table") or parameters.get("target_table_name") or parameters.get("output_table_name") or inferred_table
                 if _target_ds_name and _target_table:
-                    _target_ds_id = datasource_id
-                    if parameters.get("target_datasource_name"):
+                    _target_ds_id = _wt_ds_id or _inner_r.get("output_datasource_id") or datasource_id
+                    if not _target_ds_id and parameters.get("target_datasource_name"):
                         from sqlalchemy import select as sa_select
                         from app.models.datasource import DataSource
                         _ds_r = await db.execute(sa_select(DataSource).where(DataSource.name == parameters["target_datasource_name"]))
@@ -1083,10 +1126,17 @@ async def run_skill_nl_stream(
                         yield f"data: {json_mod.dumps({'type': 'inspecting', 'message': '执行成功，DataInspector 正在检查数据质量...'}, ensure_ascii=False)}\n\n"
                         try:
                             from app.services.data_inspector_agent import DataInspectorAgent
+                            from app.services.data_processor_agent import DataProcessorAgent
                             from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
                             if not agent_registry.get("data_inspector"):
                                 agent_registry.register(DataInspectorAgent())
+                            if not agent_registry.get("data_processor"):
+                                agent_registry.register(DataProcessorAgent())
                             _inspector = agent_registry.get("data_inspector")
+                            _processor = agent_registry.get("data_processor")
+                            _inspect_ctx = {"db": db, "user_id": current_user.id}
+                            _issues = []
+                            _summary = ""
                             _inspect_msg = AgentMessage(
                                 from_agent="runner",
                                 to_agent="data_inspector",
@@ -1098,20 +1148,50 @@ async def run_skill_nl_stream(
                                     "result_summary": str(_inner_r)[:500],
                                 },
                             )
-                            _inspect_ctx = {"db": db, "user_id": current_user.id}
-                            _issues = []
-                            _summary = ""
-                            async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
-                                _t = _evt.get("type")
-                                if _t == "handoff":
-                                    _payload = _evt.get("payload", {})
-                                    _issues = _payload.get("issues", [])
-                                    _summary = _payload.get("summary", "")
+                            for _inspection_round in range(4):
+                                _issues = []
+                                _summary = ""
+                                _handoff_to_processor = False
+                                async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
+                                    _t = _evt.get("type")
+                                    if _t == "handoff":
+                                        _payload = _evt.get("payload", {})
+                                        _issues = _payload.get("issues", [])
+                                        _summary = _payload.get("summary", "")
+                                        _handoff_to_processor = True
+                                    elif _t == "done":
+                                        break
+                                    elif _t in ("thinking", "model", "clear_thinking", "content", "tool_result", "warning_confirmation", "fatal"):
+                                        yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                                _has_auto_fix = any(i.get("severity") in ("error", "critical") for i in _issues)
+                                if not _handoff_to_processor or not _has_auto_fix:
                                     break
-                                elif _t == "done":
+                                yield f"data: {json_mod.dumps({'type': 'fixing', 'message': f'DataInspector 发现 {len(_issues)} 个问题，DataProcessor 正在自动修复...'}, ensure_ascii=False)}\n\n"
+                                _fix_msg = AgentMessage(
+                                    from_agent="data_inspector",
+                                    to_agent="data_processor",
+                                    reason=HandoffReason.FIX_REQUIRED,
+                                    payload={"issues": _issues, "summary": _summary,
+                                             "datasource_id": str(_target_ds_id), "table_name": _target_table},
+                                )
+                                _fix_handoff_back = False
+                                async for _fix_evt in _processor.run(_fix_msg, _inspect_ctx):
+                                    _ft = _fix_evt.get("type")
+                                    if _ft == "handoff":
+                                        _fix_handoff_back = True
+                                    elif _ft == "done":
+                                        break
+                                    elif _ft in ("thinking", "model", "clear_thinking", "content", "tool_result"):
+                                        yield f"data: {json_mod.dumps(_fix_evt, ensure_ascii=False, default=str)}\n\n"
+                                if not _fix_handoff_back:
                                     break
-                                elif _t in ("thinking", "model", "clear_thinking", "content"):
-                                    yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                                _inspect_msg = AgentMessage(
+                                    from_agent="data_processor",
+                                    to_agent="data_inspector",
+                                    reason=HandoffReason.FIX_COMPLETED,
+                                    payload={"datasource_id": str(_target_ds_id), "table_name": _target_table},
+                                )
+                                yield f"data: {json_mod.dumps({'type': 'inspecting', 'message': '修复完成，DataInspector 正在复查...'}, ensure_ascii=False)}\n\n"
                             _inspection = {"passed": len(_issues) == 0, "issues": _issues,
                                            "summary": _summary or f"检查完成：{len(_issues)} 个问题"}
                             yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': _sanitize_nans(_inspection)}, ensure_ascii=False, default=str)}\n\n"
@@ -1227,6 +1307,7 @@ async def debug_skill_chat(
         "debug_script_name": request.script_name,
         "debug_script_content": script_content,
         "debug_skill_md": skill_md_excerpt,
+        "debug_skill_md_full": skill_md,
         "debug_params_section": params_section,
         "debug_last_success_params": last_success_params,
         "debug_lessons": lessons,
@@ -1278,7 +1359,8 @@ async def debug_skill_chat(
                     if agent == "data_inspector":
                         evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                     elif agent == "data_processor":
-                        evt = {"type": "retry", "round": 2, "message": "DataInspector 发现问题，开始修复..."}
+                        _retry_round = context.get("debug_inspection_round", 0) + 1
+                        evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
                     else:
                         evt = None
                     if evt:
