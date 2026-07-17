@@ -19,6 +19,10 @@
         </el-button>
       </div>
       <div class="toolbar-right">
+        <el-select v-model="sortBy" style="width: 120px" @change="loadOperators">
+          <el-option label="创建时间" value="created" />
+          <el-option label="修改时间" value="updated" />
+        </el-select>
         <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
           <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
         </el-select>
@@ -397,6 +401,7 @@ const operators = ref<any[]>([])
 const categories = ref<string[]>([])
 const filterCategory = ref('')
 const searchQuery = ref('')
+const sortBy = ref('created')
 
 const filteredOperators = computed(() => {
   let list = operators.value
@@ -417,7 +422,7 @@ const filteredOperators = computed(() => {
 
 async function loadOperators() {
   try {
-    operators.value = await api.get('/operators')
+    operators.value = await api.get(`/operators?sort_by=${sortBy.value}`)
     categories.value = await api.get('/operators/categories')
   } catch (e: any) {
     ElMessage.error('加载算子失败')

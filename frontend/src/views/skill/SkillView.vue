@@ -12,6 +12,10 @@
         </el-button>
       </div>
       <div class="toolbar-right">
+        <el-select v-model="sortBy" style="width: 120px" @change="loadSkills">
+          <el-option label="创建时间" value="created" />
+          <el-option label="修改时间" value="updated" />
+        </el-select>
         <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
           <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
         </el-select>
@@ -508,6 +512,28 @@
                       </el-collapse>
                     </div>
                   </div>
+                  <div v-if="msg.inspectionResult" class="debug-msg-inspection">
+                    <div class="inspection-header">
+                      <el-tag :type="msg.inspectionResult.passed ? 'success' : 'warning'" size="small">
+                        {{ msg.inspectionResult.passed ? '检查通过' : '发现问题' }}
+                      </el-tag>
+                      <span class="inspection-summary">{{ msg.inspectionResult.summary }}</span>
+                    </div>
+                    <div v-if="msg.inspectionResult.issues && msg.inspectionResult.issues.length" class="inspection-issues">
+                      <div v-for="(issue, idx) in msg.inspectionResult.issues" :key="idx" class="inspection-issue-item">
+                        <div class="inspection-issue-main">
+                          <el-tag :type="issue.severity === 'fatal' ? 'danger' : issue.severity === 'error' ? 'error' : issue.severity === 'critical' ? 'error' : 'warning'" size="small">
+                            {{ issue.severity }}
+                          </el-tag>
+                          <span class="inspection-issue-desc">{{ issue.description }}</span>
+                        </div>
+                        <div v-if="issue.suggestion" class="inspection-issue-suggestion">→ {{ issue.suggestion }}</div>
+                      </div>
+                    </div>
+                    <div v-if="msg.inspectionResult.error" class="inspection-error">
+                      <el-alert :title="msg.inspectionResult.error" type="warning" :closable="false" />
+                    </div>
+                  </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
                     <el-tag type="warning" size="small">脚本已更新: {{ msg.scriptUpdated }}</el-tag>
                   </div>
@@ -603,6 +629,7 @@ const skills = ref<any[]>([])
 const categories = ref<string[]>([])
 const filterCategory = ref('')
 const searchQuery = ref('')
+const sortBy = ref('created')
 const agentName = ref('DC')
 
 async function loadAgentConfig() {
@@ -638,7 +665,7 @@ const datasources = ref<any[]>([])
 
 async function loadSkills() {
   try {
-    skills.value = await api.get('/skills')
+    skills.value = await api.get(`/skills?sort_by=${sortBy.value}`)
     categories.value = await api.get('/skills/categories')
   } catch (e: any) {
     ElMessage.error('加载技能失败')
@@ -671,8 +698,10 @@ function truncateMarkdown(src: string): string {
   return text.length > 120 ? text.slice(0, 120) + '...' : text
 }
 
+const md = markdownIt({ html: false, breaks: true, linkify: true })
+
 function renderMarkdown(src: string): string {
-  return markdownIt().render(src)
+  return md.render(src)
 }
 
 function formatDate(d: string | null): string {
@@ -2275,11 +2304,18 @@ async function handleDebugSend() {
         message: userMsg,
         history,
         script_name: debugScriptName.value,
+        datasource_id: cmdExampleDsName.value
+          ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
+          : undefined,
+        table_name: cmdExampleTableName.value || undefined,
         context: {
           exec_tab: execTab.value,
           nl_query: execNLQuery.value || '',
           cmd_str: execCmdStr.value || '',
           json_params: execParamsStr.value || '',
+          datasource_name: cmdExampleDsName.value || '',
+          table_name: cmdExampleTableName.value || '',
+          skill_params: skillParams.value || [],
         },
       }),
       signal: debugAbortController.signal,
@@ -2337,8 +2373,10 @@ async function handleDebugSend() {
             msg.content += data.content
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行脚本...'
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
             msg.runResult = data.result
             if (!msg.content) {
               const r = data.result || {}
@@ -2397,7 +2435,7 @@ async function handleDebugSend() {
 
     const finalMsg = debugMessages.value[assistantIdx]
     if (finalMsg.thinking && !thinkingDone) {
-      finalMsg.thinking += '\n\n[推理过程已中断]'
+      finalMsg.thinkingOpen = false
     }
     streamOk = true
 
@@ -2417,6 +2455,11 @@ async function handleDebugSend() {
   } finally {
     debugStreaming.value = false
     debugAbortController = null
+    // 清理执行中状态（防止循环结束后仍显示"正在执行..."）
+    const finalMsg = debugMessages.value[assistantIdx]
+    if (finalMsg) {
+      finalMsg.executingMsg = ''
+    }
     await nextTick()
     scrollSkillDebugToBottom()
   }
@@ -3244,6 +3287,62 @@ onMounted(() => {
 
 .debug-msg-script-updated {
   margin-top: 6px;
+}
+
+.debug-msg-inspection {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: #f0f9eb;
+  border-radius: 6px;
+  border-left: 3px solid #67c23a;
+
+  .inspection-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+
+    .inspection-summary {
+      font-size: 13px;
+      color: #606266;
+    }
+  }
+
+  .inspection-issues {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .inspection-issue-item {
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #606266;
+    line-height: 1.6;
+
+    .inspection-issue-main {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    .inspection-issue-desc {
+      flex: 1;
+    }
+
+    .inspection-issue-suggestion {
+      margin-top: 4px;
+      padding-left: 40px;
+      color: #909399;
+      line-height: 1.6;
+    }
+  }
+
+  .inspection-error {
+    margin-top: 6px;
+  }
 }
 
 .debug-input-area {

@@ -132,8 +132,7 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
     """分批写入记录到目标表。
 
     第一批使用原始写入策略，后续批次自动切换为 append。
-    会检查 write_table_data 的返回值，写入失败时抛出异常。
-    尝试 records 和 data(DataFrame) 两种写入方式。
+    仅使用 records 参数写入，不使用 DataFrame 方式。
 
     Args:
         records: 待写入的记录列表。
@@ -157,7 +156,6 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         if batch_num > 1 and if_table_exists in clearing_strategies:
             current_strategy = "append"
 
-        # 尝试1: 用 records 参数写入
         write_result = None
         try:
             write_result = write_table_data(
@@ -167,32 +165,30 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
                 table_remark=table_remark,
                 column_remarks=column_remarks,
             )
-            print(f"  [DEBUG] records 方式返回: {write_result}")
+            print(f"  [DEBUG] write_table_data 返回: {write_result}")
         except Exception as we:
-            log("warn", f"records 方式写入异常 (批次 {batch_num}): {we}")
-            write_result = {"success": False, "error": str(we)}
+            raise RuntimeError(f"write_table_data 异常 (批次 {batch_num}): {we}")
 
-        # 如果 records 方式失败，尝试用 data(DataFrame) 参数
         if isinstance(write_result, dict) and not write_result.get("success", True):
-            err1 = write_result.get("error", str(write_result))
-            log("info", f"records 方式失败，尝试 data(DataFrame) 方式写入...")
-            try:
-                df_batch = pd.DataFrame(batch)
-                write_result = write_table_data(
-                    target_ds, table_name,
-                    data=df_batch,
-                    if_table_exists=current_strategy,
-                    table_remark=table_remark,
-                    column_remarks=column_remarks,
-                )
-                print(f"  [DEBUG] data 方式返回: {write_result}")
-            except Exception as we2:
-                raise RuntimeError(f"两种写入方式均失败 (批次 {batch_num}): records错误={err1}, data错误={we2}")
-
-        # 检查最终写入返回值
-        if isinstance(write_result, dict) and not write_result.get("success", True):
-            err_msg = write_result.get("error", str(write_result))
-            raise RuntimeError(f"write_table_data 返回失败 (批次 {batch_num}): {err_msg}")
+            err_msg = write_result.get("error", write_result.get("message", str(write_result)))
+            # 如果 fail 策略因表已存在失败，自动重试 truncate
+            if current_strategy == "fail" and "已存在" in str(err_msg):
+                log("warn", f"表已存在，fail 策略失败，自动切换为 truncate 重试...")
+                try:
+                    write_result = write_table_data(
+                        target_ds, table_name,
+                        records=batch,
+                        if_table_exists="truncate",
+                        table_remark=table_remark,
+                        column_remarks=column_remarks,
+                    )
+                    print(f"  [DEBUG] truncate 重试返回: {write_result}")
+                except Exception as we2:
+                    raise RuntimeError(f"truncate 重试也失败 (批次 {batch_num}): {we2}")
+                if isinstance(write_result, dict) and not write_result.get("success", True):
+                    raise RuntimeError(f"truncate 重试返回失败 (批次 {batch_num}): {write_result}")
+            else:
+                raise RuntimeError(f"write_table_data 返回失败 (批次 {batch_num}): {err_msg}")
 
         written = min(i + batch_size, total)
         print(f"  已写入第 {batch_num} 批: {len(batch)} 条 (累计 {written}/{total})")
@@ -222,14 +218,11 @@ def extract_image_info(
     所有记录标记为"待人工审核"。写入目标表时自动生成英文列名和中文备注，
     添加 ID（8位零补齐）和时间戳列。
 
-    当 write_table_data 对目标数据源不可用时（如 PostgreSQL 返回 404），
-    直接用 open() 将 CSV 写入文件链接目录，确保 UTF-8 编码正确。
-
     Args:
         source_datasource_name: 源数据源名称。
         source_table_name: 源表名。
         target_datasource_name: 目标数据源名称。
-        target_table_name: 目标表名（英文）。
+        target_table_name: 目标表名。
         image_column: 图片路径列名。
         doc_type: 文档类型（auto/id_card/business_license）。
         if_table_exists: 写入策略。
@@ -370,58 +363,12 @@ def extract_image_info(
     # ---- 6. 写入目标表 ----
     log("info", f"写入目标表: {target_table_name} (策略: {if_table_exists})")
 
-    write_success = False
-    write_error_msg = ""
-
-    try:
-        _write_records(
-            processed_records, target_ds, target_table_name,
-            if_table_exists, batch_size,
-            table_remark=TABLE_REMARK,
-            column_remarks=COLUMN_REMARKS,
-        )
-        write_success = True
-    except Exception as e:
-        write_error_msg = str(e)
-        log("warn", f"write_table_data 写入失败: {write_error_msg}")
-
-    # ---- 6b. Fallback: 写入失败时直接用 open() 写 CSV 文件 ----
-    if not write_success:
-        log("info", "write_table_data 不可用，直接用 open() 写 CSV 文件到文件链接目录...")
-        csv_path = ""
-        try:
-            import csv as csv_module
-            csv_path = f"d:\\wenwu\\{target_table_name}.csv"
-            with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv_module.DictWriter(f, fieldnames=list(COLUMN_REMARKS.keys()))
-                writer.writeheader()
-                writer.writerows(processed_records)
-            log("info", f"CSV 文件写入成功: {csv_path} ({len(processed_records)} 条)")
-
-            # 同时生成一份 JSON 供检查
-            json_path = f"d:\\wenwu\\{target_table_name}_sample.json"
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(processed_records[:5], f, ensure_ascii=False, indent=2)
-            log("info", f"样本 JSON 写入成功: {json_path}")
-
-            return {
-                "success": True,
-                "total_rows": len(processed_records),
-                "target_table": target_table_name,
-                "columns": list(COLUMN_REMARKS.keys()),
-                "pending_review": pending_review_count,
-                "doc_type_distribution": type_dist,
-                "write_method": "csv_file_direct",
-                "csv_path": csv_path,
-                "write_error": write_error_msg,
-                "sample": processed_records[:3],
-            }
-        except Exception as csv_err:
-            return {
-                "success": False,
-                "error": f"写入目标表失败: {write_error_msg}; CSV文件写入也失败: {csv_err}",
-                "message": "数据写入异常"
-            }
+    _write_records(
+        processed_records, target_ds, target_table_name,
+        if_table_exists, batch_size,
+        table_remark=TABLE_REMARK,
+        column_remarks=COLUMN_REMARKS,
+    )
 
     log("info", f"处理完成: 共 {len(processed_records)} 条数据已写入 {target_table_name}")
 
@@ -468,9 +415,9 @@ def main(**kwargs):
     
     # 默认值
     resolved.setdefault('source_datasource_name', '凭证库')
-    resolved.setdefault('source_table_name', 'file_list')
+    resolved.setdefault('source_table_name', '所有的图片')
     resolved.setdefault('target_datasource_name', '凭证检索库')
-    resolved.setdefault('target_table_name', 'credential_extracted_info')
+    resolved.setdefault('target_table_name', '关键信息')
     resolved.setdefault('image_column', 'file_path')
     resolved.setdefault('doc_type', 'auto')
     resolved.setdefault('if_table_exists', 'truncate')

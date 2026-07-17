@@ -128,6 +128,43 @@ def write_lessons(base: Path, lessons: str) -> None:
     _write(base, data)
 
 
+# ==================== 调试历史（Agent 长期记忆）====================
+
+MAX_DEBUG_HISTORY = 50  # 最多保留 50 条调试记录
+
+
+def append_debug_history(base: Path, *, session_log: str) -> None:
+    """追加一次调试会话的修改历史到 experience.json。
+    session_log 是 run_debug 结束时生成的本轮修改摘要文本。"""
+    if not session_log or not session_log.strip():
+        return
+    data = read_experience(base)
+    data.setdefault("debug_history", [])
+    data["debug_history"].append({
+        "timestamp": datetime.now().isoformat(),
+        "session_log": session_log[:2000],
+    })
+    if len(data["debug_history"]) > MAX_DEBUG_HISTORY:
+        data["debug_history"] = data["debug_history"][-MAX_DEBUG_HISTORY:]
+    _write(base, data)
+
+
+def read_debug_history(base: Path) -> str:
+    """读取调试历史，返回拼接的文本（用于注入系统提示词）。"""
+    data = read_experience(base)
+    history = data.get("debug_history", [])
+    if not history:
+        return ""
+    # 取最近 5 次调试会话
+    recent = history[-5:]
+    parts = []
+    for h in recent:
+        ts = h.get("timestamp", "")[:19]
+        log = h.get("session_log", "")
+        parts.append(f"[{ts}]\n{log}")
+    return "\n\n".join(parts)
+
+
 async def collect_all_lessons(db, user_id) -> str:
     """收集该用户所有算子+技能的经验总结，用于注入生成/修改/调试提示词。"""
     parts = []

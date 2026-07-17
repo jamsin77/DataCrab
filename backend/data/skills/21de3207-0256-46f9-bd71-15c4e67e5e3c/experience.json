@@ -32,6 +32,124 @@
         "target_table_name": "目标全国文物表"
       },
       "stdout_preview": "============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n====================================="
+    },
+    {
+      "timestamp": "2026-07-16T11:03:46.367500",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpbrhxzi7l.py\", line 1247, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpbrhxzi7l.py\", line 787, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '文物列表'",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_timestamp"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "extract_province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "stdout_preview": "debug start\n\n============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n========================",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-16T11:22:28.268925",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2bibbjh6.py\", line 1247, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2bibbjh6.py\", line 787, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '文物列表'",
+      "parameters": {},
+      "stdout_preview": "debug start\n\n============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n========================",
+      "context_summary": "工具: modify_and_run\n推理摘要: The user wants me to re-check the \"national_key_relic\" table. Let me first look at the current state of the script and the data sources to understand what's happening. The user seems to want me to re-run the migration and then have it checked.\n\nLet me look at the data sources and the table structure first, and also run the script with the correct parameters.\n\nLooking at the previous context, the u\nAI输出: "
+    },
+    {
+      "timestamp": "2026-07-16T11:23:23.099310",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeh46dm8v.py\", line 1247, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeh46dm8v.py\", line 787, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '文物列表'",
+      "parameters": {},
+      "stdout_preview": "debug start\n\n============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n========================",
+      "context_summary": "工具: modify_and_run\n推理摘要: The script ran but failed because:\n1. The parameters weren't passed correctly - the script received empty kwargs `{}`\n2. The `get_datasource_id_by_name` function timed out when trying to resolve \"文物列表\"\n\nLooking at the error more carefully:\n- The stdout shows `📥 main() 被调用，收到参数: {}` - meaning the parameters weren't injected\n- Then it ran self-tests (which passed)\n- Then it tried to run migration wi\nAI输出: 我看到两个问题：\n1. `_extract_province` 函数定义在 `if __name__ == '__main__':` 之后，会被系统自动删除，导致省份提取时报 `NameError`\n2. `get_datasource_id_by_name` 超时，可能是瞬时问题\n\n让我先查看数据源列表获取正确信息，同时修复脚本中 `_extract_province` 的位置问题。"
+    },
+    {
+      "timestamp": "2026-07-16T11:49:57.425555",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptffccrnk.py\", line 1247, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptffccrnk.py\", line 787, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '文物列表'",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "if_table_exists": "truncate",
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "address_province"
+          }
+        }
+      },
+      "stdout_preview": "debug start\n\n============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n========================",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-16T15:16:43.959307",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp3_xt6wjv.py\", line 1247, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp3_xt6wjv.py\", line 787, in migrate_data\n    raise ValueError(f\"找不到源数据源: '{source_datasource_name}'\")\nValueError: 找不到源数据源: '文物列表'",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "if_table_exists": "truncate",
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "address_province"
+          }
+        }
+      },
+      "stdout_preview": "debug start\n\n============================================================\n📥 main() 被调用，收到参数: {}\n============================================================\n\n🧪 无迁移参数，运行自测验证...\n========================",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -903,6 +1021,353 @@
         "if_table_exists": "truncate",
         "batch_size": 1000,
         "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-15T21:00:24.793950",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_timestamp"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "extract_province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T08:37:07.775898",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "文物ID": "文物ID",
+          "文物名称": "文物名称",
+          "文物地址": "文物地址",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_timestamp"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "extract_province_from_address"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T08:39:40.892565",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T09:25:26.574058",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "function() { return \"00000000\".substr(this.row.ID.length, 8); }"
+          },
+          "时间戳": {
+            "value": "function() { return new Date().getTime(); }"
+          },
+          "省份": {
+            "value": "function() { return this.row.地址.split(\"-\")[0]; }"
+          }
+        },
+        "if_table_exists": "truncate",
+        "drop_columns": [],
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T10:51:20.793168",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "lambda row: str(row['ID']).zfill(8)"
+          },
+          "时间戳": {
+            "value": "lambda row: int(time.time())"
+          },
+          "省份": {
+            "value": "lambda row: row['地址'].split('省')[0]"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T10:52:19.037106",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T11:05:01.876953",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_timestamp"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "extract_province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T11:19:05.392779",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "lambda row: str(row['ID']).zfill(8)"
+          },
+          "时间戳": {
+            "value": "lambda row: int(time.time())"
+          },
+          "省份": {
+            "value": "lambda row: row['地址'].split(' ')[-1]"
+          }
+        },
+        "if_table_exists": "truncate",
+        "drop_columns": [],
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T11:24:38.064979",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "0padded_timestamp"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "extract_province"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T11:34:15.611225",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "add_columns": {
+          "ID": {
+            "value": "lambda row: \"00000000\".rjust(8, \"0\") + str(row['ID'])"
+          },
+          "时间戳": {
+            "value": "lambda row: int(time.time())"
+          },
+          "省份": {
+            "value": "lambda row: row['地址'].split(',')[0]"
+          }
+        },
+        "if_table_exists": "truncate",
+        "batch_size": 1000,
+        "limit": 10000
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-16T11:50:41.712508",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "if_table_exists": "truncate",
+        "add_columns": {
+          "ID": {
+            "value": "auto_generate"
+          },
+          "时间戳": {
+            "value": "auto_generate"
+          },
+          "省份": {
+            "value": "auto_generate"
+          }
+        }
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
+    },
+    {
+      "timestamp": "2026-07-17T14:15:44.498098",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物",
+        "column_mapping": {
+          "ID": "ID",
+          "时间戳": "时间戳",
+          "省份": "省份"
+        },
+        "if_table_exists": "truncate",
+        "add_columns": {
+          "ID": {
+            "value": "0padded_id"
+          },
+          "时间戳": {
+            "value": "current_timestamp"
+          },
+          "省份": {
+            "value": "address_province"
+          }
+        }
       },
       "result_summary": "{'success': True, 'migrated_rows': 252, 'columns': ['batch', 'year', 'serial_no', 'code', 'name', 'era', 'address', 'type', 'remark', 'ID', 'timestamp', 'province'], 'target_table': 'national_key_reli"
     }

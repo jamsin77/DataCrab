@@ -160,6 +160,7 @@ const currentSessionTitle = computed(() => {
 
 const md = new MarkdownIt({
   html: false,
+  breaks: true,
   linkify: true,
   typographer: true,
 })

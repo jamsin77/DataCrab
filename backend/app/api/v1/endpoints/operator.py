@@ -333,6 +333,7 @@ async def list_operators(
     category: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("created", pattern="^(created|updated)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -348,7 +349,8 @@ async def list_operators(
     )
     if category:
         query = query.where(Operator.category == category)
-    query = query.order_by(Operator.updated_at.desc()).offset(skip).limit(limit)
+    order_col = Operator.updated_at if sort_by == "updated" else Operator.created_at
+    query = query.order_by(order_col.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -1079,6 +1081,9 @@ async def debug_operator_chat(
 
         runtime_gen = runtime.run("data_processor", message, context)
 
+        _inspector_active = False
+        _inspector_summary = ""
+        _inspector_content_sent = False
         try:
             while True:
                 try:
@@ -1092,6 +1097,7 @@ async def debug_operator_chat(
                 t = event.get("type")
                 if t == "agent_switch":
                     agent = event.get("agent")
+                    _inspector_active = (agent == "data_inspector")
                     if agent == "data_inspector":
                         evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                     elif agent == "data_processor":
@@ -1101,6 +1107,17 @@ async def debug_operator_chat(
                     if evt:
                         yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
                 elif t == "done":
+                    if _inspector_active and _inspector_summary and not _inspector_content_sent:
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
+                    _inspector_active = False
+                elif _inspector_active and t == "warning_confirmation":
+                    _inspector_summary = event.get("summary", "")
+                elif _inspector_active and t == "content":
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    _inspector_content_sent = True
+                elif _inspector_active and t == "fatal":
+                    _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
+                elif _inspector_active and t == "tool_result":
                     pass
                 else:
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"

@@ -833,13 +833,12 @@ def _extract_province(address: str) -> str:
         for sar in ["香港特别行政区", "澳门特别行政区"]:
             if address.startswith(sar):
                 return sar
-        # 简写情况
         if address.startswith("香港"):
             return "香港特别行政区"
         if address.startswith("澳门"):
             return "澳门特别行政区"
     
-    # 自治区（按名称长度从长到短匹配，避免"广西"匹配到"西"）
+    # 自治区（按名称长度从长到短匹配）
     autonomous_regions = [
         "广西壮族自治区", "新疆维吾尔自治区", "宁夏回族自治区", 
         "内蒙古自治区", "西藏自治区"
@@ -847,7 +846,6 @@ def _extract_province(address: str) -> str:
     for ar in autonomous_regions:
         if address.startswith(ar):
             return ar
-    # 自治区简写
     ar_short = {
         "广西": "广西壮族自治区",
         "新疆": "新疆维吾尔自治区",
@@ -860,15 +858,13 @@ def _extract_province(address: str) -> str:
             return full
     
     # 普通省份：匹配 "XX省"
-    import re
     match = re.match(r'^([\u4e00-\u9fa5]{2,4})省', address)
     if match:
         return match.group(1) + "省"
     
-    # 如果以上都没匹配到，尝试取第一个到"省"字为止
+    # 取第一个到"省"字为止
     if "省" in address:
         idx = address.index("省")
         return address[:idx + 1]
     
-    # 无法识别，返回空
     return ""

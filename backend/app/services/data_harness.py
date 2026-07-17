@@ -70,6 +70,10 @@ def collect_experience(
 
     params = parameters or {}
     success = exec_result.get("success", False)
+    # 进程成功不代表脚本成功：检查脚本返回值中的 success 字段
+    _inner = exec_result.get("result")
+    if isinstance(_inner, dict) and _inner.get("success") is False:
+        success = False
 
     if not success:
         try:

@@ -211,14 +211,16 @@ def main(input_data=None, **kwargs):
             return {"success": False, "error": f"找不到数据源: {datasource_name}"}
         log("info", f"通过名称找到数据源: {datasource_name} -> {ds_id}")
 
-    # 读取数据
-    result = query_table_data(ds_id, table_name, limit=5000)
-    if not result.get("success"):
-        return {"success": False, "error": f"读取数据失败: {result.get('error')}"}
-
-    df = pd.DataFrame(result["data"], columns=result["columns"])
-    if df.empty:
+    # 读取数据（分块读取，避免漏行）
+    all_rows = []
+    columns = None
+    for chunk in iter_table_data(ds_id, table_name, chunk_size=5000):
+        if not columns:
+            columns = chunk.get("columns", [])
+        all_rows.extend(chunk.get("rows", []))
+    if not all_rows:
         return {"success": True, "message": "无数据", "count": 0}
+    df = pd.DataFrame(all_rows, columns=columns)
 
     log("info", f"总数据量: {len(df)} 行")
     log("info", f"列名: {list(df.columns)}")
