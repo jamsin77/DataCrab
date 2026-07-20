@@ -148,11 +148,16 @@ class AgentRuntime:
         context: Dict[str, Any],
         max_handoffs: int = 10,
     ) -> AsyncGenerator[Dict, None]:
+        # 从 context 获取最大检查轮次，动态调整 handoff 上限和收敛阈值
+        # 一轮检查-修复循环需要 2 次 handoff（Processor→Inspector + Inspector→Processor）
+        _max_inspections = context.get("debug_max_inspections", 7)
+        max_handoffs = max(max_handoffs, _max_inspections * 2 + 2)
         handoff_count = 0
         current_agent = self.registry.get(agent_name)
         current_message = message
-        # 收敛检测：委托给非侵入式 ConvergenceGuard（G）
-        guard = ConvergenceGuard(threshold=4)
+        # 收敛检测：阈值 = max_inspections * 2 + 3（允许完整 7 轮循环 + 余量，
+        # 确保由 _inspection_round 检查终止而非 ConvergenceGuard 提前截断）
+        guard = ConvergenceGuard(threshold=_max_inspections * 2 + 3)
 
         while current_agent and handoff_count < max_handoffs:
             async for event in current_agent.run(current_message, context):

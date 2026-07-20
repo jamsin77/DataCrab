@@ -204,3 +204,10 @@ DataProcessorAgent（统一入口）
 | **工具结果智能压缩** | data_processor_agent.py | `_compress_tool_result`：失败保留全量错误信息，成功只保留摘要+少量数据行，降低上下文占用 |
 | **handoff 参数简化** | data_processor_agent.py | `handoff_to_inspector` 去掉 datasource_id/table_name 必填，自动使用当前调试上下文的数据源与表，降低 Agent 调用门槛 |
 | **工具异常兜底** | data_processor_agent.py | `_safe_execute` 捕获工具执行异常返回结构化 JSON 错误，避免单工具异常导致整个 gather 崩溃 |
+| **LLM 流式超时保护** | llm.py | `_stream_with_timeout`：首 chunk 120s / 后续 60s 超时保护，5 个流式方法全接入；超时降级到下一个模型而非静默挂起 |
+| **调试无工具重定向** | data_processor_agent.py + data_inspector_agent.py | 思维模型无工具调用（Processor 任意无工具）/ 推理截断（Inspector 仅 `finish_reason=length`）→ 切快速模型 + `tool_choice=required` 强制工具调用，避免思维模型反复截断浪费 token；Inspector 正常检查完成不受影响 |
+| **长度升级死代码清理** | llm.py + data_processor_agent.py + data_inspector_agent.py | `chat_stream_with_tools_and_thinking` 的 `token_chain` 长度升级被新重定向机制替代，移除内层循环 + `clear_thinking` yield + docstring；两个 Agent 的 `_cleared`/`clear_thinking` 处理同步清除（`chat_stream_with_thinking` 非 tools 版的长度升级仍保留，供 endpoints/skill_creator 使用） |
+| **Inspector 表名模糊匹配** | inspector_tools.py | `_resolve_table_name`：表不存在时按包含关系找最相似表名，修复 Inspector 误用业务名当表名导致 `get_table_data` 失败 |
+| **handoff 上限联动** | multi_agent.py + operator.py + pipeline.py | `max_handoffs` 与 `debug_max_inspections` 联动（= inspections×2+2），ConvergenceGuard 阈值同步放宽，避免 7 轮检查-修复循环被提前截断；retry round 事件显示真实检查轮次 |
+| **written_tables 追踪** | skill_runner.py + data_processor_agent.py | `write_table_data` 记录 `_WRITTEN_TABLES`，执行结果返回 `written_tables`；DataProcessor handoff 优先从中取实际写入表名，不依赖 result 类型推断 |
+| **embedding 按 provider 选** | llm.py | `_eff_embedding_model` + `_PROVIDER_EMBEDDING_MODELS`：按 provider 选 embedding 模型（glm→embedding-3 / qwen→text-embedding-v3 等），避免用 OpenAI 模型名调智谱等 provider 报错；`init_user_llm_context` 增加 UUID 类型校验 + 空 API key 回退全局 |

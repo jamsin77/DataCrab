@@ -280,16 +280,25 @@ class DataInspectorAgent(BaseAgent):
 
         had_any_tool_calls = False
         pressure_warned = False
+        _no_tool_redirects = 0  # 推理截断重定向计数（切快速模型 + tool_choice=required）
 
         yield {"type": "model", "content": llm_manager.pick_model(inspect_msg or "数据检查")}
 
         for i in range(max_iterations):
+            # 重定向时切快速模型（非思维模型，不浪费 token 在推理上）+ 强制工具调用
+            _is_redirect = _no_tool_redirects > 0
+            _llm_model = llm_manager.fast_model if _is_redirect else None
+            _llm_tool_choice = "required" if _is_redirect else "auto"
+            _llm_max_tokens = 8000 if _is_redirect else 6000
+            if _is_redirect:
+                yield {"type": "model", "content": llm_manager.fast_model}
             content = ""
             tool_calls = []
             finish_reason = None
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=8000,
+                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=_llm_max_tokens,
+                model=_llm_model, tool_choice=_llm_tool_choice,
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -301,12 +310,16 @@ class DataInspectorAgent(BaseAgent):
                     tool_calls = event["tool_calls"]
                 elif t == "finish":
                     finish_reason = event["finish_reason"]
-                elif t == "clear_thinking":
-                    yield event
-                    content = ""
-                    tool_calls = []
 
             if not tool_calls:
+                # 推理过长被截断且无工具调用 → 切快速模型强制工具调用（避免误判检查完成导致漏检）
+                if finish_reason == "length" and _no_tool_redirects < 2:
+                    _no_tool_redirects += 1
+                    local_messages.append({"role": "assistant", "content": content})
+                    yield {"type": "content", "content": "\n\n⚠️ 推理过长被截断，切换快速模型继续执行检查。"}
+                    local_messages.append({"role": "user", "content": "推理过长被截断，请直接调用检查工具（profile_data / 标准检查 / 质量检查 / 安全检查），不要长篇分析。"})
+                    continue
+
                 # 反幻觉：防"只规划不执行"（K）
                 if is_planning_only(content) and i == 0:
                     local_messages.append({"role": "assistant", "content": content})

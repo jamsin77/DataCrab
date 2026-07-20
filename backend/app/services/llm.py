@@ -45,6 +45,19 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
     from app.models.custom_extension import UserLLMConfig
     from app.core.crypto import decrypt
     from sqlalchemy import select as sa_select
+    import uuid as _uuid
+
+    if isinstance(user_id, str):
+        try:
+            user_id = _uuid.UUID(user_id)
+        except (ValueError, AttributeError):
+            set_user_llm_config(None)
+            logger.warning(f"init_user_llm_context: user_id 不是有效的 UUID: {user_id!r}，回退全局配置")
+            return None
+    elif not isinstance(user_id, _uuid.UUID):
+        set_user_llm_config(None)
+        logger.warning(f"init_user_llm_context: user_id 类型不支持: {type(user_id)}，回退全局配置")
+        return None
 
     async with async_session() as session:
         result = await session.execute(
@@ -57,6 +70,10 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
         return None
 
     api_key = decrypt(rec.api_key_encrypted) if rec.api_key_encrypted else ""
+    if not api_key:
+        set_user_llm_config(None)
+        logger.info(f"init_user_llm_context: 用户 {user_id} 的 LLM 配置无 API key，回退全局配置")
+        return None
     fallback = []
     for fb in (rec.fallback_models or []):
         fb_key = decrypt(fb["api_key_encrypted"]) if fb.get("api_key_encrypted") else ""
@@ -100,8 +117,40 @@ def _get_transient_errors():
     return _TRANSIENT_ERRORS
 
 
+async def _stream_with_timeout(stream, first_timeout: float = 120.0, chunk_timeout: float = 60.0):
+    """遍历流式响应，带超时保护。
+
+    首 chunk 用更长超时（思维模型推理阶段可能 60-90s 才出第一个 token），
+    后续 chunk 用较短超时（流式建立后 token 应持续到达）。
+    超时时抛出 asyncio.TimeoutError，让调用方捕获并降级重试，而非静默结束。
+    """
+    import asyncio as _aio
+    is_first = True
+    while True:
+        t = first_timeout if is_first else chunk_timeout
+        try:
+            chunk = await _aio.wait_for(stream.__anext__(), timeout=t)
+        except StopAsyncIteration:
+            return
+        except _aio.TimeoutError:
+            logger.warning(f"LLM 流式响应超时（{'首个' if is_first else '后续'}chunk {t}s 无数据），将降级重试")
+            raise
+        is_first = False
+        yield chunk
+
+
 # Provider 注册表：内存缓存，启动时从 DB 加载
 _provider_registry: Dict[str, Dict[str, Any]] = {}
+
+# Provider 默认 embedding 模型映射（避免用 OpenAI 模型名调智谱等 provider）
+_PROVIDER_EMBEDDING_MODELS: Dict[str, str] = {
+    "glm": "embedding-3",
+    "qwen": "text-embedding-v3",
+    "siliconflow": "BAAI/bge-large-zh-v1.5",
+    "openai": "text-embedding-ada-002",
+    "deepseek": "",
+    "moonshot": "",
+}
 
 # 预配置 Provider（启动时 seed 到 DB）
 _SEED_PROVIDERS = {
@@ -679,10 +728,15 @@ class LLMManager:
                 last_err = e
                 logger.warning(f"LLM chat_stream创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-            return
+            try:
+                async for chunk in _stream_with_timeout(stream):
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                return
+            except Exception as e:
+                last_err = e
+                logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
+                continue
         raise last_err or RuntimeError("无可用LLM模型")
 
     async def chat_stream_with_messages(
@@ -711,10 +765,15 @@ class LLMManager:
                 last_err = e
                 logger.warning(f"LLM chat_stream_with_messages创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-            return
+            try:
+                async for chunk in _stream_with_timeout(stream):
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                return
+            except Exception as e:
+                last_err = e
+                logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
+                continue
         raise last_err or RuntimeError("无可用LLM模型")
 
     async def chat_stream_with_thinking(
@@ -769,7 +828,7 @@ class LLMManager:
                     yield {"type": "model", "content": attempt_model}
                     finish_reason = None
                     has_content = False
-                    async for chunk in stream:
+                    async for chunk in _stream_with_timeout(stream):
                         if not chunk.choices:
                             continue
                         choice = chunk.choices[0]
@@ -828,14 +887,19 @@ class LLMManager:
                 last_err = e
                 logger.warning(f"LLM chat_stream_with_tools创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    yield f"data: {json.dumps({'type': 'content', 'content': delta.content}, ensure_ascii=False)}\n\n"
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        yield f"data: {json.dumps({'type': 'tool_call', 'id': tc.id, 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}}, ensure_ascii=False)}\n\n"
-            return
+            try:
+                async for chunk in _stream_with_timeout(stream):
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        yield f"data: {json.dumps({'type': 'content', 'content': delta.content}, ensure_ascii=False)}\n\n"
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            yield f"data: {json.dumps({'type': 'tool_call', 'id': tc.id, 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}}, ensure_ascii=False)}\n\n"
+                return
+            except Exception as e:
+                last_err = e
+                logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
+                continue
         raise last_err or RuntimeError("无可用LLM模型")
 
     async def chat_stream_with_tools_and_thinking(
@@ -845,11 +909,14 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 8000,
+        tool_choice: str = "auto",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式工具调用对话（含推理过程）。
 
         结合 chat_stream_with_thinking（流式推理）和 chat_with_tools（工具调用）的能力。
-        断路器自动降级 + 输出长度升级。
+        断路器自动降级。输出长度截断（finish_reason=length）不在本方法重试，
+        而是由调用方（Agent 的无工具重定向机制：切快速模型 + tool_choice=required）处理，
+        避免思维模型反复截断浪费 token。
 
         Yields:
             {"type": "model", "content": "..."} — 模型名
@@ -857,7 +924,6 @@ class LLMManager:
             {"type": "content", "content": "..."} — 正文内容（逐 chunk 流式）
             {"type": "tool_calls", "tool_calls": [...]} — 完整工具调用列表（流结束后一次性 yield）
             {"type": "finish", "finish_reason": "tool_calls"|"stop"|"length"} — 结束原因
-            {"type": "clear_thinking", "content": ""} — 长度升级时清空已流式内容
         """
         if not self._initialized:
             await self.initialize()
@@ -867,7 +933,6 @@ class LLMManager:
         tried_models: List[str] = []
 
         base_tokens = max_tokens or 8000
-        token_chain = [base_tokens, base_tokens * 2, base_tokens * 4]
 
         for attempt_model in chain:
             if attempt_model in tried_models:
@@ -876,87 +941,91 @@ class LLMManager:
                 continue
             tried_models.append(attempt_model)
 
-            for token_budget in token_chain:
-                cfg = self._model_configs()[0]
-                try:
-                    logger.info(f"LLM stream+tools: model={attempt_model}, max_tokens={token_budget}, tools={[t['function']['name'] for t in tools]}")
-                    create_kwargs = dict(
-                        model=attempt_model,
-                        messages=messages,
-                        tools=tools,
-                        tool_choice="auto",
-                        temperature=temperature,
-                        stream=True,
-                        max_tokens=token_budget,
-                    )
-                    stream = await self._acreate(cfg, **create_kwargs)
-                except Exception as e:
-                    _circuit.record_failure(attempt_model)
-                    logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
-                    break  # 换模型，不重试 token
+            cfg = self._model_configs()[0]
+            try:
+                logger.info(f"LLM stream+tools: model={attempt_model}, max_tokens={base_tokens}, tools={[t['function']['name'] for t in tools]}")
+                create_kwargs = dict(
+                    model=attempt_model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    temperature=temperature,
+                    stream=True,
+                    max_tokens=base_tokens,
+                )
+                stream = await self._acreate(cfg, **create_kwargs)
+            except Exception as e:
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
+                continue  # 换模型
 
-                try:
-                    yield {"type": "model", "content": attempt_model}
+            try:
+                yield {"type": "model", "content": attempt_model}
 
-                    accumulated_tc: Dict[int, Dict] = {}
-                    finish_reason = None
+                accumulated_tc: Dict[int, Dict] = {}
+                finish_reason = None
 
-                    async for chunk in stream:
-                        if not chunk.choices:
-                            continue
-                        choice = chunk.choices[0]
-                        delta = choice.delta
+                async for chunk in _stream_with_timeout(stream):
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
 
-                        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                            yield {"type": "thinking", "content": delta.reasoning_content}
+                    if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                        yield {"type": "thinking", "content": delta.reasoning_content}
 
-                        if delta.content:
-                            yield {"type": "content", "content": delta.content}
+                    if delta.content:
+                        yield {"type": "content", "content": delta.content}
 
-                        if delta.tool_calls:
-                            for tc_delta in delta.tool_calls:
-                                idx = tc_delta.index
-                                if idx not in accumulated_tc:
-                                    accumulated_tc[idx] = {
-                                        "id": "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                if tc_delta.id:
-                                    accumulated_tc[idx]["id"] = tc_delta.id
-                                if tc_delta.function:
-                                    if tc_delta.function.name:
-                                        accumulated_tc[idx]["function"]["name"] += tc_delta.function.name
-                                    if tc_delta.function.arguments:
-                                        accumulated_tc[idx]["function"]["arguments"] += tc_delta.function.arguments
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in accumulated_tc:
+                                accumulated_tc[idx] = {
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            if tc_delta.id:
+                                accumulated_tc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    accumulated_tc[idx]["function"]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    accumulated_tc[idx]["function"]["arguments"] += tc_delta.function.arguments
 
-                        if choice.finish_reason:
-                            finish_reason = choice.finish_reason
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
 
-                    _circuit.record_success(attempt_model)
+                _circuit.record_success(attempt_model)
 
-                    # 长度升级：finish_reason=length 时清空重试
-                    if finish_reason == "length" and token_budget < token_chain[-1]:
-                        logger.warning(f"模型 {attempt_model} 输出被截断 max_tokens={token_budget}，升级到 {token_budget * 2}")
-                        yield {"type": "clear_thinking", "content": ""}
-                        continue  # 重试更大的 token_budget
+                # yield 完整工具调用（finish_reason=length 的截断交由调用方 Agent 的无工具重定向机制处理）
+                tc_list = [accumulated_tc[i] for i in sorted(accumulated_tc.keys())]
+                if tc_list:
+                    yield {"type": "tool_calls", "tool_calls": tc_list}
 
-                    # yield 完整工具调用
-                    tc_list = [accumulated_tc[i] for i in sorted(accumulated_tc.keys())]
-                    if tc_list:
-                        yield {"type": "tool_calls", "tool_calls": tc_list}
+                yield {"type": "finish", "finish_reason": finish_reason or "stop"}
+                return
 
-                    yield {"type": "finish", "finish_reason": finish_reason or "stop"}
-                    return
-
-                except Exception as e:
-                    _circuit.record_failure(attempt_model)
-                    logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
-                    break  # 换模型
+            except Exception as e:
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                continue  # 换模型
 
         raise RuntimeError(f"所有模型均不可用: {tried_models}")
 
     # ---------- 嵌入 ----------
+    def _eff_embedding_model(self, provider: str = "") -> str:
+        """根据 provider 选择 embedding 模型（用户配置优先 → provider 默认 → 全局兜底）"""
+        cfg = get_user_llm_config()
+        if cfg and cfg.get("embedding_model"):
+            return cfg["embedding_model"]
+        if provider and provider in _PROVIDER_EMBEDDING_MODELS:
+            emb = _PROVIDER_EMBEDDING_MODELS[provider]
+            if emb:
+                return emb
+        return self.embedding_model or settings.OPENAI_EMBEDDING_MODEL
+
     async def embed(self, text: str) -> list:
         """生成文本嵌入向量（主模型，失败则降级）"""
         if not self._initialized:
@@ -966,8 +1035,10 @@ class LLMManager:
         for cfg in self._model_configs():
             try:
                 client = self._client_for(cfg)
+                provider = cfg.get("provider", "")
+                emb_model = self._eff_embedding_model(provider)
                 response = await client.embeddings.create(
-                    model=self.embedding_model or settings.OPENAI_EMBEDDING_MODEL,
+                    model=emb_model,
                     input=text,
                 )
                 return response.data[0].embedding

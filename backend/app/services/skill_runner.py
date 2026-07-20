@@ -182,6 +182,8 @@ def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
         print(f"[SkillRunner] llm_chat failed: {{e}}")
         return ""
 
+_WRITTEN_TABLES = []
+
 def write_table_data(datasource_id, table_name, records=None, data=None, if_table_exists="fail", table_remark="", column_remarks=None, **extra):
     import re as _re
     if not _re.match(r'^[0-9a-f]{{8}}-[0-9a-f]{{4}}', str(datasource_id)):
@@ -205,7 +207,9 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            _resp_data = json.loads(resp.read().decode("utf-8"))
+            _WRITTEN_TABLES.append({{"datasource_id": str(datasource_id), "table_name": str(table_name)}})
+            return _resp_data
     except urllib.error.HTTPError as e:
         _msg = _http_err(e)
         print(f"[SkillRunner] write_table_data failed: HTTP {{e.code}} {{_msg}}")
@@ -425,6 +429,8 @@ if __name__ == "__main__":
                 print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str))
             else:
                 print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False))
+        if _WRITTEN_TABLES:
+            print("__WRITTEN_TABLES__" + json.dumps(_sanitize_nans(_WRITTEN_TABLES), ensure_ascii=False, default=str))
 """
 
 
@@ -558,9 +564,21 @@ def run_skill_script(
                     pass
                 break
 
+        written_tables = None
+        for line in stdout.split("\n"):
+            if "__WRITTEN_TABLES__" in line:
+                try:
+                    json_str = line.split("__WRITTEN_TABLES__", 1)[1].strip()
+                    written_tables = json.loads(json_str)
+                    stdout = stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+
         return {
             "success": proc.returncode == 0,
             "result": result,
+            "written_tables": written_tables,
             "error": error_msg,
             "stdout": stdout.strip(),
             "execution_time_ms": round(elapsed_ms, 2),

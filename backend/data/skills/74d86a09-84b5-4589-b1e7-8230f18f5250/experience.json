@@ -296,6 +296,66 @@
       },
       "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp', 'record_timestamp']\n[WARN",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-17T16:24:39.671960",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "merge_fields",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp']\n[WARN] 筛选列 '分类' 不存在，将使用关键",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-17T22:34:31.141566",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "merge_fields",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp']\n[WARN] 筛选列 '分类' 不存在，将使用关键",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-17T22:47:36.780229",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "merge_fields",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp']\n[WARN] 筛选列 '分类' 不存在，将使用关键",
+      "context_summary": ""
     }
   ],
   "positive": [

@@ -1519,20 +1519,25 @@ class DataProcessorAgent(BaseAgent):
                                     local_messages[_mi]["content"] = _orig[:300]
 
             # 第2轮起：yield 轮次事件（前端分轮展示）
-            _round_yielded = False
             if _total_rounds > 1:
                 yield {"type": "round", "round": _total_rounds}
-                _round_yielded = True
 
             # 流式 LLM 调用（推理 + 工具调用）
+            # 重定向时切快速模型（非思维模型，不浪费 token 在推理上）+ 强制工具调用
+            _is_redirect = _no_tool_redirects > 0
+            _llm_model = llm_manager.fast_model if _is_redirect else None
+            _llm_tool_choice = "required" if _is_redirect else "auto"
+            _llm_max_tokens = 8000 if _is_redirect else 4000
+            if _is_redirect:
+                yield {"type": "model", "content": llm_manager.fast_model}
             content = ""
             thinking_content = ""
             tool_calls = []
             finish_reason = None
-            _cleared = False  # 本轮是否发生 clear_thinking
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=12000,
+                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=_llm_max_tokens,
+                model=_llm_model, tool_choice=_llm_tool_choice,
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -1545,16 +1550,6 @@ class DataProcessorAgent(BaseAgent):
                     tool_calls = event["tool_calls"]
                 elif t == "finish":
                     finish_reason = event["finish_reason"]
-                elif t == "clear_thinking":
-                    yield event
-                    content = ""
-                    thinking_content = ""
-                    tool_calls = []
-                    _cleared = True
-
-            # clear_thinking 清空了 msg.content（含轮次标记），需要重新发送
-            if _cleared and _round_yielded:
-                yield {"type": "round", "round": _total_rounds}
 
             if not tool_calls:
                 # 分析模式：无工具调用 = 分析完成，直接输出结论
@@ -1566,9 +1561,9 @@ class DataProcessorAgent(BaseAgent):
                     _no_tool_redirects += 1
                     local_messages.append({"role": "assistant", "content": content})
                     if finish_reason == "length":
-                        _redirect_msg = "推理过程过长被截断，未生成工具调用。请直接调用 modify_and_run 修改并执行脚本，推理控制在3句话以内，不要长篇分析。"
+                        _redirect_msg = "推理过长被截断，切换快速模型直接生成代码。"
                     else:
-                        _redirect_msg = "请直接调用 modify_and_run 修改并执行脚本（成功后调 handoff_to_inspector 交接检查），不要只描述计划或输出结论。"
+                        _redirect_msg = "切换快速模型，直接调用 modify_and_run 修改并执行脚本。"
                     yield {"type": "content", "content": f"\n\n⚠️ {_redirect_msg}"}
                     local_messages.append({"role": "user", "content": _redirect_msg})
                     continue
@@ -1861,9 +1856,6 @@ class DataProcessorAgent(BaseAgent):
             elif t == "content":
                 full_content += event["content"]
                 yield event
-            elif t == "clear_thinking":
-                yield event
-                full_content = ""
         yield {"type": "give_up", "reason": full_content[:2000]}
 
         # 将"无法修复"的原因分析存入经验库，下次调试可直接参考

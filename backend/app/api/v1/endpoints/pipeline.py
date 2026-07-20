@@ -489,7 +489,8 @@ async def debug_pipeline_chat(
                     if agent == "data_inspector":
                         evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                     elif agent == "data_processor":
-                        evt = {"type": "retry", "round": 2, "message": "DataInspector 发现问题，开始修复..."}
+                        _retry_round = context.get("debug_inspection_round", 0) + 1
+                        evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
                     else:
                         evt = None
                     if evt:

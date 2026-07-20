@@ -24,9 +24,44 @@ class DataInspectorTools:
             raise ValueError(f"数据源不存在: {datasource_id}")
 
         connector = get_connector(datasource.type, datasource.connection_config or {})
-        df = await connector.get_table_data(table_name, page=1, page_size=page_size)
-        await connector.close()
-        return df
+        try:
+            df = await connector.get_table_data(table_name, page=1, page_size=page_size)
+            return df
+        except Exception as e:
+            err_msg = str(e)
+            if "不存在" in err_msg or "does not exist" in err_msg or "no such table" in err_msg.lower():
+                resolved = await self._resolve_table_name(connector, table_name)
+                if resolved and resolved != table_name:
+                    logger.info(f"Inspector 表名模糊匹配: '{table_name}' -> '{resolved}'")
+                    df = await connector.get_table_data(resolved, page=1, page_size=page_size)
+                    return df
+            raise
+        finally:
+            await connector.close()
+
+    async def _resolve_table_name(self, connector, table_name: str) -> str:
+        """当目标表名不存在时，从数据源的所有表中查找最相似的表名"""
+        try:
+            schema = await connector.get_schema()
+            all_tables = [t.get("table_name", "") for t in (schema or []) if t.get("table_name")]
+            if not all_tables:
+                return ""
+            for t in all_tables:
+                if t.lower() == table_name.lower():
+                    return t
+            candidates = []
+            target_lower = table_name.lower()
+            for t in all_tables:
+                t_lower = t.lower()
+                if target_lower in t_lower or t_lower in target_lower:
+                    candidates.append(t)
+            if len(candidates) == 1:
+                return candidates[0]
+            if len(candidates) > 1:
+                return min(candidates, key=len)
+            return ""
+        except Exception:
+            return ""
 
     async def profile_data(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
         try:
