@@ -117,6 +117,6 @@
 | 第五轮 | 推理截断修复 + 参数记忆 + 自愈循环 + 沙箱补全 + 失败检测 + 多智能体架构统一 | 推理截断修复；debug-chat `{{}}` bug；执行参数记忆；沙箱 log 函数；自愈循环 5 轮；失败检测两层；流式工具调用方法；DataProcessor 调试模式；调试页面统一 AgentRuntime |
 | 第六轮 | 非侵入式 Harness 重构 + 沙箱文档统一 + UI 修复 | data_harness.py 抽出（ConvergenceGuard + collect_experience）；SANDBOX_TOOLS_DOC 统一；数据源刷新只刷当前表；对话推理自动滚动 |
 | 第七轮 | 调度系统落地 + 死代码清理 + EP 中文化 | task_runner.py 后台执行 + 30s 扫描器；sandbox_ns.py 抽出；Element Plus 中文化；删除 CodeView/ExploreView/Notebook 全套（净减 1159 行） |
-| 第八轮 | 调试 Loop 强化（进行中） | 强制每轮执行；AST 脚本智能压缩；工具结果智能压缩；handoff 参数简化；工具异常兜底 |
+| 第八轮 | 调试 Loop 强化 | 强制每轮执行；AST 脚本智能压缩；工具结果智能压缩；handoff 参数简化；工具异常兜底；LLM 流式超时保护；调试无工具重定向；长度升级死代码清理；Inspector 表名模糊匹配；handoff 上限联动；written_tables 追踪；embedding 按 provider 选 |
 
-- 当前测试：84 个单元测试全部通过（`backend/tests/`）
+- 当前测试：86 个单元测试全部通过（`backend/tests/`）

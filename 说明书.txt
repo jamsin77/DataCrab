@@ -36,7 +36,7 @@ DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提�
 
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
 - 动态轮次预算：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40）
-- 收敛检测：ConvergenceGuard 连续 4 次在同一张表来回 handoff → 终止
+- 收敛检测：ConvergenceGuard 动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止
 - 7 个公共工具：query_table_data / get_table_schema / list_user_datasources / list_user_file_links / save_file_to_link / kb_search / execute_sql
 - 支持并行工具调用，SSE 流式输出推理过程和执行结果
 
@@ -219,7 +219,7 @@ DataCrab/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、加密、类型）
 │   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，177 条路由）
-│   │   ├── models/            # ORM 模型（18 个模型类，10 个文件）
+│   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
 │   │       ├── llm.py         # LLM 管理器（多提供商、流式、工具调用）

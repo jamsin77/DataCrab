@@ -40,10 +40,10 @@ DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architectur
 
 - **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the DataProcessor → DataInspector multi-agent flow
 - **Orchestrator-Worker granularity**: simple operations (modify_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
-- **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together (3-in-1)
+- **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
 - Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
-- Convergence detection: `ConvergenceGuard` non-intrusive component — 4 back-and-forth handoffs on the same table → terminate
+- Convergence detection: `ConvergenceGuard` non-intrusive component — dynamic threshold (= inspection limit ×2+3, default 17) back-and-forth handoffs on the same table → terminate
 - Supports parallel tool calls
 - SSE streaming of reasoning process and execution results
 
@@ -63,6 +63,7 @@ DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architectur
 | ChromaDB | Vector database |
 
 - Connection testing, schema discovery, paginated table data browsing
+- Data writes support 7 strategies: `fail` (error), `append`, `replace` (drop+recreate), `overwrite`/`truncate` (clear+add columns), `delete_rows` (clear no column add), `upsert` (update or insert by id); supports table remarks and column remarks (PostgreSQL/MySQL/SQLite)
 - Data quality analysis (completeness, missing values, outlier detection)
 - Table statistics (row count, column count, size)
 
@@ -187,7 +188,7 @@ Three Markdown rule libraries, viewable/editable on the "System Settings" page; 
 - **Language**: Python 3.11+
 - **Web framework**: FastAPI + Uvicorn
 - **ORM**: SQLAlchemy 2.0 (async, supports SQLite / PostgreSQL)
-- **LLM integration**: Zhipu GLM (glm-4-flash / glm-4-plus / glm-5.2)
+- **LLM integration**: Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible
 - **Data processing**: pandas, numpy
 
 ### Frontend
@@ -218,7 +219,7 @@ DataCrab/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, types)
 │   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 177 routes)
-│   │   ├── models/            # ORM models (18 model classes, 10 files)
+│   │   ├── models/            # ORM models (19 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
 │   │       ├── llm.py         # LLM manager (multi-provider, streaming, tool calls)

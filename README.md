@@ -40,10 +40,10 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 
 - **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走 DataProcessor → DataInspector 多智能体流程
 - **Orchestrator-Worker 粒度**：简单操作（modify_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
-- **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用（三合一）
+- **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
 - 动态轮次预算：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40）
-- 收敛检测：`ConvergenceGuard` 非侵入式组件，连续 4 次在同一张表来回 handoff → 终止
+- 收敛检测：`ConvergenceGuard` 非侵入式组件，动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止
 - 支持并行工具调用
 - SSE 流式输出推理过程和执行结果
 
@@ -191,7 +191,7 @@ assets/           # 静态资源
 - **语言**：Python 3.11+
 - **Web 框架**：FastAPI + Uvicorn
 - **ORM**：SQLAlchemy 2.0（异步，支持 SQLite / PostgreSQL）
-- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
+- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容
 - **数据处理**：pandas, numpy
 
 ### 前端
@@ -222,7 +222,7 @@ DataCrab/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
 │   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，177 条路由）
-│   │   ├── models/            # ORM 模型（18 个模型类，10 个文件）
+│   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
 │   │       ├── llm.py         # LLM 管理器（多提供商、流式、工具调用）

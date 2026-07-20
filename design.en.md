@@ -2655,15 +2655,15 @@ DataProcessor (Orchestrator + lightweight tools)
 
 Before the refactor, DataProcessor used `chat_with_tools()` (non-streaming, no reasoning) and the debug assistant used `chat_stream_with_thinking()` (streaming reasoning, no tool calls). The two were incompatible.
 
-Added `chat_stream_with_tools_and_thinking()` (`llm.py`), a 3-in-1 method:
+Added `chat_stream_with_tools_and_thinking()` (`llm.py`), supporting streaming reasoning, streaming content, and tool calls:
 
 | Capability | Source | Implementation |
 |------|------|------|
 | Streaming reasoning (thinking) | chat_stream_with_thinking | yield reasoning_content chunk by chunk |
 | Streaming content | chat_stream_with_thinking | yield content chunk by chunk |
 | Tool calls (tool_calls) | chat_with_tools | accumulate tool_call deltas, yield once after the stream ends |
-| Length escalation | chat_stream_with_thinking | finish_reason=length → clear_thinking → double max_tokens and retry |
-| Circuit-breaker fallback | chat_stream_with_thinking | model failure → switch to the fallback chain |
+| No-tool redirection | added in Round 8 (replaces former length escalation) | reasoning model emits no tool call / reasoning truncated (finish_reason=length) → switch to fast model + tool_choice=required to force a tool call |
+| Circuit-breaker fallback + timeout guard | chat_stream_with_thinking + added in Round 8 | model failure / 120s first-chunk timeout / 60s subsequent-chunk timeout → switch to the fallback chain |
 
 ##### DataProcessor Debug Mode
 
@@ -4152,7 +4152,7 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | Element Plus localization | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
 | Dead-code cleanup | multiple | deleted the entire CodeView/ExploreView/Notebook set (frontend + backend + model + schema + routes, net -1159 lines); skill_executor.py slimmed to 2 dataclasses (333→37 lines) |
 
-### 11.19 Debug Loop Strengthening — In Progress
+### 11.19 Debug Loop Strengthening
 
 | Improvement | File | Description |
 |------|------|------|
@@ -4161,3 +4161,10 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | Smart tool-result compression | data_processor_agent.py | `_compress_tool_result`: failures keep full error info, successes keep only a summary + a few data rows, reducing context usage |
 | handoff param simplification | data_processor_agent.py | `handoff_to_inspector` no longer requires datasource_id/table_name; auto-uses the current debug context's datasource and table |
 | Tool-exception fallback | data_processor_agent.py | `_safe_execute` catches tool-execution exceptions and returns a structured JSON error, preventing a single tool exception from crashing the whole gather |
+| LLM stream timeout guard | llm.py | `_stream_with_timeout`: 120s first-chunk / 60s subsequent-chunk timeout, applied to all 5 streaming methods; on timeout degrades to the next model instead of hanging silently |
+| Debug no-tool redirection | data_processor_agent.py + data_inspector_agent.py | When the reasoning model emits no tool call (Processor: any no-tool) or reasoning is truncated (Inspector: only `finish_reason=length`), switch to the fast model + `tool_choice=required` to force a tool call, avoiding repeated truncation wasting tokens on the reasoning model; Inspector's normal check-completion is unaffected |
+| Length-escalation dead-code cleanup | llm.py + data_processor_agent.py + data_inspector_agent.py | The `token_chain` length escalation in `chat_stream_with_tools_and_thinking` was superseded by the new redirection mechanism; removed the inner loop + `clear_thinking` yield + docstring; the two agents' `_cleared`/`clear_thinking` handling removed in sync (the non-tools `chat_stream_with_thinking` retains its length escalation for endpoints/skill_creator) |
+| Inspector fuzzy table-name matching | inspector_tools.py | `_resolve_table_name`: when the table doesn't exist, finds the closest table name by containment, fixing Inspector using a business name as the table name causing `get_table_data` to fail |
+| Handoff-cap linkage | multi_agent.py + operator.py + pipeline.py | `max_handoffs` links to `debug_max_inspections` (= inspections×2+2), ConvergenceGuard threshold widened in sync, preventing the 7-round inspect-fix loop from being cut short; retry-round events show the real inspection round |
+| written_tables tracking | skill_runner.py + data_processor_agent.py | `write_table_data` records `_WRITTEN_TABLES`, execution result returns `written_tables`; DataProcessor handoff prefers the actually-written table name from it, not inferring from the result type |
+| Provider-aware embedding selection | llm.py | `_eff_embedding_model` + `_PROVIDER_EMBEDDING_MODELS`: picks the embedding model by provider (glm→embedding-3 / qwen→text-embedding-v3 etc.), avoiding OpenAI model names being sent to Zhipu et al.; `init_user_llm_context` adds UUID type validation + empty-API-key fallback to global config |

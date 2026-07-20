@@ -36,7 +36,7 @@ Adopts an Orchestrator-Worker pattern (inspired by Claude Code / OpenAI Agents S
 
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
 - Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
-- Convergence detection: ConvergenceGuard — 4 back-and-forth handoffs on the same table → terminate
+- Convergence detection: ConvergenceGuard — dynamic threshold (= inspection limit ×2+3, default 17) back-and-forth handoffs on the same table → terminate
 - 7 shared tools: query_table_data / get_table_schema / list_user_datasources / list_user_file_links / save_file_to_link / kb_search / execute_sql
 - Supports parallel tool calls; SSE streaming of reasoning and execution results
 
@@ -219,7 +219,7 @@ DataCrab/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, crypto, types)
 │   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 177 routes)
-│   │   ├── models/            # ORM models (18 model classes, 10 files)
+│   │   ├── models/            # ORM models (19 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
 │   │       ├── llm.py         # LLM manager (multi-provider, streaming, tool calls)

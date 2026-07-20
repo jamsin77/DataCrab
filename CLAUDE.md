@@ -95,7 +95,7 @@ DataProcessorAgent（统一入口）
     └── 不需要检查 → 直接返回结果
 ```
 
-**收敛检测**：连续 4 次在同一张表上来回 handoff → 终止并提示用户介入。
+**收敛检测**：动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止并提示用户介入。
 
 ## 工程改进记录（借鉴 DeepAnalyze）
 
@@ -195,7 +195,7 @@ DataProcessorAgent（统一入口）
 | **Element Plus 中文化** | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
 | **死代码清理** | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行） |
 
-### 第八轮（调试 Loop 强化：上下文压缩 + 强制执行 + handoff 简化）——进行中
+### 第八轮（调试 Loop 强化：上下文压缩 + 强制执行 + handoff 简化）
 
 | 改进 | 文件 | 说明 |
 |------|------|------|
