@@ -598,7 +598,7 @@ class LLMManager:
         prompt: str,
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """与大模型对话"""
         if not self._initialized:
@@ -628,7 +628,7 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """多轮对话，支持 system/user/assistant 消息列表"""
         if not self._initialized:
@@ -659,7 +659,7 @@ class LLMManager:
         tools: List[Dict[str, Any]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         """带工具调用的对话，返回 OpenAI 格式的 response dict"""
         if not self._initialized:
@@ -781,24 +781,14 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[Dict[str, str], None]:
-        """流式对话（含推理过程）。
-
-        模型选择 + 输出长度升级（借鉴 DeepAnalyze）：
-        - 断路器自动降级：首选模型失败 → 切另一个模型
-        - 输出长度升级：finish_reason=length → max_tokens 翻倍重试（4K→8K→16K）
-        """
+        """流式对话（含推理过程）。"""
         if not self._initialized:
             await self.initialize()
 
         target_model = self._resolve_model(model)
         chain = self._degradation_chain(target_model)
         tried_models: List[str] = []
-
-        # 输出长度升级链（借鉴 DeepAnalyze 四级回退）
-        base_tokens = max_tokens or 4000
-        token_chain = [base_tokens, base_tokens * 2, base_tokens * 4]
 
         for attempt_model in chain:
             if attempt_model in tried_models:
@@ -807,54 +797,39 @@ class LLMManager:
                 continue
             tried_models.append(attempt_model)
 
-            for token_budget in token_chain:
-                cfg = self._model_configs()[0]
-                try:
-                    logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}, max_tokens={token_budget}")
-                    create_kwargs = dict(
-                        model=attempt_model,
-                        messages=messages,
-                        temperature=temperature,
-                        stream=True,
-                        max_tokens=token_budget,
-                    )
-                    stream = await self._acreate(cfg, **create_kwargs)
-                except Exception as e:
-                    _circuit.record_failure(attempt_model)
-                    logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
-                    break  # 换模型，不重试 token
+            cfg = self._model_configs()[0]
+            try:
+                logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}")
+                create_kwargs = dict(
+                    model=attempt_model,
+                    messages=messages,
+                    temperature=temperature,
+                    stream=True,
+                )
+                stream = await self._acreate(cfg, **create_kwargs)
+            except Exception as e:
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
+                continue
 
-                try:
-                    yield {"type": "model", "content": attempt_model}
-                    finish_reason = None
-                    has_content = False
-                    async for chunk in _stream_with_timeout(stream):
-                        if not chunk.choices:
-                            continue
-                        choice = chunk.choices[0]
-                        delta = choice.delta
-                        if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                            yield {"type": "thinking", "content": delta.reasoning_content}
-                        if delta.content:
-                            yield {"type": "content", "content": delta.content}
-                            has_content = True
-                        if choice.finish_reason:
-                            finish_reason = choice.finish_reason
+            try:
+                yield {"type": "model", "content": attempt_model}
+                async for chunk in _stream_with_timeout(stream):
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        yield {"type": "thinking", "content": delta.reasoning_content}
+                    if delta.content:
+                        yield {"type": "content", "content": delta.content}
 
-                    _circuit.record_success(attempt_model)
-
-                    # finish_reason=length → 推理+正文共享 max_tokens 预算被截断，升级重试
-                    # （无论是否有部分正文输出都需重试；前端 clear_thinking 会清空已流式的推理+正文避免重复）
-                    if finish_reason == "length" and token_budget < token_chain[-1]:
-                        logger.warning(f"模型 {attempt_model} 输出被截断 max_tokens={token_budget}（推理+正文共享预算），升级到 {token_budget * 2} 重试")
-                        yield {"type": "clear_thinking", "content": ""}
-                        continue  # 重试更大的 token_budget
-
-                    return  # 正常结束
-                except Exception as e:
-                    _circuit.record_failure(attempt_model)
-                    logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
-                    break  # 换模型
+                _circuit.record_success(attempt_model)
+                return
+            except Exception as e:
+                _circuit.record_failure(attempt_model)
+                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                continue
 
         raise RuntimeError(f"所有模型均不可用: {tried_models}")
 
@@ -908,15 +883,9 @@ class LLMManager:
         tools: List[Dict[str, Any]],
         model: Optional[str] = None,
         temperature: float = 0.3,
-        max_tokens: int = 8000,
         tool_choice: str = "auto",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式工具调用对话（含推理过程）。
-
-        结合 chat_stream_with_thinking（流式推理）和 chat_with_tools（工具调用）的能力。
-        断路器自动降级。输出长度截断（finish_reason=length）不在本方法重试，
-        而是由调用方（Agent 的无工具重定向机制：切快速模型 + tool_choice=required）处理，
-        避免思维模型反复截断浪费 token。
 
         Yields:
             {"type": "model", "content": "..."} — 模型名
@@ -932,8 +901,6 @@ class LLMManager:
         chain = self._degradation_chain(target_model)
         tried_models: List[str] = []
 
-        base_tokens = max_tokens or 8000
-
         for attempt_model in chain:
             if attempt_model in tried_models:
                 continue
@@ -943,7 +910,7 @@ class LLMManager:
 
             cfg = self._model_configs()[0]
             try:
-                logger.info(f"LLM stream+tools: model={attempt_model}, max_tokens={base_tokens}, tools={[t['function']['name'] for t in tools]}")
+                logger.info(f"LLM stream+tools: model={attempt_model}, tools={[t['function']['name'] for t in tools]}")
                 create_kwargs = dict(
                     model=attempt_model,
                     messages=messages,
@@ -951,13 +918,12 @@ class LLMManager:
                     tool_choice=tool_choice,
                     temperature=temperature,
                     stream=True,
-                    max_tokens=base_tokens,
                 )
                 stream = await self._acreate(cfg, **create_kwargs)
             except Exception as e:
                 _circuit.record_failure(attempt_model)
                 logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
-                continue  # 换模型
+                continue
 
             try:
                 yield {"type": "model", "content": attempt_model}
@@ -999,7 +965,6 @@ class LLMManager:
 
                 _circuit.record_success(attempt_model)
 
-                # yield 完整工具调用（finish_reason=length 的截断交由调用方 Agent 的无工具重定向机制处理）
                 tc_list = [accumulated_tc[i] for i in sorted(accumulated_tc.keys())]
                 if tc_list:
                     yield {"type": "tool_calls", "tool_calls": tc_list}
@@ -1010,7 +975,7 @@ class LLMManager:
             except Exception as e:
                 _circuit.record_failure(attempt_model)
                 logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
-                continue  # 换模型
+                continue
 
         raise RuntimeError(f"所有模型均不可用: {tried_models}")
 
@@ -1053,7 +1018,7 @@ class LLMManager:
         prompt: str,
         model: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """生成文本响应（chat方法的别名）"""
         return await self.chat(prompt, model=model, temperature=temperature, max_tokens=max_tokens)

@@ -4168,3 +4168,79 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | Handoff-cap linkage | multi_agent.py + operator.py + pipeline.py | `max_handoffs` links to `debug_max_inspections` (= inspections×2+2), ConvergenceGuard threshold widened in sync, preventing the 7-round inspect-fix loop from being cut short; retry-round events show the real inspection round |
 | written_tables tracking | skill_runner.py + data_processor_agent.py | `write_table_data` records `_WRITTEN_TABLES`, execution result returns `written_tables`; DataProcessor handoff prefers the actually-written table name from it, not inferring from the result type |
 | Provider-aware embedding selection | llm.py | `_eff_embedding_model` + `_PROVIDER_EMBEDDING_MODELS`: picks the embedding model by provider (glm→embedding-3 / qwen→text-embedding-v3 etc.), avoiding OpenAI model names being sent to Zhipu et al.; `init_user_llm_context` adds UUID type validation + empty-API-key fallback to global config |
+
+### 11.20 Round 9 — Truncation-Guarantee Contract + Reasoning-Budget Right Fix + Prefix Cache
+
+**Core insight**: After comparing with Opencode / DeepAnalyze, round 8's `max_tokens=4000` "to prevent reasoning from dragging on" was self-harm — max_tokens is a cap, not a charge; the model's reasoning self-terminates, so the cap only truncates and never saves tokens. The real cause of "reasoning dragging on" is circular reasoning (the model stuck in a loop), which should be fixed at the root with StuckDetector + frequency_penalty, not with a cap. Both goals (no truncation + token saving) are satisfied by the same set of levers.
+
+**Truncation-guarantee contract (user-visible truncation → zero)**:
+- L1 prevent: max_tokens raised to 12000 (cap≠cost; reasoning self-terminates, no waste)
+- L2 continue: on finish_reason=length → append partial + "continue from where you stopped", same-model continuation (≤5 rounds); partial reused as input (hits prefix cache), no regeneration, no clear_thinking
+- L3 force-progress: if continuation exhausted and still length (extremely rare) → same model + tool_choice=required fallback (does NOT switch to fast_model — preserves already-generated reasoning)
+- L4 circular-reasoning right fix: has_massive_repetition detects reasoning duplication → inject frequency_penalty=0.1 next round (one-shot, DA line 1567)
+
+| Change | File | Notes |
+|------|------|------|
+| L1 delete 4000 cap + delete "thinking ≤5 sentences" | llm.py + 2 agents + endpoints | max_tokens 4000/6000/8000 → 12000 (cap≠cost); removed DEBUG_INSTRUCTIONS "keep thinking within 5 sentences" (cap doesn't save tokens; prompt-begging doesn't save provider reasoning tokens, only degrades quality) |
+| L2 truncation continuation | llm.py | `chat_stream_with_tools_and_thinking` / `chat_stream_with_thinking` add L2 continue: on finish_reason=length append generated partial assistant + "continue" user msg, same-model continuation ≤5 rounds; partial reused as input (prefix-cache hit), no regeneration, no clear_thinking; replaces token_chain escalation (4K→8K→16K regeneration) |
+| L3 force-progress (replaces fast_model redirect) | data_processor_agent.py + data_inspector_agent.py | Deleted length→fast_model redirect (loses reasoning + double billing); L2 exhausted → same model + tool_choice=required (`_force_tool_attempts` ≤2); L3 failure → give_up graceful termination (explicit failure signal, not a truncated fake result) |
+| L4 circular-reasoning right fix | agent_utils.py + llm.py + 2 agents | `has_massive_repetition`: samples candidate substrings and counts non-overlapping occurrences (≥3 = repetition); reasoning repetition detected → next round `frequency_penalty=0.1` (one-shot, reset after use); root-cause fix for "reasoning dragging on", replacing the 4000-cap band-aid |
+| Prefix Cache static/dynamic partition | data_processor_agent.py | `build_debug_system_prompt` split into static region (instructions + spec + sandbox docs + tool guidance + safety + anti-hallucination) memoized byte-stable above `---DYNAMIC_BOUNDARY---`, dynamic region (script/params/lessons/history) below; removed round_num progressive injection (broke cache); GLM context cache hits static prefix from round 2, input cost down 30%+ (DA line 1484-1536) |
+| continue event observability | llm.py + 2 agents | L2 continuation yields `{"type":"continue","round":n}` forwarded to frontend; L3/L4 trigger warning logs |
+| Cross-turn reasoning summary keeps conclusion | data_processor_agent.py | `thinking_content[:500]` (first-segment only) → first 200 + last 300 chars (preserves root-cause conclusion, not just opening context) |
+| endpoints max_tokens sync | operator.py + pipeline.py + skill.py | 4 `chat_stream_with_thinking(max_tokens=4000/2000)` → 12000, consistent with new default |
+
+**Relationship to prior rounds**: Round 8's "no-tool redirect (switch to fast_model)" and "length-escalation dead-code cleanup" are fully superseded by this round's L2+L3 — L2 continuation preserves reasoning (no loss), L3 same-model fallback (no dumb-model switch). Round 8's `_stream_with_timeout` / written_tables / provider-aware embedding / handoff-cap linkage remain untouched.
+
+### 11.21 Round 10 — Line-Level Patch Primitive (aligning with OpenCode edit)
+
+**Core insight**: Round 9's L2 continuation can rescue "output truncation", but cannot rescue the root cause of "shouldn't have generated this much code in the first place". Comparing with OpenCode revealed the essential gap is **edit-primitive granularity**: OpenCode uses line-level patches (old_string/new_string) — small edits produce small output, naturally never truncating; DataCrab's `modify_and_run(code=...)` forces the LLM to emit the entire function or even the whole script, with a high output floor → truncation. experience.json's lessons plainly recorded "fix is just one line" yet the LLM still rewrote the whole thing, dropped imports, and truncated. This round lowers the edit primitive from function-level to line-level.
+
+| Change | File | Notes |
+|------|------|------|
+| apply_patch line-level patch | operator_parser.py | `apply_patch(original, old_string, new_string)`: exact string match (unique) → per-line strip lenient match (tolerates indentation); 0 hits → "not found" error, >1 hits → "not unique" error; returns `{success, code, message}`. Aligns with OpenCode edit semantics |
+| edit_script / edit_and_run tools | data_processor_agent.py | New `EDIT_SCRIPT_TOOL` / `EDIT_AND_RUN_TOOL` schema (old_string+new_string, line-level patch); `edit_and_run` delegates to edit_script+run_script (symmetric with modify_and_run); `DEBUG_TOOLS` grows to 6 |
+| read_script tool (verbatim read) | data_processor_agent.py | `READ_SCRIPT_TOOL`: returns the verbatim full text of the current script (optional function_name to view a single function). Call before line-level patch to get the exact old_string; result is not compressed (preserves verbatim text), fixing the issue where `_extract_script_for_context` compressed >8KB scripts so the LLM couldn't get verbatim text |
+| _finalize_script_change shared helper | data_processor_agent.py | Extracted modify_script's "write operator/pipeline/skill + skill_md + AST syntax check + diff" into a shared method, reused by both modify_script and edit_script, eliminating ~90 lines of duplication |
+| DEBUG_INSTRUCTIONS rewrite | data_processor_agent.py | "every round must use modify_and_run" → "every round must use edit_and_run or modify_and_run"; prefer edit_and_run for small edits (small output, no truncation); only use modify_and_run for whole-function rewrites; added edit_and_run call example |
+| run_debug loop integration | data_processor_agent.py | `_TOOL_LABELS` adds edit_script/edit_and_run/read_script; "executing" detection adds edit_and_run; "query-only no edit" check adds edit_and_run/edit_script; result-handling blocks `modify_and_run`/`modify_and_run` branches expanded to `in (modify_and_run, edit_and_run)` / `in (modify_script, edit_script)`; read_script result not compressed |
+| tool honesty table | tool_guidance.py | Added "debug script-editing tools" section: honest comparison of edit_and_run (small output / precise / requires unique match), modify_and_run (large output / function-level / may truncate), read_script (verbatim / costs tokens) |
+| apply_patch unit tests | tests/test_apply_patch.py | 7 cases: exact unique replace / not found / multiple non-unique / empty old_string / lenient indentation match / multiline replace / lenient multiple fails |
+
+**Relationship to prior rounds**: Round 9's L2 continuation + L3 force-progress remain untouched — they are the fallback for "output truncation"; this round reduces output volume at the root, so small edits no longer trigger truncation. The two are complementary: edit_and_run makes output small (prevention), L2 continuation backs up rare output truncation (insurance).
+
+### 11.22 Round 11 — Function-Level Merge Fixes Subfunction-Split Bug (modify_script losing functions)
+
+**Core bug**: Round 10's `edit_and_run` solved "small edits don't truncate", but `modify_script`'s (whole-function rewrite scenario) merge logic was still the old "full replacement" — when the LLM returned multi-function code with imports, it would overwrite the entire original script, losing all imports / constants / other functions; worse, new functions (not present in the original script) would be mistakenly treated by the subsequent `_strip_main_block` as "code outside the main block" and deleted, so the LLM's helper functions simply vanished. experience.json repeatedly recorded "after edit, main can't find helper" — exactly this bug.
+
+**Fix strategy**: `apply_partial_code` always performs function-level merge, no longer full replacement.
+
+| Change | File | Notes |
+|------|------|------|
+| `apply_partial_code` function-level merge | operator_parser.py | Rewritten: AST parses top-level FunctionDef/AsyncFunctionDef/ClassDef in partial → same-name definitions replace the corresponding ones in the original script (replace back-to-front to avoid line-offset issues) → new functions (non-same-name) inserted before `if __name__ == '__main__':` (to avoid deletion by `_strip_main_block`); no longer overwrites the whole segment, preserving the original script's imports/constants/other functions |
+| `_find_main_block_line` AST locator | operator_parser.py | New helper: uses AST to precisely find the line number (0-based) of `if __name__ == '__main__':`; returns the last line count if not found (append to file end); more robust than regex, immune to string literals |
+| `modify_script` integration | data_processor_agent.py | `modify_script` tool changed from "write code directly" to `apply_partial_code(current, code)` function-level merge, then goes through `_finalize_script_change` (write + AST syntax check + diff); edit_script unaffected (line-level patch never does full replacement anyway) |
+| `apply_partial_code` unit tests | tests/test_apply_patch.py | 5 new cases: no main block append / insert before main block (core bug) / mixed (same-name replace + new function) / multiple new functions all before main / same-name replace (regression of original behavior); total cases 7→12 |
+
+**Relationship to prior rounds**: Round 10's `edit_and_run` (line-level patch, small edits) + this round's `apply_partial_code` (function-level merge, whole-function rewrites) together cover both usage scenarios of modify_script — small edits go through line-level patch (small output), large changes go through function-level merge (no function loss). Both avoid the old "full replacement loses context" bug.
+
+### 11.23 Round 12 — Aligning with OpenCode Debug Mode (minimal prompt + thinking + investigate-without-fix detection + SSE keepalive + import fixes)
+
+**Core insight**: Comparing with OpenCode revealed DataCrab's debug mode gap — OpenCode locates code via context (error→direct Edit), DataCrab guided "first investigate" causing 7 rounds of investigation without fixing; OpenCode has thinking, DataCrab disabled it (`enable_thinking=False`); OpenCode has no round concept, DataCrab's round display was accidentally deleted.
+
+| Change | File | Notes |
+|------|------|------|
+| DEBUG_INSTRUCTIONS to OpenCode minimal style | data_processor_agent.py | Removed investigation guidance + round info, changed to "look at error, use edit_and_run to modify and execute" |
+| thinking enabled | data_processor_agent.py | `enable_thinking=False`→`True` + loop forwards thinking events to frontend (previously discarded) |
+| investigate-without-fix detection | data_processor_agent.py | `_no_fix_rounds`: called tools but not edit_and_run/modify_and_run/run_script → count; 3 consecutive → give_up |
+| analyze mode 1 round | data_processor_agent.py | `max_iterations = 1 if analyze_only else 7` |
+| round display fix | SkillView/OperatorView/PipelineView.vue | round event adds `─── Round ${data.round} ───` (previously accidentally deleted) |
+| run() adds yield round | data_processor_agent.py | Main chat run() yields round each round (previously missing) |
+| SSE ping mechanism | skill.py | Auto-fix adds ping (every 20s keepalive, prevents network error) |
+| platform issue prediction | data_processor_agent.py | `_is_platform_issue_report` + `_PLATFORM_ISSUE_SIGNALS`: LLM output judged as platform issue → platform_issue event + terminate |
+| per-round platform check removed | data_processor_agent.py | Removed per-round fast_model platform check (misjudgment + waste) |
+| import fixes | data_processor_agent.py | Added StuckDetector/SearchSaturationDetector/estimate_complexity/get_turn_budget/should_warn_ungrounded_claim/is_planning_only/get_context_pressure_level/build_pressure_warning |
+| frontend platform_issue handling | SkillView/OperatorView.vue | Shows "platform capability missing" |
+| timeout back to 300s | config.py | SKILL_RUNNER_TIMEOUT 60→300 |
+
+**Relationship to prior rounds**: Rounds 10-11 aligned the editing primitive layer (edit_and_run + apply_partial_code); this round aligns the debug mode layer (minimal prompt + thinking + context-based locating). Complementary: primitives make small edits not truncate, mode makes LLM modify directly without investigating.

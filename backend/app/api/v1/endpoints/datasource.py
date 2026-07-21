@@ -54,7 +54,48 @@ async def create_datasource(
     db.add(datasource)
     await db.flush()
     await db.refresh(datasource)
+
+    # 自动为文件型数据源创建 FileLink（授权目录），使沙箱 read_file/llm_vision 可访问
+    await _auto_create_file_link(db, datasource, current_user.id)
+
     return datasource
+
+
+async def _auto_create_file_link(db: AsyncSession, datasource: DataSource, user_id):
+    """文件型数据源自动创建 FileLink，授权沙箱访问其目录"""
+    from pathlib import Path
+    from app.models.filelink import FileLink
+
+    cfg = datasource.connection_config or {}
+    file_path = cfg.get("file_path") or cfg.get("directory") or ""
+    if not file_path:
+        return
+
+    p = Path(file_path)
+    # 文件 → 授权父目录；目录 → 授权自身
+    dir_path = str(p.parent) if p.is_file() or "." in p.name else str(p)
+
+    # 检查是否已有同路径的 FileLink
+    result = await db.execute(
+        select(FileLink).where(
+            FileLink.path == dir_path,
+            FileLink.created_by == user_id,
+            FileLink.is_active == True,
+        )
+    )
+    if result.scalars().first():
+        return
+
+    link = FileLink(
+        name=f"[自动] {datasource.name}",
+        path=dir_path,
+        description=f"数据源 {datasource.name} 自动授权目录",
+        link_type="directory",
+        created_by=user_id,
+    )
+    db.add(link)
+    await db.flush()
+    logger.info(f"自动创建 FileLink: {dir_path} (数据源: {datasource.name})")
 
 
 @router.get("", response_model=list[DataSourceResponse])
@@ -134,6 +175,10 @@ async def update_datasource(
 
     await db.flush()
     await db.refresh(datasource)
+
+    # 修改时也自动创建 FileLink（授权目录）
+    await _auto_create_file_link(db, datasource, current_user.id)
+
     return datasource
 
 

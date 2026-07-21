@@ -8,7 +8,6 @@
 - delegate_to_inspector 工具：Agent 自主决定是否交接检查（O）
 - 动态轮次预算（Q）：按任务复杂度分配迭代上限
 - 上下文压力主动告警（R）：50%/60% 阈值注入提示
-- 输出长度升级（S）：finish_reason=length 时提升 max_tokens
 - 三级反幻觉注入（T）：standard 级别
 """
 
@@ -36,9 +35,6 @@ from app.services.agent_utils import (
     get_anti_hallucination_section,
 )
 from loguru import logger
-
-# 输出长度升级链（S）
-_OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
 
 # Agent 自主 handoff 工具（O）：让 Agent 自己决定是否需要检查
 DELEGATE_TOOL = {
@@ -123,24 +119,14 @@ class AgentService:
 
         had_any_tool_calls = False
         pressure_warned = False
-        output_token_idx = 0
         has_preinjected = "实时数据查询结果" in ctx.datasource_context
 
         for i in range(max_iterations):
-            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
             response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
+                messages=local_messages, tools=self.tools, temperature=0.3
             )
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
-
-            # 输出长度升级（S）：输出被截断时提升 max_tokens 重试
-            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
-                output_token_idx += 1
-                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
-                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
-                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
-                continue
 
             if not tool_calls:
                 content = response.get("content", "")
@@ -219,24 +205,14 @@ class AgentService:
 
         had_any_tool_calls = False
         pressure_warned = False
-        output_token_idx = 0
         has_preinjected = "实时数据查询结果" in ctx.datasource_context
 
         for i in range(max_iterations):
-            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
             response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=max_tokens
+                messages=local_messages, tools=self.tools, temperature=0.3
             )
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
-
-            # 输出长度升级（S）
-            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
-                output_token_idx += 1
-                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
-                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
-                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
-                continue
 
             if not tool_calls:
                 content = response.get("content", "")

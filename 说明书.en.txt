@@ -70,9 +70,9 @@ Operators are Python scripts stored in the database, supporting:
 - **AI modification**: natural-language instructions modify an existing operator script, with auto-verification
 - **Clone**: copy an operator and its script
 - **Debug/Execute**: run the operator in a sandboxed namespace with injected tool functions (query_table_data, llm_chat, etc.)
-- **AI debug assistant**: chat-style interactive debugging; the AI modifies scripts and auto-executes to verify; results shown in the message stream
+- **AI debug assistant**: chat-style interactive debugging; line-level patch editing (edit_and_run) + thinking reasoning visualization; the AI modifies scripts and auto-executes to verify; results shown in the message stream
 - **Download**: export as a `.py` file
-- **Self-evolving experience library**: failures record negative examples; successes after a fix record positive examples; the LLM distills lessons injected into subsequent prompts
+- **Self-evolving experience library**: failures record negative examples; successes after a fix record positive examples; the LLM distills lessons (common errors + success patterns) accumulated
 
 ### 5. Skill Management
 
@@ -320,8 +320,8 @@ All API routes are prefixed with `/api/v1/`:
 2. **Pluggable connectors**: BaseConnector abstract class + registry pattern for easily extending new data source types
 3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable
 4. **Pipeline = Python main function**: discards the DAG model; each pipeline is a standalone runnable Python function
-5. **Self-evolving experience library**: operators and skills share a unified experience.json, closing the execute→record→distill→inject loop
+5. **Self-evolving experience library**: operators and skills share a unified experience.json, closing the execute→record→distill→accumulate loop
 6. **LLM capability injection**: the llm_chat() function can be called directly inside operator and skill scripts
 7. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback
 8. **AST script introspection**: Python AST parsing auto-extracts function signatures and docs, registering operators with zero config
-9. **AI debug assistant**: chat-style interactive debugging with visible AI reasoning; on execution failure, error stack traces are automatically fed back to the AI for repair (a Loop Engineering practice)
+9. **AI debug assistant**: chat-style interactive debugging with thinking reasoning visualization + line-level patch editing (edit_and_run); on execution failure, error stack traces are automatically fed back to the AI for repair (a Loop Engineering practice)

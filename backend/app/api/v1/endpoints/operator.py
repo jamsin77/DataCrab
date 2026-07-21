@@ -770,7 +770,7 @@ async def generate_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': 'AI 正在推理和生成算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -894,7 +894,7 @@ async def modify_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': 'AI 正在推理和修改算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, max_tokens=4000):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1296,7 +1296,7 @@ async def operator_to_pipeline_stream(
             ]
 
             full_content = ""
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":

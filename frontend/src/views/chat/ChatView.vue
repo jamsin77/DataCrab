@@ -83,6 +83,7 @@
               </div>
               <div v-if="msg.role === 'user'" class="user-text">{{ msg.content }}</div>
               
+              <div class="msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
               <div class="message-actions">
                 <el-button
                   class="copy-btn"
@@ -167,6 +168,13 @@ const md = new MarkdownIt({
 
 function renderMarkdown(content: string): string {
   return md.render(content)
+}
+
+function formatMsgTime(ts: string): string {
+  try {
+    const d = new Date(ts)
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch { return '' }
 }
 
 function toggleReasoning(msgId: string) {
@@ -453,6 +461,12 @@ async function handleSessionCommand(command: string, sessionId: string) {
     opacity: 0;
     transition: opacity 0.2s;
     margin-top: 4px;
+  }
+
+  .msg-time {
+    font-size: 11px;
+    color: #999;
+    margin-top: 2px;
   }
 
   &:hover .message-actions {

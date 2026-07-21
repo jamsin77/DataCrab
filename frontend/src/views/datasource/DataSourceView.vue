@@ -52,7 +52,7 @@
     </el-table>
 
     <el-dialog v-model="showCreateDialog" :title="editId ? '编辑数据源' : '新建数据源'" width="600px" @closed="resetForm">
-      <el-form :model="configForm" label-width="auto" ref="formRef">
+      <el-form :model="configForm" label-position="top" ref="formRef">
         <el-form-item label="名称" required>
           <el-input v-model="configForm.name" placeholder="请输入数据源名称" />
         </el-form-item>
@@ -189,7 +189,7 @@
     </el-dialog>
 
     <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? '编辑连接器' : '新建连接器'" width="680px">
-      <el-form label-width="100px">
+      <el-form label-position="top">
         <el-form-item label="标识" required>
           <el-input v-model="connectorEditForm.name" :disabled="!!connectorEditForm.id" placeholder="英文小写，如 mongodb" />
         </el-form-item>

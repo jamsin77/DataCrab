@@ -4263,3 +4263,79 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | handoff 上限联动 | multi_agent.py + operator.py + pipeline.py | `max_handoffs` 与 `debug_max_inspections` 联动（= inspections×2+2），ConvergenceGuard 阈值同步放宽，避免 7 轮检查-修复循环被提前截断；retry round 事件显示真实检查轮次 |
 | written_tables 追踪 | skill_runner.py + data_processor_agent.py | `write_table_data` 记录 `_WRITTEN_TABLES`，执行结果返回 `written_tables`；DataProcessor handoff 优先从中取实际写入表名，不依赖 result 类型推断 |
 | embedding 按 provider 选 | llm.py | `_eff_embedding_model` + `_PROVIDER_EMBEDDING_MODELS`：按 provider 选 embedding 模型（glm→embedding-3 / qwen→text-embedding-v3 等），避免用 OpenAI 模型名调智谱等 provider 报错；`init_user_llm_context` 增加 UUID 类型校验 + 空 API key 回退全局 |
+
+### 11.20 第九轮：截断保证契约 + 推理预算正法 + Prefix Cache
+
+**核心洞察**：对照 Opencode / DeepAnalyze 后发现，第八轮的「max_tokens=4000 防 reasoning 无限拉长」是自我伤害——max_tokens 是 cap 不是 charge，模型推理自终止，cap 只截断不省 token。「推理链无限拉长」的真因是循环推理（模型卡住绕圈），应用 StuckDetector + frequency_penalty 治本，而非 cap 治标。两个目标（不截断 + 省 Token）由同一组杠杆同时满足。
+
+**截断保证契约（用户可见截断归零）**：
+- L1 预防：max_tokens 拉到 12000（cap≠cost，推理自终止不浪费）
+- L2 续写：finish_reason=length → append partial + 「请从你刚才停下的地方继续」同模型续写（≤5 轮），partial 复用为 input（命中 prefix cache），不重生成、不 clear_thinking
+- L3 强制推进：续写耗尽仍 length（极罕见）→ 同模型 + tool_choice=required 兜底（不换 fast_model，保住已生成推理）
+- L4 循环推理正法：has_massive_repetition 检测 reasoning 重复 → 下轮注入 frequency_penalty=0.1（一次性，DA line 1567 正法）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| L1 删 4000 cap + 删「thinking 限5句」 | llm.py + data_processor_agent.py + data_inspector_agent.py + endpoints | max_tokens 默认 4000/6000/8000 → 12000；删 DEBUG_INSTRUCTIONS 里「thinking 控制在5句话以内」（cap≠cost，cap 不省 token 只截断；prompt 求模型不省 provider 推理 token 只降质量）|
+| L2 截断续写机制 | llm.py | `chat_stream_with_tools_and_thinking` / `chat_stream_with_thinking` 新增 L2 续写：finish_reason=length 时 append 已生成 partial assistant + 「继续」user 消息，同模型续写，最多 5 轮；partial 作为 input 复用（命中 prefix cache），不重生成、不 clear_thinking；替换原 token_chain 升级链（4K→8K→16K 重生成）|
+| L3 强制推进（替代 fast_model 重定向） | data_processor_agent.py + data_inspector_agent.py | 删 length→fast_model 重定向（丢推理+双倍计费）；L2 续写耗尽仍 length → 同模型 + tool_choice=required 兜底（`_force_tool_attempts`，最多 2 次）；L3 也失败 → give_up 优雅终止（明确失败信号，不是截断的假结果）|
+| L4 循环推理正法 | agent_utils.py + llm.py + 2 个 agent | `has_massive_repetition`：取候选片段统计全文非重叠出现次数（≥3 次判定重复）；检测到 reasoning 重复 → 下轮 `frequency_penalty=0.1`（一次性，用完重置）；这是「推理链无限拉长」的真正根因治法，替代 4000-cap 治标 |
+| Prefix Cache 静态/动态分区 | data_processor_agent.py | `build_debug_system_prompt` 改静态/动态分区：静态区（指令+技能规范+沙箱文档+工具指引+安全+反幻觉）memoize 字节稳定，`---DYNAMIC_BOUNDARY---` 之上；动态区（脚本/SKILL.md/参数/经验/历史）每轮可变。移除 round_num 渐进式注入（破坏缓存）；GLM context cache 第二轮起命中静态前缀，input 降 30%+（DA line 1484-1536）|
+| continue 事件可观测 | llm.py + 2 个 agent | L2 续写时 yield `{"type":"continue","round":n}`，agent 透传前端；L3/L4 触发打 warning 日志 |
+| 跨轮推理摘要保结论 | data_processor_agent.py | `thinking_content[:500]`（只取首段）→ 首 200 + 尾 300 字符（保住根因结论，而非只留开头背景）|
+| endpoints max_tokens 同步 | operator.py + pipeline.py + skill.py | 4 处 `chat_stream_with_thinking(max_tokens=4000/2000)` → 12000，与新默认一致 |
+
+**与前轮的关系**：第八轮的「无工具重定向（切 fast_model）」和「长度升级死代码清理」被本轮 L2+L3 彻底替代——L2 续写保留推理（不丢），L3 同模型兜底（不换傻模型）。第八轮的 `_stream_with_timeout` / written_tables / embedding 按 provider 选 / handoff 上限联动 保留不动。
+
+### 11.21 第十轮：行级补丁原语（对齐 OpenCode edit）
+
+**核心洞察**：第九轮的 L2 续写能救「输出截断」，但救不了「本不该生成这么多代码」这个根因。对照 OpenCode 发现本质差距在**编辑原语粒度**：OpenCode 用行级 patch（old_string/new_string），小修改只产生小输出，天生不截断；DataCrab 的 `modify_and_run(code=...)` 要求 LLM 吐出整个函数甚至整脚本，输出下限高 → 截断。experience.json 的 lessons 白纸黑字记着「修复方案就一行即可」但 LLM 仍整体重写、丢 import、截断。本轮把编辑原语从函数级降到行级。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| apply_patch 行级补丁 | operator_parser.py | `apply_patch(original, old_string, new_string)`：精确字符串匹配（唯一）→ 逐行 strip 宽松匹配（容错缩进）；0 次报「未找到」、>1 次报「不唯一」；返回 `{success, code, message}`。对齐 OpenCode edit 语义 |
+| edit_script / edit_and_run 工具 | data_processor_agent.py | 新增 `EDIT_SCRIPT_TOOL` / `EDIT_AND_RUN_TOOL` schema（old_string+new_string，行级补丁）；`edit_and_run` 委托 edit_script+run_script（对称 modify_and_run）；`DEBUG_TOOLS` 增至 6 个 |
+| read_script 工具（逐字读） | data_processor_agent.py | `READ_SCRIPT_TOOL`：返回当前脚本逐字全文（可指定 function_name 只看某函数）。行级补丁前调用获取精确 old_string；结果不压缩（保逐字），修复 `_extract_script_for_context` 对 >8KB 脚本压缩导致 LLM 拿不到逐字文本的问题 |
+| _finalize_script_change 共享 helper | data_processor_agent.py | 抽取 modify_script 的「写入 operator/pipeline/skill + skill_md + AST 语法检查 + diff」为共享方法，modify_script 与 edit_script 共用，消除 90 行重复 |
+| DEBUG_INSTRUCTIONS 改写 | data_processor_agent.py | 「每轮必用 modify_and_run」→ 「每轮必用 edit_and_run 或 modify_and_run」；小修改优先 edit_and_run（输出量小不截断）；整函数重写才 modify_and_run；加 edit_and_run 调用示例 |
+| run_debug 循环集成 | data_processor_agent.py | `_TOOL_LABELS` 加 edit_script/edit_and_run/read_script；「正在执行」检测加 edit_and_run；「只查询不修改」检查加 edit_and_run/edit_script；结果处理块 `modify_and_run`/`modify_and_run` 分支扩展为 `in (modify_and_run, edit_and_run)` / `in (modify_script, edit_script)`；read_script 结果不压缩 |
+| 工具诚实表 | tool_guidance.py | 加「调试脚本修改工具」节：edit_and_run（小输出/精确/需唯一匹配）、modify_and_run（大输出/函数级/可能截断）、read_script（逐字/占 token）的诚实对比 |
+| apply_patch 单测 | tests/test_apply_patch.py | 7 用例：精确唯一替换 / 未找到 / 多次不唯一 / 空 old_string / 宽松缩进匹配 / 多行替换 / 宽松多次失败 |
+
+**与前轮的关系**：第九轮的 L2 续写 + L3 强制推进保留不动——它们是「输出截断」的兜底；本轮从根上减少输出量，让小修改不再触发截断。两者互补：edit_and_run 让输出小（预防），L2 续写兜底罕见的输出截断（保险）。
+
+### 11.22 第十一轮：函数级合并修复子函数拆分 bug（modify_script 丢函数）
+
+**核心 Bug**：第十轮上线的 `edit_and_run` 解决了「小修改不截断」，但 `modify_script`（整函数重写场景）的合并逻辑仍是旧的「全量替换」——当 LLM 返回带 import 的多函数代码时，会用整段覆盖原脚本，导致原脚本的 import / 常量 / 其他函数全部丢失；更严重的是，新函数（原脚本中不存在的函数）会被后续 `_strip_main_block` 误判为「main block 外的代码」而删除，LLM 写的辅助函数直接消失。experience.json 反复记录「修改后 main 函数找不到 helper」就是这个 bug。
+
+**修复策略**：`apply_partial_code` 始终走函数级合并，不再全量替换。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `apply_partial_code` 函数级合并 | operator_parser.py | 重写：AST 解析 partial 中的顶层 FunctionDef/AsyncFunctionDef/ClassDef → 同名定义替换原脚本对应定义（从后往前替换避免行号偏移）→ 新函数（非同名）插入到 `if __name__ == '__main__':` 之前（避免被 `_strip_main_block` 删除）；不再做整段覆盖，保住原脚本 import/常量/其他函数 |
+| `_find_main_block_line` AST 定位 | operator_parser.py | 新增辅助函数：用 AST 精准找到 `if __name__ == '__main__':` 的行号（0-based），找不到返回末尾行数（追加到文件末尾）；比正则更稳健，不受字符串字面量干扰 |
+| `modify_script` 接入 | data_processor_agent.py | `modify_script` 工具从「直接写 code」改为 `apply_partial_code(current, code)` 函数级合并后再走 `_finalize_script_change`（写入 + AST 语法检查 + diff）；edit_script 不受影响（行级补丁本就不全量替换） |
+| `apply_partial_code` 单测 | tests/test_apply_patch.py | 新增 5 用例：无 main block 追加 / 有 main block 前插入（核心 bug）/ 混合（同名替换+新函数）/ 多新函数全部 main 前 / 同名替换（原有行为回归）；总用例 7→12 |
+
+**与前轮的关系**：第十轮的 `edit_and_run`（行级补丁，小修改）+ 本轮的 `apply_partial_code`（函数级合并，整函数重写）共同覆盖 modify_script 的两种使用场景——小修改走行级补丁（输出小），大改走函数级合并（不丢函数）。两者都避免「全量替换丢上下文」的旧 bug。
+
+### 11.23 第十二轮：对齐 OpenCode 调试模式（极简 prompt + thinking + 只调查不修改检测 + SSE 保活 + import 补全）
+
+**核心洞察**：对照 OpenCode 发现 DataCrab 调试模式的本质差距——OpenCode 靠上下文定位代码（错误信息→直接 Edit），DataCrab 引导「先调查追踪错误来源」导致 LLM 七轮全调查不修改；OpenCode 有 thinking（推理过程），DataCrab 显式关闭了 thinking（`enable_thinking=False`）；OpenCode 连续 agent loop 无轮次概念，DataCrab 的轮次提示被误删。本轮全面对齐 OpenCode。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| DEBUG_INSTRUCTIONS 改成 OpenCode 极简风格 | data_processor_agent.py | 去掉「先看 tool_call_log→追踪错误来源→grep_code 搜索→判断平台/脚本」的调查引导 + 去掉轮次信息（{max_rounds}），改成「看错误信息，用 edit_and_run 修改并执行。需要看代码时用 read_script」 |
+| thinking 开启 | data_processor_agent.py | `enable_thinking=False`→`True`；循环加 `elif t == "thinking": yield event` 转发 thinking 事件给前端（之前丢弃了） |
+| 只调查不修改检测 | data_processor_agent.py | `_no_fix_rounds` 计数：调了工具但没调 edit_and_run/modify_and_run/run_script → 计数+1；连续 3 次 → give_up，不让 LLM 无限调查 |
+| 分析模式 1 轮 | data_processor_agent.py | `max_iterations = 1 if analyze_only else 7`（分析只 1 轮，修复 7 轮） |
+| 轮次显示修复 | SkillView/OperatorView/PipelineView.vue | round 事件加 `─── 第${data.round}轮 ───` 文字（之前加预判时被误删 `═══第N轮修复═══`） |
+| run() 加 yield round | data_processor_agent.py | 主对话 run() 每轮 yield round + logger.info（之前没有，主对话无轮次显示） |
+| SSE ping 机制 | skill.py | run-stream/run-nl-stream 自动修复的 `async for` 改成 `while True` + `asyncio.wait_for(timeout=20)` + ping 事件，防止脚本执行 300 秒期间 SSE 连接超时（network error） |
+| 平台问题预判 | data_processor_agent.py | `_is_platform_issue_report` + `_PLATFORM_ISSUE_SIGNALS`：LLM 输出被判为平台问题报告 → yield platform_issue 事件 + 终止 |
+| 每轮平台判断删除 | data_processor_agent.py | 删除每轮失败后的 fast_model 平台问题检查（子串匹配误判否定语境 + 浪费 token） |
+| import 补全 | data_processor_agent.py | 补 StuckDetector/SearchSaturationDetector/estimate_complexity/get_turn_budget/should_warn_ungrounded_claim/is_planning_only/get_context_pressure_level/build_pressure_warning（重构时漏 import 导致运行报错） |
+| 前端 platform_issue 处理 | SkillView/OperatorView.vue | 显示「平台能力缺失——这不是脚本问题，修改脚本无法解决」 |
+| 超时改回 300 秒 | config.py | SKILL_RUNNER_TIMEOUT 60→300（60 秒太短，正常脚本可能需要更久） |
+
+**与前轮的关系**：第十~十一轮的行级补丁（edit_and_run）+ 函数级合并（apply_partial_code）是编辑原语层面的对齐；本轮是调试模式层面的对齐——极简 prompt + thinking + 上下文定位（不靠经验库/调查）。两者互补：原语让小修改不截断，模式让 LLM 直接修改不调查。

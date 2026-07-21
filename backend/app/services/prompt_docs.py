@@ -9,6 +9,10 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
 - `get_datasource_id_by_name(name)` → str: 按名称查找数据源UUID
 - `list_tables(datasource_id_or_name)` → list[str]: 列出数据源中的所有表名
 - `write_table_data(datasource_id_or_name, table_name, records=[...])` → dict: 写入数据到数据源
+- `resolve_column(df, name)` → str | None: 按用户提到的列名解析 DataFrame 实际列名（精确→忽略大小写→模糊→翻译匹配）
+  - 当用户说"处理价格列"但实际列名是 price/Price/价格区间 时，用它拿到实际列名再 df[col]
+  - **处理用户自然语言提到的列名时务必先调用 resolve_column 解析**，不要直接 df[name]，避免 KeyError
+  - 找不到返回 None（此时应提示用户列名不存在）
 
 ### SQL 执行函数（结构化数据源）
 - `execute_sql(datasource_id_or_name, sql, limit=10000)` → dict: {"success": bool, "data": [行dict], "columns": [列名], "row_count": int}

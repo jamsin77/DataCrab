@@ -47,6 +47,7 @@ COLUMN_REMARKS = {
     "doc_type": "凭证类型（从文件名提取）",
     "doc_type_pinyin": "凭证类型拼音",
     "extraction_status": "提取状态",
+    "extracted_info": "OCR提取的关键信息（JSON格式）",
     "review_note": "审核备注",
     "timestamp": "数据导入时间戳",
 }
@@ -429,3 +430,31 @@ def main(**kwargs):
     resolved.setdefault('translation_target_lang', '')
     
     return extract_image_info(**resolved)
+
+
+def _probe_ocr_functions():
+    """探测沙箱中可用的OCR/视觉相关函数"""
+    import builtins
+    # 列出所有内置全局名称
+    all_names = dir(builtins)
+    # 也检查全局命名空间
+    try:
+        g = globals()
+        all_names = list(set(all_names + list(g.keys())))
+    except:
+        pass
+    
+    ocr_related = []
+    for name in sorted(all_names):
+        name_lower = name.lower()
+        if any(kw in name_lower for kw in ['ocr', 'vision', 'image', 'recognize', 'read', 'llm', 'chat', 'extract']):
+            ocr_related.append(name)
+    
+    print("OCR/视觉相关函数:", ocr_related)
+    print("\n所有非下划线开头的全局名称:")
+    for name in sorted(all_names):
+        if not name.startswith('_'):
+            print(f"  {name}")
+    return {"ocr_related": ocr_related}
+
+_probe_ocr_functions()

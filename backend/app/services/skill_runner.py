@@ -32,6 +32,46 @@ def _strip_main_block(script_content: str) -> str:
     return re.sub(pattern, '', script_content, flags=re.DOTALL)
 
 
+# 环境问题关键词（修改脚本无法解决）
+_ENV_ERROR_PATTERNS = [
+    ("PyCapsule_Import", "环境问题：numpy C 扩展损坏，需重装 numpy（pip install --force-reinstall numpy）"),
+    ("DLL load failed", "环境问题：DLL 加载失败，可能是 Python 版本或依赖库不兼容"),
+    ("ImportError: Unable to import required dependency", "环境问题：第三方库安装损坏，需重装对应库"),
+    ("ModuleNotFoundError: No module named 'numpy'", "环境问题：numpy 未安装（pip install numpy）"),
+    ("ModuleNotFoundError: No module named 'pandas'", "环境问题：pandas 未安装（pip install pandas）"),
+    ("Permission denied", "环境问题：文件权限不足"),
+    ("ConnectionRefusedError", "环境问题：网络连接被拒绝，检查服务是否运行"),
+    ("ConnectionError", "环境问题：网络连接失败"),
+    ("OSError: [Errno 28]", "环境问题：磁盘空间不足"),
+]
+
+# 脚本问题关键词（修改脚本可修复）
+_SCRIPT_ERROR_PATTERNS = [
+    ("KeyError", "script_error"),
+    ("ValueError", "script_error"),
+    ("TypeError", "script_error"),
+    ("AttributeError", "script_error"),
+    ("IndexError", "script_error"),
+    ("SyntaxError", "script_error"),
+    ("NameError", "script_error"),
+    ("FileNotFoundError", "script_error"),
+    ("ZeroDivisionError", "script_error"),
+    ("UnboundLocalError", "script_error"),
+    ("NotImplementedError", "script_error"),
+]
+
+
+def _classify_execution_error(error_msg: str) -> str:
+    """分类执行错误：environment_issue（环境问题，修改脚本无法解决） / script_error（脚本问题，可修复）"""
+    for pattern, msg in _ENV_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return msg
+    for pattern, error_type in _SCRIPT_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return error_type
+    return "script_error"  # 默认按脚本问题处理
+
+
 SKILL_RUNNER_TEMPLATE = """
 import json
 import sys
@@ -385,22 +425,102 @@ def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_toke
         print(f"[SkillRunner] llm_vision failed: {{e}}")
         return ""
 
+def resolve_column(df, name):
+    # 按 name 解析 DataFrame 实际列名（精确 → 忽略大小写 → 模糊 → 翻译匹配）。找不到返回 None。
+    # 用于用户提到的列名与实际列名不一致（中英文/近义词）场景：如用户说"价格"但实际列是 price。
+    import difflib
+    cols = list(df.columns)
+    name_s = str(name).strip()
+    if not name_s:
+        return None
+    # 1. 精确匹配
+    if name_s in cols:
+        return name_s
+    # 2. 忽略大小写/空白
+    _low = {{str(c).strip().lower(): c for c in cols}}
+    if name_s.lower() in _low:
+        return _low[name_s.lower()]
+    # 3. 模糊匹配（difflib，cutoff=0.6，捕捉近义词/拼写差异）
+    _str_cols = [str(c) for c in cols]
+    _m = difflib.get_close_matches(name_s, _str_cols, n=1, cutoff=0.6)
+    if _m:
+        return _m[0]
+    # 4. 翻译匹配：用 llm_chat 从实际列名里选语义最相近的（中英文/跨语言场景）
+    try:
+        _hint = ", ".join(_str_cols)
+        _ans = llm_chat("数据表实际列名列表：[" + _hint + "]。用户想处理的列名是：" + name_s + "。请从列表中选出语义最相近的一个列名，只输出列名本身，不要解释。若都不相近，输出 __NONE__。").strip()
+        if _ans and _ans != "__NONE__" and _ans in cols:
+            return _ans
+        # 翻译结果再模糊一次（防 LLM 返回带引号/空格）
+        _m2 = difflib.get_close_matches(_ans, _str_cols, n=1, cutoff=0.6)
+        if _m2:
+            return _m2[0]
+    except Exception as _e:
+        print("[SkillRunner] resolve_column translate failed: " + str(_e))
+    return None
+
+# Tool call log — 记录每个平台工具调用的结果，供调试 agent 判断错误来源
+_TOOL_CALL_LOG = []
+
+def _wrap_tool_log(_func_name, _func):
+    import time as _time
+    def _wrapper(*args, **kwargs):
+        _start = _time.time()
+        try:
+            _result = _func(*args, **kwargs)
+            _success = True
+            _message = ""
+            if isinstance(_result, dict):
+                _success = _result.get("success", True)
+                _message = _result.get("message", "") or _result.get("error", "")
+            _TOOL_CALL_LOG.append({{
+                "tool": _func_name,
+                "success": _success,
+                "message": str(_message)[:300] if _message else "",
+                "elapsed_ms": round((_time.time() - _start) * 1000, 2),
+            }})
+            return _result
+        except Exception as _e:
+            _TOOL_CALL_LOG.append({{
+                "tool": _func_name,
+                "success": False,
+                "message": str(_e)[:300],
+                "elapsed_ms": round((_time.time() - _start) * 1000, 2),
+            }})
+            raise
+    return _wrapper
+
 # Inject into builtins so scripts using get_data_accessor() can find them
 import builtins as _builtins
-_builtins.get_table_data = get_table_data
-_builtins.query_table_data = get_table_data
-_builtins.write_table_data = write_table_data
-_builtins.execute_sql = execute_sql
-_builtins.list_tables = list_tables
-_builtins.iter_table_data = iter_table_data
-_builtins.read_file = read_file
-_builtins.write_file = write_file
+_builtins.get_table_data = _wrap_tool_log("get_table_data", get_table_data)
+_builtins.query_table_data = _wrap_tool_log("query_table_data", get_table_data)
+_builtins.write_table_data = _wrap_tool_log("write_table_data", write_table_data)
+_builtins.execute_sql = _wrap_tool_log("execute_sql", execute_sql)
+_builtins.list_tables = _wrap_tool_log("list_tables", list_tables)
+_builtins.iter_table_data = _wrap_tool_log("iter_table_data", iter_table_data)
+_builtins.read_file = _wrap_tool_log("read_file", read_file)
+_builtins.write_file = _wrap_tool_log("write_file", write_file)
 _builtins.compute_map = compute_map
-_builtins.llm_vision = llm_vision
-_builtins.llm_chat = llm_chat
+_builtins.llm_vision = _wrap_tool_log("llm_vision", llm_vision)
+_builtins.llm_chat = _wrap_tool_log("llm_chat", llm_chat)
 _builtins.log = log
-_builtins.get_datasource_id_by_name = _dc_get_datasource_id_by_name
-_builtins.get_table_schema = _dc_get_table_schema
+_builtins.get_datasource_id_by_name = _wrap_tool_log("get_datasource_id_by_name", _dc_get_datasource_id_by_name)
+_builtins.get_table_schema = _wrap_tool_log("get_table_schema", _dc_get_table_schema)
+_builtins.resolve_column = resolve_column
+
+_INJECTED_FUNCTIONS = [
+    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+    "log", "read_file", "write_file", "compute_map",
+    "get_datasource_id_by_name", "resolve_column",
+]
+
+# atexit 确保脚本崩溃时也输出 tool_call_log（供调试 agent 追踪错误来源）
+import atexit as _atexit
+def _print_tool_call_log():
+    if _TOOL_CALL_LOG:
+        print("__TOOL_CALL_LOG__" + json.dumps(_sanitize_nans(_TOOL_CALL_LOG), ensure_ascii=False, default=str))
+_atexit.register(_print_tool_call_log)
 
 # __SCRIPT_CONTENT__
 
@@ -494,8 +614,10 @@ def run_skill_script(
         pass
 
     if uses_argparse:
-        script_content = _strip_main_block(script_content)
         function_name = "main"
+    # 始终剥离 if __name__ 块：避免用户脚本的 __main__ 与模板的 __main__ 冲突
+    # （Fix 1 保证新函数已在 if __name__ 之前，删除安全）
+    script_content = _strip_main_block(script_content)
 
     if datasource_id and "datasource" not in parameters and "datasource_id" not in parameters:
         if uses_argparse and datasource_name:
@@ -537,15 +659,17 @@ def run_skill_script(
             errors="replace",
             timeout=timeout,
             cwd=str(skill_path),
-            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8"},
+            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
         )
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
 
+        error_type = None
         if proc.returncode != 0:
             error_msg = stderr.strip() or stdout.strip()[:500] or "脚本执行失败（无错误输出）"
+            error_type = _classify_execution_error(error_msg)
         else:
             error_msg = None
 
@@ -575,19 +699,68 @@ def run_skill_script(
                     pass
                 break
 
+        tool_call_log = None
+        for line in stdout.split("\n"):
+            if "__TOOL_CALL_LOG__" in line:
+                try:
+                    json_str = line.split("__TOOL_CALL_LOG__", 1)[1].strip()
+                    tool_call_log = json.loads(json_str)
+                    stdout = stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+
         return {
             "success": proc.returncode == 0,
             "result": result,
             "written_tables": written_tables,
+            "tool_calls": tool_call_log or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
             "error": error_msg,
+            "error_type": error_type,
             "stdout": stdout.strip(),
             "execution_time_ms": round(elapsed_ms, 2),
         }
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as _te:
+        # 捕获超时前的 stdout（PYTHONUNBUFFERED=1 确保实时 flush）
+        _timeout_stdout = ""
+        if _te.stdout:
+            _timeout_stdout = _te.stdout if isinstance(_te.stdout, str) else _te.stdout.decode("utf-8", "replace")
+        if _te.stderr:
+            _timeout_stderr = _te.stderr if isinstance(_te.stderr, str) else _te.stderr.decode("utf-8", "replace")
+            if _timeout_stderr.strip():
+                _timeout_stdout += "\n[stderr]\n" + _timeout_stderr
+        # 尝试从超时前的 stdout 解析 tool_call_log（atexit 可能没执行，但试一下）
+        _timeout_tool_calls = None
+        for line in _timeout_stdout.split("\n"):
+            if "__TOOL_CALL_LOG__" in line:
+                try:
+                    json_str = line.split("__TOOL_CALL_LOG__", 1)[1].strip()
+                    _timeout_tool_calls = json.loads(json_str)
+                    _timeout_stdout = _timeout_stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
         return {
             "success": False,
             "error": f"脚本执行超时（{timeout}秒）",
-            "stdout": "",
+            "stdout": _timeout_stdout.strip(),
+            "tool_calls": _timeout_tool_calls or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
             "execution_time_ms": timeout * 1000,
         }
     except Exception as e:

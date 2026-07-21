@@ -285,7 +285,7 @@ async def create_pipeline_from_skill_stream(
             yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在分析 Skill 结构...'}, ensure_ascii=False)}\n\n"
 
             full_content = ""
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, max_tokens=4000):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":

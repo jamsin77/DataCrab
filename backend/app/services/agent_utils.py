@@ -134,6 +134,7 @@ class StuckDetector:
         self._idle_count = 0
 
 
+
 # ==================== 标识符机械抽取（压缩保护）====================
 
 _IDENTIFIER_PATTERNS = [

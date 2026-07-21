@@ -66,8 +66,25 @@ class DataInspectorTools:
     async def profile_data(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
         try:
             df = await self._load_data(datasource_id, table_name, db)
+            # 用 get_table_stats 取真实行数，避免 page_size 截断导致行数不准
+            real_row_count = len(df)
+            try:
+                result = await db.execute(
+                    select(DataSource).where(DataSource.id == _uuid.UUID(datasource_id))
+                )
+                datasource = result.scalar_one_or_none()
+                if datasource:
+                    connector = get_connector(datasource.type, datasource.connection_config or {})
+                    try:
+                        stats = await connector.get_table_stats(table_name)
+                        if isinstance(stats.get("row_count"), (int, float)):
+                            real_row_count = stats["row_count"]
+                    finally:
+                        await connector.close()
+            except Exception:
+                pass  # stats 失败时回退到 len(df)
             profile = {
-                "row_count": len(df),
+                "row_count": real_row_count,
                 "column_count": len(df.columns),
                 "columns": {},
             }

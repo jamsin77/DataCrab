@@ -392,10 +392,10 @@
                   <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
                 </div>
               </div>
-              <el-button v-if="execRunning" type="danger" size="small" style="margin-top:8px" @click="stopExec">
+              <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" size="small" style="margin-top:8px" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -484,11 +484,20 @@
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
-                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <el-collapse v-if="msg.content" :model-value="msg._contentOpen === false ? [] : ['content']" @change="(v: any) => { msg._contentOpen = v.length > 0 }">
+                    <el-collapse-item name="content">
+                      <template #title>
+                        <span class="collapse-label">AI回复</span>
+                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                      </template>
+                      <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                    </el-collapse-item>
+                  </el-collapse>
                   <div v-if="msg.executingMsg" class="debug-msg-executing">
                     <el-icon class="thinking-spin"><Loading /></el-icon>
                     <span>{{ msg.executingMsg }}</span>
                   </div>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
                       <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
@@ -496,10 +505,24 @@
                       </el-tag>
                       <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
                     </div>
-                    <div v-if="msg.runResult.error" class="debug-result-error"><pre>{{ msg.runResult.error }}</pre></div>
+                    <div v-if="msg.runResult.error" class="debug-result-error">
+                      <el-collapse>
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">错误信息</span>
+                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
+                          <pre>{{ msg.runResult.error }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
                     <div v-if="msg.runResult.stdout" class="debug-result-stdout">
                       <el-collapse>
-                        <el-collapse-item title="标准输出">
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">标准输出</span>
+                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
                           <pre>{{ msg.runResult.stdout }}</pre>
                         </el-collapse-item>
                       </el-collapse>
@@ -807,7 +830,7 @@ async function convertToPipeline() {
     role: 'assistant',
     content: '',
     thinking: '',
-    thinkingOpen: true,
+    thinkingOpen: false,
   })
   skillPinnedToBottom.value = true
   await nextTick()
@@ -978,8 +1001,8 @@ async function handleGenerate() {
   generateAbortController = new AbortController()
   const userText = generatePrompt.value.trim()
   pushHistory(genHistory, genHistoryIdx, userText, 'generate')
-  genMessages.value.push({ role: 'user', content: userText })
-  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
+  genMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
 
   try {
     const token = localStorage.getItem('access_token')
@@ -1014,10 +1037,10 @@ async function handleGenerate() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'chunk') {
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
@@ -1104,8 +1127,8 @@ async function handleModifySkill() {
   modifyError.value = ''
   const userText = modifyInstruction.value.trim()
   pushHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
-  modifyMessages.value.push({ role: 'user', content: userText })
-  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
+  modifyMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
 
   const ctrl = new AbortController()
   modifyAbortCtrl.value = ctrl
@@ -1142,10 +1165,10 @@ async function handleModifySkill() {
         const data = JSON.parse(trimmed.slice(6))
         const msg = modifyMessages.value[modifyMessages.value.length - 1]
         if (data.type === 'clear_thinking') {
-          msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+          msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
         } else if (data.type === 'thinking') {
-          if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
-          if (!msg.thinking) msg.thinkingOpen = true
+          if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+          if (!msg.thinking) msg.thinkingOpen = false
           msg.thinking = (msg.thinking || '') + data.content
         } else if (data.type === 'content') {
           if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
@@ -1333,6 +1356,7 @@ interface DebugMessage {
   scriptUpdated?: string
   model?: string
   executingMsg?: string
+  created_at?: string
 }
 
 const debugMessages = ref<DebugMessage[]>([])
@@ -1341,6 +1365,19 @@ const debugStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
 let debugAbortController: AbortController | null = null
 const skillPinnedToBottom = ref(true)
+
+function formatMsgTime(ts?: string): string {
+  if (!ts) return ''
+  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return '' }
+}
+
+function copyText(text: string) {
+  navigator.clipboard.writeText(text).then(() => {
+    ElMessage.success('已复制')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
 
 function scrollSkillDebugToBottom(force = false) {
   const el = debugMsgListRef.value
@@ -1358,8 +1395,7 @@ function scrollThinkingBodyToBottom(msgIdx: number) {
       const body = target.querySelector('.thinking-body') as HTMLElement | null
       if (body) body.scrollTop = body.scrollHeight
     }
-    // 同时滚动主消息列表
-    list.scrollTop = list.scrollHeight
+    scrollSkillDebugToBottom()
   })
 }
 function onSkillListScroll() {
@@ -1370,8 +1406,8 @@ function onSkillListScroll() {
 
 // 执行流式：在消息列表中开一条 live 助手消息，返回其索引
 function startExecMessage(userText: string): number {
-  debugMessages.value.push({ role: 'user', content: userText })
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
+  debugMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   nextTick(() => scrollSkillDebugToBottom(true))
   return debugMessages.value.length - 1
 }
@@ -1908,14 +1944,14 @@ async function handleRunSkill() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = true
+              msg.thinkingOpen = false
               thinkingDone = false
             }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
@@ -1928,12 +1964,28 @@ async function handleRunSkill() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行技能脚本...'
+          } else if (data.type === 'fixing') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
+          } else if (data.type === 'round') {
+            console.log('[SkillView] 收到 round 事件:', data)
+            msg.executingMsg = ''
+            msg.thinkingOpen = false
+            thinkingDone = true
+            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+          } else if (data.type === 'run_result') {
+            msg.executingMsg = ''
+            msg.runResult = data.result
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -1953,7 +2005,7 @@ async function handleRunSkill() {
     } else {
       result = {
         success: false,
-        error: e.response?.data?.detail || e.message || String(e),
+        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
       }
     }
   } finally {
@@ -2022,14 +2074,14 @@ async function handleRunSkillNL() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = true
+              msg.thinkingOpen = false
               thinkingDone = false
             }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
@@ -2043,7 +2095,7 @@ async function handleRunSkillNL() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
@@ -2053,6 +2105,19 @@ async function handleRunSkillNL() {
           } else if (data.type === 'executing') {
             execPhase.value = 'executing'
             if (!msg.thinking) msg.thinking = '正在执行技能脚本...'
+          } else if (data.type === 'fixing') {
+            execPhase.value = 'executing'
+            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
+          } else if (data.type === 'round') {
+            msg.thinkingOpen = false
+            thinkingDone = true
+            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+          } else if (data.type === 'run_result') {
+            msg.runResult = data.result
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2072,7 +2137,7 @@ async function handleRunSkillNL() {
     } else {
       result = {
         success: false,
-        error: e.response?.data?.detail || e.message || String(e),
+        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
       }
     }
   } finally {
@@ -2179,14 +2244,14 @@ async function handleRunCmd() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = true
+              msg.thinkingOpen = false
               thinkingDone = false
             }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
@@ -2199,12 +2264,28 @@ async function handleRunCmd() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行技能脚本...'
+          } else if (data.type === 'fixing') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
+          } else if (data.type === 'round') {
+            console.log('[SkillView] 收到 round 事件:', data)
+            msg.executingMsg = ''
+            msg.thinkingOpen = false
+            thinkingDone = true
+            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+          } else if (data.type === 'run_result') {
+            msg.executingMsg = ''
+            msg.runResult = data.result
+          } else if (data.type === 'script_updated') {
+            msg.scriptUpdated = data.script_name
+          } else if (data.type === 'give_up') {
+            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2224,7 +2305,7 @@ async function handleRunCmd() {
     } else {
       result = {
         success: false,
-        error: e.response?.data?.detail || e.message || String(e),
+        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
       }
     }
   } finally {
@@ -2274,13 +2355,13 @@ async function handleDebugSend() {
 
   const userMsg = debugInput.value.trim()
   pushHistory(chatHistory, chatHistoryIdx, userMsg, 'chat')
-  debugMessages.value.push({ role: 'user', content: userMsg })
+  debugMessages.value.push({ role: 'user', content: userMsg, created_at: new Date().toISOString() })
   debugInput.value = ''
   debugStreaming.value = true
   debugAbortController = new AbortController()
 
   const assistantIdx = debugMessages.value.length
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   skillPinnedToBottom.value = true
   nextTick(() => scrollSkillDebugToBottom(true))
 
@@ -2354,15 +2435,15 @@ async function handleDebugSend() {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = true
+              msg.thinkingOpen = false
               thinkingDone = false
             }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
             scrollThinkingBodyToBottom(assistantIdx)
           } else if (data.type === 'content') {
@@ -2393,18 +2474,19 @@ async function handleDebugSend() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
+            console.log('[SkillView] 收到 round 事件:', data)
             msg.executingMsg = ''
-            msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
+            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'fatal') {
@@ -2425,6 +2507,19 @@ async function handleDebugSend() {
             }
             warnText += '\n\n> 如需修复，请回复"修复警告问题"'
             msg.content += warnText
+          } else if (data.type === 'platform_issue') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
+            msg.thinkingOpen = false
+            thinkingDone = true
+          } else if (data.type === 'done') {
+            msg.executingMsg = ''
+            if (!msg.content || msg.content.trim() === '') {
+              msg.content = '✅ 调试完成'
+            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
+              msg.content += '\n\n✅ 调试完成'
+            }
+            msg.thinkingOpen = false
           }
         } catch (e) {
           console.error('[DEBUG-CHAT] parse error:', e, 'line:', trimmed.substring(0, 200))
@@ -3124,6 +3219,11 @@ onMounted(() => {
       max-width: 85%;
       width: fit-content;
     }
+    .debug-msg-time {
+      font-size: 11px;
+      color: #999;
+      margin-top: 2px;
+    }
   }
 
   &.assistant {
@@ -3175,6 +3275,10 @@ onMounted(() => {
     font-size: 13px;
     color: #409eff;
     font-weight: 500;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f5f7fa;
     border-bottom: 1px solid #d9ecff;
     cursor: pointer;
     user-select: none;
@@ -3253,6 +3357,26 @@ onMounted(() => {
   .exec-time {
     font-size: 11px;
     color: #909399;
+  }
+
+  /* 所有 debug 折叠区域统一样式 */
+  .debug-msg-assistant :deep(.el-collapse-item__header) {
+    position: relative;
+    height: 32px;
+    line-height: 32px;
+    padding: 0 10px;
+    font-size: 12px;
+    background: #f5f7fa;
+    border-bottom: 1px solid #e4e7ed;
+  }
+  .collapse-label {
+    color: #909399;
+    font-size: 12px;
+  }
+  .collapse-copy-btn {
+    margin-left: auto;
+    padding: 2px 6px;
+    font-size: 12px;
   }
 
   .debug-result-error {

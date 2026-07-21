@@ -13,6 +13,7 @@
 
 import json
 import asyncio
+import os
 from pathlib import Path
 from typing import Dict, Any, AsyncGenerator
 
@@ -23,15 +24,19 @@ from app.services.multi_agent import BaseAgent, AgentMessage, HandoffReason
 from app.services.llm import llm_manager
 from app.services.shared_tools import SHARED_TOOL_SCHEMAS, execute_shared_tool
 from app.services.agent_utils import (
+    truncate_tool_result,
+    estimate_tokens,
+    extract_identifiers,
+    build_identifier_hint,
+    get_anti_hallucination_section,
     StuckDetector,
-    is_planning_only,
-    should_warn_ungrounded_claim,
+    SearchSaturationDetector,
     estimate_complexity,
     get_turn_budget,
+    should_warn_ungrounded_claim,
+    is_planning_only,
     get_context_pressure_level,
     build_pressure_warning,
-    get_anti_hallucination_section,
-    SearchSaturationDetector,
 )
 from app.services.tool_guidance import get_tool_guidance
 
@@ -101,12 +106,12 @@ MODIFY_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "modify_script",
-        "description": "修改当前调试的技能/脚本（不执行）。提供修改后的函数代码，系统自动合并到现有脚本（函数级合并）并做语法检查，只需输出修改的函数。技能调试时若需更新参数规范/描述等技能元信息，可通过 skill_md 一并提供更新后的完整 SKILL.md 全文，系统会同步写入。",
+        "description": "修改当前调试的技能/脚本（不执行）。提供修改后的函数代码（可含多个 def 定义），系统自动合并到现有脚本（同名函数替换，新函数自动插入 if __name__ 之前）并做语法检查。技能调试时若需更新参数规范/描述等技能元信息，可通过 skill_md 一并提供更新后的完整 SKILL.md 全文，系统会同步写入。",
         "parameters": {
             "type": "object",
             "properties": {
                 "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "code": {"type": "string", "description": "修改后的函数代码（Python 代码，含 def 定义）"},
+                "code": {"type": "string", "description": "修改后的函数代码（可含一个或多个 def 定义；同名函数替换，新函数自动插入 if __name__ 之前）"},
                 "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。当需要新增/修改参数规范、描述等技能元信息时提供。修改函数签名（增减参数）时务必同步更新此处的参数规范表。算子/流程调试无需此参数。"},
             },
             "required": ["code"],
@@ -134,12 +139,12 @@ MODIFY_AND_RUN_TOOL = {
     "type": "function",
     "function": {
         "name": "modify_and_run",
-        "description": "修改技能/脚本并立即执行（推荐优先使用）。一步完成：合并代码（+ 可选更新 SKILL.md）→ 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。技能调试时可通过 skill_md 同步更新技能规范。",
+        "description": "修改技能/脚本并立即执行（推荐优先使用）。一步完成：合并代码（+ 可选更新 SKILL.md）→ 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。支持一次输出多个函数（同名替换，新函数自动插入 if __name__ 之前）。技能调试时可通过 skill_md 同步更新技能规范。",
         "parameters": {
             "type": "object",
             "properties": {
                 "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "code": {"type": "string", "description": "修改后的函数代码（Python 代码，含 def 定义）"},
+                "code": {"type": "string", "description": "修改后的函数代码（可含一个或多个 def 定义；同名函数替换，新函数自动插入 if __name__ 之前）"},
                 "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。需要新增/修改参数规范、描述等技能元信息时提供。算子/流程调试无需此参数。"},
                 "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
             },
@@ -148,7 +153,85 @@ MODIFY_AND_RUN_TOOL = {
     },
 }
 
-DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL, MODIFY_AND_RUN_TOOL]
+EDIT_SCRIPT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_script",
+        "description": "行级补丁修改脚本（不执行）。提供 old_string（脚本中唯一存在的原文片段）和 new_string（替换内容），系统精确定位并替换，只改动需要变化的部分。适合小修改——输出量小、不会截断。old_string 必须逐字匹配且唯一；不唯一时多带几行上下文；找不到时先调 read_script 查看逐字内容。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
+                "old_string": {"type": "string", "description": "脚本中要被替换的原文片段（逐字复制，必须唯一匹配）。多带几行上下文以保证唯一。"},
+                "new_string": {"type": "string", "description": "替换后的新内容（保持正确缩进）"},
+                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。需要改参数规范/描述时提供。"},
+            },
+            "required": ["old_string", "new_string"],
+        },
+    },
+}
+
+EDIT_AND_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_and_run",
+        "description": "行级补丁修改脚本并立即执行（小修改首选，推荐优先使用）。一步完成：精确补丁 → 语法检查 → 执行验证。比 modify_and_run 更省 token（只输出改动片段，不重写整函数，不会截断）。old_string 必须逐字唯一匹配；不匹配会报错，此时先调 read_script 查看逐字内容再重试。大范围重写（整函数/多函数）才用 modify_and_run。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
+                "old_string": {"type": "string", "description": "脚本中要被替换的原文片段（逐字复制，必须唯一匹配）"},
+                "new_string": {"type": "string", "description": "替换后的新内容（保持正确缩进）"},
+                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
+                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。"},
+            },
+            "required": ["old_string", "new_string"],
+        },
+    },
+}
+
+READ_SCRIPT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_script",
+        "description": "读取代码的逐字内容（不压缩）。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围，用于查看错误生成的精确代码。平台代码只读，不可修改。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=用户脚本（默认），platform=平台源码"},
+                "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
+                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
+                "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
+                "offset": {"type": "integer", "description": "起始行号（仅 scope=platform，1-indexed）"},
+                "limit": {"type": "integer", "description": "读取行数（仅 scope=platform，默认 50）"},
+            },
+            "required": [],
+        },
+    },
+}
+
+GREP_SCRIPT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "grep_script",
+        "description": "在代码中搜索（正则匹配），返回匹配行+行号+上下文。scope='script'（默认）搜当前调试脚本，定位 old_string 精确位置；scope='platform' 搜平台源码（connectors.py/skill_runner.py 等），追踪错误来源。例如：grep_script('文件不存在', scope='platform') 找到哪段平台代码生成了这个错误。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "正则表达式（默认大小写不敏感）"},
+                "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=搜用户脚本（默认），platform=搜平台源码"},
+                "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
+                "function_name": {"type": "string", "description": "可选，仅 scope=script 时限定函数范围"},
+                "file_filter": {"type": "string", "description": "可选，仅 scope=platform 时限定文件名（如 connectors.py）"},
+                "context_lines": {"type": "integer", "description": "上下文行数（默认 3）"},
+                "case_sensitive": {"type": "boolean", "description": "是否大小写敏感（默认 false）"},
+            },
+            "required": ["pattern"],
+        },
+    },
+}
+
+DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL, MODIFY_AND_RUN_TOOL, EDIT_SCRIPT_TOOL, EDIT_AND_RUN_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
 
 # 自定义扩展工具（save_connector + save_llm_adapter）
 
@@ -270,36 +353,24 @@ def _is_analyze_only_request(msg: str) -> bool:
         return False
     return any(kw in msg for kw in _ANALYZE_KEYWORDS)
 
-DEBUG_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），正在调试一个脚本。
 
-## 核心规则（必须遵守）
-- **每一轮都必须调用 modify_and_run**，不调用任何工具的轮次会被立即终止
-- **推理过程（thinking）控制在5句话以内**，只写根因和修复方向，不要长篇分析。长推理会超出token限制导致工具调用丢失
-- **可以同轮调用 get_table_schema / query_table_data 辅助定位问题，但必须同时调用 modify_and_run 修改并执行**——禁止只查询不修改
-- **根因分析放在推理过程（thinking）中**，不要输出为正文。正文只用于工具调用，不用于分析
-- **禁止输出"我需要重写""我来修复"等计划性文字而不跟工具调用**，直接调 modify_and_run
-- 修改脚本时只需输出修改的函数，系统会自动合并并做语法检查
+_PLATFORM_ISSUE_SIGNALS = [
+    "平台问题", "平台能力缺失", "平台不支持", "平台限制",
+    "不是脚本问题", "修改脚本无法解决", "无法绕过", "平台 bug",
+    "连接器不支持", "连接器无法", "沙箱不支持", "沙箱未注入",
+    "platform issue", "connector does not support",
+]
 
-## 你的能力（通过工具调用）
-1. **modify_and_run**（每轮必用）：修改脚本并立即执行，一步到位
-2. **get_table_schema / query_table_data**（可选，辅助定位）：查看表结构和数据，但必须与 modify_and_run 同轮调用
-3. **handoff_to_inspector**: 执行成功后系统会自动调用，你不需要手动调用
+def _is_platform_issue_report(content: str) -> bool:
+    """检测 agent 输出是否明确判定为平台问题（而非脚本问题）。"""
+    if not content or len(content) < 4:
+        return False
+    return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
-## 工作流程
-1. 在推理中分析错误根因，确定修复方向（不要输出为正文）
-2. **立即调用 modify_and_run** 修改并执行（如需查数据可同轮调用 get_table_schema / query_table_data）
-3. 如果执行失败，根据错误信息继续 modify_and_run（总共 {max_rounds} 轮，跨检查修复共享）
-4. 执行成功后，系统**自动**交接 DataInspector 做质量检查（你不需要做任何事）
-5. 如果 DataInspector 发现问题，modify_and_run 修复后重新执行（总共 {max_inspections} 轮检查修复）
-
-## 规则
-- run_script 的 parameters 必须包含技能所需的关键参数，不能为空
-- 推理请简洁，直奔重点
-- 看到错误后先分析根因，不要盲目尝试
-- **每一轮都必须有 modify_and_run 工具调用**，只查询不修改的轮次会被立即终止
-
-## 技能规范（脚本必须符合此规范）
-""" + _SKILL_SPEC
+DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
+看错误信息，修复脚本并执行。需要看代码用 read_script/grep_script，小改用 edit_and_run，大改用 modify_and_run。
+每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 次修改机会，执行错误最多 3 次。
+"""
 
 # 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
 SKILL_DEBUG_EXTRA = """
@@ -311,6 +382,10 @@ SKILL_DEBUG_EXTRA = """
 - **保持一致**：修改函数签名（增减参数）时，务必同步更新 SKILL.md 的参数规范表，使脚本与技能规范一致。
 - SKILL.md 全文已在下方展示，需要修改时输出完整新版本到 skill_md 参数。
 """
+
+# 调试 system prompt 静态前缀缓存（借鉴 DeepAnalyze sectionCache：字节稳定 → 命中 prefix cache）
+# key = (is_skill, analyze_only, max_rounds, max_inspections)；一次会话内不变
+_DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
 
 ANALYZE_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），用户要求你**只分析问题，不修改代码**。
 
@@ -337,10 +412,6 @@ ANALYZE_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 
 """ + _SKILL_SPEC
 
 DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL] + EXTENSION_TOOLS
-
-
-# 输出长度升级链（S）
-_OUTPUT_TOKEN_ESCALATION = [3000, 6000, 12000]
 
 
 def _analyze_error(error_msg: str) -> str:
@@ -477,7 +548,6 @@ class DataProcessorAgent(BaseAgent):
 
         had_any_tool_calls = False
         pressure_warned = False
-        output_token_idx = 0
         has_preinjected_data = context.get("has_preinjected_data", False)
 
         # 模型选择 + 降级链（与调试模式一致）
@@ -486,7 +556,8 @@ class DataProcessorAgent(BaseAgent):
         degradation_chain = llm_manager._degradation_chain(chosen_model)
 
         for i in range(max_iterations):
-            max_tokens = _OUTPUT_TOKEN_ESCALATION[min(output_token_idx, len(_OUTPUT_TOKEN_ESCALATION) - 1)]
+            logger.info(f"[run] 第{i+1}轮开始, budget={max_iterations}")
+            yield {"type": "round", "round": i + 1}
 
             # 降级链：逐个尝试可用模型
             response = None
@@ -496,7 +567,7 @@ class DataProcessorAgent(BaseAgent):
                 try:
                     response = await llm_manager.chat_with_tools(
                         messages=local_messages, tools=self.tools, model=attempt_model,
-                        temperature=0.3, max_tokens=max_tokens
+                        temperature=0.3
                     )
                     _circuit.record_success(attempt_model)
                     if i == 0:
@@ -512,14 +583,6 @@ class DataProcessorAgent(BaseAgent):
                 return
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
-
-            # 输出长度升级（S）
-            if finish_reason == "length" and output_token_idx < len(_OUTPUT_TOKEN_ESCALATION) - 1:
-                output_token_idx += 1
-                logger.warning(f"输出被截断(finish_reason=length)，升级 max_tokens 到 {_OUTPUT_TOKEN_ESCALATION[output_token_idx]}")
-                local_messages.append({"role": "assistant", "content": response.get("content") or ""})
-                local_messages.append({"role": "user", "content": "上一段输出被截断了，请用更大的输出长度重新生成完整内容。"})
-                continue
 
             # 推理过程（GLM 等推理模型返回 reasoning_content）
             reasoning = response.get("reasoning")
@@ -640,61 +703,44 @@ class DataProcessorAgent(BaseAgent):
                 result = await self._execute_tool(tc["function"]["name"], func_args, db, user_id, context)
                 return {"tool_call_id": tc["id"], "content": result}
             except Exception as e:
-                logger.error(f"工具执行异常 {tc['function']['name']}: {e}")
-                return {"tool_call_id": tc["id"], "content": json.dumps({"success": False, "error": f"工具执行异常: {e}"}, ensure_ascii=False)}
+                logger.error(f"平台工具异常 {tc['function']['name']}: {e}")
+                return {"tool_call_id": tc["id"], "content": json.dumps({"success": False, "error": f"平台工具异常（这不是脚本问题，修改脚本无法解决）: {tc['function']['name']} 执行失败 - {e}"}, ensure_ascii=False)}
 
         results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
         return list(results)
 
     @staticmethod
-    def _extract_script_for_context(script: str, threshold: int = 3000) -> str:
-        """AST 智能提取脚本：保留所有函数签名+docstring，大函数缩略体。
-        语法错误时回退为原始截断（调试中的脚本可能有语法错误）。"""
-        if len(script) <= 8000:
-            return script
+    def _script_summary(script: str, script_name: str = "main.py") -> str:
+        """生成脚本摘要：函数名+行号+docstring 首行，不放假代码。agent 按需用 grep_script/read_script 查看。"""
+        lines = script.splitlines()
+        total = len(lines)
         try:
             import ast
             tree = ast.parse(script)
-            lines = script.splitlines()
-            parts = []
+            funcs = []
+            imports = []
             for node in ast.iter_child_nodes(tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
-                    parts.append(ast.get_source_segment(script, node) or "")
+                    seg = ast.get_source_segment(script, node) or ""
+                    imports.append(seg.strip())
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    seg = ast.get_source_segment(script, node) or ""
-                    if len(seg) <= threshold:
-                        parts.append(seg)
-                    else:
-                        # 签名 + docstring + 前5行 + 后5行
-                        seg_lines = seg.splitlines()
-                        docstring = ast.get_docstring(node)
-                        header = "\n".join(seg_lines[:1])  # def 行
-                        body_start = 1
-                        if docstring:
-                            # 找 docstring 结束行
-                            for li, line in enumerate(seg_lines[1:], 1):
-                                if '"""' in line or "'''" in line:
-                                    body_start = li + 1
-                                    break
-                            header += "\n" + "\n".join(seg_lines[1:body_start])
-                        head_lines = seg_lines[body_start:body_start + 5]
-                        tail_lines = seg_lines[-5:]
-                        omitted = len(seg_lines) - body_start - 5 - 5
-                        parts.append(
-                            header + "\n" + "\n".join(head_lines) +
-                            f"\n    # ... （省略 {omitted} 行） ...\n" +
-                            "\n".join(tail_lines)
-                        )
-                elif isinstance(node, ast.Assign):
-                    parts.append(ast.get_source_segment(script, node) or "")
-                else:
-                    seg = ast.get_source_segment(script, node) or ""
-                    if len(seg) <= 2000:
-                        parts.append(seg)
-            result = "\n\n".join(p for p in parts if p)
-            return result if result else script[:50000]
+                    doc = ast.get_docstring(node) or ""
+                    doc_first = doc.split('\n')[0].strip() if doc else ""
+                    args = ", ".join(a.arg for a in node.args.args[:4])
+                    if len(node.args.args) > 4:
+                        args += ", ..."
+                    funcs.append(f"- L{node.lineno} {node.name}({args}){' — ' + doc_first if doc_first else ''}")
+            result = f"## 当前脚本（{script_name}，共 {total} 行）\n"
+            if imports:
+                result += f"导入: {'; '.join(imports[:5])}{'...' if len(imports) > 5 else ''}\n"
+            if funcs:
+                result += "函数列表:\n" + "\n".join(funcs)
+            else:
+                result += "(无可解析的函数)"
+            result += "\n需要查看具体代码时用 read_script（看某函数全文）或 grep_script（搜关键词）。"
+            return result
         except SyntaxError:
-            return script[:50000]  # 语法错误时回退
+            return f"## 当前脚本（{script_name}，共 {total} 行）\n脚本有语法错误，用 read_script 查看逐字内容。"
 
     @staticmethod
     def _check_required_params(context: Dict[str, Any], parameters: Dict[str, Any]) -> str:
@@ -815,6 +861,85 @@ class DataProcessorAgent(BaseAgent):
         except (json.JSONDecodeError, TypeError):
             return content[:3000]
 
+    async def _finalize_script_change(self, merged: str, current: str, script_name: str,
+                                       arguments: dict, db: AsyncSession, context: Dict) -> str:
+        """持久化合并后的脚本（operator/pipeline/skill）+ skill_md + AST 语法检查 + diff。
+        modify_script 与 edit_script 共用此方法，返回 JSON 结果字符串。"""
+        context["debug_script_content"] = merged
+
+        # 写入对应存储
+        if context.get("debug_type") == "operator":
+            from app.models.operator import Operator
+            from sqlalchemy import select as sa_select
+            op_id = context.get("debug_operator_id")
+            op_result = await db.execute(sa_select(Operator).where(Operator.id == op_id))
+            op = op_result.scalar_one_or_none()
+            if op:
+                op.script_content = merged
+                from app.services.operator_parser import parse_python_script
+                try:
+                    parsed = parse_python_script(merged)
+                    if parsed.get("function_name"):
+                        op.function_name = parsed["function_name"]
+                        op.inputs = parsed.get("inputs", op.inputs)
+                        op.outputs = parsed.get("outputs", op.outputs)
+                        op.parameters = parsed.get("parameters", op.parameters)
+                except Exception:
+                    pass
+                await db.flush()
+        elif context.get("debug_type") == "pipeline":
+            from app.models.pipeline import Pipeline
+            from sqlalchemy import select as sa_select
+            pipe_id = context.get("debug_pipeline_id")
+            pipe_result = await db.execute(sa_select(Pipeline).where(Pipeline.id == pipe_id))
+            pipe = pipe_result.scalar_one_or_none()
+            if pipe:
+                pipe.main_code = merged
+                await db.flush()
+        else:
+            folder = context.get("debug_folder")
+            if folder:
+                from app.services.skill_parser import write_skill_script
+                write_skill_script(folder, script_name, merged)
+
+        # skill_md 同步
+        _skill_md_updated = False
+        _new_md = (arguments.get("skill_md") or "").strip()
+        if _new_md and context.get("debug_type") in (None, "skill"):
+            folder = context.get("debug_folder")
+            if folder:
+                from app.services.skill_parser import write_skill_md as _wsm
+                _wsm(folder, _new_md)
+                context["debug_skill_md_full"] = _new_md
+                context["debug_skill_md"] = _new_md[:1200]
+                _skill_md_updated = True
+                logger.info(f"debug modify_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
+
+        logger.info(f"debug modify_script: {script_name} 已更新 ({len(merged)} 字符)")
+
+        # AST 语法预检
+        import ast as _ast
+        try:
+            _ast.parse(merged)
+        except SyntaxError as _se:
+            logger.warning(f"modify_script 语法错误: {_se}")
+            return json.dumps({
+                "success": False,
+                "error": f"语法错误（第{_se.lineno}行）: {_se.msg}",
+                "syntax_error": True,
+                "merged_preview": merged[:3000],
+            }, ensure_ascii=False)
+
+        diff_lines = _compute_diff_summary(current, merged)
+        return json.dumps({
+            "success": True,
+            "script_name": script_name,
+            "message": "技能已更新，语法检查通过" if _skill_md_updated else "脚本已更新，语法检查通过",
+            "skill_md_updated": _skill_md_updated,
+            "merged_preview": merged[:8000],
+            "changed_lines": diff_lines,
+        }, ensure_ascii=False)
+
     async def _execute_tool(self, name: str, arguments: dict, db: AsyncSession, user_id, context: Dict) -> str:
         logger.info(f"DataProcessor执行工具: {name}")
 
@@ -844,87 +969,182 @@ class DataProcessorAgent(BaseAgent):
                 from app.services.operator_parser import apply_partial_code
                 current = context.get("debug_script_content", "")
                 merged = apply_partial_code(current, code)
-                context["debug_script_content"] = merged
-
-                if context.get("debug_type") == "operator":
-                    # 算子：更新数据库
-                    from app.models.operator import Operator
-                    from sqlalchemy import select as sa_select
-                    op_id = context.get("debug_operator_id")
-                    op_result = await db.execute(sa_select(Operator).where(Operator.id == op_id))
-                    op = op_result.scalar_one_or_none()
-                    if op:
-                        op.script_content = merged
-                        from app.services.operator_parser import parse_python_script
-                        try:
-                            parsed = parse_python_script(merged)
-                            if parsed.get("function_name"):
-                                op.function_name = parsed["function_name"]
-                                op.inputs = parsed.get("inputs", op.inputs)
-                                op.outputs = parsed.get("outputs", op.outputs)
-                                op.parameters = parsed.get("parameters", op.parameters)
-                        except Exception:
-                            pass
-                        await db.flush()
-                elif context.get("debug_type") == "pipeline":
-                    # 流程：更新数据库
-                    from app.models.pipeline import Pipeline
-                    from sqlalchemy import select as sa_select
-                    pipe_id = context.get("debug_pipeline_id")
-                    pipe_result = await db.execute(sa_select(Pipeline).where(Pipeline.id == pipe_id))
-                    pipe = pipe_result.scalar_one_or_none()
-                    if pipe:
-                        pipe.main_code = merged
-                        await db.flush()
-                else:
-                    # 技能：写入文件
-                    folder = context.get("debug_folder")
-                    if folder:
-                        from app.services.skill_parser import write_skill_script
-                        write_skill_script(folder, script_name, merged)
-
-                _skill_md_updated = False
-                # 技能级修改：若提供了 skill_md，同步更新 SKILL.md（技能规范），保持脚本与规范一致
-                _new_md = (arguments.get("skill_md") or "").strip()
-                if _new_md and context.get("debug_type") in (None, "skill"):
-                    folder = context.get("debug_folder")
-                    if folder:
-                        from app.services.skill_parser import write_skill_md as _wsm
-                        _wsm(folder, _new_md)
-                        context["debug_skill_md_full"] = _new_md
-                        context["debug_skill_md"] = _new_md[:1200]
-                        _skill_md_updated = True
-                        logger.info(f"debug modify_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
-
-                logger.info(f"debug modify_script: {script_name} 已更新 ({len(merged)} 字符)")
-
-                # AST 语法预检
-                import ast as _ast
-                try:
-                    _ast.parse(merged)
-                except SyntaxError as _se:
-                    logger.warning(f"modify_script 语法错误: {_se}")
-                    return json.dumps({
-                        "success": False,
-                        "error": f"语法错误（第{_se.lineno}行）: {_se.msg}",
-                        "syntax_error": True,
-                        "merged_preview": merged[:3000],
-                    }, ensure_ascii=False)
-
-                # diff 摘要
-                diff_lines = _compute_diff_summary(current, merged)
-
-                return json.dumps({
-                    "success": True,
-                    "script_name": script_name,
-                    "message": "技能已更新，语法检查通过" if _skill_md_updated else "脚本已更新，语法检查通过",
-                    "skill_md_updated": _skill_md_updated,
-                    "merged_preview": merged[:8000],
-                    "changed_lines": diff_lines,
-                }, ensure_ascii=False)
+                return await self._finalize_script_change(merged, current, script_name, arguments, db, context)
             except Exception as e:
                 logger.warning(f"modify_script 失败: {e}")
                 return json.dumps({"success": False, "error": str(e)})
+
+        if name == "edit_script":
+            # 行级补丁（对齐 OpenCode edit）：小修改只输出 old/new 片段，不重写整函数
+            old_string = arguments.get("old_string", "")
+            new_string = arguments.get("new_string", "")
+            if not old_string:
+                return json.dumps({"success": False, "error": "缺少 old_string"}, ensure_ascii=False)
+            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
+            try:
+                from app.services.operator_parser import apply_patch
+                current = context.get("debug_script_content", "")
+                patch = apply_patch(current, old_string, new_string)
+                if not patch.get("success"):
+                    return json.dumps({"success": False, "error": patch.get("message", "补丁失败"), "patch_error": True}, ensure_ascii=False)
+                return await self._finalize_script_change(patch["code"], current, script_name, arguments, db, context)
+            except Exception as e:
+                logger.warning(f"edit_script 失败: {e}")
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        if name == "read_script":
+            scope = arguments.get("scope", "script")
+            if scope == "platform":
+                file_path = arguments.get("file_path", "")
+                if not file_path:
+                    return json.dumps({"success": False, "error": "缺少 file_path"}, ensure_ascii=False)
+                search_dir = Path(__file__).resolve().parent.parent
+                candidates = [
+                    search_dir / file_path,
+                    search_dir / "services" / file_path,
+                    search_dir / "api" / "v1" / "endpoints" / file_path,
+                ]
+                resolved = None
+                for c in candidates:
+                    try:
+                        rp = c.resolve()
+                        if str(rp).startswith(str(search_dir.resolve())) and rp.exists():
+                            resolved = rp
+                            break
+                    except Exception:
+                        continue
+                if not resolved:
+                    return json.dumps({"success": False, "error": f"文件未找到: {file_path}"}, ensure_ascii=False)
+                offset = max(1, int(arguments.get("offset", 1)))
+                limit = min(200, int(arguments.get("limit", 50)))
+                try:
+                    with open(resolved, encoding="utf-8") as f:
+                        all_lines = f.readlines()
+                    start = offset - 1
+                    end = min(len(all_lines), start + limit)
+                    seg_lines = [f"L{i+1}: {all_lines[i].rstrip()}" for i in range(start, end)]
+                    return json.dumps({"success": True, "file": os.path.relpath(str(resolved), str(search_dir)),
+                                       "offset": offset, "limit": limit, "total_lines": len(all_lines),
+                                       "content": "\n".join(seg_lines)}, ensure_ascii=False)
+                except Exception as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            # scope='script' — 读当前脚本逐字内容
+            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
+            current = context.get("debug_script_content", "")
+            function_name = arguments.get("function_name")
+            if function_name:
+                try:
+                    import ast as _ast
+                    tree = _ast.parse(current)
+                    for node in _ast.iter_child_nodes(tree):
+                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == function_name:
+                            seg = _ast.get_source_segment(current, node) or ""
+                            return json.dumps({"success": True, "script_name": script_name, "function": function_name, "content": seg}, ensure_ascii=False)
+                    return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
+                except SyntaxError as _se:
+                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
+            return json.dumps({"success": True, "script_name": script_name, "content": current}, ensure_ascii=False)
+
+        if name == "grep_script":
+            scope = arguments.get("scope", "script")
+            pattern = arguments.get("pattern", "")
+            if not pattern:
+                return json.dumps({"success": False, "error": "缺少 pattern"}, ensure_ascii=False)
+            context_lines = int(arguments.get("context_lines", 3))
+            import re as _grep_re
+
+            if scope == "platform":
+                file_filter = arguments.get("file_filter", "*.py")
+                import glob as _glob
+                search_dir = Path(__file__).resolve().parent.parent
+                files = _glob.glob(str(search_dir / "**" / file_filter), recursive=True)
+                flags = 0 if arguments.get("case_sensitive") else _grep_re.IGNORECASE
+                try:
+                    regex = _grep_re.compile(pattern, flags)
+                except _grep_re.error as e:
+                    return json.dumps({"success": False, "error": f"正则表达式错误: {e}"}, ensure_ascii=False)
+                all_matches = []
+                for fpath in sorted(files):
+                    try:
+                        with open(fpath, encoding="utf-8") as f:
+                            lines = f.readlines()
+                    except Exception:
+                        continue
+                    for i, line in enumerate(lines):
+                        if regex.search(line):
+                            start = max(0, i - context_lines)
+                            end = min(len(lines), i + context_lines + 1)
+                            snippet_lines = []
+                            for j in range(start, end):
+                                prefix = ">>" if j == i else "  "
+                                snippet_lines.append(f"{prefix} L{j+1}: {lines[j].rstrip()}")
+                            all_matches.append({"file": str(Path(fpath).relative_to(search_dir)), "line": i + 1,
+                                                "snippet": "\n".join(snippet_lines)})
+                if not all_matches:
+                    return json.dumps({"success": True, "pattern": pattern, "scope": "platform",
+                                       "matches": [], "total_matches": 0, "message": "未找到匹配"}, ensure_ascii=False)
+                _MAX = 50
+                truncated = len(all_matches) > _MAX
+                result = {"success": True, "pattern": pattern, "scope": "platform",
+                          "matches": all_matches[:_MAX], "total_matches": len(all_matches)}
+                if truncated:
+                    result["truncated"] = True
+                    result["message"] = f"匹配数超过 {_MAX}，仅显示前 {_MAX} 个。请用 file_filter 限定文件或用更精确的 pattern。"
+                return json.dumps(result, ensure_ascii=False)
+
+            # scope='script' — 搜当前脚本
+            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
+            current = context.get("debug_script_content", "")
+            case_sensitive = arguments.get("case_sensitive", False)
+            function_name = arguments.get("function_name")
+            all_lines = current.splitlines()
+            if function_name:
+                try:
+                    import ast as _ast
+                    tree = _ast.parse(current)
+                    func_start = None
+                    func_end = None
+                    for node in _ast.iter_child_nodes(tree):
+                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == function_name:
+                            func_start = node.lineno
+                            func_end = getattr(node, "end_lineno", func_start)
+                            break
+                    if func_start is None:
+                        return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
+                    search_lines = all_lines[func_start - 1: func_end]
+                    line_offset = func_start
+                except SyntaxError as _se:
+                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
+            else:
+                search_lines = all_lines
+                line_offset = 1
+            flags = 0 if case_sensitive else _grep_re.IGNORECASE
+            try:
+                regex = _grep_re.compile(pattern, flags)
+            except _grep_re.error as e:
+                return json.dumps({"success": False, "error": f"正则表达式错误: {e}"}, ensure_ascii=False)
+            match_indices = [i for i, line in enumerate(search_lines) if regex.search(line)]
+            if not match_indices:
+                return json.dumps({"success": True, "pattern": pattern, "script_name": script_name,
+                                   "function": function_name, "matches": [], "total_matches": 0,
+                                   "message": "未找到匹配"}, ensure_ascii=False)
+            _MAX_MATCHES = 50
+            truncated = len(match_indices) > _MAX_MATCHES
+            match_blocks = []
+            for idx in match_indices[:_MAX_MATCHES]:
+                start = max(0, idx - context_lines)
+                end = min(len(search_lines), idx + context_lines + 1)
+                snippet_lines = []
+                for j in range(start, end):
+                    prefix = ">>" if j == idx else "  "
+                    snippet_lines.append(f"{prefix} L{line_offset + j}: {search_lines[j]}")
+                match_blocks.append({"line": line_offset + idx, "snippet": "\n".join(snippet_lines)})
+            result = {"success": True, "pattern": pattern, "script_name": script_name,
+                      "function": function_name, "matches": match_blocks, "total_matches": len(match_indices)}
+            if truncated:
+                result["truncated"] = True
+                result["message"] = f"匹配数超过 {_MAX_MATCHES}，仅显示前 {_MAX_MATCHES} 个。请用更精确的 pattern 或指定 function_name 缩小范围。"
+            return json.dumps(result, ensure_ascii=False)
 
         if name == "run_script":
             script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
@@ -1023,6 +1243,34 @@ class DataProcessorAgent(BaseAgent):
             except json.JSONDecodeError:
                 _rdata = {"success": False, "error": "run 结果解析失败"}
             # 合并结果
+            _rdata["modify"] = _mdata
+            _rdata["script_name"] = _mdata.get("script_name", "main.py")
+            return json.dumps(_rdata, ensure_ascii=False, default=str)
+
+        if name == "edit_and_run":
+            # 合并工具：edit_script + run_script 一步到位（行级补丁版，小修改首选）
+            _edit_result = await self._execute_tool("edit_script", {
+                "old_string": arguments.get("old_string", ""),
+                "new_string": arguments.get("new_string", ""),
+                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
+                "skill_md": arguments.get("skill_md", ""),
+            }, db, user_id, context)
+            try:
+                _mdata = json.loads(_edit_result)
+            except json.JSONDecodeError:
+                _mdata = {"success": False, "error": "edit 结果解析失败"}
+            if not _mdata.get("success"):
+                # 补丁失败（未找到/不唯一/语法错误）→ 直接返回，不执行
+                return _edit_result
+            # 补丁成功 → 执行
+            _run_result = await self._execute_tool("run_script", {
+                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
+                "parameters": arguments.get("parameters", {}),
+            }, db, user_id, context)
+            try:
+                _rdata = json.loads(_run_result)
+            except json.JSONDecodeError:
+                _rdata = {"success": False, "error": "run 结果解析失败"}
             _rdata["modify"] = _mdata
             _rdata["script_name"] = _mdata.get("script_name", "main.py")
             return json.dumps(_rdata, ensure_ascii=False, default=str)
@@ -1286,96 +1534,56 @@ class DataProcessorAgent(BaseAgent):
     # ==================== 调试模式 ====================
 
     def build_debug_system_prompt(self, context: Dict[str, Any], round_num: int = 1) -> str:
-        """构建调试模式 system prompt"""
+        """构建调试模式 system prompt（精简版，对齐 OpenCode）。"""
         max_rounds = context.get("debug_max_rounds", 7)
-        max_inspections = context.get("debug_max_inspections", 7)
         _is_skill = context.get("debug_type") in (None, "skill")
-        if context.get("debug_analyze_only"):
-            prompt = ANALYZE_INSTRUCTIONS
-            if _is_skill:
-                prompt = prompt.replace("正在调试一个脚本", "正在调试一个技能（SKILL.md 规范 + scripts/main.py 脚本）")
-        else:
-            prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_inspections}", str(max_inspections))
-            if _is_skill:
-                # 技能调试：把「脚本」框架提升为「技能」，并附加技能级操作说明
-                prompt = prompt.replace("正在调试一个脚本", "正在调试一个技能（由 SKILL.md 规范 + scripts/main.py 脚本组成）")
-                prompt += SKILL_DEBUG_EXTRA
+        _analyze = context.get("debug_analyze_only")
 
-        # 当前脚本（AST 智能提取：保留所有函数签名+docstring，大函数缩略体）
+        if _analyze:
+            prompt = ANALYZE_INSTRUCTIONS
+        else:
+            prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds))
+
+        # 目标连接器能力（1-2 行，不放完整能力清单）
+        target_ds_type = context.get("debug_output_datasource_type", "")
+        if target_ds_type:
+            from app.services.tool_guidance import PLATFORM_CAPABILITIES
+            _caps = PLATFORM_CAPABILITIES.get("connector", {}).get(target_ds_type, {})
+            _wtd = _caps.get("write_table_data", {})
+            _can_create = _wtd.get("create_new_file", _wtd.get("create_new_table", False))
+            prompt += f"\n目标连接器({target_ds_type}): 创建新文件/表={'✅' if _can_create else '❌'}, execute_sql={'✅' if _caps.get('execute_sql') else '❌'}"
+            if not _can_create:
+                prompt += "。标❌的能力修改脚本无法绕过，直接报告"
+
+        # 动态信息（只留必需的）
+        parts = []
         script_content = context.get("debug_script_content", "")
         script_name = context.get("debug_script_name", "main.py")
         if script_content:
-            _smart_script = self._extract_script_for_context(script_content)
-            prompt += f"\n## 当前脚本（{script_name}）\n```python\n{_smart_script}\n```\n"
+            parts.append(self._script_summary(script_content, script_name))
 
-        # SKILL.md：技能调试展示完整内容（供 AI 通过 skill_md 参数修改）；其他场景展示摘要
-        if _is_skill:
-            skill_md_full = context.get("debug_skill_md_full") or context.get("debug_skill_md") or ""
-            if skill_md_full:
-                prompt += f"\n## 当前 SKILL.md（完整，可通过 skill_md 参数修改全文）\n```markdown\n{skill_md_full[:4000]}\n```\n"
-        else:
-            skill_md = context.get("debug_skill_md", "")
-            if skill_md:
-                prompt += f"\n## SKILL.md（摘要）\n```\n{skill_md[:1000]}\n```\n"
-
-        # 参数规范
-        params_section = context.get("debug_params_section", "")
-        if params_section:
-            prompt += f"\n## 参数规范\n{params_section[:1500]}\n"
-
-        # 最近成功参数
         last_params = context.get("debug_last_success_params")
         if last_params:
-            prompt += f"\n## 最近一次成功执行的参数\n```json\n{json.dumps(last_params, ensure_ascii=False, default=str)}\n```\n用户未明确指定新参数时，请复用这些参数执行。\n"
+            parts.append(f"最近成功参数: {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
 
-        # 用户调试输入
         ctx = context.get("debug_user_context", {})
         if ctx:
-            ctx_parts = []
-            if ctx.get("nl_query"):
-                ctx_parts.append(f"- 自然语言输入：{ctx['nl_query']}")
-            elif ctx.get("cmd_str"):
-                ctx_parts.append(f"- 命令行输入：{ctx['cmd_str']}")
-            elif ctx.get("json_params"):
-                ctx_parts.append(f"- JSON参数：{ctx['json_params']}")
-            # 数据源和表名（从执行面板带入）
-            ctx_ds = ctx.get("datasource_name") or ""
-            ctx_tbl = ctx.get("table_name") or ""
-            if ctx_ds:
-                ctx_parts.append(f"- 数据源：{ctx_ds}")
-            if ctx_tbl:
-                ctx_parts.append(f"- 表名：{ctx_tbl}")
-            if ctx_parts:
-                prompt += "\n## 用户调试输入\n" + "\n".join(ctx_parts) + "\n优先使用这些输入作为执行参数。"
+            _ds = ctx.get("datasource_name") or ""
+            _tbl = ctx.get("table_name") or ""
+            if _ds or _tbl:
+                parts.append(f"数据源: {_ds}, 表: {_tbl}")
 
-        # 数据源信息
-        ds_name = context.get("debug_datasource_name")
-        tbl = context.get("debug_table_name")
-        if ds_name or tbl:
-            prompt += f"\n## 调试数据源\n- 数据源：{ds_name or '未选择'}\n- 表名：{tbl or '未选择'}\n"
+        _tool_calls = context.get("debug_tool_calls")
+        if _tool_calls:
+            _tc_lines = [f"- {_tc.get('tool')}: {'✅' if _tc.get('success') else '❌'} {str(_tc.get('message',''))[:150]}" for _tc in _tool_calls]
+            parts.append("上次工具调用:\n" + "\n".join(_tc_lines))
 
-        # 历史经验
-        lessons = context.get("debug_lessons", "")
-        if lessons:
-            prompt += f"\n## 历史经验（修改脚本时参考）\n{lessons[:800]}\n"
+        _exec_stdout = context.get("debug_exec_stdout")
+        if _exec_stdout:
+            parts.append(f"上次输出:\n```\n{_exec_stdout[:1000]}\n```")
 
-        # 之前调试的修改历史（跨 handoff 保留，防止 AI 忘记之前改了什么）
-        session_log = context.get("debug_session_log", "")
-        if session_log:
-            prompt += f"\n## 之前修改历史（不要重复已失败的修改，在当前脚本基础上增量修改）\n{session_log}\n"
-
-        # 沙箱内置函数文档（始终保留——函数签名是必需的）
-        from app.services.prompt_docs import SANDBOX_TOOLS_DOC
-        prompt += "\n" + SANDBOX_TOOLS_DOC
-
-        # 渐进式注入：第1轮全量，第2轮起去掉工具能力表，第4轮起去掉反幻觉
-        if round_num < 4:
-            prompt += "\n" + get_tool_guidance()
-        if round_num < 2:
-            from app.services.prompt_docs import SAFETY_RULES_DOC
-            prompt += "\n" + SAFETY_RULES_DOC
-        prompt += "\n" + get_anti_hallucination_section("standard")
-
+        if parts:
+            prompt += "\n\n" + "\n\n".join(parts)
         return prompt
 
     async def run_debug(
@@ -1455,315 +1663,207 @@ class DataProcessorAgent(BaseAgent):
                 return
             local_messages.append({"role": "user", "content": user_msg})
 
-        # 调试模式工具：分析模式只给查询工具，修复模式给全套
+        # 调试模式工具选择
         if context.get("debug_analyze_only"):
+            # 分析模式：只给查询工具
             debug_tools = SHARED_TOOL_SCHEMAS
+        elif context.get("debug_max_inspections", 7) == 0:
+            # 自动修复模式：修改+执行工具 + read_script/grep_script（LLM 可先调查再改）
+            debug_tools = [MODIFY_AND_RUN_TOOL, EDIT_AND_RUN_TOOL, MODIFY_SCRIPT_TOOL, EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
         else:
+            # 正常调试模式（debug-chat）：全套工具（含 read_script/query/handoff）
             debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
 
-        stuck_detector = StuckDetector()
-        max_iterations = 3 if context.get("debug_analyze_only") else context.get("debug_max_rounds", 7)
-        # 跨 handoff 共享的统一轮次预算（每次 run_debug 不重置）
-        _total_rounds = context.get("debug_total_rounds", 0)
-        had_any_tool_calls = False
-        _last_error_sig = None
-        _same_error_count = 0
-        _should_stop = False
-        _run_succeeded = False  # run_script 成功过
-        _should_handoff = False  # 执行成功后自动 handoff 到 DataInspector
-        _handoff_output_table = None  # 执行结果中的目标表名（优先于源表）
-        script_name = context.get("debug_script_name", "main.py")  # 供经验记录使用
-        _error_counted_this_round = False  # 防止同轮多工具失败重复计数
-        _no_tool_redirects = 0
+        max_fix_attempts = 1 if context.get("debug_analyze_only") else context.get("debug_max_rounds", 7)
+        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化
+        _total_llm_calls = 0
+        _MAX_LLM_CALLS = max_fix_attempts * 3 + 3  # 安全上限
+        _MAX_EXEC_FAILURES = 3  # 首次执行成功前，最多 3 次执行失败
+        _exec_failures_before_success = context.get("debug_exec_failures", 0)
+        _execution_succeeded = context.get("debug_execution_succeeded", False)
+        _should_handoff = False
+        _handoff_output_table = None
+        script_name = context.get("debug_script_name", "main.py")
+
+        logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
         yield {"type": "model", "content": llm_manager.pick_model(user_msg, history)}
 
-        for i in range(max_iterations):
-            # 统一轮次预算：跨 handoff 共享，总轮次不超过 max_iterations
-            _total_rounds += 1
-            context["debug_total_rounds"] = _total_rounds
-            if _total_rounds > max_iterations:
-                yield {"type": "content", "content": f"\n已达到最大调试轮次（{max_iterations}轮），停止修复。"}
-                break
+        while _fix_attempts < max_fix_attempts and _total_llm_calls < _MAX_LLM_CALLS:
+            _total_llm_calls += 1
+            local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _fix_attempts + 1)}
 
-            # 每轮重建 system prompt（含最新脚本内容，让 AI 看到自己的修改）
-            local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _total_rounds)}
-            _error_counted_this_round = False  # 每轮重置，防止同轮多工具重复计数
-
-            # 第4轮起：压缩旧轮次的 tool 消息（保留错误+traceback，成功只留摘要）
-            if i >= 3:
-                _tool_count = 0
-                for _mi in range(len(local_messages) - 1, -1, -1):
-                    if local_messages[_mi].get("role") == "tool":
-                        _tool_count += 1
-                        if _tool_count > 4:  # 保留最近4条tool消息（约2轮）
-                            _orig = local_messages[_mi].get("content", "")
-                            if len(_orig) > 300:
-                                try:
-                                    _td = json.loads(_orig)
-                                    _is_fail = not _td.get("success") or _td.get("error")
-                                    if _is_fail:
-                                        # 失败：保留 error + stdout 末尾 300 字符
-                                        _brief = json.dumps({
-                                            "success": _td.get("success"),
-                                            "error": str(_td.get("error", ""))[:500],
-                                            "stdout": str(_td.get("stdout", ""))[-300:],
-                                        }, ensure_ascii=False)
-                                    else:
-                                        # 成功：一句话摘要
-                                        _r = _td.get("result", {})
-                                        _summary = _r.get("output_table", "") if isinstance(_r, dict) else ""
-                                        _brief = f'[已压缩] ✅ 成功' + (f'，输出表={_summary}' if _summary else '')
-                                    local_messages[_mi]["content"] = _brief
-                                except Exception:
-                                    local_messages[_mi]["content"] = _orig[:300]
-
-            # 第2轮起：yield 轮次事件（前端分轮展示）
-            if _total_rounds > 1:
-                yield {"type": "round", "round": _total_rounds}
-
-            # 流式 LLM 调用（推理 + 工具调用）
-            # 重定向时切快速模型（非思维模型，不浪费 token 在推理上）+ 强制工具调用
-            _is_redirect = _no_tool_redirects > 0
-            _llm_model = llm_manager.fast_model if _is_redirect else None
-            _llm_tool_choice = "required" if _is_redirect else "auto"
-            _llm_max_tokens = 8000 if _is_redirect else 4000
-            if _is_redirect:
-                yield {"type": "model", "content": llm_manager.fast_model}
             content = ""
-            thinking_content = ""
             tool_calls = []
-            finish_reason = None
 
+            logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "/" + str(max_fix_attempts) + "）")
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=_llm_max_tokens,
-                model=_llm_model, tool_choice=_llm_tool_choice,
+                messages=local_messages, tools=debug_tools, temperature=0.1,
+                model=None, tool_choice="auto",
             ):
                 t = event["type"]
                 if t == "thinking":
-                    thinking_content += event.get("content", "")
                     yield event
                 elif t == "content":
                     content += event["content"]
-                    yield event
                 elif t == "tool_calls":
                     tool_calls = event["tool_calls"]
-                elif t == "finish":
-                    finish_reason = event["finish_reason"]
+
+            logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "返回 content_len=" + str(len(content)) + " tool_calls=" + str(len(tool_calls)))
+
+            # 检测是否为修改尝试（edit_and_run/modify_and_run/run_script）
+            _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_and_run", "modify_and_run", "run_script") for tc in tool_calls)
+            if _has_fix:
+                _fix_attempts += 1
+                context["debug_total_rounds"] = _fix_attempts
+                yield {"type": "round", "round": _fix_attempts}
+                yield {"type": "content", "content": f"\n第{_fix_attempts}次修改尝试："}
+                if _fix_attempts == max_fix_attempts:
+                    yield {"type": "content", "content": f"⚠️ 这是最后一次修改尝试（第 {max_fix_attempts}/{max_fix_attempts} 次）。如果错误来自平台限制，请直接报告。\n"}
+
+            # 只显示关键动作摘要（带脚本名，对齐 OpenCode 的简洁风格）
+            _script_name = context.get("debug_script_name", "main.py")
+            _TOOL_ACTION_MAP = {
+                "read_script": f"读取 {_script_name}",
+                "grep_script": f"搜索 {_script_name}",
+                "get_table_schema": "查看表结构",
+                "query_table_data": "查询数据",
+                "edit_and_run": f"修改并执行 {_script_name}",
+                "modify_and_run": f"修改并执行 {_script_name}",
+                "run_script": f"执行 {_script_name}",
+                "handoff_to_inspector": "交接检查",
+                "list_user_datasources": "列出数据源",
+            }
+            if tool_calls:
+                _actions = []
+                for tc in tool_calls:
+                    _name = tc["function"]["name"]
+                    _label = _TOOL_ACTION_MAP.get(_name, _name)
+                    # edit_and_run: 显示 old→new 代码变更（像 OpenCode 的 edit 输出）
+                    if _name == "edit_and_run":
+                        try:
+                            _args = json.loads(tc["function"]["arguments"])
+                            _old = str(_args.get("old_string", ""))[:100].replace("\n", "\\n")
+                            _new = str(_args.get("new_string", ""))[:100].replace("\n", "\\n")
+                            if _old or _new:
+                                _label += f"\n  - {repr(_old)[:80]} → {repr(_new)[:80]}"
+                        except: pass
+                    # modify_and_run: 显示修改了哪个函数
+                    elif _name == "modify_and_run":
+                        try:
+                            _args = json.loads(tc["function"]["arguments"])
+                            _code = str(_args.get("code", ""))
+                            import re as _re
+                            _funcs = _re.findall(r'def\s+(\w+)', _code)
+                            if _funcs:
+                                _label += f"（{', '.join(_funcs[:3])}）"
+                        except: pass
+                    _actions.append(_label)
+                _summary = '\n'.join(_actions)
+                if content:
+                    for _line in content.strip().split('\n'):
+                        _line = _line.strip()
+                        if _line and not _line.startswith('#') and not _line.startswith('def '):
+                            _summary += f"\n{_line[:200]}"
+                            break
+                yield {"type": "content", "content": f"{_summary}\n"}
+            elif content:
+                _brief = content.strip().split('\n')[0][:100]
+                yield {"type": "content", "content": f"分析中：{_brief}\n"}
+            else:
+                yield {"type": "content", "content": f"无输出\n"}
 
             if not tool_calls:
-                # 分析模式：无工具调用 = 分析完成，直接输出结论
                 if context.get("debug_analyze_only"):
                     yield {"type": "done", "result": {"agent": self.name, "content": content}}
                     return
-                # 修复模式：无工具调用 → 重定向要求调工具，最多 2 次，再不调则终止
-                if _no_tool_redirects < 2:
-                    _no_tool_redirects += 1
-                    local_messages.append({"role": "assistant", "content": content})
-                    if finish_reason == "length":
-                        _redirect_msg = "推理过长被截断，切换快速模型直接生成代码。"
-                    else:
-                        _redirect_msg = "切换快速模型，直接调用 modify_and_run 修改并执行脚本。"
-                    yield {"type": "content", "content": f"\n\n⚠️ {_redirect_msg}"}
-                    local_messages.append({"role": "user", "content": _redirect_msg})
-                    continue
-                break
+                # agent 判定为平台问题 → 终止修复循环，上报用户
+                if _is_platform_issue_report(content):
+                    yield {"type": "platform_issue", "message": content}
+                    yield {"type": "done", "result": {"agent": self.name, "content": content, "platform_issue": True}}
+                    return
+                local_messages.append({"role": "assistant", "content": content})
+                local_messages.append({"role": "user", "content": "请调用工具修改并执行脚本。"})
+                continue
 
-            # 只查询不修改 → 重定向（仅修复模式；分析模式允许只查询）
-            if not context.get("debug_analyze_only"):
-                _tool_names = [tc["function"]["name"] for tc in tool_calls]
-                _has_modify = any(n in ("modify_and_run", "modify_script", "run_script") for n in _tool_names)
-                if not _has_modify:
-                    if _no_tool_redirects < 2:
-                        _no_tool_redirects += 1
-                        local_messages.append({"role": "assistant", "content": content})
-                        local_messages.append({"role": "user", "content": "你只调用了查询工具，没有修改脚本。请调用 modify_and_run 修改并执行脚本。如需查询，请与 modify_and_run 同轮调用。"})
-                        continue
-                    break
-
-            had_any_tool_calls = True
-
-            # 空轮次补充：LLM 直接调用工具但未输出推理/正文时，补一句提示让用户知道这轮做了什么
-            if not content:
-                _TOOL_LABELS = {
-                    "modify_script": "修改脚本", "run_script": "执行脚本",
-                    "modify_and_run": "修改并执行脚本", "save_connector": "保存连接器",
-                    "delete_connector": "删除连接器", "query_table_data": "查询数据",
-                    "get_table_schema": "获取表结构", "list_user_datasources": "列出数据源",
-                    "handoff_to_inspector": "交接检查", "save_llm_adapter": "保存模型适配器",
-                    "delete_llm_adapter": "删除模型适配器", "get_llm_config": "查询模型配置",
-                    "kb_search": "知识库检索", "save_file_to_link": "保存文件",
-                }
-                _labels = [_TOOL_LABELS.get(tc["function"]["name"], tc["function"]["name"]) for tc in tool_calls]
-                yield {"type": "content", "content": f"（执行操作：{' → '.join(_labels)}）"}
-
-            # 卡死检测
-            for tc in tool_calls:
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    args = {}
-                intervention = stuck_detector.record_tool_call(tc["function"]["name"], args)
-                if intervention:
-                    local_messages.append({"role": "user", "content": intervention})
-
-            # 记录 assistant 消息（含推理摘要，让下一轮 LLM 能看到自己的根因分析）
-            _msg_content = content
-            if thinking_content:
-                _msg_content = f"{content}\n\n[上轮推理摘要] {thinking_content[:500]}" if content else f"[上轮推理摘要] {thinking_content[:500]}"
             local_messages.append({
                 "role": "assistant",
-                "content": _msg_content,
+                "content": content,
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            # 执行前：如果有 run_script / modify_and_run 工具，先通知前端"正在执行"
             for tc in tool_calls:
-                if tc["function"]["name"] == "modify_and_run":
-                    yield {"type": "executing", "message": "正在修改并执行脚本..."}
+                _tn = tc["function"]["name"]
+                if _tn in ("modify_and_run", "edit_and_run"):
+                    yield {"type": "executing", "message": f"正在修改并执行 {_script_name}..."}
                     break
-                elif tc["function"]["name"] == "run_script":
-                    yield {"type": "executing", "message": "正在执行脚本..."}
+                elif _tn == "run_script":
+                    yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
                     break
 
-            # 执行工具
             results = await self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
+            # 工具结果摘要（像 OpenCode 显示 grep/read 结果）
+            _result_lines = []
             for r in results:
-                # 智能压缩工具结果（失败保留错误全量，成功保留摘要）
-                _compressed = self._compress_tool_result(r["content"])
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _compressed})
-
-                # 翻译工具结果为前端事件
                 tool_name = ""
                 for tc in tool_calls:
                     if tc["id"] == r["tool_call_id"]:
                         tool_name = tc["function"]["name"]
                         break
 
-                if tool_name == "modify_script":
-                    try:
-                        rdata = json.loads(r["content"])
-                        if rdata.get("success"):
-                            yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
-                            if rdata.get("skill_md_updated"):
-                                yield {"type": "skill_md_updated"}
-                    except Exception:
-                        pass
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
 
-                elif tool_name == "modify_and_run":
+                # 调查工具结果摘要
+                try:
+                    _rd = json.loads(r["content"])
+                    if tool_name == "grep_script" and _rd.get("success"):
+                        _cnt = _rd.get("total_matches", 0)
+                        _first = ""
+                        for _m in _rd.get("matches", []):
+                            _first = _m.get("snippet", "").split("\n")[0][:80]
+                            break
+                        _result_lines.append(f"  搜索: {_cnt} 个匹配" + (f"，首个: {_first}" if _first else ""))
+                    elif tool_name == "read_script" and _rd.get("success"):
+                        _func = _rd.get("function", "")
+                        _len = len(_rd.get("content", ""))
+                        _result_lines.append(f"  读取: {_func or '全文'} ({_len} 字符)")
+                    elif tool_name == "get_table_schema" and _rd.get("success"):
+                        _cols = len(_rd.get("columns", []))
+                        _result_lines.append(f"  表结构: {_cols} 列")
+                    elif tool_name == "query_table_data" and _rd.get("success"):
+                        _rows = _rd.get("row_count", 0)
+                        _result_lines.append(f"  查询: {_rows} 行")
+                    elif tool_name == "list_user_datasources" and _rd.get("success"):
+                        _cnt = len(_rd.get("datasources", _rd.get("data", [])))
+                        _result_lines.append(f"  数据源: {_cnt} 个")
+                except: pass
+
+                if tool_name in ("modify_script", "edit_script", "modify_and_run", "edit_and_run"):
                     try:
                         rdata = json.loads(r["content"])
-                        # 修改成功 → yield script_updated
-                        _mdata = rdata.get("modify", {})
+                        _mdata = rdata.get("modify", rdata)
                         if _mdata.get("success"):
                             yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
                             if _mdata.get("skill_md_updated"):
                                 yield {"type": "skill_md_updated"}
-                        # 执行结果 → yield run_result + 失败检测（同 run_script 逻辑）
-                        yield {"type": "run_result", "result": rdata}
-                        _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
-                        _is_fail = (not rdata.get("success")
-                                    or ("success" in _inner_r and not _inner_r["success"])
-                                    or (rdata.get("error") and str(rdata.get("error")).strip())
-                                    or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
-                        _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
-                        if _is_fail:
-                            if not _err_msg:
-                                _err_msg = "执行返回失败（success=False），无明确错误信息"
-                            if not _error_counted_this_round:
-                                _sig = _err_msg[:100]
-                                if _sig == _last_error_sig:
-                                    _same_error_count += 1
-                                else:
-                                    _last_error_sig = _sig
-                                    _same_error_count = 1
-                                _error_counted_this_round = True
-                            folder = context.get("debug_folder")
-                            if folder:
-                                try:
-                                    from app.services import experience as _exp
-                                    _ctx_summary = f"工具: {tool_name}\n推理摘要: {thinking_content[:400]}\nAI输出: {content[:200]}"
-                                    _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=_ctx_summary)
-                                except Exception:
-                                    pass
-                            if _same_error_count >= 3:
-                                yield {"type": "content", "content": f"\n连续 {_same_error_count} 次出现相同错误，自动停止重试。"}
-                                _should_stop = True
-                                break
-                            elif _same_error_count >= 2:
-                                local_messages.append({"role": "user", "content": f"⚠️ 这个错误已连续出现 {_same_error_count} 次，说明你的修复方向可能不对。请尝试完全不同的修复策略，不要做微调。如果确实无法修复，请说明原因。"})
-                        elif not _is_fail:
-                            _last_error_sig = None
-                            _same_error_count = 0
-                            _run_succeeded = True
-                            _should_handoff = True  # 成功后自动交接 DataInspector
-                            # 优先从 written_tables 获取实际写入的表名（不依赖 result 类型）
-                            _wt = rdata.get("written_tables")
-                            if _wt:
-                                _handoff_output_table = _wt[-1].get("table_name")
-                                context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
-                            else:
-                                _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
-                            context["debug_output_table"] = _handoff_output_table
-                            folder = context.get("debug_folder")
-                            if folder:
-                                try:
-                                    from app.services import experience as _exp
-                                    if _exp.read_negative(folder):
-                                        _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
-                                except Exception:
-                                    pass
                     except Exception:
                         pass
 
-                elif tool_name == "run_script":
+                if tool_name in ("modify_and_run", "edit_and_run", "run_script"):
                     try:
                         rdata = json.loads(r["content"])
                         yield {"type": "run_result", "result": rdata}
-
-                        # 失败判定 + 经验记录 + 重复错误检测
                         _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
                         _is_fail = (not rdata.get("success")
                                     or ("success" in _inner_r and not _inner_r["success"])
                                     or (rdata.get("error") and str(rdata.get("error")).strip())
                                     or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
-                        _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
-
-                        if _is_fail and _err_msg:
-                            # 重复错误检测：取错误前 100 字作签名（同轮不重复计数）
-                            if not _error_counted_this_round:
-                                _sig = _err_msg[:100]
-                                if _sig == _last_error_sig:
-                                    _same_error_count += 1
-                                else:
-                                    _last_error_sig = _sig
-                                    _same_error_count = 1
-                                _error_counted_this_round = True
-
-                            # 经验记录：失败 → 反例 + 错误日志
-                            folder = context.get("debug_folder")
-                            if folder:
-                                try:
-                                    from app.services.skill_parser import read_skill_script
-                                    from app.api.v1.endpoints.skill import append_error_log
-                                    append_error_log(folder, script_name, "execution_error", _err_msg, {}, rdata.get("stdout", ""), "debug-chat")
-                                except Exception:
-                                    pass
-
-                            # 连续 3 次相同错误 → 停止，进入 give_up
-                            if _same_error_count >= 3:
-                                yield {"type": "content", "content": f"\n连续 {_same_error_count} 次出现相同错误，自动停止重试。"}
-                                _should_stop = True
-                                break
-                            elif _same_error_count >= 2:
-                                local_messages.append({"role": "user", "content": f"⚠️ 这个错误已连续出现 {_same_error_count} 次，说明你的修复方向可能不对。请尝试完全不同的修复策略，不要做微调。如果确实无法修复，请说明原因。"})
-                        elif not _is_fail:
-                            # 成功 → 记录正例 + 自动交接 DataInspector
-                            _last_error_sig = None
-                            _same_error_count = 0
-                            _run_succeeded = True
-                            _should_handoff = True  # 成功后自动交接 DataInspector
-                            # 优先从 written_tables 获取实际写入的表名（不依赖 result 类型）
+                        if not _is_fail:
+                            _should_handoff = True
+                            _execution_succeeded = True
+                            context["debug_execution_succeeded"] = True
+                            _exec_failures_before_success = 0
+                            context["debug_exec_failures"] = 0
                             _wt = rdata.get("written_tables")
                             if _wt:
                                 _handoff_output_table = _wt[-1].get("table_name")
@@ -1779,44 +1879,60 @@ class DataProcessorAgent(BaseAgent):
                                         _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
                                 except Exception:
                                     pass
+                        else:
+                            _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
+                            _err_type = rdata.get("error_type") or _inner_r.get("error_type") or ""
+                            # 环境问题：修改脚本无法解决，直接报告
+                            if _err_type and "环境问题" in _err_type:
+                                yield {"type": "content", "content": f"\n❌ {_err_type}\n错误详情：{_err_msg[:300]}\n"}
+                                yield {"type": "give_up", "reason": _err_type}
+                                yield {"type": "done", "result": {"agent": self.name, "content": _err_type}}
+                                return
+                            # 执行错误子限制：首次成功前连续 3 次执行失败 → 停
+                            if not _execution_succeeded:
+                                _exec_failures_before_success += 1
+                                context["debug_exec_failures"] = _exec_failures_before_success
+                                if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
+                                    yield {"type": "give_up", "reason": f"连续 {_exec_failures_before_success} 次执行失败，无法自动修复"}
+                                    yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
+                                    return
+                            folder = context.get("debug_folder")
+                            if folder and _err_msg:
+                                try:
+                                    from app.services import experience as _exp
+                                    _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=f"工具: {tool_name}\nAI输出: {content[:200]}")
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
-                # 检查 handoff
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        self._save_session_log(local_messages, context, _inspection_round)
-
                         yield {
-                            "type": "handoff",
-                            "to": result_data["to"],
-                            "reason": result_data["reason"],
-                            "payload": result_data.get("payload", {}),
-                            "from": self.name,
+                            "type": "handoff", "to": result_data["to"], "reason": result_data["reason"],
+                            "payload": result_data.get("payload", {}), "from": self.name,
                         }
                         return
                 except (json.JSONDecodeError, AttributeError):
                     pass
 
-            # 重复错误 → 跳出外层重试循环
-            if _should_stop:
-                break
+            # yield 调查工具结果摘要
+            if _result_lines:
+                yield {"type": "content", "content": "\n".join(_result_lines) + "\n"}
 
-            # 执行成功 → 自动交接 DataInspector（仅修复模式；分析模式不 handoff）
             if _should_handoff and not context.get("debug_analyze_only"):
-                self._save_session_log(local_messages, context, _inspection_round)
-
+                if context.get("debug_max_inspections", 7) <= 0:
+                    yield {"type": "done", "result": {"agent": self.name, "content": "修复成功", "success": True}}
+                    return
                 ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
                 _is_recheck = _inspection_round > 0
                 yield {
-                    "type": "handoff",
-                    "to": "data_inspector",
+                    "type": "handoff", "to": "data_inspector",
                     "reason": HandoffReason.FIX_COMPLETED.value if _is_recheck else HandoffReason.INSPECT_RESULT.value,
                     "payload": {
-                        "datasource_id": ds_id,
-                        "table_name": tbl,
+                        "datasource_id": ds_id, "table_name": tbl,
                         "operation_description": f"第 {_inspection_round} 轮修复后复查" if _is_recheck else "技能调试执行成功，自动交接质量检查",
                         "result_summary": "执行成功",
                     },
@@ -1824,51 +1940,32 @@ class DataProcessorAgent(BaseAgent):
                 }
                 return
 
-        # 分析模式：轮次耗尽直接输出已有内容，不走修复失败逻辑
         if context.get("debug_analyze_only"):
             yield {"type": "done", "result": {"agent": self.name, "content": content or "分析完成"}}
             return
 
-        # 轮次耗尽或重复错误或 AI 主动放弃 → 让 AI 分析无法修复的原因
-        if _same_error_count >= 3:
-            _reason = f"连续 {_same_error_count} 次相同错误"
-        elif had_any_tool_calls and not _should_stop:
-            _reason = f"AI 在第 {_total_rounds} 轮主动停止修复"
-        else:
-            _reason = f"已达到最大调试轮次（{max_iterations}）"
-        feedback_msg = (
-            f"{_reason}，脚本仍然执行失败。\n"
-            "请分析以上错误信息，判断是否确实无法修复。\n"
-            "如果无法修复，请明确列出无法修复的原因（如环境依赖缺失、数据源不可达、表结构不兼容等），不要再次输出修改脚本。\n"
+        # 7次修改仍失败 → 让 LLM 判断是代码问题还是平台问题
+        _classify_msg = (
+            f"经过 {_fix_attempts} 次修改尝试（总计 {max_fix_attempts} 次上限），脚本仍然无法通过检查。\n"
+            f"最后的错误信息：{content[:500] if content else '无'}\n\n"
+            "请判断这个错误属于以下哪类，一句话说明原因：\n"
+            "1. 代码问题（可以通过修改脚本修复）\n"
+            "2. 平台限制（如连接器不支持某功能、数据源类型限制等，修改脚本无法解决）\n"
+            "3. 环境问题（如数据源不可达、权限不足、文件不存在等）\n"
+            "只回答分类和原因，不要输出代码。"
         )
-        if _last_error_sig:
-            feedback_msg += f"\n最近重复出现的错误：\n{_last_error_sig}"
-        local_messages.append({"role": "assistant", "content": content})
-        local_messages.append({"role": "user", "content": feedback_msg})
+        local_messages.append({"role": "user", "content": _classify_msg})
+        _classification = ""
+        try:
+            async for _evt in llm_manager.chat_stream_with_tools_and_thinking(
+                messages=local_messages, tools=debug_tools, temperature=0.1,
+                model=None, tool_choice="auto",
+            ):
+                if _evt.get("type") == "content":
+                    _classification += _evt.get("content", "")
+                    yield _evt
+        except Exception:
+            pass
 
-        full_content = ""
-        async for event in llm_manager.chat_stream_with_tools_and_thinking(
-            messages=local_messages, tools=debug_tools, temperature=0.1, max_tokens=4000,
-        ):
-            t = event["type"]
-            if t == "thinking":
-                yield event
-            elif t == "content":
-                full_content += event["content"]
-                yield event
-        yield {"type": "give_up", "reason": full_content[:2000]}
-
-        # 将"无法修复"的原因分析存入经验库，下次调试可直接参考
-        folder = context.get("debug_folder")
-        if folder:
-            try:
-                from app.services import experience as _exp
-                _exp.write_lessons(folder, full_content.strip())
-                # 持久化本次调试记忆（含修改历史 + give_up 分析）
-                _session_log = context.get("debug_session_log", "")
-                _exp.append_debug_history(folder, session_log=_session_log + f"\n\n[give_up 分析]\n{full_content[:1000]}")
-                logger.info(f"已将 give_up 分析存入经验库: {folder}")
-            except Exception as e:
-                logger.warning(f"存储 give_up 经验失败: {e}")
-
-        yield {"type": "done", "result": {"agent": self.name, "content": full_content}}
+        yield {"type": "give_up", "reason": _classification[:1000] if _classification else f"已达到最大修改次数（{_fix_attempts}次）"}
+        yield {"type": "done", "result": {"agent": self.name, "content": _classification or content or "调试失败"}}

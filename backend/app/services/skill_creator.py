@@ -185,50 +185,57 @@ tags:
 import pandas as pd
 from typing import Dict, Any, Optional, List
 
+def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
+    # 从数据源加载表数据
+    ds_id = get_datasource_id_by_name(datasource_name)
+    if not ds_id:
+        raise ValueError(f"找不到数据源: {datasource_name}")
+    result = query_table_data(ds_id, table_name)
+    if not result.get("success"):
+        raise ValueError(f"读取数据失败: {result.get('error')}")
+    return pd.DataFrame(result["data"], columns=result["columns"])
+
+def _find_dynasty_column(df: pd.DataFrame) -> str:
+    # 自动检测朝代列名
+    for col in df.columns:
+        if "朝代" in col or "dynasty" in col.lower():
+            return col
+    raise ValueError(f"未找到朝代列，现有列: {list(df.columns)}")
+
+def _filter_by_dynasty(df: pd.DataFrame, dynasties: str) -> pd.DataFrame:
+    # 按朝代筛选
+    dynasty_col = _find_dynasty_column(df)
+    dynasty_list = [d.strip() for d in dynasties.split(",") if d.strip()]
+    filtered = df[df[dynasty_col].astype(str).isin(dynasty_list)]
+    print(f"筛选完成: {len(df)} → {len(filtered)} 条 (朝代: {', '.join(dynasty_list)})")
+    return filtered
+
+def _save_result(df: pd.DataFrame, output_dir: Optional[str], table_name: str) -> None:
+    # 保存结果到文件
+    if output_dir:
+        import os
+        path = os.path.join(output_dir, f"filtered_{table_name}.csv")
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+        print(f"已保存: {path}")
+
 def filter_by_dynasty(
     datasource_name: str,
     table_name: str = "artifacts",
     dynasties: str = "",
     output_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    ds_id = get_datasource_id_by_name(datasource_name)
-    if not ds_id:
-        raise ValueError(f"找不到数据源: {datasource_name}")
-
-    result = query_table_data(ds_id, table_name)
-    if not result.get("success"):
-        raise ValueError(f"读取数据失败: {result.get('error')}")
-
-    df = pd.DataFrame(result["data"], columns=result["columns"])
+    # 主业务函数：编排各步骤
+    df = _load_data(datasource_name, table_name)
     if df.empty:
         return {"success": True, "filtered_count": 0, "data": []}
-
-    dynasty_list = [d.strip() for d in dynasties.split(",") if d.strip()]
-    dynasty_col = None
-    for col in df.columns:
-        if "朝代" in col or "dynasty" in col.lower():
-            dynasty_col = col
-            break
-
-    if dynasty_col is None:
-        raise ValueError(f"未找到朝代列，现有列: {list(df.columns)}")
-
-    filtered = df[df[dynasty_col].astype(str).isin(dynasty_list)]
-    print(f"筛选完成: {len(df)} → {len(filtered)} 条 (朝代: {', '.join(dynasty_list)})")
-
-    if output_dir:
-        import os
-        path = os.path.join(output_dir, f"filtered_{table_name}.csv")
-        filtered.to_csv(path, index=False, encoding="utf-8-sig")
-        print(f"已保存: {path}")
-
+    filtered = _filter_by_dynasty(df, dynasties)
+    _save_result(filtered, output_dir, table_name)
     return {
         "success": True,
         "filtered_count": len(filtered),
         "columns": list(filtered.columns),
         "data": filtered.to_dict(orient="records")[:10],
     }
-
 
 def main(**params):
     return filter_by_dynasty(**params)

@@ -185,7 +185,16 @@
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
-                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <el-collapse v-if="msg.content" :model-value="msg._contentOpen === false ? [] : ['content']" @change="(v: any) => { msg._contentOpen = v.length > 0 }">
+                    <el-collapse-item name="content">
+                      <template #title>
+                        <span class="collapse-label">AI回复</span>
+                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                      </template>
+                      <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                    </el-collapse-item>
+                  </el-collapse>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
                   <div v-if="msg.executingMsg" class="debug-msg-executing">
                     <el-icon class="thinking-spin"><Loading /></el-icon>
                     <span>{{ msg.executingMsg }}</span>
@@ -197,10 +206,24 @@
                       </el-tag>
                       <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
                     </div>
-                    <div v-if="msg.runResult.error" class="debug-result-error"><pre>{{ msg.runResult.error }}</pre></div>
+                    <div v-if="msg.runResult.error" class="debug-result-error">
+                      <el-collapse>
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">错误信息</span>
+                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
+                          <pre>{{ msg.runResult.error }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
                     <div v-if="msg.runResult.stdout" class="debug-result-stdout">
                       <el-collapse>
-                        <el-collapse-item title="标准输出">
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">标准输出</span>
+                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
                           <pre>{{ msg.runResult.stdout }}</pre>
                         </el-collapse-item>
                       </el-collapse>
@@ -396,6 +419,14 @@ const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string) {
   return md.render(text || '')
 }
+function formatMsgTime(ts?: string): string {
+  if (!ts) return ''
+  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return '' }
+}
+
+function copyText(text: string) {
+  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制')).catch(() => ElMessage.error('复制失败'))
+}
 
 const operators = ref<any[]>([])
 const categories = ref<string[]>([])
@@ -505,6 +536,7 @@ interface OpChatMessage {
   runResult?: any
   model?: string
   executingMsg?: string
+  created_at?: string
 }
 const opMessages = ref<OpChatMessage[]>([])
 const opInput = ref('')
@@ -816,8 +848,8 @@ async function handleGenerate() {
   generating.value = true
   genMessages.value = []
   const userText = generatePrompt.value.trim()
-  genMessages.value.push({ role: 'user', content: userText })
-  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
+  genMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   generateAbortController = new AbortController()
   pushGenericHistory(generateHistory, generateHistoryIdx, userText, 'generate')
 
@@ -857,10 +889,10 @@ async function handleGenerate() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = genMessages.value[genMessages.value.length - 1]
           if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
@@ -917,8 +949,8 @@ async function handleModify() {
   if (!modifyTarget.value) return
   modifying.value = true
   const userText = modifyInstruction.value.trim()
-  modifyMessages.value.push({ role: 'user', content: userText })
-  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: true })
+  modifyMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   modifyAbortController = new AbortController()
   pushGenericHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
 
@@ -958,10 +990,10 @@ async function handleModify() {
           const data = JSON.parse(trimmed.slice(6))
           const msg = modifyMessages.value[modifyMessages.value.length - 1]
           if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = true; thinkingDone = false
+            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = true; thinkingDone = false }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
@@ -1195,14 +1227,14 @@ async function handleOpSend() {
   if (!debugOperator.value || !opInput.value.trim() || opStreaming.value) return
 
   const userMsg = opInput.value.trim()
-  opMessages.value.push({ role: 'user', content: userMsg })
+  opMessages.value.push({ role: 'user', content: userMsg, created_at: new Date().toISOString() })
   pushGenericHistory(opChatHistory, opChatHistoryIdx, userMsg, 'op_chat')
   opInput.value = ''
   opStreaming.value = true
   opAbortController = new AbortController()
 
   const assistantIdx = opMessages.value.length
-  opMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false })
+  opMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   opPinnedToBottom.value = true
   await nextTick()
   scrollOpToBottom(true)
@@ -1278,15 +1310,15 @@ async function handleOpSend() {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
               msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = true
+              msg.thinkingOpen = false
               thinkingDone = false
             }
-            if (!msg.thinking) msg.thinkingOpen = true
+            if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) {
@@ -1313,18 +1345,18 @@ async function handleOpSend() {
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
             msg.executingMsg = ''
-            msg.content += `\n\n═══ 第${data.round}轮修改 ═══\n`
-            msg.thinkingOpen = true
+            msg.thinkingOpen = false
             thinkingDone = true
+            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
           } else if (data.type === 'fatal') {
@@ -1345,6 +1377,19 @@ async function handleOpSend() {
             }
             warnText += '\n\n> 如需修复，请回复"修复警告问题"'
             msg.content += warnText
+          } else if (data.type === 'platform_issue') {
+            msg.executingMsg = ''
+            msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
+            msg.thinkingOpen = false
+            thinkingDone = true
+          } else if (data.type === 'done') {
+            msg.executingMsg = ''
+            if (!msg.content || msg.content.trim() === '') {
+              msg.content = '✅ 调试完成'
+            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
+              msg.content += '\n\n✅ 调试完成'
+            }
+            msg.thinkingOpen = false
           }
         } catch {
           // skip
@@ -1367,7 +1412,7 @@ async function handleOpSend() {
         msg.content = '*[已停止生成]*'
       }
     } else {
-      opMessages.value[assistantIdx].content = `请求出错: ${e.message || String(e)}`
+      opMessages.value[assistantIdx].content = `请求出错: ${e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message || String(e)}`
     }
   } finally {
     opStreaming.value = false
@@ -1582,6 +1627,29 @@ onMounted(() => {
     color: #909399;
   }
 
+  /* 所有 debug 折叠区域统一样式 */
+  .debug-msg-assistant :deep(.el-collapse-item__header) {
+    position: relative;
+    height: 32px;
+    line-height: 32px;
+    padding: 0 10px;
+    font-size: 12px;
+    background: #f5f7fa;
+    border-bottom: 1px solid #e4e7ed;
+  }
+  .collapse-label {
+    color: #909399;
+    font-size: 12px;
+  }
+  .collapse-copy-btn {
+    position: absolute;
+    right: 32px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 2px 6px;
+    font-size: 12px;
+    z-index: 1;
+  }
   .debug-result-error {
     padding: 6px 10px;
     pre {
@@ -1672,6 +1740,11 @@ onMounted(() => {
       max-width: 85%;
       width: fit-content;
     }
+    .debug-msg-time {
+      font-size: 11px;
+      color: #999;
+      margin-top: 2px;
+    }
   }
 
   &.assistant {
@@ -1723,6 +1796,10 @@ onMounted(() => {
     font-size: 13px;
     color: #409eff;
     font-weight: 500;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f5f7fa;
     border-bottom: 1px solid #d9ecff;
     cursor: pointer;
     user-select: none;

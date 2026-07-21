@@ -118,5 +118,10 @@
 | 第六轮 | 非侵入式 Harness 重构 + 沙箱文档统一 + UI 修复 | data_harness.py 抽出（ConvergenceGuard + collect_experience）；SANDBOX_TOOLS_DOC 统一；数据源刷新只刷当前表；对话推理自动滚动 |
 | 第七轮 | 调度系统落地 + 死代码清理 + EP 中文化 | task_runner.py 后台执行 + 30s 扫描器；sandbox_ns.py 抽出；Element Plus 中文化；删除 CodeView/ExploreView/Notebook 全套（净减 1159 行） |
 | 第八轮 | 调试 Loop 强化 | 强制每轮执行；AST 脚本智能压缩；工具结果智能压缩；handoff 参数简化；工具异常兜底；LLM 流式超时保护；调试无工具重定向；长度升级死代码清理；Inspector 表名模糊匹配；handoff 上限联动；written_tables 追踪；embedding 按 provider 选 |
+| 第九轮 | 截断保证契约 + 推理预算正法 + Prefix Cache | L1 max_tokens→12000；L2 截断续写（同模型续写≤5轮）；L3 强制推进（tool_choice=required）；L4 循环推理正法（frequency_penalty）；Prefix Cache 静态/动态分区 |
+| 第十轮 | 行级补丁原语（对齐 OpenCode edit） | apply_patch 行级补丁；edit_script/edit_and_run 工具；read_script 逐字读；_finalize_script_change 共享 helper；apply_patch 单测 |
+| 第十一轮 | 函数级合并修复子函数拆分 bug | apply_partial_code 函数级合并；_find_main_block_line AST 定位；modify_script 接入；apply_partial_code 单测（总用例 7→12） |
+| 第十二轮 | 对齐 OpenCode 调试模式 | DEBUG_INSTRUCTIONS 极简风格；thinking 开启；只调查不修改检测；分析模式1轮；轮次显示修复；run() 加 yield round；SSE ping 机制；平台问题预判；import 补全；超时改回300秒 |
+| 第十三轮 | 修改尝试正法 | 3次执行错误上限（首次成功前）+7次总修改上限（含检查修复）；跨 handoff 持久化计数器；删 fast model；删"只调查不修改"检测器；删 enable_thinking/frequency_penalty/max_tokens 死代码；前端"轮"→"修改尝试" |
 
-- 当前测试：86 个单元测试全部通过（`backend/tests/`）
+- 当前测试：见 `backend/tests/`（111 个用例，含 apply_patch / platform_issue_detection / event_filter / experience / skill_runner 等）

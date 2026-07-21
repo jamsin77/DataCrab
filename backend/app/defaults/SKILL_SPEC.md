@@ -65,6 +65,44 @@ def main(**params):
     return migrate_data(**params)
 ```
 
+### 3.1.1 代码组织建议
+
+复杂逻辑应拆分为多个聚焦的子函数，`main` 只做编排：
+
+```python
+def _load_data(datasource_name, table_name):
+    """加载数据"""
+    ...
+
+def _clean_data(df):
+    """清洗数据"""
+    ...
+
+def _transform_data(df):
+    """转换数据"""
+    ...
+
+def _write_data(df, target_datasource, target_table):
+    """写入结果"""
+    ...
+
+def migrate_data(**params):
+    """主业务函数：编排各步骤"""
+    df = _load_data(params["source_datasource"], params["source_table"])
+    df = _clean_data(df)
+    df = _transform_data(df)
+    _write_data(df, params["target_datasource"], params["target_table"])
+    return {"success": True, "rows": len(df)}
+
+def main(**params):
+    return migrate_data(**params)
+```
+
+拆分的好处：
+- 每个子函数可独立用 `edit_and_run` 精确修改
+- 调试时只需重写出错的子函数，不必重写整个 `main`
+- 代码更清晰，更容易被 DataInspector 检查
+
 ### 3.2 必须遵守的规则
 
 | 规则 | 说明 |

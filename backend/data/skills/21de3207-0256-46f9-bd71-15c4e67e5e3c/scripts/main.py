@@ -353,6 +353,9 @@ def migrate_data(
         target_datasource_name = kwargs.get('target_datasource')
 
     column_mapping = column_mapping or {}
+    # 兼容 column_mapping 传入 list 的情况（如 ["col1", "col2"]）
+    if isinstance(column_mapping, list):
+        column_mapping = {item: item for item in column_mapping if isinstance(item, str)}
     column_transforms = column_transforms or {}
     drop_columns = drop_columns or []
 
@@ -404,27 +407,36 @@ def migrate_data(
     print(f"  目标表已存在策略: {if_table_exists}")
     print("=" * 60)
 
-    # 探测 write_table_data 签名
-    print("\n🔍 探测 write_table_data 函数签名...")
-    write_supported_params = set()
-    try:
-        sig = inspect.signature(write_table_data)
-        print(f"  {sig}")
-        write_supported_params = set(sig.parameters.keys())
-    except Exception as e:
-        print(f"  无法获取签名: {e}")
+    # 不再使用 inspect.signature 探测平台函数签名（可能挂起导致超时）
+    # 改为写入时 try-except 试探参数支持情况
+    write_supported_params = {"if_table_exists", "table_remark", "column_remarks"}  # 假设支持，写入时自动降级
+    print("\n🔍 跳过签名探测，写入时自动适配参数")
 
-    # 步骤1: 获取数据源 ID
+    # 步骤1: 获取数据源 ID（单次尝试，失败直接用名称）
     print("\n📡 步骤1: 获取数据源信息...")
-    source_ds_id = get_datasource_id_by_name(source_datasource_name)
-    if not source_ds_id:
-        raise ValueError(f"找不到源数据源: '{source_datasource_name}'")
-    print(f"  ✅ 源数据源 ID: {source_ds_id}")
 
-    target_ds_id = get_datasource_id_by_name(target_datasource_name)
-    if not target_ds_id:
-        raise ValueError(f"找不到目标数据源: '{target_datasource_name}'")
-    print(f"  ✅ 目标数据源 ID: {target_ds_id}")
+    def _resolve_ds(ds_name):
+        try:
+            ds_id = get_datasource_id_by_name(ds_name)
+            if ds_id:
+                return ds_id
+        except Exception as e:
+            print(f"  ⚠️ 解析数据源 '{ds_name}' 异常: {e}")
+        return None
+
+    source_ds_id = _resolve_ds(source_datasource_name)
+    if source_ds_id:
+        print(f"  ✅ 源数据源 ID: {source_ds_id}")
+    else:
+        source_ds_id = source_datasource_name
+        print(f"  ⚠️ 无法解析源数据源ID，直接使用名称: '{source_ds_id}'")
+
+    target_ds_id = _resolve_ds(target_datasource_name)
+    if target_ds_id:
+        print(f"  ✅ 目标数据源 ID: {target_ds_id}")
+    else:
+        target_ds_id = target_datasource_name
+        print(f"  ⚠️ 无法解析目标数据源ID，直接使用名称: '{target_ds_id}'")
 
     # 步骤2: 读取源表数据
     print(f"\n📊 步骤2: 从源表 '{source_table_name}' 读取数据 (limit={limit})...")
@@ -621,13 +633,68 @@ def migrate_data(
         total_written = _write_records(records, target_table_name)
     except Exception as e:
         err_str = str(e)
-        # 检测是否为结构不兼容（如字段不存在），如果是则尝试自动创建新表写入
-        if "不存在" in err_str or "does not exist" in err_str.lower() or "no such column" in err_str.lower():
-            print(f"  ⚠️ 写入失败: {e}")
-            print(f"  💡 可能是目标表已存在且结构不兼容。尝试使用新表名自动创建并写入...")
-            target_table_name = f"{target_table_name}_{int(time.time())}"
-            print(f"  🔄 新表名: '{target_table_name}'")
-            total_written = _write_records(records, target_table_name)
+        # 检测是否为"文件/表不存在"错误 → 用 create 策略重试 write_table_data
+        if "不存在" in err_str or "does not exist" in err_str.lower() or "no such" in err_str.lower():
+            print(f"  ⚠️ write_table_data 写入失败: {e}")
+            print(f"  💡 目标表不存在，尝试用 create 策略自动创建并写入...")
+
+            # 用 create 策略重试 write_table_data（让平台自动建表）
+            create_kwargs = dict(write_extra_kwargs)
+            create_kwargs["if_table_exists"] = "create"
+            try:
+                total_written = 0
+                for i in range(0, len(records), batch_size):
+                    batch_num = i // batch_size + 1
+                    batch = records[i:i + batch_size]
+                    print(f"  📦 [create重试] 批次 {batch_num}: 写入 {len(batch)} 行...")
+                    # 第一批用 create，后续用 append
+                    if batch_num > 1:
+                        create_kwargs["if_table_exists"] = "append"
+                    write_result = write_table_data(
+                        target_ds_id, target_table_name, records=batch, **create_kwargs
+                    )
+                    if not write_result.get("success"):
+                        error_msg = write_result.get("error") or write_result.get("message", "未知错误")
+                        raise ValueError(f"create重试写入失败 (批次 {batch_num}): {error_msg}")
+                    batch_count = write_result.get("row_count", len(batch))
+                    total_written += batch_count
+                print(f"  ✅ create策略写入成功! 共 {total_written} 行")
+            except Exception as create_err:
+                print(f"  ❌ create策略也失败: {create_err}")
+                # 最后兜底：尝试 execute_sql（仅对 DB 型数据源有效）
+                print(f"  💡 尝试使用 execute_sql 创建表并写入数据...")
+                try:
+                    execute_sql_func = _get_builtin_func('execute_sql')
+                    col_defs = ", ".join([f'"{col}" TEXT' for col in df.columns])
+                    create_sql = f'CREATE TABLE IF NOT EXISTS "{target_table_name}" ({col_defs})'
+                    execute_sql_func(target_ds_id, create_sql)
+                    print(f"  ✅ 表 '{target_table_name}' 创建成功 (或已存在)")
+
+                    col_names_str = ", ".join([f'"{col}"' for col in df.columns])
+                    total_written = 0
+                    for i in range(0, len(records), batch_size):
+                        batch = records[i:i + batch_size]
+                        batch_num = i // batch_size + 1
+                        print(f"  📦 SQL批次 {batch_num}: 插入 {len(batch)} 行...")
+
+                        for record in batch:
+                            values = []
+                            for col in df.columns:
+                                val = record.get(col)
+                                if val is None:
+                                    values.append("NULL")
+                                else:
+                                    escaped = str(val).replace("'", "''")
+                                    values.append(f"'{escaped}'")
+                            values_str = ", ".join(values)
+                            insert_sql = f'INSERT INTO "{target_table_name}" ({col_names_str}) VALUES ({values_str})'
+                            execute_sql_func(target_ds_id, insert_sql)
+
+                        total_written += len(batch)
+                    print(f"  ✅ SQL写入成功! 共 {total_written} 行")
+                except Exception as sql_err:
+                    print(f"  ❌ execute_sql 方式也失败: {sql_err}")
+                    raise ValueError(f"所有写入方式均失败。write_table_data 错误: {e}; create重试错误: {create_err}; execute_sql 错误: {sql_err}")
         else:
             print(f"  ⚠️ 首次写入失败: {e}")
             print(f"  🔄 尝试将所有数据转为字符串后重试...")
@@ -753,7 +820,7 @@ def main(**kwargs):
 
     # 参数名兼容映射，解决系统注入参数名不一致的问题
     param_aliases = {
-        'source_datasource_name': ['source_datasource_name', 'source_datasource', 'sourceDatasource', 'sourceDatasourceName', 'from_datasource', 'fromDatasource', 'datasource'],
+        'source_datasource_name': ['source_datasource_name', 'source_datasource', 'sourceDatasource', 'sourceDatasourceName', 'from_datasource', 'fromDatasource', 'datasource', 'datasource_name', 'datasourceName'],
         'source_table_name': ['source_table_name', 'source_table', 'sourceTable', 'sourceTableName', 'table_name', 'tableName', 'from_table', 'fromTable'],
         'target_datasource_name': ['target_datasource_name', 'target_datasource', 'targetDatasource', 'targetDatasourceName', 'to_datasource', 'toDatasource'],
         'target_table_name': ['target_table_name', 'target_table', 'targetTable', 'targetTableName', 'to_table', 'toTable'],
@@ -803,10 +870,6 @@ def main(**kwargs):
         print(f"\n完整堆栈:")
         print(traceback.format_exc())
         return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
-
-
-if __name__ == "__main__":
-    main()
 
 
 def _extract_province(address: str) -> str:
@@ -868,3 +931,72 @@ def _extract_province(address: str) -> str:
         return address[:idx + 1]
     
     return ""
+
+
+
+
+# ===== 英文→中文反向翻译字典 =====
+COMMON_EN_CN = {v: k for k, v in COMMON_CN_EN.items()}
+
+def _smart_translate_en_to_cn(text: str) -> str:
+    """智能翻译英文列名/表名为中文。
+    
+    优先精确匹配，其次按 _ 拆分逐词匹配后拼接，
+    最后用 llm_chat 调用大模型翻译。
+    """
+    text = str(text).strip()
+    if not text:
+        return text
+    # 1. 精确匹配
+    if text in COMMON_EN_CN:
+        return COMMON_EN_CN[text]
+    # 2. 按 _ 拆分逐词匹配
+    parts = text.split('_')
+    translated_parts = []
+    all_matched = True
+    for part in parts:
+        if part in COMMON_EN_CN:
+            translated_parts.append(COMMON_EN_CN[part])
+        else:
+            translated_parts.append(part)
+            all_matched = False
+    if all_matched:
+        return ''.join(translated_parts)
+    # 部分匹配也返回拼接结果
+    if any(COMMON_EN_CN.get(p) for p in parts):
+        return ''.join(translated_parts)
+    # 3. 用 llm_chat 翻译
+    try:
+        llm_chat_func = _get_builtin_func('llm_chat')
+        prompt = (
+            f"请将以下英文数据库表名/列名翻译为简洁的中文，"
+            f"只输出中文翻译结果，不要添加任何说明或标点：\n{text}"
+        )
+        reply = llm_chat_func(prompt, system_prompt="你是数据库命名翻译助手，只输出中文翻译结果。", temperature=0.3)
+        result = reply.strip()
+        if result:
+            return result
+    except Exception as e:
+        print(f"  ⚠️ llm_chat 翻译失败: {e}")
+    return text
+
+def _write_records(records, table_name, target_ds, if_table_exists="fail", batch_size=1000):
+    """分批写入记录到目标数据源。
+    
+    第一批用原策略（如 overwrite/replace/truncate），后续批次用 append。
+    """
+    clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}
+    total = 0
+    for i in range(0, len(records), batch_size):
+        batch_num = i // batch_size + 1
+        batch = records[i:i + batch_size]
+        current_strategy = if_table_exists
+        if batch_num > 1 and if_table_exists in clearing_strategies:
+            current_strategy = "append"
+        write_table_data(target_ds, table_name, records=batch, if_table_exists=current_strategy)
+        total += len(batch)
+        print(f"  📝 写入批次 {batch_num}: {len(batch)} 条 (累计 {total})")
+    return total
+
+if __name__ == "__main__":
+    main()

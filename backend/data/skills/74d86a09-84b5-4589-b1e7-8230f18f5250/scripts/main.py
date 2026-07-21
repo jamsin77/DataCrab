@@ -275,13 +275,12 @@ def main(input_data=None, **kwargs):
     if source_df.empty:
         return {"success": True, "message": "无源数据需要归并", "count": len(df)}
 
-    # 确定归并字段（备注列）
+    # 确定归并字段（备注列）—— 使用智能列名解析（支持中英文翻译匹配）
     actual_merge_field = merge_field
     if actual_merge_field not in source_df.columns:
-        possible_cols = [c for c in source_df.columns if merge_field.lower() in str(c).lower() or str(c).lower() in merge_field.lower()]
-        if possible_cols:
-            actual_merge_field = possible_cols[0]
-            log("info", f"归并字段模糊匹配为: {actual_merge_field}")
+        actual_merge_field = _resolve_column_smart(source_df, merge_field)
+        if actual_merge_field:
+            log("info", f"归并字段 '{merge_field}' 解析为: {actual_merge_field}")
         else:
             return {"success": False, "error": f"归并字段 '{merge_field}' 不存在，现有列: {list(source_df.columns)}"}
 
@@ -341,3 +340,40 @@ def main(input_data=None, **kwargs):
         "final_count": len(target_df),
         "output_table": output_table,
     }
+
+
+def _resolve_column_smart(df, name):
+    """智能解析列名：先精确/模糊匹配，找不到则用LLM翻译后匹配
+    
+    Args:
+        df: DataFrame
+        name: 用户指定的列名（可能是中文、英文或别名）
+    
+    Returns:
+        str: 匹配到的实际列名，或 None
+    """
+    # 1. 先用内置 resolve_column（精确→忽略大小写→模糊→翻译匹配）
+    col = resolve_column(df, name)
+    if col:
+        return col
+    
+    # 2. 用 LLM 翻译列名，再匹配
+    actual_cols = list(df.columns)
+    prompt = f"""用户想要处理名为 "{name}" 的列，但表中实际列名为：{actual_cols}
+
+请找出与 "{name}" 语义最相近的列名。考虑中英文翻译关系（如"备注"="remarks"="remark"="notes"，"名称"="name"="title"）。
+
+只返回最匹配的列名（必须是上面列表中的一个），如果没有匹配的返回 null。只返回列名本身，不要其他内容。"""
+    
+    try:
+        result = llm_chat(prompt, temperature=0.1, max_tokens=100)
+        result = result.strip().strip('"').strip("'").strip()
+        
+        if result and result.lower() != 'null' and result in actual_cols:
+            log("info", f"列名 '{name}' 通过翻译匹配到 '{result}'")
+            return result
+    except Exception as e:
+        log("warn", f"翻译匹配列名失败: {e}")
+    
+    log("warn", f"无法找到与 '{name}' 匹配的列，可用列: {actual_cols}")
+    return None
