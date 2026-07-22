@@ -37,11 +37,6 @@
           <el-icon><Timer /></el-icon>
           <template #title>调度</template>
         </el-menu-item>
-        <!-- 文件链接菜单已隐藏 -->
-        <!-- <el-menu-item index="/filelink">
-          <el-icon><FolderOpened /></el-icon>
-          <template #title>文件链接</template>
-        </el-menu-item> -->
         <el-menu-item index="/knowledge">
           <el-icon><Collection /></el-icon>
           <template #title>知识库</template>

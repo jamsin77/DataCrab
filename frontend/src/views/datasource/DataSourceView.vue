@@ -15,7 +15,6 @@
             :value="c.name"
           />
         </el-select>
-        <el-button :icon="Setting" @click="openConnectorManager">连接器管理</el-button>
       </div>
     </div>
 

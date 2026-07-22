@@ -4,7 +4,46 @@ import asyncio
 import json
 import threading
 
+from pathlib import Path
+
 from app.core.database import async_session
+
+
+async def _get_allowed_paths(db, user_id) -> list[str]:
+    """收集授权路径：文件链接 + 数据源目录（用户建数据源即授权）。"""
+    from sqlalchemy import select as _select
+    allowed = []
+
+    # 1. 文件链接
+    from app.models.filelink import FileLink
+    result = await db.execute(_select(FileLink).where(
+        FileLink.is_active == True, FileLink.created_by == user_id
+    ))
+    for f in result.scalars().all():
+        if f.link_type == "directory":
+            allowed.append(f.path)
+        else:
+            allowed.append(str(Path(f.path).parent))
+
+    # 2. 文件型数据源（csv/excel/generic_file 等）自动授权
+    from app.models.datasource import DataSource
+    result = await db.execute(_select(DataSource).where(
+        DataSource.is_active == True, DataSource.created_by == user_id
+    ))
+    _FILE_DS_TYPES = {"csv", "excel", "generic_file"}
+    for ds in result.scalars().all():
+        if ds.type not in _FILE_DS_TYPES:
+            continue
+        cfg = ds.connection_config or {}
+        for key in ("path", "folder_path", "file_path"):
+            p = cfg.get(key)
+            if p:
+                allowed.append(str(Path(p).parent if Path(p).suffix else p))
+        for p in cfg.get("file_paths", []):
+            if p:
+                allowed.append(str(Path(p).parent))
+
+    return allowed
 
 
 def run_async_in_thread(coro):
@@ -191,16 +230,7 @@ def build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                from sqlalchemy import select as _select
-                from app.models.filelink import FileLink
-                result = await db.execute(_select(FileLink).where(
-                    FileLink.is_active == True, FileLink.created_by == current_user_id
-                ))
-                links = result.scalars().all()
-                allowed = [f.path for f in links if f.link_type == "directory"]
-                for f in links:
-                    if f.link_type == "file":
-                        allowed.append(str(Path(f.path).parent))
+                allowed = await _get_allowed_paths(db, current_user_id)
 
                 resolved = Path(path).resolve()
                 ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
@@ -219,6 +249,9 @@ def build_operator_namespace(current_user_id):
                     return pd.read_excel(resolved)
                 elif ext == ".parquet":
                     return pd.read_parquet(resolved)
+                elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
+                    # 图片 fail-fast：绝不返回 UTF-8 乱码（会掩盖错误信号，诱导把乱码当数据传给 llm_vision）
+                    raise RuntimeError(f"read_file 不支持读取图片文件({ext})。请直接将图片路径传给 llm_vision(image_path, prompt) 进行 OCR/识别。")
                 else:
                     return resolved.read_text(encoding="utf-8")
 
@@ -230,13 +263,7 @@ def build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                from sqlalchemy import select as _select
-                from app.models.filelink import FileLink
-                result = await db.execute(_select(FileLink).where(
-                    FileLink.is_active == True, FileLink.created_by == current_user_id
-                ))
-                links = result.scalars().all()
-                allowed = [f.path for f in links if f.link_type == "directory"]
+                allowed = await _get_allowed_paths(db, current_user_id)
 
                 resolved = Path(path).resolve()
                 ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
@@ -277,16 +304,7 @@ def build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                from sqlalchemy import select as _select
-                from app.models.filelink import FileLink
-                result = await db.execute(_select(FileLink).where(
-                    FileLink.is_active == True, FileLink.created_by == current_user_id
-                ))
-                links = result.scalars().all()
-                allowed = [f.path for f in links if f.link_type == "directory"]
-                for f in links:
-                    if f.link_type == "file":
-                        allowed.append(str(Path(f.path).parent))
+                allowed = await _get_allowed_paths(db, current_user_id)
 
                 resolved = Path(image_path).resolve()
                 ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
@@ -324,6 +342,93 @@ def build_operator_namespace(current_user_id):
 
         return run_async_in_thread(_run())
 
+    def call_operator(operator_name, **params):
+        """调用用户自定义算子（通过内部 HTTP 端点执行算子脚本）"""
+        import urllib.request as _ureq
+
+        async def _run():
+            from app.core.database import async_session
+            from sqlalchemy import select as _sel
+            from app.models.operator import Operator
+            from uuid import UUID as _UUID
+            import inspect as _inspect
+            import io as _io
+
+            # 查找算子（按 ID 或名称）
+            try:
+                op_id = _UUID(str(operator_name))
+                r = await async_session().execute(_sel(Operator).where(Operator.id == op_id))
+            except (ValueError, TypeError):
+                async with async_session() as _db:
+                    r = await _db.execute(_sel(Operator).where(Operator.name == operator_name))
+            op = r.scalar_one_or_none()
+            if not op:
+                raise RuntimeError(f"算子不存在: {operator_name}")
+            if not op.script_content:
+                raise RuntimeError(f"算子 '{operator_name}' 没有可执行脚本")
+
+            captured = _io.StringIO()
+            ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
+            ns.update(build_operator_namespace(current_user_id))
+            exec(op.script_content, ns)
+            func = ns.get(op.function_name or "")
+            if not func:
+                raise RuntimeError(f"算子脚本中未找到函数: {op.function_name}")
+
+            is_async = _inspect.iscoroutinefunction(func)
+            result = await func(**params) if is_async else func(**params)
+            if hasattr(result, "to_dict"):
+                result = result.to_dict(orient="records")
+            return {"success": True, "result": result, "stdout": captured.getvalue() or None}
+
+        try:
+            return run_async_in_thread(_run())
+        except Exception as e:
+            return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
+
+    def grep(directory, pattern, file_extensions=None, max_matches=200):
+        """在授权目录内递归搜索文件内容（正则匹配），返回匹配行"""
+        import re as _re
+        from pathlib import Path as _Path
+
+        async def _run():
+            async with async_session() as db:
+                allowed = await _get_allowed_paths(db, current_user_id)
+
+                resolved = _Path(directory).resolve()
+                ok = any(str(resolved).startswith(str(_Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"目录不在授权范围内: {directory}")
+                if not resolved.exists():
+                    raise RuntimeError(f"目录不存在: {directory}")
+
+                regex = _re.compile(pattern)
+                matches = []
+                for file_path in sorted(resolved.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    if file_extensions and file_path.suffix.lower() not in file_extensions:
+                        continue
+                    try:
+                        content = file_path.read_text(encoding="utf-8", errors="replace")
+                        for line_no, line in enumerate(content.splitlines(), 1):
+                            if regex.search(line):
+                                matches.append({
+                                    "file": str(file_path.relative_to(resolved)),
+                                    "line": line_no,
+                                    "content": line[:500],
+                                })
+                                if len(matches) >= max_matches:
+                                    return {"matches": matches, "total": len(matches), "truncated": True}
+                    except Exception:
+                        continue
+                return {"matches": matches, "total": len(matches), "truncated": False}
+
+        try:
+            return run_async_in_thread(_run())
+        except Exception as e:
+            return {"matches": [], "total": 0, "truncated": False, "error": str(e)}
+
     return {
         "query_table_data": query_table_data,
         "get_table_schema": get_table_schema,
@@ -336,6 +441,8 @@ def build_operator_namespace(current_user_id):
         "read_file": read_file,
         "write_file": write_file,
         "compute_map": compute_map,
+        "call_operator": call_operator,
+        "grep": grep,
         "pd": pd,
         "json": json,
     }

@@ -67,7 +67,7 @@ async def _auto_create_file_link(db: AsyncSession, datasource: DataSource, user_
     from app.models.filelink import FileLink
 
     cfg = datasource.connection_config or {}
-    file_path = cfg.get("file_path") or cfg.get("directory") or ""
+    file_path = cfg.get("file_path") or cfg.get("path") or cfg.get("folder_path") or cfg.get("directory") or ""
     if not file_path:
         return
 
@@ -535,21 +535,13 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
     from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
 
     user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
     image_path = body.get("image_path", "")
     prompt = body.get("prompt", "")
     if not image_path or not prompt:
         raise HTTPException(status_code=400, detail="image_path 和 prompt 必填")
 
-    # 路径校验（同 read_file）
-    result = await db.execute(
-        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
-    )
-    links = result.scalars().all()
-    allowed_dirs = [f.path for f in links if f.link_type == "directory"]
-    for f in links:
-        if f.link_type == "file":
-            allowed_dirs.append(str(Path(f.path).parent))
-
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
     validated = _validate_file_path(image_path, allowed_dirs)
     p = Path(validated)
     if not p.exists():
@@ -706,6 +698,42 @@ def _validate_file_path(path: str, allowed_dirs: list) -> str:
     raise HTTPException(status_code=403, detail=f"路径不在授权目录范围内: {path}")
 
 
+async def _collect_allowed_dirs(db: AsyncSession, user_id) -> list[str]:
+    """收集授权目录：文件链接 + 文件型数据源目录（用户建数据源即授权）"""
+    from pathlib import Path
+    allowed = []
+
+    # 1. 文件链接
+    from app.models.filelink import FileLink
+    result = await db.execute(
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+    )
+    for f in result.scalars().all():
+        if f.link_type == "directory":
+            allowed.append(f.path)
+        else:
+            allowed.append(str(Path(f.path).parent))
+
+    # 2. 文件型数据源自动授权
+    result = await db.execute(
+        select(DataSource).where(DataSource.is_active == True, DataSource.created_by == user_id)
+    )
+    _FILE_DS_TYPES = {"csv", "excel", "generic_file"}
+    for ds in result.scalars().all():
+        if ds.type not in _FILE_DS_TYPES:
+            continue
+        cfg = ds.connection_config or {}
+        for key in ("path", "folder_path", "file_path", "directory"):
+            p = cfg.get(key)
+            if p:
+                allowed.append(str(Path(p).parent if Path(p).suffix else p))
+        for p in cfg.get("file_paths", []):
+            if p:
+                allowed.append(str(Path(p).parent))
+
+    return allowed
+
+
 @router.get("/internal/file-links")
 async def internal_list_file_links(
     user_id: str = Query(...),
@@ -713,8 +741,9 @@ async def internal_list_file_links(
 ):
     """内部文件链接列表端点（无认证，仅供技能执行器子进程本机调用）"""
     from app.models.filelink import FileLink
+    _uid = UUID(str(user_id)) if user_id else None
     result = await db.execute(
-        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
+        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == _uid)
     )
     return [
         {"id": str(f.id), "name": f.name, "path": f.path, "link_type": f.link_type}
@@ -730,18 +759,10 @@ async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
     from app.models.filelink import FileLink
 
     user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
     file_path = body.get("path", "")
 
-    # 获取用户授权目录
-    result = await db.execute(
-        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
-    )
-    allowed_dirs = [f.path for f in result.scalars().all() if f.link_type == "directory"]
-    # 对 file 类型的链接，允许访问链接指向的文件
-    for f in result.scalars().all():
-        if f.link_type == "file":
-            allowed_dirs.append(str(Path(f.path).parent))
-
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
     validated = _validate_file_path(file_path, allowed_dirs)
     p = Path(validated)
     if not p.exists():
@@ -765,6 +786,9 @@ async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
             import pandas as _pd
             df = _pd.read_parquet(p)
             return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+        elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
+            # 图片/二进制 fail-fast：绝不返回 UTF-8 乱码（会掩盖错误信号，诱导 LLM 把乱码当数据传给 llm_vision）
+            raise HTTPException(status_code=400, detail=f"read_file 不支持读取图片文件({ext})。请直接将图片路径传给 llm_vision(image_path, prompt) 进行 OCR/识别。")
         else:
             return {"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}
     except Exception as e:
@@ -780,16 +804,12 @@ async def internal_write_file(body: dict, db: AsyncSession = Depends(get_db)):
     import json as _json
 
     user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
     file_path = body.get("path", "")
     data = body.get("data")
     fmt = body.get("format")
 
-    # 获取用户授权目录
-    result = await db.execute(
-        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == user_id)
-    )
-    allowed_dirs = [f.path for f in result.scalars().all() if f.link_type == "directory"]
-
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
     validated = _validate_file_path(file_path, allowed_dirs)
     p = Path(validated)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -813,3 +833,57 @@ async def internal_write_file(body: dict, db: AsyncSession = Depends(get_db)):
         return {"success": True, "path": str(p), "size": p.stat().st_size}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"写入文件失败: {e}")
+
+
+@router.post("/internal/files/grep")
+async def internal_grep(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部文件搜索端点（无认证，仅供技能执行器子进程本机调用）。
+    在授权目录内递归搜索文件内容，返回匹配行。"""
+    from pathlib import Path
+    from app.models.filelink import FileLink
+    import re as _re
+
+    user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
+    directory = body.get("directory", "")
+    pattern = body.get("pattern", "")
+    file_extensions = body.get("file_extensions")  # 可选，如 [".py", ".txt"]，None=全部
+    max_matches = int(body.get("max_matches", 200))
+
+    if not directory or not pattern:
+        raise HTTPException(status_code=400, detail="directory 和 pattern 必填")
+
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
+    resolved = Path(directory).resolve()
+    ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed_dirs)
+    if not ok:
+        raise HTTPException(status_code=403, detail=f"目录不在授权范围内: {directory}")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail=f"目录不存在: {directory}")
+
+    try:
+        regex = _re.compile(pattern)
+    except _re.error as e:
+        raise HTTPException(status_code=400, detail=f"正则表达式无效: {e}")
+
+    matches = []
+    for file_path in sorted(resolved.rglob("*")):
+        if not file_path.is_file():
+            continue
+        if file_extensions and file_path.suffix.lower() not in file_extensions:
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            for line_no, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    matches.append({
+                        "file": str(file_path.relative_to(resolved)),
+                        "line": line_no,
+                        "content": line[:500],
+                    })
+                    if len(matches) >= max_matches:
+                        return {"matches": matches, "total": len(matches), "truncated": True}
+        except Exception:
+            continue
+
+    return {"matches": matches, "total": len(matches), "truncated": False}
