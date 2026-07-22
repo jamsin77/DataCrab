@@ -26,7 +26,6 @@ from app.services.connectors import get_connector
 from app.services.shared_tools import SHARED_TOOL_SCHEMAS, execute_shared_tool
 from app.services.agent_utils import (
     StuckDetector,
-    is_planning_only,
     should_warn_ungrounded_claim,
     estimate_complexity,
     get_turn_budget,
@@ -131,12 +130,6 @@ class AgentService:
             if not tool_calls:
                 content = response.get("content", "")
 
-                # 反幻觉：防"只规划不执行"（K）
-                if is_planning_only(content) and i == 0:
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
-                    continue
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
                 # 例外：system prompt 已预注入实时数据时跳过
                 if not had_any_tool_calls and not has_preinjected:
@@ -217,12 +210,6 @@ class AgentService:
             if not tool_calls:
                 content = response.get("content", "")
 
-                # 反幻觉：防"只规划不执行"（K）
-                if is_planning_only(content) and i == 0:
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
-                    continue
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
                 # 例外：system prompt 已预注入实时数据时跳过
                 if not had_any_tool_calls and not has_preinjected:
@@ -240,8 +227,8 @@ class AgentService:
                     continue
 
                 if content:
-                    yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                    yield {"type": "content", "content": content}
+                yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
             had_any_tool_calls = True

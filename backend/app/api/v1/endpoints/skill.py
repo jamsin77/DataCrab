@@ -643,7 +643,9 @@ async def run_skill_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            exec_result = await run_skill_script_async(
+            # 用 ping 保活：技能执行可能耗时数分钟，SSE 无心跳会被超时断开
+            import asyncio as _asyncio
+            _exec_task = _asyncio.create_task(run_skill_script_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=request.parameters,
@@ -652,7 +654,16 @@ async def run_skill_stream(
                 datasource_name=ds_name,
                 table_name=request.table_name,
                 user_id=str(current_user.id),
-            )
+            ))
+            while True:
+                try:
+                    exec_result = await _asyncio.wait_for(_asyncio.shield(_exec_task), timeout=20.0)
+                    break
+                except _asyncio.TimeoutError:
+                    yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                except _asyncio.CancelledError:
+                    _exec_task.cancel()
+                    raise
 
             # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
             from app.core.database import async_session as _new_session
@@ -992,6 +1003,14 @@ async def run_skill_nl_stream(
     if params_match:
         params_section = params_match.group(1).strip()[:1500]
 
+    # 获取用户数据源列表，帮助 LLM 正确匹配数据源名（避免猜错目标数据源）
+    from app.models.datasource import DataSource as _DSModel
+    _ds_result = await db.execute(
+        select(_DSModel).where(_DSModel.created_by == current_user.id, _DSModel.is_active == True)
+    )
+    _ds_names = [ds.name for ds in _ds_result.scalars().all()]
+    _ds_list_str = "\n".join(f"- {name}" for name in _ds_names) if _ds_names else "(无)"
+
     messages = [
         {
             "role": "system",
@@ -1001,8 +1020,10 @@ async def run_skill_nl_stream(
                 "规则：\n"
                 "- 参数名必须与参数规范完全一致\n"
                 "- 区分数据源名(DataSource)和表名(Table)\n"
-                "- 用户说\"从X数据源\"时，输出 datasource_name: \"X\"\n"
-                "- 用户说\"把Y这张表\"时，输出 table_name: \"Y\"\n\n"
+                "- 用户说\"从X数据源\"时，输出对应的 source_datasource_name: \"X\"\n"
+                "- 用户说\"到Y数据源\"或\"搬到Y\"时，输出对应的 target_datasource_name: \"Y\"\n"
+                "- 数据源名必须从下方「可用数据源」列表中选取，不要编造\n"
+                "- column_mapping 是列名映射（源列名→目标列名），不是表名映射\n\n"
                 '输出格式：{"parameters": {"参数名": 值}}'
             ),
         },
@@ -1012,6 +1033,7 @@ async def run_skill_nl_stream(
                 f"技能：{skill.display_name or skill.name}\n"
                 f"描述：{skill.description or ''}\n\n"
                 f"参数规范：\n{params_section or '请参考脚本函数签名推断参数'}\n\n"
+                f"可用数据源：\n{_ds_list_str}\n\n"
                 f"用户指令：{request.query}\n\n"
                 f"只输出 JSON。"
             ),
@@ -1076,7 +1098,9 @@ async def run_skill_nl_stream(
             logger.info(f"NL推断参数: {json_mod.dumps(parameters, ensure_ascii=False)}")
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '参数推断完成，正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            exec_result = await run_skill_script_async(
+            # 用 ping 保活：技能执行可能耗时数分钟（如 OCR 71 张图），SSE 无心跳会被代理/浏览器超时断开
+            import asyncio as _asyncio
+            _exec_task = _asyncio.create_task(run_skill_script_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=parameters,
@@ -1085,7 +1109,16 @@ async def run_skill_nl_stream(
                 datasource_name=ds_name,
                 table_name=inferred_table,
                 user_id=str(current_user.id),
-            )
+            ))
+            while True:
+                try:
+                    exec_result = await _asyncio.wait_for(_asyncio.shield(_exec_task), timeout=20.0)
+                    break
+                except _asyncio.TimeoutError:
+                    yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                except _asyncio.CancelledError:
+                    _exec_task.cancel()
+                    raise
 
             # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
             from app.core.database import async_session as _new_session
@@ -1370,6 +1403,8 @@ async def debug_skill_chat(
                     if _inspector_active and _inspector_summary and not _inspector_content_sent:
                         yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
                     _inspector_active = False
+                    # 转发 done 事件（含 result.content，不能吞）
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 elif _inspector_active and t == "warning_confirmation":
                     _inspector_summary = event.get("summary", "")
                 elif _inspector_active and t == "content":

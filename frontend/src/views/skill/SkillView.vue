@@ -372,7 +372,7 @@
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkillNL" :disabled="!execNLQuery.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkillNL" :disabled="!execNLQuery.trim() || debugStreaming">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -395,7 +395,7 @@
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunCmd" :disabled="!execCmdStr.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunCmd" :disabled="!execCmdStr.trim() || debugStreaming">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -416,7 +416,7 @@
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
                 <el-icon><VideoPause /></el-icon> 停止
               </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkill" :disabled="!execParamsStr.trim()">
+              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkill" :disabled="!execParamsStr.trim() || debugStreaming">
                 <el-icon><VideoPlay /></el-icon> 执行
               </el-button>
             </el-tab-pane>
@@ -579,7 +579,7 @@
               :autosize="{ minRows: 1, maxRows: 4 }"
               placeholder="输入调试指令... (Enter发送, ↑↓浏览历史)"
               @keydown="handleDebugKeyDown"
-              :disabled="debugStreaming"
+              :disabled="debugStreaming || execRunning"
             />
             <el-button
               v-if="debugStreaming"
@@ -593,7 +593,7 @@
               v-else
               type="primary"
               circle
-              :disabled="!debugInput.trim()"
+              :disabled="!debugInput.trim() || execRunning"
               @click="handleDebugSend"
             >
               <el-icon><Promotion /></el-icon>
@@ -1985,7 +1985,7 @@ async function handleRunSkill() {
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2117,7 +2117,7 @@ async function handleRunSkillNL() {
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2285,7 +2285,7 @@ async function handleRunCmd() {
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2488,7 +2488,7 @@ async function handleDebugSend() {
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -3227,7 +3227,7 @@ onMounted(() => {
   }
 
   &.assistant {
-    align-self: flex-start;
+    align-self: stretch;
     max-width: 100%;
 
     .debug-msg-assistant {
@@ -3235,10 +3235,30 @@ onMounted(() => {
       border: 1px solid #e4e7ed;
       border-radius: 10px 10px 10px 2px;
       padding: 8px 12px;
+      width: 100%;
       max-width: 100%;
       min-width: 0;
       overflow-wrap: break-word;
       word-break: break-word;
+
+      :deep(.el-collapse) {
+        border-top: none;
+        border-bottom: none;
+      }
+      :deep(.el-collapse-item__header) {
+        border-bottom: none;
+        padding: 0;
+        height: 28px;
+        line-height: 28px;
+        font-size: 12px;
+      }
+      :deep(.el-collapse-item__wrap) {
+        border-bottom: none;
+        background: transparent;
+      }
+      :deep(.el-collapse-item__content) {
+        padding: 0;
+      }
     }
   }
 }
@@ -3344,6 +3364,11 @@ onMounted(() => {
   border: 1px solid #e4e7ed;
   border-radius: 6px;
   overflow: hidden;
+
+  :deep(.el-collapse) {
+    border-top: none;
+    border-bottom: none;
+  }
 
   .runresult-header {
     display: flex;

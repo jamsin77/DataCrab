@@ -183,11 +183,6 @@ _DATA_CLAIM_PATTERNS = [
     re.compile(r'(?:共有|总共有|包含|存在)\s*\d', re.IGNORECASE),
 ]
 
-_PLANNING_PREFIXES = (
-    "我将", "让我", "首先", "我已", "策略", "计划", "步骤", "将采取",
-    "接下来", "下面我", "我的思路", "I will", "Let me", "First",
-)
-
 
 def has_data_claims(text: str) -> bool:
     """检查文本中是否包含数据声明（数字、统计结论等）。"""
@@ -197,17 +192,6 @@ def has_data_claims(text: str) -> bool:
         if pattern.search(text):
             return True
     return False
-
-
-def is_planning_only(text: str) -> bool:
-    """检查文本是否只是规划文本（"我将...然后...最后..."）而没有实际产出。
-
-    借鉴 DeepAnalyze 的"防只规划不执行"机制。
-    """
-    if not text or len(text) > 2000:
-        return False
-    stripped = text.strip()
-    return any(stripped.startswith(prefix) for prefix in _PLANNING_PREFIXES)
 
 
 def should_warn_ungrounded_claim(output_text: str, had_tool_calls_this_turn: bool) -> Optional[str]:

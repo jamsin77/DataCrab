@@ -34,11 +34,11 @@ from app.services.agent_utils import (
     estimate_complexity,
     get_turn_budget,
     should_warn_ungrounded_claim,
-    is_planning_only,
     get_context_pressure_level,
     build_pressure_warning,
 )
 from app.services.tool_guidance import get_tool_guidance
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC
 
 DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（DataProcessor），一位数据处理专家。
 
@@ -331,28 +331,6 @@ EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, DELETE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_
 _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
 _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
-# 意图检测：分析模式 vs 修复模式
-_ANALYZE_KEYWORDS = [
-    '看一看', '看看', '看下', '看一下', '分析', '检查下', '检查一', '找找', '找问题',
-    '什么问题', '哪里', '为什么', '怎么回事', '诊断', '查看', '排查', '看看有',
-    '看下有', '有什么问题', '存在什么', '是否存在', '看眼', '瞅瞅',
-]
-_FIX_KEYWORDS = [
-    '修复', '修改', '改正', '搞好', '修好', '修一下', '改一下', '修复下',
-    '修改下', '改正下', 'fix', '优化', '调整', '重写', '重新写', '改好',
-    '改正一下', '修改一下', '修复一下', '搞定',
-]
-
-
-def _is_analyze_only_request(msg: str) -> bool:
-    """判断用户消息是否为分析-only 请求（只看不改）。有修复关键词则走修复模式。"""
-    if not msg:
-        return False
-    has_fix = any(kw in msg.lower() for kw in _FIX_KEYWORDS)
-    if has_fix:
-        return False
-    return any(kw in msg for kw in _ANALYZE_KEYWORDS)
-
 
 _PLATFORM_ISSUE_SIGNALS = [
     "平台问题", "平台能力缺失", "平台不支持", "平台限制",
@@ -384,32 +362,8 @@ SKILL_DEBUG_EXTRA = """
 """
 
 # 调试 system prompt 静态前缀缓存（借鉴 DeepAnalyze sectionCache：字节稳定 → 命中 prefix cache）
-# key = (is_skill, analyze_only, max_rounds, max_inspections)；一次会话内不变
+# key = (is_skill, max_rounds, max_inspections)；一次会话内不变
 _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
-
-ANALYZE_INSTRUCTIONS = """你是 DataCrab 平台的调试助手（DataProcessor 角色），用户要求你**只分析问题，不修改代码**。
-
-## 核心规则
-- **禁止调用 modify_and_run / modify_script / run_script**，本轮只分析不修改
-- 可以调用 get_table_schema / query_table_data / execute_sql 查看表结构和数据，辅助分析
-- 分析完成后，在回复中说明：发现的问题、错误原因、修复建议
-- 推理请简洁，直奔重点
-
-## 你的能力（通过工具调用）
-1. **get_table_schema**: 查看表结构
-2. **query_table_data**: 查看表数据
-3. **execute_sql**: 执行 SQL 查询
-4. **list_user_datasources**: 列出数据源
-
-## 输出要求
-- 逐条列出发现的问题（如有），标注严重程度（info/warning/error）
-- 说明每个问题的根因
-- 给出修复建议（但不要执行修复）
-- 如果脚本没有明显问题，说明"未发现明显问题"
-- 如需修复，请用户说"修复下"或"修改下"触发修复模式
-
-## 技能规范（脚本必须符合此规范）
-""" + _SKILL_SPEC
 
 DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL] + EXTENSION_TOOLS
 
@@ -592,12 +546,6 @@ class DataProcessorAgent(BaseAgent):
             if not tool_calls:
                 content = response.get("content", "")
 
-                # 反幻觉：防"只规划不执行"（K）
-                if is_planning_only(content) and i == 0:
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行操作。"})
-                    continue
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
                 # 例外：system prompt 已预注入实时数据时，Agent 基于预注入数据回答是合理的
                 if not had_any_tool_calls and not has_preinjected_data:
@@ -726,9 +674,16 @@ class DataProcessorAgent(BaseAgent):
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     doc = ast.get_docstring(node) or ""
                     doc_first = doc.split('\n')[0].strip() if doc else ""
-                    args = ", ".join(a.arg for a in node.args.args[:4])
-                    if len(node.args.args) > 4:
-                        args += ", ..."
+                    # 完整签名：含 *args/**kwargs，不截断（截断会让 LLM 重写时漏 **kwargs → runner 传参 TypeError）
+                    sig_parts = [a.arg for a in node.args.args]
+                    if node.args.vararg:
+                        sig_parts.append(f"*{node.args.vararg.arg}")
+                    elif node.args.kwonlyargs:
+                        sig_parts.append("*")
+                    sig_parts.extend(a.arg for a in node.args.kwonlyargs)
+                    if node.args.kwarg:
+                        sig_parts.append(f"**{node.args.kwarg.arg}")
+                    args = ", ".join(sig_parts)
                     funcs.append(f"- L{node.lineno} {node.name}({args}){' — ' + doc_first if doc_first else ''}")
             result = f"## 当前脚本（{script_name}，共 {total} 行）\n"
             if imports:
@@ -1536,13 +1491,11 @@ class DataProcessorAgent(BaseAgent):
     def build_debug_system_prompt(self, context: Dict[str, Any], round_num: int = 1) -> str:
         """构建调试模式 system prompt（精简版，对齐 OpenCode）。"""
         max_rounds = context.get("debug_max_rounds", 7)
-        _is_skill = context.get("debug_type") in (None, "skill")
-        _analyze = context.get("debug_analyze_only")
+        prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds))
 
-        if _analyze:
-            prompt = ANALYZE_INSTRUCTIONS
-        else:
-            prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds))
+        # 沙箱函数签名契约（对齐 OpenCode：工具 schema 永远在 prompt 里，LLM 不必猜 API）
+        # 放静态区保证字节稳定 → 命中 prefix cache；含 llm_vision(image_path,...) 等关键签名
+        prompt += "\n\n" + SANDBOX_TOOLS_DOC
 
         # 目标连接器能力（1-2 行，不放完整能力清单）
         target_ds_type = context.get("debug_output_datasource_type", "")
@@ -1607,13 +1560,6 @@ class DataProcessorAgent(BaseAgent):
 
         await llm_manager.initialize()
 
-        # 意图检测：用户说"看一看/分析下/检查下" → 分析模式（不修改代码，不跑7轮循环）
-        # 用户说"修复下/修改下/改正下" → 修复模式（正常7轮循环）
-        if message.reason != HandoffReason.FIX_REQUIRED:
-            _user_msg_raw = message.payload.get("user_message", message.payload.get("content", ""))
-            if _is_analyze_only_request(_user_msg_raw):
-                context["debug_analyze_only"] = True
-
         system_prompt = self.build_debug_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
 
@@ -1663,18 +1609,15 @@ class DataProcessorAgent(BaseAgent):
                 return
             local_messages.append({"role": "user", "content": user_msg})
 
-        # 调试模式工具选择
-        if context.get("debug_analyze_only"):
-            # 分析模式：只给查询工具
-            debug_tools = SHARED_TOOL_SCHEMAS
-        elif context.get("debug_max_inspections", 7) == 0:
+        # 调试模式工具选择（对齐 OpenCode：始终全工具，LLM 自主决策）
+        if context.get("debug_max_inspections", 7) == 0:
             # 自动修复模式：修改+执行工具 + read_script/grep_script（LLM 可先调查再改）
             debug_tools = [MODIFY_AND_RUN_TOOL, EDIT_AND_RUN_TOOL, MODIFY_SCRIPT_TOOL, EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
         else:
             # 正常调试模式（debug-chat）：全套工具（含 read_script/query/handoff）
             debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
 
-        max_fix_attempts = 1 if context.get("debug_analyze_only") else context.get("debug_max_rounds", 7)
+        max_fix_attempts = context.get("debug_max_rounds", 7)
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化
         _total_llm_calls = 0
         _MAX_LLM_CALLS = max_fix_attempts * 3 + 3  # 安全上限
@@ -1706,6 +1649,7 @@ class DataProcessorAgent(BaseAgent):
                     yield event
                 elif t == "content":
                     content += event["content"]
+                    yield event
                 elif t == "tool_calls":
                     tool_calls = event["tool_calls"]
 
@@ -1759,24 +1703,9 @@ class DataProcessorAgent(BaseAgent):
                                 _label += f"（{', '.join(_funcs[:3])}）"
                         except: pass
                     _actions.append(_label)
-                _summary = '\n'.join(_actions)
-                if content:
-                    for _line in content.strip().split('\n'):
-                        _line = _line.strip()
-                        if _line and not _line.startswith('#') and not _line.startswith('def '):
-                            _summary += f"\n{_line[:200]}"
-                            break
-                yield {"type": "content", "content": f"{_summary}\n"}
-            elif content:
-                _brief = content.strip().split('\n')[0][:100]
-                yield {"type": "content", "content": f"分析中：{_brief}\n"}
-            else:
-                yield {"type": "content", "content": f"无输出\n"}
+                yield {"type": "content", "content": '\n'.join(_actions) + '\n'}
 
             if not tool_calls:
-                if context.get("debug_analyze_only"):
-                    yield {"type": "done", "result": {"agent": self.name, "content": content}}
-                    return
                 # agent 判定为平台问题 → 终止修复循环，上报用户
                 if _is_platform_issue_report(content):
                     yield {"type": "platform_issue", "message": content}
@@ -1804,6 +1733,7 @@ class DataProcessorAgent(BaseAgent):
             results = await self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
             # 工具结果摘要（像 OpenCode 显示 grep/read 结果）
             _result_lines = []
+            _pending_handoff = None
             for r in results:
                 tool_name = ""
                 for tc in tool_calls:
@@ -1909,11 +1839,10 @@ class DataProcessorAgent(BaseAgent):
                 try:
                     result_data = json.loads(r["content"])
                     if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        yield {
-                            "type": "handoff", "to": result_data["to"], "reason": result_data["reason"],
-                            "payload": result_data.get("payload", {}), "from": self.name,
+                        _pending_handoff = {
+                            "to": result_data["to"], "reason": result_data["reason"],
+                            "payload": result_data.get("payload", {}),
                         }
-                        return
                 except (json.JSONDecodeError, AttributeError):
                     pass
 
@@ -1921,7 +1850,8 @@ class DataProcessorAgent(BaseAgent):
             if _result_lines:
                 yield {"type": "content", "content": "\n".join(_result_lines) + "\n"}
 
-            if _should_handoff and not context.get("debug_analyze_only"):
+            # 先处理执行成功触发的自动 handoff（含写入表信息）
+            if _should_handoff:
                 if context.get("debug_max_inspections", 7) <= 0:
                     yield {"type": "done", "result": {"agent": self.name, "content": "修复成功", "success": True}}
                     return
@@ -1940,9 +1870,13 @@ class DataProcessorAgent(BaseAgent):
                 }
                 return
 
-        if context.get("debug_analyze_only"):
-            yield {"type": "done", "result": {"agent": self.name, "content": content or "分析完成"}}
-            return
+            # 再处理 LLM 显式调用的 handoff_to_inspector（所有工具结果已处理完毕）
+            if _pending_handoff:
+                yield {
+                    "type": "handoff", "to": _pending_handoff["to"], "reason": _pending_handoff["reason"],
+                    "payload": _pending_handoff["payload"], "from": self.name,
+                }
+                return
 
         # 7次修改仍失败 → 让 LLM 判断是代码问题还是平台问题
         _classify_msg = (

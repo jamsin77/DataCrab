@@ -1111,6 +1111,7 @@ async def debug_operator_chat(
                     if _inspector_active and _inspector_summary and not _inspector_content_sent:
                         yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
                     _inspector_active = False
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 elif _inspector_active and t == "warning_confirmation":
                     _inspector_summary = event.get("summary", "")
                 elif _inspector_active and t == "content":
@@ -1340,3 +1341,60 @@ async def operator_to_pipeline_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+# ============================================================
+# 内部端点：供技能沙箱子进程调用算子（无认证，本机调用）
+# ============================================================
+@router.post("/internal/execute")
+async def internal_execute_operator(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部算子执行端点（无认证，仅供技能执行器子进程本机调用）。
+    根据算子名称或 ID 加载脚本并执行，返回结果。"""
+    from app.models.operator import Operator
+    from app.services.sandbox_ns import build_operator_namespace as _build_ns, run_async_in_thread as _run_thread
+    from uuid import UUID as _UUID
+    import pandas as _pd
+
+    operator_key = body.get("operator_name") or body.get("operator_id")
+    params = body.get("parameters") or {}
+    user_id = body.get("user_id")
+    if not operator_key:
+        raise HTTPException(status_code=400, detail="operator_name 或 operator_id 必填")
+
+    # 查找算子（按 ID 或名称）
+    try:
+        op_uuid = _UUID(str(operator_key))
+        result = await db.execute(select(Operator).where(Operator.id == op_uuid))
+    except (ValueError, TypeError):
+        result = await db.execute(
+            select(Operator).where(Operator.name == operator_key)
+        )
+    operator = result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=404, detail=f"算子不存在: {operator_key}")
+
+    if not operator.script_content:
+        raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")
+
+    _uid = _UUID(str(user_id)) if user_id else None
+
+    try:
+        captured = io.StringIO()
+        local_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
+        local_ns.update(_build_ns(_uid))
+
+        exec(operator.script_content, local_ns)
+
+        func = local_ns.get(operator.function_name or "")
+        if not func:
+            raise ValueError(f"脚本中未找到函数: {operator.function_name}")
+
+        is_async = inspect.iscoroutinefunction(func)
+        result_value = await func(**params) if is_async else func(**params)
+
+        if hasattr(result_value, "to_dict"):
+            result_value = result_value.to_dict(orient="records")
+
+        return {"success": True, "result": result_value, "stdout": captured.getvalue() or None}
+    except Exception as e:
+        return {"success": False, "error": f"{type(e).__name__}: {str(e)}", "stdout": captured.getvalue() or None}

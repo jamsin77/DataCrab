@@ -499,6 +499,7 @@ async def debug_pipeline_chat(
                     if _inspector_active and _inspector_summary and not _inspector_content_sent:
                         yield f"data: {json.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
                     _inspector_active = False
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 elif _inspector_active and t == "warning_confirmation":
                     _inspector_summary = event.get("summary", "")
                 elif _inspector_active and t == "content":

@@ -20,7 +20,6 @@ from app.services.llm import llm_manager
 from app.services.inspector_tools import inspector_tools
 from app.services.agent_utils import (
     StuckDetector,
-    is_planning_only,
     should_warn_ungrounded_claim,
     estimate_complexity,
     get_turn_budget,
@@ -286,13 +285,12 @@ class DataInspectorAgent(BaseAgent):
         for i in range(max_iterations):
             _llm_model = None
             _llm_tool_choice = "auto"
-            _llm_max_tokens = 12000
             content = ""
             tool_calls = []
             finish_reason = None
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools, temperature=0.3, max_tokens=_llm_max_tokens,
+                messages=local_messages, tools=self.tools, temperature=0.3,
                 model=_llm_model, tool_choice=_llm_tool_choice,
             ):
                 t = event["type"]
@@ -307,11 +305,6 @@ class DataInspectorAgent(BaseAgent):
                     finish_reason = event["finish_reason"]
 
             if not tool_calls:
-                if is_planning_only(content) and i == 0:
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请不要只描述计划，直接开始执行检查操作。"})
-                    continue
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
                 if not had_any_tool_calls:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
