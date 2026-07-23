@@ -1273,6 +1273,15 @@ async def run_skill_nl_stream(
                             yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': {'passed': True, 'error': str(inspect_err)[:200]}}, ensure_ascii=False)}\n\n"
 
             logger.info(f"NL stream: exec_result success={exec_result.get('success')}, error={str(exec_result.get('error',''))[:100]}")
+
+            # 执行失败时检查错误类型：平台限制/数据问题/环境问题 → 明确报告
+            if not _exec_success:
+                _err_type = exec_result.get("error_type") or ""
+                if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制", "数据问题")):
+                    _err_msg = str(exec_result.get("error", ""))[:500]
+                    _platform_msg = _err_type + "\n\n错误详情：" + _err_msg
+                    yield f"data: {json_mod.dumps({'type': 'platform_issue', 'message': _platform_msg}, ensure_ascii=False)}\n\n"
+
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
         except asyncio.CancelledError:

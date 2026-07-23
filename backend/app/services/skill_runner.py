@@ -57,11 +57,11 @@ _PLATFORM_ERROR_PATTERNS = [
 # 数据问题关键词（用户配置问题，修改脚本无法解决）
 _DATA_ERROR_PATTERNS = [
     ("数据源不存在", "数据问题：数据源不存在，请检查数据源配置"),
-    ("表不存在", "数据问题：表不存在，请检查表名"),
-    ("找不到源数据源", "数据问题：找不到数据源，请检查数据源名称"),
+    ("源表不存在", "数据问题：源表不存在，请检查表名"),
+    ("源文件不存在", "数据问题：源文件不存在，请检查文件路径"),
+    ("找不到源数据源", "数据问题：找不到源数据源，请检查数据源名称"),
     ("找不到目标数据源", "数据问题：找不到目标数据源，请检查数据源名称"),
     ("路径不在授权目录", "数据问题：路径不在授权目录，请在文件链接中添加目录"),
-    ("文件不存在", "数据问题：文件不存在，请检查文件路径"),
 ]
 
 # 脚本问题关键词（修改脚本可修复）
@@ -834,6 +834,48 @@ def run_skill_script(
             pass
 
 
+async def _llm_classify_error(error_msg: str) -> str:
+    """用 LLM 推断错误类型，返回分类结果。
+    分类：环境问题 / 平台限制 / 数据问题 / 脚本错误
+    """
+    from app.services.llm import llm_manager
+    await llm_manager.initialize()
+    
+    prompt = f"""分析以下技能执行错误，判断属于哪一类（只输出分类名，不要解释）：
+
+1. 环境问题：Python 环境缺失（numpy/pandas 没装、DLL 损坏、权限不足、网络不通）
+2. 平台限制：DataCrab 平台功能缺失（不支持的写入策略、不支持的文件操作、NotImplementedError）
+3. 数据问题：用户数据配置问题（源数据源/源表/源文件不存在、路径不在授权目录）
+4. 脚本错误：脚本身代码 bug（KeyError/TypeError/逻辑错误/参数传错），可通过修改脚本修复
+
+关键区分：
+- 源文件/源表不存在 → 数据问题（用户数据缺失）
+- 目标文件/目标表不存在 → 脚本错误（脚本应处理创建）
+- 文件存在但参数传错 → 脚本错误
+- 平台不支持某功能 → 平台限制
+
+错误信息：
+{error_msg[:2000]}
+
+只输出分类名（环境问题/平台限制/数据问题/脚本错误），不要其他内容。"""
+
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        response = await llm_manager.chat_with_messages(messages, temperature=0.0, max_tokens=50)
+        result = response.strip()
+        if "环境" in result:
+            return "环境问题：LLM 判定为环境问题"
+        elif "平台" in result:
+            return "平台限制：LLM 判定为平台限制"
+        elif "数据" in result:
+            return "数据问题：LLM 判定为数据问题"
+        else:
+            return "script_error"
+    except Exception as e:
+        logger.warning(f"LLM 错误分类失败，回退到 script_error: {e}")
+        return "script_error"
+
+
 async def run_skill_script_async(
     skill_path: Path,
     script_name: str = "main.py",
@@ -847,7 +889,7 @@ async def run_skill_script_async(
 ) -> Dict[str, Any]:
     """异步执行 Skill 脚本，委托给同步版本以避免 Windows 上的 NotImplementedError"""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
+    result = await loop.run_in_executor(
         None,
         lambda: run_skill_script(
             skill_path=skill_path,
@@ -861,3 +903,12 @@ async def run_skill_script_async(
             user_id=user_id,
         ),
     )
+    # 关键词匹配不到（script_error）时，用 LLM 重新推断
+    if not result.get("success") and result.get("error_type") == "script_error":
+        _err = result.get("error", "")
+        if _err:
+            _llm_type = await _llm_classify_error(_err)
+            if _llm_type != "script_error":
+                result["error_type"] = _llm_type
+                logger.info(f"LLM 错误分类: script_error → {_llm_type}")
+    return result

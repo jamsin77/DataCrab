@@ -1,5 +1,5 @@
-# 可选依赖：按需安装 pip install -r requirements-optional.txt
-# chromadb: 文档知识库 RAG（拉入 25+ 依赖，按需安装）
+# Optional dependencies: pip install -r requirements-optional.txt
+# chromadb: Knowledge base RAG (pulls 25+ sub-dependencies)
 chromadb>=0.4.0
-# minio: OBS 对象存储连接器
+# minio: OBS object storage connector
 minio>=7.2.0

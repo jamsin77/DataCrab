@@ -91,7 +91,7 @@ def _correct_severity(llm_issues, local_messages):
     return corrected
 
 
-DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（DataInspector），一位数据质量专家。
+DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的 DataInspector（数据检查智能体），一位数据质量专家。
 
 ## 核心能力
 - 擅长数据标准检查、质量评估和安全审计
@@ -113,7 +113,7 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（Data
 
 ## 交接规则
 - 发现 `fatal` 问题（违反法律法规）：**不要**交接修复，直接在内容中说明违法风险并停止
-- 发现 `error` 或 `critical` 问题：使用 handoff_to_processor 交接给数据处理智能体**自动修复**
+- 发现 `error` 或 `critical` 问题：使用 handoff_to_processor 交接给 DataProcessor **自动修复**
 - 仅发现 `warning` 问题：在内容中列出问题，说明由用户决定是否修复，不要交接
 - 所有问题已修复或无问题时，返回检查通过结果
 """
@@ -197,7 +197,7 @@ DATA_INSPECTOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "handoff_to_processor",
-            "description": "将检查发现的问题交接给数据处理智能体进行修复",
+            "description": "将检查发现的问题交接给 DataProcessor 进行修复",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -358,20 +358,6 @@ class DataInspectorAgent(BaseAgent):
                     local_messages.append({"role": "assistant", "content": content})
                     local_messages.append({"role": "user", "content": intervention})
                     continue
-
-                # 强制交接：检查工具发现 error/critical 但 LLM 未调 handoff_to_processor
-                if had_any_tool_calls and i < max_iterations - 1:
-                    _severe = _collect_severe_issues(local_messages)
-                    if _severe:
-                        local_messages.append({"role": "assistant", "content": content})
-                        _redirect = (
-                            "检查工具发现了 error/critical 级问题，但你没有调用 handoff_to_processor 交接修复。"
-                            "请立即调用 handoff_to_processor 工具，将下列问题通过 issues 参数传入"
-                            "（每项含 description/severity/column/suggestion），让 DataProcessor 自动修复：\n"
-                            + json.dumps(_severe, ensure_ascii=False, default=str)
-                        )
-                        local_messages.append({"role": "user", "content": _redirect})
-                        continue
 
                 # content 已在流式阶段逐 token 输出，不再重复 yield 全量
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}

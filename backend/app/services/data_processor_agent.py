@@ -40,7 +40,7 @@ from app.services.agent_utils import (
 from app.services.tool_guidance import get_tool_guidance
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
 
-DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（DataProcessor），一位数据处理专家。
+DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的 DataProcessor（数据处理智能体），一位数据处理专家。
 
 ## 核心能力
 - 擅长 SQL、pandas、数据清洗和转换
@@ -81,7 +81,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（Data
 - 重新执行后再次交接检查
 
 ## 交接规则
-- 数据处理完成后，使用 handoff_to_inspector 交接给检查智能体
+- 数据处理完成后，使用 handoff_to_inspector 交接给 DataInspector
 - 当用户请求是数据质量检查相关时，直接交接（delegate）给 DataInspector
 """
 
@@ -90,7 +90,7 @@ HANDOFF_TOOL = {
     "type": "function",
     "function": {
         "name": "handoff_to_inspector",
-        "description": "将处理结果交接给数据检查智能体进行质量检查。无需传参，自动使用当前调试的数据源和表",
+        "description": "将处理结果交接给 DataInspector 进行质量检查。无需传参，自动使用当前调试的数据源和表",
         "parameters": {
             "type": "object",
             "properties": {
@@ -194,16 +194,16 @@ READ_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_script",
-        "description": "读取代码的逐字内容（带行号，不压缩）。scope='script'（默认）读当前调试脚本；scope='platform' 读平台源码。**必须用 offset/limit 只读需要改的行**（grep_script 已定位行号后，offset=行号-5, limit=15 即可），不要读全文或整个函数。**修改脚本前必须先 read_script**，否则 edit_script/modify_script 会被拒绝。",
+        "description": "读取代码的逐字内容（不压缩，带行号）。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围，用于查看错误生成的精确代码。平台代码只读，不可修改。grep_script 搜到行号后，用 offset/limit 只读相关行，不要读全文。",
         "parameters": {
             "type": "object",
             "properties": {
                 "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=用户脚本（默认），platform=平台源码"},
                 "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
-                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数（大函数默认只返回前60行，需配合 offset/limit 翻页）"},
+                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
                 "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
-                "offset": {"type": "integer", "description": "起始行号（1-indexed，默认1）"},
-                "limit": {"type": "integer", "description": "读取行数（默认全部）"},
+                "offset": {"type": "integer", "description": "起始行号（1-indexed，grep 到行号后用 offset=行号-5）"},
+                "limit": {"type": "integer", "description": "读取行数（默认 50，配合 offset 只读相关行）"},
             },
             "required": [],
         },
@@ -351,8 +351,8 @@ def _is_platform_issue_report(content: str) -> bool:
     return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
-看错误信息，修复脚本并执行。工作流（对齐 OpenCode）：grep_script 搜关键词定位行号 → read_script(offset=N, limit=M) 只读相关行 → edit_and_run 修改并执行。不要读全文或整个函数，用 offset/limit 精确读取。大范围重写才 modify_and_run。
-每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 次修改机会，执行错误最多 3 次。调查（read_script/grep_script/query_table_data）不限次数。
+看错误信息，修复脚本并执行。工作流（对齐 OpenCode）：grep_script 搜关键词定位行号 → read_script(offset=行号-5, limit=15) 只读相关行 → edit_and_run 修改并执行。不要读全文或整个函数，用 offset/limit 精确读取。大范围重写才 modify_and_run。
+每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 轮（调查和修改都算），执行错误最多 3 次。
 
 ## 必须遵守
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
@@ -1663,8 +1663,8 @@ class DataProcessorAgent(BaseAgent):
             debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
-        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化
-        _total_llm_calls = 0  # 仅用于日志，不作为限制条件（对齐 OpenCode：调查不限次）
+        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化，只数 fix 工具
+        _total_llm_calls = 0  # 仅用于日志
         _MAX_EXEC_FAILURES = 3  # 首次执行成功前，最多 3 次执行失败
         _exec_failures_before_success = context.get("debug_exec_failures", 0)
         _execution_succeeded = context.get("debug_execution_succeeded", False)

@@ -40,7 +40,7 @@ DELEGATE_TOOL = {
     "type": "function",
     "function": {
         "name": "delegate_to_inspector",
-        "description": "将当前数据处理结果交接给数据检查智能体进行质量检查。当你认为数据处理已完成、需要验证质量或用户要求检查时调用",
+        "description": "将当前数据处理结果交接给 DataInspector 进行质量检查。当你认为数据处理已完成、需要验证质量或用户要求检查时调用",
         "parameters": {
             "type": "object",
             "properties": {

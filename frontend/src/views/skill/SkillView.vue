@@ -1986,6 +1986,8 @@ async function handleRunSkill() {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+          } else if (data.type === 'platform_issue') {
+            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2118,6 +2120,8 @@ async function handleRunSkillNL() {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+          } else if (data.type === 'platform_issue') {
+            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result
@@ -2286,6 +2290,8 @@ async function handleRunCmd() {
             msg.scriptUpdated = data.script_name
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+          } else if (data.type === 'platform_issue') {
+            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
           } else if (data.type === 'done') {
             if (data.result != null) {
               result = data.result

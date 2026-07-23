@@ -622,6 +622,25 @@ def migrate_data(
         else:
             print(f"    ✅ 所有列名均为合法英文标识符")
 
+    # 步骤3.5: 数据质量修复 — 填充可选字段空值
+    # 对"备注"/"remark"等可选字段，空值填充为"无"，避免DQ-COM-003空值率告警
+    _optional_fill_cols = []
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if col_lower in ("备注", "remark", "remarks", "note", "notes", "comment", "comments"):
+            _optional_fill_cols.append(col)
+    if _optional_fill_cols:
+        print(f"\n  🔧 [3.5] 数据质量修复: 填充可选字段空值...")
+        for col in _optional_fill_cols:
+            # 统计空值（None、NaN、空字符串、纯空白）
+            _is_empty = df[col].isna() | (df[col].astype(str).str.strip() == "") | (df[col].astype(str).str.strip() == "nan")
+            _fill_count = int(_is_empty.sum())
+            if _fill_count > 0:
+                df.loc[_is_empty, col] = "无"
+                print(f"    ✅ 列 '{col}': 填充 {_fill_count}/{len(df)} 行空值 → '无'")
+            else:
+                print(f"    ✅ 列 '{col}': 无空值，无需填充")
+
     print(f"\n  📊 预处理完成: 最终列名: {list(df.columns)}")
     if column_remarks:
         print(f"  📝 列备注: {column_remarks}")
