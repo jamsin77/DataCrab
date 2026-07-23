@@ -811,6 +811,23 @@
       },
       "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-23T15:38:50.906199",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpx7nmvkqi.py\", line 1537, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpx7nmvkqi.py\", line 919, in migrate_data\n    result = query_table_data(source_ds_id, source_table_name, limit=limit)\n             ^^^^^",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "target_table_name": "national_key_cultural_relic_protection_units_merged",
+        "translate_to_cn": true,
+        "if_table_exists": "rename"
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → national_key_cultural_relic_protection_units_merged\n",
+      "context_summary": ""
     }
   ],
   "positive": [

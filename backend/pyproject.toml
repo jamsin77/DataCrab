@@ -28,14 +28,15 @@ dependencies = [
     "tenacity>=8.2.0",
     "python-dateutil>=2.8.0",
     "openai>=1.0",
-    "chromadb>=0.4.0",
-    "minio>=7.2.0",
     "pyyaml>=6.0",
     "croniter>=2.0.0",
     "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]
+kb = ["chromadb>=0.4.0"]       # 文档知识库 RAG
+obs = ["minio>=7.2.0"]         # OBS 对象存储连接器
+all = ["chromadb>=0.4.0", "minio>=7.2.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",

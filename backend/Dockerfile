@@ -8,9 +8,13 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装Python依赖
+# 安装核心 Python 依赖
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 安装可选依赖（知识库 + OBS）
+COPY requirements-optional.txt ./
+RUN pip install --no-cache-dir -r requirements-optional.txt || true
 
 # 安装项目（editable mode）
 COPY . .
