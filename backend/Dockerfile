@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -9,13 +9,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Python依赖
-COPY pyproject.toml poetry.lock* ./
-RUN pip install poetry && \
-    poetry config virtualenvs.create false && \
-    poetry install --no-dev --no-interaction --no-ansi
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制应用代码
+# 安装项目（editable mode）
 COPY . .
+RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 

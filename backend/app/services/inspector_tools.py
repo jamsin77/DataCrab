@@ -842,7 +842,7 @@ class DataInspectorTools:
 
             # SEC-CLASS-001 数据分级标注缺失
             try:
-                from app.models.table_metadata import TableMetadata as _TM
+                from app.models.datasource import TableMetadata as _TM
                 tm_result = await db.execute(
                     select(_TM).where(_TM.datasource_id == _uuid.UUID(datasource_id),
                                       _TM.table_name == table_name)
