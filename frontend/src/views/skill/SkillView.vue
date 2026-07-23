@@ -4,7 +4,7 @@
       <div class="toolbar-left">
         <el-button type="primary" @click="showUploadDialog = true">
           <el-icon><Upload /></el-icon>
-          上传 Skill 包
+          导入 Skill 包
         </el-button>
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
@@ -99,11 +99,11 @@
       </template>
     </el-dialog>
 
-    <!-- ==================== 上传对话框 ==================== -->
-    <el-dialog v-model="showUploadDialog" title="上传 Skill 包" width="480px">
+    <!-- ==================== 导入对话框 ==================== -->
+    <el-dialog v-model="showUploadDialog" title="导入 Skill 包" width="480px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
-          请上传 .zip 格式的 Skill 包，包内需包含 SKILL.md 文件
+          请上传 .zip 格式的 Skill 包，包内需包含 SKILL.md 文件。同名技能可选择覆盖或重命名
         </template>
       </el-alert>
       <el-upload
@@ -118,6 +118,29 @@
       </el-upload>
       <template #footer>
         <el-button @click="showUploadDialog = false">取消</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== 重名冲突对话框 ==================== -->
+    <el-dialog v-model="showConflictDialog" title="技能已存在" width="460px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom:16px">
+        <template #title>
+          技能 "{{ conflictInfo?.parsed_name }}" 已存在，请选择覆盖或重命名
+        </template>
+      </el-alert>
+      <el-form label-width="80px" style="margin-top: 12px">
+        <el-form-item label="新名称">
+          <el-input
+            v-model="renameValue"
+            placeholder="输入新技能名称"
+            @keyup.enter="confirmRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showConflictDialog = false">取消</el-button>
+        <el-button type="danger" plain :loading="importing" @click="confirmOverwrite">覆盖原有</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmRename">重命名导入</el-button>
       </template>
     </el-dialog>
 
@@ -740,8 +763,15 @@ function formatResult(result: any): string {
   }
 }
 
-// ==================== 上传 ====================
+// ==================== 导入 ====================
 const showUploadDialog = ref(false)
+
+// 重名冲突处理
+const showConflictDialog = ref(false)
+const conflictInfo = ref<any>(null)
+const pendingFile = ref<File | null>(null)
+const renameValue = ref('')
+const importing = ref(false)
 
 function validateZip(file: any) {
   if (!file.name.toLowerCase().endsWith('.zip')) {
@@ -752,18 +782,55 @@ function validateZip(file: any) {
 }
 
 async function handleUploadZip(options: any) {
+  pendingFile.value = options.file
+  await doImport(options.file, 'check')
+}
+
+async function doImport(file: File, mode: string, newName?: string) {
+  importing.value = true
   const formData = new FormData()
-  formData.append('file', options.file)
+  formData.append('file', file)
+  const params: any = { mode }
+  if (newName) params.new_name = newName
   try {
     const res = await api.post('/skills/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      params,
     })
-    ElMessage.success(`Skill 包 "${res.display_name || res.name}" 已上传`)
+    ElMessage.success(`Skill 包 "${res.display_name || res.name}" 已导入`)
     showUploadDialog.value = false
+    showConflictDialog.value = false
+    pendingFile.value = null
+    conflictInfo.value = null
     await loadSkills()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '上传失败')
+    const status = e.response?.status
+    const detail = e.response?.data?.detail
+    if (status === 409 && detail && typeof detail === 'object') {
+      // 重名冲突 → 弹出选择对话框
+      conflictInfo.value = detail
+      renameValue.value = `${detail.parsed_name}-copy`
+      showConflictDialog.value = true
+    } else {
+      ElMessage.error(typeof detail === 'string' ? detail : '导入失败')
+    }
+  } finally {
+    importing.value = false
   }
+}
+
+async function confirmOverwrite() {
+  if (!pendingFile.value) return
+  await doImport(pendingFile.value, 'overwrite')
+}
+
+async function confirmRename() {
+  if (!pendingFile.value) return
+  if (!renameValue.value.trim()) {
+    ElMessage.warning('请输入新名称')
+    return
+  }
+  await doImport(pendingFile.value, 'rename', renameValue.value.trim())
 }
 
 // ==================== 下载 ====================

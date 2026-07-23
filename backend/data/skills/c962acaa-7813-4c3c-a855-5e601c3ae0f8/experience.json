@@ -898,6 +898,26 @@
       "parameters": {},
       "stdout_preview": "⚠️ 缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。\n   source_datasource_name=None\n   source_table_name=None\n   target_datasource_name=文物库",
       "context_summary": "工具: modify_and_run\nAI输出: 现在我已经完全理解了问题根源：\n\n**问题分析：**\n- ID `00005271` 的记录 `name` 为空，备注是\"更名为西狭古栈道遗址及摩崖石刻\"\n- 这条记录在源 Excel 数据中就已经是空的（原始数据缺陷）\n- 相邻记录 ID `00005270` 名称是\"西狭古栈道遗址及题刻\"，备注\"并入第五批...西狭颂摩崖石刻\"\n- ID `00005271` 的备注明确写了\"更名为西狭古栈道"
+    },
+    {
+      "timestamp": "2026-07-23T20:40:30.610609",
+      "source": "run-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {},
+      "stdout_preview": "⚠️ 缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。\n   source_datasource_name=None\n   source_table_name=None\n   target_datasource_name=None",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-23T20:43:29.214866",
+      "source": "run-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {},
+      "stdout_preview": "⚠️ 缺少必要的迁移参数 (源数据源名, 源表名, 目标数据源名)。\n   source_datasource_name=None\n   source_table_name=None\n   target_datasource_name=None",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -2288,6 +2308,46 @@
         "translate_to_cn": true
       },
       "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位', 'table_remark': 'national_key_cultural_relic_protection_units', 'co"
+    },
+    {
+      "timestamp": "2026-07-23T20:39:58.549445",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "NationalKeyCulturalRelics",
+        "column_mapping": {
+          "全国重点文物保护单位": "NationalKeyCulturalRelics",
+          "备注": "Remark"
+        },
+        "translate_to_cn": true,
+        "if_table_exists": "overwrite"
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['批次', '分类', '名称', '年代', '地址', 'Remark', '编号', '时间戳'], 'target_table': '国家级重点文物', 'table_remark': 'NationalKeyCulturalRelics', 'column_remarks': {}}"
+    },
+    {
+      "timestamp": "2026-07-23T20:56:20.433896",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "全国重点文物保护单位",
+        "column_mapping": null,
+        "column_transforms": null,
+        "drop_columns": null,
+        "add_columns": null,
+        "if_table_exists": "overwrite",
+        "auto_translate": true,
+        "translate_to_cn": false,
+        "batch_size": 1000,
+        "limit": 10000,
+        "output_dir": null
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units'"
     }
   ],
   "lessons": "",

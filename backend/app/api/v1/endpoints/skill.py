@@ -105,6 +105,15 @@ def _get_skill_folder(skill_id: UUID) -> Path:
     return _get_skill_storage() / str(skill_id)
 
 
+def _resolve_skill_folder(skill: Skill) -> Path:
+    """优先用 skill_path 解析实际文件夹（兼容 init_db 导入的技能，其文件夹 UUID ≠ skill ID）"""
+    if skill.skill_path:
+        p = Path(skill.skill_path)
+        if p.exists():
+            return p
+    return _get_skill_folder(skill.id)
+
+
 async def _sync_scripts_to_operators(
     skill: Skill,
     folder: Path,
@@ -191,7 +200,7 @@ def _get_skill_relative_path(folder: Path) -> str:
 
 
 def _build_detail(skill: Skill) -> SkillDetailResponse:
-    folder = _get_skill_folder(skill.id)
+    folder = _resolve_skill_folder(skill)
     info = get_skill_info_from_path(folder)
 
     return SkillDetailResponse(
@@ -337,7 +346,7 @@ async def delete_skill(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     if folder.exists():
         shutil.rmtree(folder)
 
@@ -354,13 +363,37 @@ async def delete_skill(
     logger.info(f"技能已删除: {skill_name} ({skill_id})，关联算子已清理")
 
 
+async def _delete_skill_completely(skill: Skill, skill_id: UUID, db: AsyncSession):
+    """彻底删除技能：文件夹 + DB 记录 + 关联算子"""
+    folder = _resolve_skill_folder(skill)
+    if folder.exists():
+        shutil.rmtree(folder)
+    skill_name = skill.name
+    prefix = f"{skill_name}-"
+    ops = await db.execute(select(Operator).where(Operator.name.startswith(prefix)))
+    for op in ops.scalars().all():
+        cfg = op.execution_config or {}
+        if cfg.get("source") == "skill" and cfg.get("skill_id") == str(skill_id):
+            await db.delete(op)
+    await db.delete(skill)
+    await db.flush()
+
+
 @router.post("/upload", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
 async def upload_skill(
     file: UploadFile = File(...),
+    mode: str = Query("check", pattern="^(check|overwrite|rename|new)$"),
+    new_name: str = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """上传 Skill 包（.zip 格式）"""
+    """导入 Skill 包（.zip 格式）
+
+    - mode=check（默认）：重名时返回 409，由前端询问用户
+    - mode=overwrite：重名时覆盖原有技能（删除旧的，导入新的）
+    - mode=rename：重名时用 new_name 重命名导入
+    - mode=new：强制创建新技能（允许重名）
+    """
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="只支持 .zip 格式的 Skill 包")
 
@@ -390,6 +423,45 @@ async def upload_skill(
         display_name = parsed.get("name") or name
         description = parsed.get("description") or ""
 
+        # 重名检测
+        existing_result = await db.execute(select(Skill).where(Skill.name == name))
+        existing_skill = existing_result.scalar_one_or_none()
+
+        if existing_skill:
+            if mode == "check":
+                # 清理临时文件夹，返回冲突信息让前端决策
+                shutil.rmtree(folder)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": f"技能 \"{name}\" 已存在",
+                        "existing_skill_id": str(existing_skill.id),
+                        "existing_display_name": existing_skill.display_name or existing_skill.name,
+                        "parsed_name": name,
+                    },
+                )
+            elif mode == "overwrite":
+                logger.info(f"覆盖技能: {name} ({existing_skill.id})")
+                await _delete_skill_completely(existing_skill, existing_skill.id, db)
+            elif mode == "rename":
+                if not new_name:
+                    shutil.rmtree(folder)
+                    raise HTTPException(status_code=400, detail="重命名模式需要提供 new_name 参数")
+                name = new_name.replace("_", "-")
+                display_name = new_name
+                # 同步修改 SKILL.md 中的 name
+                raw_md = skill_md_path.read_text(encoding="utf-8")
+                import re as _re
+                raw_md = _re.sub(
+                    r"(^name:\s*).*$",
+                    rf"\g<1>{name}",
+                    raw_md,
+                    count=1,
+                    flags=_re.MULTILINE,
+                )
+                skill_md_path.write_text(raw_md, encoding="utf-8")
+            # mode == "new" → 允许重名，直接创建
+
         scripts_dir = folder / "scripts"
         if not scripts_dir.is_dir():
             scripts_dir.mkdir(exist_ok=True)
@@ -410,7 +482,8 @@ async def upload_skill(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
-        logger.info(f"Skill 包已上传: {name} ({skill.id})")
+        await _sync_scripts_to_operators(skill, folder, db, current_user)
+        logger.info(f"Skill 包已导入: {name} ({skill.id}) mode={mode}")
         return _build_detail(skill)
     except HTTPException:
         raise
@@ -434,7 +507,7 @@ async def download_skill(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     if not folder.exists():
         raise HTTPException(status_code=404, detail="Skill 文件夹不存在")
 
@@ -641,6 +714,8 @@ async def run_skill_stream(
 
     async def generate():
         try:
+            from app.services.llm import init_user_llm_context
+            await init_user_llm_context(current_user.id)
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
             # 用 ping 保活：技能执行可能耗时数分钟，SSE 无心跳会被超时断开
@@ -877,7 +952,8 @@ async def run_skill_nl(
     if script_content is None:
         raise HTTPException(status_code=400, detail=f"脚本 {request.script_name} 不存在")
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     messages = [
@@ -1004,7 +1080,8 @@ async def run_skill_nl_stream(
     if script_content is None:
         raise HTTPException(status_code=400, detail=f"脚本 {request.script_name} 不存在")
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     import asyncio
@@ -1317,7 +1394,8 @@ async def debug_skill_chat(
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     import json as json_mod
@@ -1502,7 +1580,8 @@ async def summarize_skill_errors(
     if not errors and not positives:
         return {"success": True, "message": "暂无错误/成功记录", "error_count": 0, "lessons": ""}
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     import json as json_mod
@@ -1795,7 +1874,8 @@ async def modify_skill(
     if not current_md:
         raise HTTPException(status_code=400, detail="该技能没有 SKILL.md 内容")
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     messages = [
@@ -1871,7 +1951,8 @@ async def modify_skill_stream(
     if not current_md:
         raise HTTPException(status_code=400, detail="该技能没有 SKILL.md 内容")
 
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     import asyncio

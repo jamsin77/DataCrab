@@ -562,17 +562,18 @@ class LLMManager:
         if self._initialized and self._client:
             return
         try:
-            # 主客户端写入缓存，便于复用
+            # 优先使用当前请求用户的配置（contextvar），避免全局无 key 时创建空 client 失败
+            user_cfg = get_user_llm_config()
             primary = {
-                "provider": self.provider,
-                "api_key": self.api_key,
-                "api_base": self.api_base,
-                "model": self.model,
+                "provider": (user_cfg or {}).get("provider") or self.provider,
+                "api_key": (user_cfg or {}).get("api_key") or self.api_key,
+                "api_base": (user_cfg or {}).get("api_base") or self.api_base,
+                "model": (user_cfg or {}).get("model") or self.model,
             }
             self._client = self._client_for(primary)
             self._initialized = True
             fb_desc = f", fallback={[f['provider']+'/'+f['model'] for f in self.fallback_models]}" if self.fallback_models else ""
-            logger.info(f"LLM客户端初始化完成: provider={self.provider}, model={self.model}{fb_desc}")
+            logger.info(f"LLM客户端初始化完成: provider={primary['provider']}, model={primary['model']}{fb_desc}")
         except Exception as e:
             logger.error(f"LLM客户端初始化失败: {e}")
             raise

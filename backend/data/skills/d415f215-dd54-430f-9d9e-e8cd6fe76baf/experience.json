@@ -604,6 +604,26 @@
       },
       "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[SkillRunner] iter_table_data page 1 failed: timed out",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-23T20:58:32.123234",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \u001b[35m\"C:\\Users\\S00830~1\\AppData\\Local\\Temp\\tmpgc53hrc7.py\"\u001b[0m, line \u001b[35m236\u001b[0m, in \u001b[35miter_table_data\u001b[0m\n    with \u001b[31murllib.request.urlopen\u001b[0m\u001b[1;31m(_url, timeout=120)\u001b[0m as resp:\n         \u001b[31m~~~~~~~~~~~~~~~~~~~~~~\u001b[0m\u001b[1;31m^^^^^^^^^^^^^^^^^^^\u001b[0m\n  File \u001b[35m\"D:\\Program Files\\Python\\Lib\\urllib\\request.py\"\u001b[0m, line \u001b[35m189\u001b[0m, in \u001b[35murlopen\u001b[0m\n    return \u001b[31mopener.open\u001b[0m\u001b[1;31m(url, data, timeout)\u001b[0m\n           \u001b[31m~~~~~~~~~~~\u001b[",
+      "parameters": {
+        "filter_condition": "备注 contains 国家级重点文物",
+        "merge_field": "备注",
+        "output_table_name": "文物列表_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "c61ff69d-e891-492c-a7b5-aca7db2ae556",
+        "table_name": "文物列表"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: c61ff69d-e891-492c-a7b5-aca7db2ae556\n[SkillRunner] iter_table_data page 1 failed: HTTP 500 关系 \"文物列表\" 不存在",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -850,6 +870,20 @@
         "table_name": "national_key_cultural_relic_protection_units"
       },
       "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-07-23T21:01:02.522007",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': '全国重点文物保护单位_merged'}"
+    },
+    {
+      "timestamp": "2026-07-23T21:08:09.204567",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'message': '无源数据需要归并', 'count': 5057}"
     }
   ],
   "lessons": "让我先读取完整的 `main` 函数代码，看看当前列名解析逻辑，然后做出精确修改。",

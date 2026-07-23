@@ -28,7 +28,7 @@ from app.schemas.pipeline import (
 )
 from app.services.pipeline_builder import build_pipeline_from_skill
 from app.services.pipeline_executor import execute_pipeline, execute_pipeline_stream
-from app.services.llm import llm_manager
+from app.services.llm import llm_manager, init_user_llm_context
 
 router = APIRouter()
 
@@ -243,6 +243,7 @@ async def create_pipeline_from_skill_stream(
     from pathlib import Path
     import asyncio
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     skill_path = Path(skill.skill_path)
@@ -405,6 +406,7 @@ async def debug_pipeline_chat(
     if not p:
         raise HTTPException(status_code=404, detail="流程不存在")
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     main_code = p.main_code or ""

@@ -31,7 +31,7 @@ from app.schemas.operator import (
     OperatorDebugChatRequest,
 )
 from app.services.operator_parser import parse_python_script, extract_script_name
-from app.services.llm import llm_manager
+from app.services.llm import llm_manager, init_user_llm_context
 from app.services import experience
 from app.services.sandbox_ns import build_operator_namespace as _build_operator_namespace, run_async_in_thread as _run_async_in_thread
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
@@ -557,6 +557,7 @@ async def generate_operator(
     current_user: User = Depends(get_current_user),
 ):
     """根据自然语言描述生成算子"""
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
     sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
@@ -661,6 +662,7 @@ async def modify_operator(
     if not operator.script_content:
         raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
     sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
@@ -757,6 +759,7 @@ async def generate_operator_stream(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
     sys_prompt = await _system_prompt_with_lessons(db, current_user)
     messages = [
@@ -879,6 +882,7 @@ async def modify_operator_stream(
     if not operator.script_content:
         raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
     sys_prompt = await _system_prompt_with_lessons(db, current_user)
 
@@ -1003,6 +1007,7 @@ async def debug_operator_chat(
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     script_content = operator.script_content or ""
@@ -1179,6 +1184,7 @@ async def summarize_operator_experience(
     if not errors and not positives:
         return {"success": True, "message": "暂无错误/成功记录", "error_count": 0, "lessons": ""}
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     import json as json_mod
@@ -1270,6 +1276,7 @@ async def operator_to_pipeline_stream(
     from app.models.pipeline import Pipeline
     from uuid import uuid4
 
+    await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
 
     script_content = operator.script_content
