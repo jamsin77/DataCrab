@@ -97,16 +97,6 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
   - 用途: 在脚本中调用已注册的算子（如"文本翻译"算子），复用已有逻辑
   - 示例: `result = call_operator("文本翻译", text="hello", source_lang="en", target_lang="zh")`
 
-### 文件搜索函数
-- `grep(directory, pattern, file_extensions=None, max_matches=200)` → dict: 在授权目录内递归搜索文件内容
-  - directory: 要搜索的目录（必须在文件链接授权目录内）
-  - pattern: 正则表达式
-  - file_extensions: 可选，限定文件扩展名列表，如 [".py", ".txt"]；None=搜索全部文件
-  - max_matches: 最大返回匹配数（默认 200）
-  - 返回: {"matches": [{"file": str, "line": int, "content": str}], "total": int, "truncated": bool}
-  - 用途: 在文件中搜索关键词、查找配置、定位代码片段等
-  - 示例: `results = grep("D:/data", r"电话|phone|mobile", file_extensions=[".csv", ".txt"])`
-
 ### 日志函数
 - `log(level, message, *args)` → None: 输出日志（显示在执行输出中）
   - level: 日志级别字符串，如 "info" / "warn" / "error"

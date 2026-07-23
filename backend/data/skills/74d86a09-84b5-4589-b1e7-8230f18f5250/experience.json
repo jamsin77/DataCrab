@@ -564,6 +564,46 @@
       },
       "stdout_preview": "",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-23T09:55:41.587073",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpg3tciixv.py\", line 885, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpg3tciixv.py\", line 695, in main\n    for chunk in iter_table_data(ds_id, table_name, chunk_size=5000):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpg3tciixv.py\", line 2",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[SkillRunner] iter_table_data page 1 failed: timed out",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-23T09:58:45.481637",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpazu2vbq5.py\", line 885, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpazu2vbq5.py\", line 695, in main\n    for chunk in iter_table_data(ds_id, table_name, chunk_size=5000):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpazu2vbq5.py\", line 2",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[SkillRunner] iter_table_data page 1 failed: timed out",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -738,6 +778,47 @@
     },
     {
       "timestamp": "2026-07-22T20:41:11.150816",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-07-23T10:13:35.988025",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'message': '无源数据需要归并', 'count': 908}"
+    },
+    {
+      "timestamp": "2026-07-23T10:46:55.798239",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-07-23T11:00:05.447116",
       "source": "run-nl-stream",
       "script_name": "main.py",
       "parameters": {

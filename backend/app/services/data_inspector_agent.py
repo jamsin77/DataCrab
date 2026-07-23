@@ -53,6 +53,44 @@ def _collect_severe_issues(local_messages):
     return severe
 
 
+def _collect_all_tool_issues(local_messages):
+    """从工具结果中收集所有 issues（保留原始 severity，作为 severity 校验基准）。"""
+    all_issues = []
+    for m in local_messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            data = json.loads(m.get("content", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for issue in data.get("issues", []) or []:
+            if isinstance(issue, dict) and issue.get("severity"):
+                all_issues.append(issue)
+    return all_issues
+
+
+def _correct_severity(llm_issues, local_messages):
+    """用工具返回的原始 severity 修正 LLM 可能篡改的 severity。"""
+    tool_issues = _collect_all_tool_issues(local_messages)
+    if not tool_issues:
+        return llm_issues
+    corrected = []
+    for li in llm_issues:
+        _li_desc = str(li.get("description", ""))
+        _matched = False
+        for ti in tool_issues:
+            _ti_desc = str(ti.get("description", ""))
+            if _li_desc and _ti_desc and (_li_desc in _ti_desc or _ti_desc in _li_desc):
+                corrected.append({**li, "severity": ti.get("severity", li.get("severity"))})
+                _matched = True
+                break
+        if not _matched:
+            corrected.append(li)
+    return corrected
+
+
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的数据检查智能体（DataInspector），一位数据质量专家。
 
 ## 核心能力
@@ -235,6 +273,7 @@ class DataInspectorAgent(BaseAgent):
 
         system_prompt = self.build_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
+        context["_local_messages"] = local_messages  # 供 _execute_tool 中 _correct_severity 使用
 
         if message.reason == HandoffReason.INSPECT_RESULT or message.reason == HandoffReason.DELEGATE:
             ds_id = message.payload.get("datasource_id", "")
@@ -471,12 +510,15 @@ class DataInspectorAgent(BaseAgent):
             )
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "handoff_to_processor":
+            _llm_issues = arguments.get("issues", [])
+            _local_msgs = context.get("_local_messages", [])
+            _issues = _correct_severity(_llm_issues, _local_msgs)
             return json.dumps({
                 "_handoff": True,
                 "to": "data_processor",
                 "reason": HandoffReason.FIX_REQUIRED.value,
                 "payload": {
-                    "issues": arguments.get("issues", []),
+                    "issues": _issues,
                     "summary": arguments.get("summary", ""),
                     "datasource_id": context.get("current_datasource_id", ""),
                     "table_name": context.get("current_table_name", ""),

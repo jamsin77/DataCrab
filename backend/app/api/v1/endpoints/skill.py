@@ -1166,9 +1166,11 @@ async def run_skill_nl_stream(
             _wt = exec_result.get("written_tables")
             _wt_table = _wt[-1].get("table_name") if _wt else None
             _wt_ds_id = _wt[-1].get("datasource_id") if _wt else None
+            logger.info(f"Inspector触发检查: exec_success={_exec_success}, written_tables={_wt}, ds_name={ds_name}, datasource_id={datasource_id}")
             if _exec_success:
                 _target_ds_name = parameters.get("target_datasource_name") or ds_name
                 _target_table = _wt_table or _inner_r.get("output_table") or parameters.get("target_table_name") or parameters.get("output_table_name") or inferred_table
+                logger.info(f"Inspector触发条件: target_ds_name={_target_ds_name}, target_table={_target_table}")
                 if _target_ds_name and _target_table:
                     _target_ds_id = _wt_ds_id or _inner_r.get("output_datasource_id") or datasource_id
                     if not _target_ds_id and parameters.get("target_datasource_name"):

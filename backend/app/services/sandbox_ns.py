@@ -386,49 +386,6 @@ def build_operator_namespace(current_user_id):
         except Exception as e:
             return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
 
-    def grep(directory, pattern, file_extensions=None, max_matches=200):
-        """在授权目录内递归搜索文件内容（正则匹配），返回匹配行"""
-        import re as _re
-        from pathlib import Path as _Path
-
-        async def _run():
-            async with async_session() as db:
-                allowed = await _get_allowed_paths(db, current_user_id)
-
-                resolved = _Path(directory).resolve()
-                ok = any(str(resolved).startswith(str(_Path(a).resolve())) for a in allowed)
-                if not ok:
-                    raise RuntimeError(f"目录不在授权范围内: {directory}")
-                if not resolved.exists():
-                    raise RuntimeError(f"目录不存在: {directory}")
-
-                regex = _re.compile(pattern)
-                matches = []
-                for file_path in sorted(resolved.rglob("*")):
-                    if not file_path.is_file():
-                        continue
-                    if file_extensions and file_path.suffix.lower() not in file_extensions:
-                        continue
-                    try:
-                        content = file_path.read_text(encoding="utf-8", errors="replace")
-                        for line_no, line in enumerate(content.splitlines(), 1):
-                            if regex.search(line):
-                                matches.append({
-                                    "file": str(file_path.relative_to(resolved)),
-                                    "line": line_no,
-                                    "content": line[:500],
-                                })
-                                if len(matches) >= max_matches:
-                                    return {"matches": matches, "total": len(matches), "truncated": True}
-                    except Exception:
-                        continue
-                return {"matches": matches, "total": len(matches), "truncated": False}
-
-        try:
-            return run_async_in_thread(_run())
-        except Exception as e:
-            return {"matches": [], "total": 0, "truncated": False, "error": str(e)}
-
     return {
         "query_table_data": query_table_data,
         "get_table_schema": get_table_schema,
@@ -442,7 +399,6 @@ def build_operator_namespace(current_user_id):
         "write_file": write_file,
         "compute_map": compute_map,
         "call_operator": call_operator,
-        "grep": grep,
         "pd": pd,
         "json": json,
     }

@@ -413,6 +413,10 @@ async def send_message(
     await db.flush()
     await db.refresh(user_message)
 
+    # 刷新会话 updated_at，使会话列表按最近活跃排序
+    session.updated_at = datetime.utcnow()
+    await db.flush()
+
     try:
         # 初始化技能库
         nl_svc = _get_nl_service()
@@ -563,6 +567,14 @@ async def stream_response(
                 content=request.content,
             )
             db.add(user_message)
+            await db.flush()
+
+            # 刷新会话 updated_at，使会话列表按最近活跃排序
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(ChatSession).where(ChatSession.id == request.session_id)
+                .values(updated_at=datetime.utcnow())
+            )
             await db.flush()
 
             # 设置当前用户的 LLM 配置（API Key 按用户隔离，contextvars 请求级生效）

@@ -2130,6 +2130,30 @@
         "translate_to_cn": true
       },
       "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位（合并）', 'table_remark': 'national_key_cultural_relic_protection_units_m"
+    },
+    {
+      "timestamp": "2026-07-23T10:45:31.915467",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '时代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-23T11:00:00.619485",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
     }
   ],
   "lessons": "",

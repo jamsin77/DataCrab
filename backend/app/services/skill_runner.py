@@ -481,27 +481,6 @@ def call_operator(operator_name, **params):
         print(f"[SkillRunner] call_operator failed: {{e}}")
         return {{"success": False, "error": str(e)}}
 
-def grep(directory, pattern, file_extensions=None, max_matches=200):
-    # 在授权目录内递归搜索文件内容（正则匹配），返回匹配行
-    # directory: 要搜索的目录（必须在文件链接授权目录内）
-    # pattern: 正则表达式
-    # file_extensions: 可选，限定文件扩展名列表，如 [".py", ".txt"]；None=搜索全部文件
-    # max_matches: 最大返回匹配数（默认 200）
-    # 返回: dict {{"matches": [{{"file": str, "line": int, "content": str}}], "total": int, "truncated": bool}}
-    import urllib.request
-    _payload = json.dumps({{"directory": directory, "pattern": pattern, "file_extensions": file_extensions, "max_matches": max_matches, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/grep", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
-    try:
-        with urllib.request.urlopen(_req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        _msg = _http_err(e)
-        print(f"[SkillRunner] grep failed: HTTP {{e.code}} {{_msg}}")
-        return {{"matches": [], "total": 0, "truncated": False, "error": _msg}}
-    except Exception as e:
-        print(f"[SkillRunner] grep failed: {{e}}")
-        return {{"matches": [], "total": 0, "truncated": False, "error": str(e)}}
-
 def resolve_column(df, name):
     # 按 name 解析 DataFrame 实际列名（精确 → 忽略大小写 → 模糊 → 翻译匹配）。找不到返回 None。
     # 用于用户提到的列名与实际列名不一致（中英文/近义词）场景：如用户说"价格"但实际列是 price。
@@ -581,7 +560,6 @@ _builtins.compute_map = compute_map
 _builtins.llm_vision = _wrap_tool_log("llm_vision", llm_vision)
 _builtins.llm_chat = _wrap_tool_log("llm_chat", llm_chat)
 _builtins.call_operator = _wrap_tool_log("call_operator", call_operator)
-_builtins.grep = _wrap_tool_log("grep", grep)
 _builtins.log = log
 _builtins.get_datasource_id_by_name = _wrap_tool_log("get_datasource_id_by_name", _dc_get_datasource_id_by_name)
 _builtins.get_table_schema = _wrap_tool_log("get_table_schema", _dc_get_table_schema)
@@ -590,7 +568,7 @@ _builtins.resolve_column = resolve_column
 _INJECTED_FUNCTIONS = [
     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
     "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
-    "log", "read_file", "write_file", "compute_map", "call_operator", "grep",
+    "log", "read_file", "write_file", "compute_map", "call_operator",
     "get_datasource_id_by_name", "resolve_column",
 ]
 

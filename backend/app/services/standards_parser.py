@@ -14,9 +14,9 @@ def _standards_dir() -> Path:
 
 
 def parse_standards() -> List[Dict]:
-    """解析 data_standards.md，返回可自动检查的标准列表（含格式正则的）。
+    """解析 data_standards.md，返回所有标准（含正则、合法值、约束规则）。
 
-    每条: {id, name, category, fields, regex, severity}
+    每条: {id, name, category, fields, regex, legal_values, severity}
     """
     p = _standards_dir() / "data_standards.md"
     if not p.exists():
@@ -36,6 +36,7 @@ def parse_standards() -> List[Dict]:
         category = ""
         fields: List[str] = []
         regex: Optional[str] = None
+        legal_values: List[str] = []
         severity = "warning"
         for line in body.splitlines():
             ls = line.strip()
@@ -46,17 +47,22 @@ def parse_standards() -> List[Dict]:
                 fields = [f.strip() for f in re.split(r"[,，]", fields_str) if f.strip()]
             elif ls.startswith("- 格式正则"):
                 regex = ls.split(":", 1)[1].strip()
+            elif ls.startswith("- 合法值"):
+                val_str = ls.split(":", 1)[1].strip()
+                for part in re.split(r'\s*或\s*', val_str):
+                    legal_values.extend([v.strip() for v in part.split('/') if v.strip()])
             elif ls.startswith("- 严重等级"):
                 severity = ls.split(":", 1)[1].strip()
-        if regex:
-            standards.append({
-                "id": sid,
-                "name": name,
-                "category": category,
-                "fields": fields,
-                "regex": regex,
-                "severity": severity,
-            })
+        # 不再跳过无正则规则（枚举/数值约束等也要返回）
+        standards.append({
+            "id": sid,
+            "name": name,
+            "category": category,
+            "fields": fields,
+            "regex": regex,
+            "legal_values": legal_values,
+            "severity": severity,
+        })
     return standards
 
 
@@ -132,9 +138,9 @@ def parse_quality_rules() -> List[Dict]:
 
 
 def parse_security_rules() -> List[Dict]:
-    """解析 data_security_rules.md，返回安全规则列表（含检测正则的）。
+    """解析 data_security_rules.md，返回所有安全规则（含正则和检测逻辑）。
 
-    每条: {id, name, category, scope, regex, severity}
+    每条: {id, name, category, scope, regex, detection_logic, severity}
     """
     p = _standards_dir() / "data_security_rules.md"
     if not p.exists():
@@ -153,6 +159,7 @@ def parse_security_rules() -> List[Dict]:
         category = ""
         scope = ""
         regex: Optional[str] = None
+        detection_logic = ""
         severity = "warning"
         for line in body.splitlines():
             ls = line.strip()
@@ -162,17 +169,19 @@ def parse_security_rules() -> List[Dict]:
                 scope = ls.split(":", 1)[1].strip()
             elif ls.startswith("- 检测正则"):
                 regex = ls.split(":", 1)[1].strip()
+            elif ls.startswith("- 检测逻辑"):
+                detection_logic = ls.split(":", 1)[1].strip()
             elif ls.startswith("- 严重等级"):
                 severity = ls.split(":", 1)[1].strip()
-        if regex:
-            rules.append({
-                "id": sid,
-                "name": name,
-                "category": category,
-                "scope": scope,
-                "regex": regex,
-                "severity": severity,
-            })
+        rules.append({
+            "id": sid,
+            "name": name,
+            "category": category,
+            "scope": scope,
+            "regex": regex,
+            "detection_logic": detection_logic,
+            "severity": severity,
+        })
     return rules
 
 
