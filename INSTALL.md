@@ -21,19 +21,25 @@ cd data-crab
 项目根目录提供了 `package.json`，可使用 npm 统一安装前后端依赖：
 
 ```bash
-# 安装前端依赖 + 后端依赖
+# 安装前端依赖 + 后端依赖（含可选依赖：知识库 RAG + OBS 对象存储）
 npm run install
 ```
 
 该命令等价于分别执行：
 ```bash
 npm run install:frontend   # 安装前端 npm 依赖
-npm run install:backend    # 安装后端 Python 依赖
+npm run install:backend    # 安装后端 Python 依赖（核心 + 可选）
 ```
 
-### 手动安装
+> **关于可选依赖**：后端依赖分为核心和可选两部分：
+> - **核心依赖**（`requirements.txt`）：FastAPI / SQLAlchemy / pandas / openai 等，安装快
+> - **可选依赖**（`requirements-optional.txt`）：
+>   - `chromadb` — 文档知识库 RAG（拉入 25+ 子依赖，安装较慢）
+>   - `minio` — OBS 对象存储连接器
+>
+> `npm run install` 会同时安装核心和可选依赖。如果只需要核心功能（不使用知识库和 OBS），可跳过可选依赖：
 
-如需单独安装：
+### 手动安装
 
 **前端：**
 ```bash
@@ -42,11 +48,26 @@ npm install
 cd ..
 ```
 
-**后端：**
+**后端（全量）：**
+```bash
+cd backend
+pip install -e .
+pip install -r requirements-optional.txt
+cd ..
+```
+
+**后端（仅核心，跳过知识库和 OBS）：**
 ```bash
 cd backend
 pip install -e .
 cd ..
+```
+
+**后端（按需安装可选功能）：**
+```bash
+pip install -e ./backend[kb]       # 仅知识库 RAG
+pip install -e ./backend[obs]      # 仅 OBS 对象存储
+pip install -e ./backend[all]      # 全部可选依赖
 ```
 
 ## 3. 配置环境变量
@@ -119,9 +140,11 @@ cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | 命令 | 说明 |
 |------|------|
-| `npm run install` | 安装全部依赖 |
+| `npm run install` | 安装全部依赖（前端 + 后端核心 + 可选） |
 | `npm run install:frontend` | 仅安装前端依赖 |
-| `npm run install:backend` | 仅安装后端依赖 |
+| `npm run install:backend` | 仅安装后端依赖（核心 + 可选） |
+| `pip install -e ./backend` | 仅安装后端核心依赖（快） |
+| `pip install -e ./backend[all]` | 安装后端全部依赖（含知识库 + OBS） |
 | `npm run dev` | 启动开发环境（前后端同时启动） |
 | `npm run dev:frontend` | 仅启动前端开发服务器 |
 | `npm run dev:backend` | 仅启动后端开发服务器（带热重载） |
