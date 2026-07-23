@@ -15,7 +15,7 @@ from app.services.connectors import get_connector
 
 
 class DataInspectorTools:
-    async def _load_data(self, datasource_id: str, table_name: str, db: AsyncSession, page_size: int = 5000) -> pd.DataFrame:
+    async def _load_data(self, datasource_id: str, table_name: str, db: AsyncSession, page_size: int = 50000) -> pd.DataFrame:
         result = await db.execute(
             select(DataSource).where(DataSource.id == _uuid.UUID(datasource_id))
         )
