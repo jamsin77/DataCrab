@@ -1654,13 +1654,10 @@ class DataProcessorAgent(BaseAgent):
                 return
             local_messages.append({"role": "user", "content": user_msg})
 
-        # 调试模式工具选择（对齐 OpenCode：始终全工具，LLM 自主决策）
-        if context.get("debug_max_inspections", 7) == 0:
-            # 自动修复模式：修改+执行工具 + read_script/grep_script（LLM 可先调查再改）
-            debug_tools = [MODIFY_AND_RUN_TOOL, EDIT_AND_RUN_TOOL, MODIFY_SCRIPT_TOOL, EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
-        else:
-            # 正常调试模式（debug-chat）：全套工具（含 read_script/query/handoff）
-            debug_tools = DATA_PROCESSOR_TOOLS + DEBUG_TOOLS
+        # 调试模式工具选择（对齐 OpenCode：只给看代码+改代码的工具，不给查数据工具）
+        # OpenCode 只有 Read/Grep/Edit/Bash，没有 query_table_data/execute_sql
+        # 给太多工具 LLM 会被带偏：不去改脚本而是反复查数据
+        debug_tools = [MODIFY_AND_RUN_TOOL, EDIT_AND_RUN_TOOL, MODIFY_SCRIPT_TOOL, EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL, HANDOFF_TOOL]
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化，只数 fix 工具

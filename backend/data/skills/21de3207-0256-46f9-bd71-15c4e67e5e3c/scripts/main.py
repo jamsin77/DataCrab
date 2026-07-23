@@ -897,11 +897,22 @@ def main(**kwargs):
     主入口函数。
     系统会注入用户参数，直接传递给 migrate_data 执行迁移。
     如果无参数，则运行自测。
+    支持repair模式修复已有数据。
     """
     print("debug start")
     print(f"\n{'=' * 60}")
     print(f"📥 main() 被调用，收到参数: {kwargs}")
     print(f"{'=' * 60}\n")
+
+    # 修复模式：直接修复已有目标表中的数据质量问题
+    if kwargs.get('repair') or kwargs.get('fix'):
+        ds_name = kwargs.get('target_datasource_name') or kwargs.get('target_datasource') or kwargs.get('datasource_name') or kwargs.get('datasource') or ''
+        tbl_name = kwargs.get('target_table_name') or kwargs.get('target_table') or kwargs.get('table_name') or ''
+        if ds_name and tbl_name:
+            print(f"🔧 修复模式: 修复数据源 '{ds_name}' 中的表 '{tbl_name}'...")
+            return repair_existing_data(ds_name, tbl_name)
+        else:
+            return {"success": False, "error": "修复模式需要指定 target_datasource_name 和 target_table_name"}
 
     # 参数名兼容映射，解决系统注入参数名不一致的问题
     param_aliases = {
@@ -1064,6 +1075,135 @@ def _smart_translate_en_to_cn(text: str) -> str:
     except Exception as e:
         print(f"  ⚠️ llm_chat 翻译失败: {e}")
     return text
+
+
+
+def fix_empty_required_fields(df):
+    """修复必填字段「名称」空值：尝试从备注中提取名称，无法提取则标记为待补录。
+
+    针对 name/名称 字段为空但 remark/备注 中包含"更名为XXX"模式的记录，
+    从备注中提取名称填入。无法提取的标记为"未知文物名称（待补录）"。
+    """
+    name_col = None
+    remark_col = None
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if col_lower in ("name", "名称", "title"):
+            name_col = col
+        if col_lower in ("remark", "备注", "remarks", "note", "notes", "comment", "comments"):
+            remark_col = col
+
+    if not name_col:
+        return df, 0
+
+    _is_empty = df[name_col].isna() | (df[name_col].astype(str).str.strip() == "") | (df[name_col].astype(str).str.strip() == "nan")
+    empty_count = int(_is_empty.sum())
+
+    if empty_count == 0:
+        return df, 0
+
+    fixed_from_remark = 0
+    fixed_placeholder = 0
+
+    for idx in df[_is_empty].index:
+        remark_val = ""
+        if remark_col and remark_col in df.columns:
+            remark_val = str(df.at[idx, remark_col]) if pd.notna(df.at[idx, remark_col]) else ""
+
+        # 尝试从备注中提取名称：模式"更名为XXX"
+        match = re.search(r'更名为(.+)', remark_val)
+        if match:
+            extracted_name = match.group(1).strip()
+            df.at[idx, name_col] = extracted_name
+            fixed_from_remark += 1
+            print(f"    ✅ 行 {idx}: 从备注提取名称 → '{extracted_name}'")
+        else:
+            placeholder = "未知文物名称（待补录）"
+            df.at[idx, name_col] = placeholder
+            fixed_placeholder += 1
+            print(f"    ⚠️ 行 {idx}: 无法从备注提取名称，标记为 '{placeholder}' (备注: {remark_val})")
+
+    print(f"    📊 必填字段修复汇总: 从备注提取 {fixed_from_remark} 条, 占位符标记 {fixed_placeholder} 条")
+    return df, empty_count
+
+def repair_existing_data(datasource_name, table_name):
+    """修复已有目标表中的必填字段空值（名称/name字段）。
+
+    1. 查询表中 name 为空的记录
+    2. 尝试从 remark 备注中提取名称（匹配"更名为XXX"模式）
+    3. 无法提取的标记为"未知文物名称（待补录）"
+    4. 使用 write_table_data upsert 写回修复后的记录
+    """
+    print(f"\n🔧 数据质量修复: 检查表 '{table_name}' 中的必填字段空值...")
+
+    execute_sql_func = _get_builtin_func('execute_sql')
+
+    # 查找名称为空的记录
+    sql = f'''SELECT * FROM "{table_name}" WHERE name IS NULL OR TRIM(name) = '' '''
+    result = execute_sql_func(datasource_name, sql)
+
+    if not result.get("success"):
+        print(f"  ❌ 查询失败: {result.get('error')}")
+        return {"success": False, "error": result.get("error")}
+
+    empty_records = result.get("data", [])
+    if not empty_records:
+        print(f"  ✅ 未发现名称空值记录，无需修复")
+        return {"success": True, "fixed_count": 0}
+
+    print(f"  📋 发现 {len(empty_records)} 条名称空值记录，开始修复...")
+
+    # 修复每条记录
+    fixed_records = []
+    for record in empty_records:
+        record_id = record.get("ID", record.get("id", ""))
+        remark_val = str(record.get("remark", "") or "")
+
+        # 尝试从备注中提取名称
+        match = re.search(r'更名为(.+)', remark_val)
+        if match:
+            extracted_name = match.group(1).strip()
+            record["name"] = extracted_name
+            print(f"  ✅ ID={record_id}: 从备注提取名称 → '{extracted_name}'")
+        else:
+            placeholder = "未知文物名称（待补录）"
+            record["name"] = placeholder
+            print(f"  ⚠️ ID={record_id}: 无法从备注提取，标记为 '{placeholder}'")
+
+        fixed_records.append(record)
+
+    # 使用 upsert 写回修复的记录
+    write_func = _get_builtin_func('write_table_data')
+    write_result = write_func(datasource_name, table_name, records=fixed_records, if_table_exists="upsert")
+
+    if not write_result or not write_result.get("success"):
+        error_msg = (write_result or {}).get("error") or (write_result or {}).get("message", "未知错误")
+        print(f"  ⚠️ upsert 写回失败: {error_msg}")
+        print(f"  🔄 尝试使用 execute_sql UPDATE 方式修复...")
+
+        # 降级方案：尝试 execute_sql UPDATE
+        fixed_count = 0
+        for record in fixed_records:
+            record_id = record.get("ID", record.get("id", ""))
+            name_val = record.get("name", "")
+            escaped_name = str(name_val).replace("'", "''")
+            escaped_id = str(record_id).replace("'", "''")
+            update_sql = f'''UPDATE "{table_name}" SET name = '{escaped_name}' WHERE "ID" = '{escaped_id}' '''
+            update_result = execute_sql_func(datasource_name, update_sql)
+            if update_result.get("success"):
+                fixed_count += 1
+            else:
+                print(f"  ❌ ID={record_id}: UPDATE 失败 - {update_result.get('error', '未知错误')}")
+
+        if fixed_count > 0:
+            print(f"\n🎉 修复完成! 共修复 {fixed_count}/{len(empty_records)} 条记录 (execute_sql方式)")
+            return {"success": True, "fixed_count": fixed_count}
+        else:
+            return {"success": False, "error": f"所有修复方式均失败。upsert错误: {error_msg}"}
+
+    fixed_count = write_result.get("rows_written", len(fixed_records))
+    print(f"\n🎉 修复完成! 共修复 {fixed_count} 条记录")
+    return {"success": True, "fixed_count": fixed_count}
 
 if __name__ == "__main__":
     main()

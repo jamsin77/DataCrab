@@ -19,16 +19,18 @@ cd data-crab
 ## 2. 安装依赖
 
 ```bash
-npm run install
+npm install
 ```
 
-这会安装前端 npm 依赖（含 concurrently）+ 后端 Python 核心依赖。
+这会自动安装：
+- 根目录工具（concurrently，用于同时启动前后端）
+- 前端 npm 依赖
+- 后端 Python 核心依赖
 
 > **可选依赖**：如果需要文档知识库 RAG 或 OBS 对象存储，额外执行：
 > ```bash
 > pip install -e ./backend[all]
 > ```
-> 不装也不影响核心功能。
 
 ## 3. 配置环境变量
 
@@ -65,7 +67,7 @@ npm run dev
 
 | 命令 | 说明 |
 |------|------|
-| `npm run install` | 安装前端 + 后端核心依赖 |
+| `npm install` | 安装全部依赖（根目录 + 前端 + 后端） |
 | `npm run dev` | 启动开发环境（前后端同时） |
 | `npm run dev:backend` | 仅启动后端（热重载） |
 | `npm run dev:frontend` | 仅启动前端 |

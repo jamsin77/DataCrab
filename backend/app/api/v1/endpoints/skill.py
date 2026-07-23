@@ -745,6 +745,7 @@ async def run_skill_stream(
                                 _issues = []
                                 _summary = ""
                                 _handoff_to_processor = False
+                                logger.info(f"[检查循环] 第{_inspection_round+1}轮, total_rounds={_inspect_ctx.get('debug_total_rounds',0)}, inspection_round={_inspect_ctx.get('debug_inspection_round',0)}")
                                 async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
                                     _t = _evt.get("type")
                                     if _t == "handoff":
@@ -1225,6 +1226,7 @@ async def run_skill_nl_stream(
                                 _issues = []
                                 _summary = ""
                                 _handoff_to_processor = False
+                                logger.info(f"[检查循环] 第{_inspection_round+1}轮, total_rounds={_inspect_ctx.get('debug_total_rounds',0)}, inspection_round={_inspect_ctx.get('debug_inspection_round',0)}")
                                 async for _evt in _inspector.run(_inspect_msg, _inspect_ctx):
                                     _t = _evt.get("type")
                                     if _t == "handoff":

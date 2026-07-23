@@ -19,16 +19,18 @@ cd data-crab
 ## 2. Install Dependencies
 
 ```bash
-npm run install
+npm install
 ```
 
-This installs frontend npm dependencies (including concurrently) + backend Python core dependencies.
+This automatically installs:
+- Root tools (concurrently, for starting frontend + backend together)
+- Frontend npm dependencies
+- Backend Python core dependencies
 
-> **Optional dependencies**: If you need knowledge base RAG or OBS object storage, run additionally:
+> **Optional**: For knowledge base RAG or OBS storage, additionally run:
 > ```bash
 > pip install -e ./backend[all]
 > ```
-> Core features work without them.
 
 ## 3. Configure Environment
 
@@ -65,7 +67,7 @@ Terminal shows color-tagged logs:
 
 | Command | Description |
 |---------|-------------|
-| `npm run install` | Install frontend + backend core dependencies |
+| `npm install` | Install all dependencies (root + frontend + backend) |
 | `npm run dev` | Start dev environment (frontend + backend) |
 | `npm run dev:backend` | Start backend only (hot reload) |
 | `npm run dev:frontend` | Start frontend only |
