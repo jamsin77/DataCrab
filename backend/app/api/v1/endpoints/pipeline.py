@@ -508,7 +508,7 @@ async def debug_pipeline_chat(
                 elif _inspector_active and t == "fatal":
                     _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
                 elif _inspector_active and t == "tool_result":
-                    pass
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 else:
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 

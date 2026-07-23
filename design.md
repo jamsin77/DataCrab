@@ -3898,7 +3898,7 @@ volumes:
 | 自定义模型适配器 | 用户用自然语言添加的 LLM 适配器（AI 生成代码，沙箱加载） | ✅ 允许（仅此两项平台扩展） |
 
 此规则已写入：
-- personal.md（最高优先级行为规则）
+- soul.md（最高优先级行为规则）
 - chat.py _build_system_prompt（对话提示词）
 - operator.py SYSTEM_PROMPT（算子提示词）
 - skill.py 调试助手/修改提示词（技能提示词）

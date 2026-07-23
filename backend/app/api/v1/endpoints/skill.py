@@ -1,4 +1,4 @@
-﻿"""技能管理API端点 - 遵循 Agent Skills 开放标准"""
+"""技能管理API端点 - 遵循 Agent Skills 开放标准"""
 
 import io
 import math
@@ -712,7 +712,22 @@ async def run_skill_stream(
                                 agent_registry.register(DataProcessorAgent())
                             _inspector = agent_registry.get("data_inspector")
                             _processor = agent_registry.get("data_processor")
-                            _inspect_ctx = {"db": db, "user_id": current_user.id}
+                            _inspect_ctx = {
+                                "db": db,
+                                "user_id": current_user.id,
+                                "debug_mode": True,
+                                "debug_folder": folder,
+                                "debug_script_name": request.script_name,
+                                "debug_script_content": script_content,
+                                "debug_type": "skill",
+                                "debug_datasource_id": datasource_id,
+                                "debug_datasource_name": ds_name,
+                                "debug_table_name": inferred_table,
+                                "debug_skill_md": skill_md[:1200],
+                                "debug_skill_md_full": skill_md,
+                                "debug_max_rounds": 7,
+                                "debug_max_inspections": 4,
+                            }
                             _issues = []
                             _summary = ""
                             _inspect_msg = AgentMessage(
@@ -1011,38 +1026,46 @@ async def run_skill_nl_stream(
     _ds_names = [ds.name for ds in _ds_result.scalars().all()]
     _ds_list_str = "\n".join(f"- {name}" for name in _ds_names) if _ds_names else "(无)"
 
+    # 自然语言调用：始终走 LLM 推断（复用逻辑在 debug-chat 的 run_script 里）
+    from app.services import experience as _exp
+
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是技能参数解析器。根据参数规范和用户指令，推断执行参数。\n"
-                "只输出 JSON，不要解释。\n\n"
-                "规则：\n"
-                "- 参数名必须与参数规范完全一致\n"
-                "- 区分数据源名(DataSource)和表名(Table)\n"
-                "- 用户说\"从X数据源\"时，输出对应的 source_datasource_name: \"X\"\n"
-                "- 用户说\"到Y数据源\"或\"搬到Y\"时，输出对应的 target_datasource_name: \"Y\"\n"
-                "- 数据源名必须从下方「可用数据源」列表中选取，不要编造\n"
-                "- column_mapping 是列名映射（源列名→目标列名），不是表名映射\n\n"
-                '输出格式：{"parameters": {"参数名": 值}}'
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"技能：{skill.display_name or skill.name}\n"
-                f"描述：{skill.description or ''}\n\n"
-                f"参数规范：\n{params_section or '请参考脚本函数签名推断参数'}\n\n"
-                f"可用数据源：\n{_ds_list_str}\n\n"
-                f"用户指令：{request.query}\n\n"
-                f"只输出 JSON。"
-            ),
-        },
-    ]
+            {
+                "role": "system",
+                "content": (
+                    "你是技能参数解析器。根据参数规范和用户指令，提取执行参数。\n"
+                    "只输出 JSON，不要解释。\n\n"
+                    "规则：\n"
+                    "- 参数名必须与参数规范完全一致\n"
+                    "- 区分数据源名(DataSource)和表名(Table)\n"
+                    "- 用户说\"从X数据源\"时，输出对应的 source_datasource_name: \"X\"\n"
+                    "- 用户说\"到Y数据源\"或\"搬到Y\"时，输出对应的 target_datasource_name: \"Y\"\n"
+                    "- 数据源名必须从下方「可用数据源」列表中选取，不要编造\n"
+                    "- column_mapping 是列名映射（源列名→目标列名），不是表名映射\n"
+                    "- 用户说\"翻译成中文\"或\"翻译为中文\"时，输出 translate_to_cn: true（英文表名/列名→中文）\n"
+                    "- 用户说\"翻译成英文\"或\"翻译为英文\"时，输出 auto_translate: true（中文表名/列名→英文）\n"
+                    "- 翻译由平台自动处理，不需要 column_mapping 做翻译\n"
+                    "- 数据迁移场景默认 if_table_exists: \"overwrite\"（覆盖目标表）\n\n"
+                    '输出格式：{"parameters": {"参数名": 值}}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"技能：{skill.display_name or skill.name}\n"
+                    f"描述：{skill.description or ''}\n\n"
+                    f"参数规范：\n{params_section or '请参考脚本函数签名推断参数'}\n\n"
+                    f"可用数据源：\n{_ds_list_str}\n\n"
+                    f"用户指令：{request.query}\n\n"
+                    f"只输出 JSON。"
+                ),
+            },
+        ]
 
     async def generate():
-        full_content = ""
         try:
+            # LLM 推断参数
+            full_content = ""
             async for chunk in llm_manager.chat_stream_with_thinking(messages, model=llm_manager.fast_model, temperature=0.2):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
@@ -1065,7 +1088,6 @@ async def run_skill_nl_stream(
                 parsed = {"parameters": {}}
 
             parameters = parsed.get("parameters", {})
-            # 在剥离前捕获 LLM 推断的 datasource_name 和 table_name
             _llm_ds_name = parameters.get("datasource_name") or parameters.get("datasource")
             _llm_table = parameters.get("table_name") or parameters.get("table")
             for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
@@ -1096,7 +1118,8 @@ async def run_skill_nl_stream(
 
             yield f"data: {json_mod.dumps({'type': 'inferred_params', 'parameters': parameters, 'table_name': inferred_table}, ensure_ascii=False)}\n\n"
             logger.info(f"NL推断参数: {json_mod.dumps(parameters, ensure_ascii=False)}")
-            yield f"data: {json_mod.dumps({'type': 'executing', 'message': '参数推断完成，正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
+
+            yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
             # 用 ping 保活：技能执行可能耗时数分钟（如 OCR 71 张图），SSE 无心跳会被代理/浏览器超时断开
             import asyncio as _asyncio
@@ -1167,7 +1190,22 @@ async def run_skill_nl_stream(
                                 agent_registry.register(DataProcessorAgent())
                             _inspector = agent_registry.get("data_inspector")
                             _processor = agent_registry.get("data_processor")
-                            _inspect_ctx = {"db": db, "user_id": current_user.id}
+                            _inspect_ctx = {
+                                "db": db,
+                                "user_id": current_user.id,
+                                "debug_mode": True,
+                                "debug_folder": folder,
+                                "debug_script_name": request.script_name,
+                                "debug_script_content": script_content,
+                                "debug_type": "skill",
+                                "debug_datasource_id": datasource_id,
+                                "debug_datasource_name": ds_name,
+                                "debug_table_name": inferred_table,
+                                "debug_skill_md": skill_md[:1200],
+                                "debug_skill_md_full": skill_md,
+                                "debug_max_rounds": 7,
+                                "debug_max_inspections": 4,
+                            }
                             _issues = []
                             _summary = ""
                             _inspect_msg = AgentMessage(
@@ -1413,7 +1451,7 @@ async def debug_skill_chat(
                 elif _inspector_active and t == "fatal":
                     _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
                 elif _inspector_active and t == "tool_result":
-                    pass
+                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 else:
                     yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
 

@@ -37,7 +37,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
 | `connectors.py` | 数据源连接器（8 种：PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
-| `personal.md` | 助手人格与安全红线定义 |
+| `soul.md` | 助手人格与安全红线定义（原 personal.md，rename 对齐「灵魂」语义） |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
 16 个端点文件、共 177 条路由，主要：
@@ -76,7 +76,7 @@ cd backend && black app/ && isort app/
 
 ## 编码规范
 
-1. **安全红线**：DataCrab 只处理用户数据，绝不修改平台自身（personal.md）。例外：用户可用自然语言添加自定义数据源连接器和自定义模型适配器（AI 生成代码，沙箱加载）
+1. **安全红线**：DataCrab 只处理用户数据，绝不修改平台自身（soul.md）。例外：用户可用自然语言添加自定义数据源连接器和自定义模型适配器（AI 生成代码，沙箱加载）
 2. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造
 3. **修改后必验证**：每次修改数据/代码后必须测试验证
 4. **输出默认同源**：处理后的数据默认写回原数据源路径
@@ -312,3 +312,68 @@ DataProcessorAgent（统一入口）
 | **工具结果显示** | data_processor_agent.py | 调查工具（grep/read/query/schema）结果摘要 yield 给前端（像 OpenCode 显示 grep/read 结果） |
 
 **与前轮关系**：第十二轮极简 prompt+thinking+上下文定位对齐 OpenCode；本轮正法修改次数设计——3 次执行上限 + 7 次总修改上限，调查不算次数。删 fast model + 删"只调查不修改"检测器让 LLM 自由调查+修复。删 enable_thinking/frequency_penalty/max_tokens 死代码清理。
+
+### 第十四轮（静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出 + 沙箱补全）
+
+**核心洞察**：对照 OpenCode 审查 DataCrab 静默失败（6 类）+ 调试提示信息差距。OpenCode 调试流程：Grep 定位行号 → Read(offset/limit) 只读相关行 → Edit(old_string/new_string) 修改。DataCrab 之前 Read 读全文（22828字符）、显示只有字符数摘要、Edit 显示截断 80 字符、错误不分级全靠 LLM 文字判断。
+
+**静默失败审查**（AUDIT_SILENT_FAILURES.md）：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| UUID 类型不匹配 | datasource.py | 4 个 internal 端点 UUID 转 str 修复 |
+| CSV/Excel fail 静默覆盖 | connectors.py | `write_table_data` fail 策略改为 raise，不再静默覆盖 |
+| 错误结果缓存 | shared_tools.py | 工具执行失败不缓存，避免错误结果被重复使用 |
+| 连接失败 raise | connectors.py | 8 处连接失败从 return None 改为 raise ConnectionError |
+| list_user_datasources close | shared_tools.py | close() 移到 finally，避免异常泄漏 |
+| stats except: pass | connectors.py | 2 处 `except: pass` 改为 `logger.warning` |
+| skill_runner 空 return | skill_runner.py | 6 个工具函数 return 空→raise 明确错误 |
+| VALID_WRITE_STRATEGIES | connectors.py | 入口校验写入策略，无效策略直接 raise |
+
+**错误分级退出**（替代 LLM 文字判断）：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `_classify_execution_error` L4/L5/L6 | skill_runner.py | L4 环境问题（DLL/ModuleNotFound）/ L5 平台限制（不支持写入策略/NotImplementedError）/ L6 数据问题（表/文件不存在）；L1/L2 脚本错误继续修复 |
+| run_debug 三级退出 | data_processor_agent.py | `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` → give_up + return；在 `_exec_failures` 之前（不消耗 3 次额度） |
+| `_is_platform_issue_report` 保留为兜底 | data_processor_agent.py | 仅在 `not tool_calls` 时检查（LLM 不执行下结论的兜底），主要退出靠错误分级 |
+
+**OpenCode 调试显示对齐**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| read_script 无 cap | data_processor_agent.py | 默认返回全文（对齐 OpenCode Read 默认 2000 行）；offset/limit 可选用于精确读；删 60 行硬 cap |
+| read_script 带行号 | data_processor_agent.py | `L1: content` 格式（对齐 OpenCode Read） |
+| read_script 结果显示实际内容 | data_processor_agent.py | 之前 `读取: func (22828 字符)` → 现在显示实际内容 code block（cap 40 行显示） |
+| grep_script 结果显示匹配行 | data_processor_agent.py | 之前 `搜索: 3 个匹配，首个: ...` → 现在显示所有匹配行 `>> L636: content`（cap 10 个） |
+| edit_and_run action 显示 diff | data_processor_agent.py | 之前截断 80 字符 `repr(old)→repr(new)` → 现在 ```diff``` 代码块完整 old(-)/new(+)（cap 40 行） |
+| modify_and_run result 显示 diff | data_processor_agent.py | 之前只显示函数名 → 现在额外显示 `changed_lines` diff 代码块 |
+| DEBUG_INSTRUCTIONS 工作流 | data_processor_agent.py | 明确 `grep → read(offset/limit) → edit` 工作流，禁止读全文/整个函数 |
+| read_script 工具描述 | data_processor_agent.py | 必须用 offset/limit，给出示例 `offset=行号-5, limit=15` |
+
+**沙箱补全 + 文档统一**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| call_operator 内置函数 | skill_runner.py + sandbox_ns.py | 调用用户算子（按名称模糊匹配） |
+| grep 内置函数 | skill_runner.py + sandbox_ns.py | 文件搜索（正则+行号+上下文） |
+| SANDBOX_TOOLS_DOC 全签名 | prompt_docs.py | 17 个函数签名全补全，对齐实际代码 |
+| PLATFORM_CONVENTIONS_DOC | prompt_docs.py | 平台规范文档（内置函数优先/不装扩展/不调外部API）注入生成+调试+NL推断三处 |
+| read_file 图片 fail-fast | datasource.py + sandbox_ns.py + skill_runner.py | 图片直接报错不静默返回空 |
+| DQ-UNI-001 主键唯一检查 | inspector_tools.py | 确定性主键唯一性检查实现 |
+
+**其他改进**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| personal.md → soul.md | 全量 rename | 对齐「灵魂」语义；agent_config.py + config 端点 + 前端 API 全更新 |
+| 前端标签改名 | ConfigView.vue 等 | 性格设定管理/大模型管理/数据标准规则/数据质量规则/数据安全规则 |
+| give_up 显示 reason | SkillView/OperatorView/PipelineView.vue | 6 处显示 `data.reason`（之前只显示固定文案） |
+| SSE ping 保活 | skill.py | run-nl-stream + 直接执行端点加 20 秒 ping |
+| 执行失败 yield content | data_processor_agent.py | 所有执行失败都 yield `❌ 执行失败：{错误}`（之前只有环境问题才显示） |
+| NL 推断注入数据源列表 | skill.py | 避免LLM猜错目标数据源 |
+| extract-image-info 修复 | skills/e5be982a | `llm_vision(file_path, prompt)` 直接传路径 |
+| data-etl 修复 | skills/21de3207 | `"create"`→`"fail"`、删死代码、删 import inspect |
+| Excel create_new_file 平台能力 | tool_guidance.py | 改为 False（不支持创建新 Excel 文件） |
+
+**与前轮关系**：第十~十三轮建立编辑原语（edit_and_run/apply_partial_code）+ 调试模式（极简 prompt/thinking/修改尝试正法）；本轮补齐静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出。read_script 无 cap 对齐 OpenCode（靠指令引导 offset/limit，不靠硬限制）；错误分级替代 LLM 文字判断（可靠退出靠错误消息分类，不靠关键词匹配）。

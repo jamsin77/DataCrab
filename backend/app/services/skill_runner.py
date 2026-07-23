@@ -45,6 +45,25 @@ _ENV_ERROR_PATTERNS = [
     ("OSError: [Errno 28]", "环境问题：磁盘空间不足"),
 ]
 
+# 平台限制关键词（修改脚本无法解决，平台功能缺失）
+_PLATFORM_ERROR_PATTERNS = [
+    ("不支持的写入策略", "平台限制：写入策略不支持，修改脚本无法解决"),
+    ("read_file 不支持读取图片", "平台限制：read_file 不支持图片，应直接用 llm_vision"),
+    ("read_file 不支持", "平台限制：read_file 不支持此操作"),
+    ("不支持的数据源类型", "平台限制：不支持此数据源类型"),
+    ("NotImplementedError", "平台限制：该功能未实现"),
+]
+
+# 数据问题关键词（用户配置问题，修改脚本无法解决）
+_DATA_ERROR_PATTERNS = [
+    ("数据源不存在", "数据问题：数据源不存在，请检查数据源配置"),
+    ("表不存在", "数据问题：表不存在，请检查表名"),
+    ("找不到源数据源", "数据问题：找不到数据源，请检查数据源名称"),
+    ("找不到目标数据源", "数据问题：找不到目标数据源，请检查数据源名称"),
+    ("路径不在授权目录", "数据问题：路径不在授权目录，请在文件链接中添加目录"),
+    ("文件不存在", "数据问题：文件不存在，请检查文件路径"),
+]
+
 # 脚本问题关键词（修改脚本可修复）
 _SCRIPT_ERROR_PATTERNS = [
     ("KeyError", "script_error"),
@@ -57,13 +76,23 @@ _SCRIPT_ERROR_PATTERNS = [
     ("FileNotFoundError", "script_error"),
     ("ZeroDivisionError", "script_error"),
     ("UnboundLocalError", "script_error"),
-    ("NotImplementedError", "script_error"),
 ]
 
 
 def _classify_execution_error(error_msg: str) -> str:
-    """分类执行错误：environment_issue（环境问题，修改脚本无法解决） / script_error（脚本问题，可修复）"""
+    """分类执行错误，按级别返回：
+    - 环境问题（L4，退出）：PyCapsule/DLL/ModuleNotFound/Permission/Connection
+    - 平台限制（L5，退出）：不支持的策略/功能/数据源类型
+    - 数据问题（L6，报告用户）：数据源/表/文件不存在
+    - script_error（L1/L2，可修复）：其他脚本错误
+    """
     for pattern, msg in _ENV_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return msg
+    for pattern, msg in _PLATFORM_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return msg
+    for pattern, msg in _DATA_ERROR_PATTERNS:
         if pattern in error_msg:
             return msg
     for pattern, error_type in _SCRIPT_ERROR_PATTERNS:
@@ -155,11 +184,12 @@ def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_
             data = json.loads(resp.read().decode("utf-8"))
         return pd.DataFrame(data.get("rows", []))
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] query failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return pd.DataFrame()
+        _msg = _http_err(e)
+        print(f"[SkillRunner] query failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] query failed: {{e}}")
-        return pd.DataFrame()
+        raise
 
 def _dc_get_table_schema(datasource_id, table_name):
     import urllib.request, urllib.parse
@@ -170,11 +200,12 @@ def _dc_get_table_schema(datasource_id, table_name):
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] schema failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return []
+        _msg = _http_err(e)
+        print(f"[SkillRunner] schema failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] schema failed: {{e}}")
-        return []
+        raise
 
 def _dc_get_datasource_id_by_name(name):
     import urllib.request
@@ -216,11 +247,12 @@ def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("content", "")
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] llm_chat failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return ""
+        _msg = _http_err(e)
+        print(f"[SkillRunner] llm_chat failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] llm_chat failed: {{e}}")
-        return ""
+        raise
 
 _WRITTEN_TABLES = []
 
@@ -279,11 +311,12 @@ def list_tables(datasource_id):
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] list_tables failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return []
+        _msg = _http_err(e)
+        print(f"[SkillRunner] list_tables failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] list_tables failed: {{e}}")
-        return []
+        raise
 
 def iter_table_data(datasource_id, table_name, chunk_size=10000):
     # 分块迭代读取大表数据（避免一次性加载到内存）
@@ -306,11 +339,12 @@ def iter_table_data(datasource_id, table_name, chunk_size=10000):
             with urllib.request.urlopen(_url, timeout=120) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            print(f"[SkillRunner] iter_table_data page {{page}} failed: HTTP {{e.code}} {{_http_err(e)}}")
-            break
+            _msg = _http_err(e)
+            print(f"[SkillRunner] iter_table_data page {{page}} failed: HTTP {{e.code}} {{_msg}}")
+            raise RuntimeError(_msg)
         except Exception as e:
             print(f"[SkillRunner] iter_table_data page {{page}} failed: {{e}}")
-            break
+            raise
         yield data
         if not data.get("has_next", False):
             break
@@ -364,11 +398,13 @@ def read_file(path, format=None):
             return {{"columns": data.get("columns", []), "rows": data.get("rows", [])}}
         return data.get("content", "")
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] read_file failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return ""
+        _msg = _http_err(e)
+        print(f"[SkillRunner] read_file failed: HTTP {{e.code}} {{_msg}}")
+        # fail-fast：透传后端错误（如"不支持读取图片，请用 llm_vision"），不吞成空串掩盖信号
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] read_file failed: {{e}}")
-        return ""
+        raise
 
 def write_file(path, data, format=None):
     # 写入文件（路径必须在文件链接授权目录内）
@@ -419,11 +455,52 @@ def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_toke
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("content", "")
     except urllib.error.HTTPError as e:
-        print(f"[SkillRunner] llm_vision failed: HTTP {{e.code}} {{_http_err(e)}}")
-        return ""
+        _msg = _http_err(e)
+        print(f"[SkillRunner] llm_vision failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
     except Exception as e:
         print(f"[SkillRunner] llm_vision failed: {{e}}")
-        return ""
+        raise
+
+def call_operator(operator_name, **params):
+    # 调用用户自定义算子（通过内部 HTTP 端点执行算子脚本）
+    # operator_name: 算子名称或 UUID
+    # **params: 传给算子函数的参数
+    # 返回: dict {{"success": bool, "result": ..., "stdout": str, "error": str}}
+    import urllib.request
+    _payload = json.dumps({{"operator_name": operator_name, "parameters": params, "user_id": INJECTED_USER_ID}}, ensure_ascii=False, default=str).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/operators/internal/execute", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] call_operator failed: HTTP {{e.code}} {{_msg}}")
+        return {{"success": False, "error": _msg}}
+    except Exception as e:
+        print(f"[SkillRunner] call_operator failed: {{e}}")
+        return {{"success": False, "error": str(e)}}
+
+def grep(directory, pattern, file_extensions=None, max_matches=200):
+    # 在授权目录内递归搜索文件内容（正则匹配），返回匹配行
+    # directory: 要搜索的目录（必须在文件链接授权目录内）
+    # pattern: 正则表达式
+    # file_extensions: 可选，限定文件扩展名列表，如 [".py", ".txt"]；None=搜索全部文件
+    # max_matches: 最大返回匹配数（默认 200）
+    # 返回: dict {{"matches": [{{"file": str, "line": int, "content": str}}], "total": int, "truncated": bool}}
+    import urllib.request
+    _payload = json.dumps({{"directory": directory, "pattern": pattern, "file_extensions": file_extensions, "max_matches": max_matches, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/grep", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] grep failed: HTTP {{e.code}} {{_msg}}")
+        return {{"matches": [], "total": 0, "truncated": False, "error": _msg}}
+    except Exception as e:
+        print(f"[SkillRunner] grep failed: {{e}}")
+        return {{"matches": [], "total": 0, "truncated": False, "error": str(e)}}
 
 def resolve_column(df, name):
     # 按 name 解析 DataFrame 实际列名（精确 → 忽略大小写 → 模糊 → 翻译匹配）。找不到返回 None。
@@ -503,6 +580,8 @@ _builtins.write_file = _wrap_tool_log("write_file", write_file)
 _builtins.compute_map = compute_map
 _builtins.llm_vision = _wrap_tool_log("llm_vision", llm_vision)
 _builtins.llm_chat = _wrap_tool_log("llm_chat", llm_chat)
+_builtins.call_operator = _wrap_tool_log("call_operator", call_operator)
+_builtins.grep = _wrap_tool_log("grep", grep)
 _builtins.log = log
 _builtins.get_datasource_id_by_name = _wrap_tool_log("get_datasource_id_by_name", _dc_get_datasource_id_by_name)
 _builtins.get_table_schema = _wrap_tool_log("get_table_schema", _dc_get_table_schema)
@@ -511,7 +590,7 @@ _builtins.resolve_column = resolve_column
 _INJECTED_FUNCTIONS = [
     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
     "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
-    "log", "read_file", "write_file", "compute_map",
+    "log", "read_file", "write_file", "compute_map", "call_operator", "grep",
     "get_datasource_id_by_name", "resolve_column",
 ]
 

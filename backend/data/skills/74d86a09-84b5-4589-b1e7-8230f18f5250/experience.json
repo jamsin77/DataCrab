@@ -516,6 +516,54 @@
       },
       "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp']\n[WARN] 筛选列 '分类' 不存在，将使用关键",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T19:41:33.262830",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target"
+      },
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T19:48:27.582582",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target"
+      },
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T19:59:34.775691",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target"
+      },
+      "stdout_preview": "",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -666,6 +714,38 @@
         "output_table_name": "national_key_cultural_relic_protection_units_merged",
         "if_table_exists": "overwrite",
         "merge_strategy": "merge_fields",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-07-22T17:34:25.508590",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units"
+      },
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-07-22T20:41:11.150816",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "分类 contains 归并 or 分类 contains 合并 or 分类 contains 类似语义",
+        "merge_field": "备注",
+        "output_table_name": "national_key_cultural_relic_protection_units_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
         "batch_size": 1000,
         "llm_batch_size": 20,
         "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",

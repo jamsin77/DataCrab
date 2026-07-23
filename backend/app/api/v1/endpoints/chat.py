@@ -52,7 +52,7 @@ def _get_nl_service():
 
 # 加载助理人格文件
 _persona_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-_persona_path = os.path.join(_persona_dir, "services", "personal.md")
+_persona_path = os.path.join(_persona_dir, "services", "soul.md")
 try:
     with open(_persona_path, "r", encoding="utf-8") as _f:
         ASSISTANT_PERSONA = _f.read().strip()

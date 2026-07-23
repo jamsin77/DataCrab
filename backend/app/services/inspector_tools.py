@@ -231,6 +231,23 @@ class DataInspectorTools:
                         })
 
             if not quality_dimensions or "uniqueness" in quality_dimensions:
+                # DQ-UNI-001: 主键唯一性检查（确定性，不依赖 LLM，不报不连续）
+                _id_cols = [c for c in df.columns
+                            if str(c).lower().strip() in ("id", "编号")
+                            or str(c).lower().strip().endswith("_id")]
+                for col in _id_cols:
+                    dup_count = int(df[col].dropna().duplicated().sum())
+                    if dup_count > 0:
+                        issues.append({
+                            "dimension": "uniqueness",
+                            "rule_id": "DQ-UNI-001",
+                            "column": col,
+                            "severity": "critical",
+                            "description": f"主键列 '{col}' 存在 {dup_count} 个重复值",
+                            "suggestion": "去重或修正主键生成逻辑",
+                        })
+
+                # DQ-UNI-003: 整行重复检查
                 dupe_count = total - len(df.drop_duplicates())
                 dupe_rate = dupe_count / total if total else 0
                 if dupe_count > 0 and dupe_rate > dupe_thr:

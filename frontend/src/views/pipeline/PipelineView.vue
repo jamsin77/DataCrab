@@ -937,7 +937,7 @@ async function handleDebugSend() {
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -1172,6 +1172,11 @@ onMounted(() => {
   border-radius: 6px;
   overflow: hidden;
 
+  :deep(.el-collapse) {
+    border-top: none;
+    border-bottom: none;
+  }
+
   .runresult-header {
     display: flex;
     align-items: center;
@@ -1277,13 +1282,14 @@ onMounted(() => {
   }
 
   &.assistant {
-    align-self: flex-start;
+    align-self: stretch;
     max-width: 100%;
     .debug-msg-assistant {
       background: #fff;
       border: 1px solid #e4e7ed;
       border-radius: 10px 10px 10px 2px;
       padding: 8px 12px;
+      width: 100%;
       max-width: 100%;
       min-width: 0;
       overflow-wrap: break-word;

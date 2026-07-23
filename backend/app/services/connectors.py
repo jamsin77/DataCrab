@@ -19,6 +19,9 @@ from app.services.datasource import BaseConnector
 # 危险字符：双引号(PostgreSQL/SQLite引用符)、反引号(MySQL引用符)、单引号(SQL字符串)、分号(语句分隔)、null字节
 _UNSAFE_IDENTIFIER_RE = re.compile(r'["\'`;\x00]')
 
+# 平台支持的写入策略（fail-fast：不支持的策略在此拦截，不让连接器 if/elif 链静默 fall-through）
+VALID_WRITE_STRATEGIES = {"fail", "append", "replace", "overwrite", "truncate", "delete_rows", "upsert"}
+
 
 def _validate_identifier(name: str) -> str:
     if not name or _UNSAFE_IDENTIFIER_RE.search(name):
@@ -231,7 +234,7 @@ class MySQLConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return []
+            raise ConnectionError("数据库连接失败，无法执行查询")
         async with self._connection.cursor() as cur:
             await cur.execute("SHOW TABLES")
             rows = await cur.fetchall()
@@ -245,7 +248,7 @@ class MySQLConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return pd.DataFrame()
+            raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         offset = (page - 1) * page_size
         async with self._connection.cursor() as cur:
@@ -270,7 +273,7 @@ class MySQLConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return {}
+            raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         async with self._connection.cursor() as cur:
             await cur.execute(f"SELECT COUNT(*) FROM `{table}`")
@@ -390,8 +393,10 @@ class CSVConnector(BaseConnector):
         file_path = self.config.get("file_path", "")
         strategy = kwargs.get("if_table_exists", "fail")
         try:
-            df_new = pd.DataFrame(records)
             import os as _os
+            if _os.path.exists(file_path) and strategy == "fail":
+                return {"success": False, "message": f"文件已存在: {file_path} (if_table_exists=fail)"}
+            df_new = pd.DataFrame(records)
             if _os.path.exists(file_path) and strategy == "append":
                 df_old = pd.read_csv(file_path)
                 df_new = pd.concat([df_old, df_new], ignore_index=True)
@@ -554,10 +559,33 @@ class ExcelConnector(BaseConnector):
     async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         import pandas as pd
         file_path, sheet_name = self._resolve_table_name(table)
+        strategy = kwargs.get("if_table_exists", "fail")
+
+        # 文件不存在时：在数据源目录下创建新 xlsx 文件
+        if not os.path.exists(file_path):
+            # 如果 file_path 不是完整路径，拼接到数据源目录
+            if not os.path.dirname(file_path):
+                folder = self.config.get("file_path", "")
+                if os.path.isdir(folder):
+                    file_path = os.path.join(folder, file_path + ".xlsx")
+                else:
+                    return {"success": False, "message": f"无法确定文件路径: {file_path}"}
+            if not file_path.endswith((".xlsx", ".xls")):
+                file_path = file_path + ".xlsx"
+            # 创建新文件
+            df_new = pd.DataFrame(records)
+            target_sheet = sheet_name if isinstance(sheet_name, str) else "Sheet1"
+            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+                df_new.to_excel(writer, sheet_name=target_sheet, index=False)
+            return {"success": True, "rows_written": len(df_new), "created_new_file": True}
 
         try:
-            if not os.path.exists(file_path):
-                return {"success": False, "message": f"文件不存在: {file_path}"}
+            if strategy == "fail":
+                target_sheet_name = sheet_name if isinstance(sheet_name, str) else None
+                xl_check = pd.ExcelFile(file_path)
+                if target_sheet_name and target_sheet_name in xl_check.sheet_names:
+                    return {"success": False, "message": f"Sheet '{target_sheet_name}' 已存在 (if_table_exists=fail)"}
+                xl_check.close()
             df_new = pd.DataFrame(records)
             xl = pd.ExcelFile(file_path)
             sheets_data = {}
@@ -566,9 +594,14 @@ class ExcelConnector(BaseConnector):
                 target_sheet = xl.sheet_names[target_sheet if isinstance(target_sheet, int) else 0]
             for s in xl.sheet_names:
                 if s == target_sheet:
-                    sheets_data[s] = df_new
+                    if strategy == "append":
+                        df_old = pd.read_excel(xl, sheet_name=s)
+                        sheets_data[s] = pd.concat([df_old, df_new], ignore_index=True)
+                    else:
+                        sheets_data[s] = df_new
                 else:
                     sheets_data[s] = pd.read_excel(xl, sheet_name=s)
+            xl.close()
             with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
                 for s, df in sheets_data.items():
                     df.to_excel(writer, sheet_name=s, index=False)
@@ -1131,7 +1164,7 @@ class SQLiteConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return []
+            raise ConnectionError("数据库连接失败，无法执行查询")
         async with self._connection.execute(
             "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
         ) as cursor:
@@ -1146,7 +1179,7 @@ class SQLiteConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return pd.DataFrame()
+            raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         offset = (page - 1) * page_size
         async with self._connection.execute(
@@ -1161,7 +1194,7 @@ class SQLiteConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return pd.DataFrame()
+            raise ConnectionError("数据库连接失败，无法执行查询")
         async with self._connection.execute(query) as cursor:
             rows = await cursor.fetchall()
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -1171,7 +1204,7 @@ class SQLiteConnector(BaseConnector):
         if not self._connection:
             await self.connect()
         if not self._connection:
-            return {}
+            raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         async with self._connection.execute(f'SELECT COUNT(*) FROM "{table}"') as cursor:
             row = await cursor.fetchone()
@@ -1615,6 +1648,11 @@ class ConnectorManager:
         from sqlalchemy import select as sa_select
         from app.models.datasource import DataSource
         from uuid import UUID as UUIDType
+
+        # fail-fast：不支持的写入策略立即报错（对齐 OpenCode：不静默 fall-through）
+        strategy = kwargs.get("if_table_exists", "fail")
+        if strategy not in VALID_WRITE_STRATEGIES:
+            return {"success": False, "error": f"不支持的写入策略 '{strategy}'，支持的策略: {', '.join(sorted(VALID_WRITE_STRATEGIES))}"}
 
         try:
             ds_uuid = UUIDType(datasource_id) if isinstance(datasource_id, str) else datasource_id

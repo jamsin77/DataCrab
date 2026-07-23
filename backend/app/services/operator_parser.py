@@ -196,6 +196,45 @@ def _find_main_block_line(code: str) -> int:
     return len(code.split('\n'))
 
 
+def _ensure_var_kwargs(func_code: str, func_name: str) -> str:
+    """若函数定义缺少 **kwargs 则补上（防止 LLM 重写时丢失，导致 runner 传多余参数报 TypeError）。
+
+    仅在外层调用方确认"原函数有 **kwargs 而新函数没有"时调用。
+    对齐 OpenCode Edit 语义：行级补丁天然保上下文，不会丢参数；本函数是整函数替换的兜底保护。
+    """
+    try:
+        tree = ast.parse(func_code)
+    except SyntaxError:
+        return func_code
+
+    target = None
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            target = node
+            break
+    if not target or target.args.kwarg:
+        return func_code  # 找不到或已有 **kwargs
+
+    lines = func_code.split("\n")
+    # 签名范围：def 行 到 body 第一行之前（1-based）
+    sig_end = target.body[0].lineno - 1
+    sig_start = target.lineno
+    # 从签名末行往前找含 ) 的行
+    for i in range(sig_end - 1, sig_start - 2, -1):
+        if 0 <= i < len(lines) and ")" in lines[i]:
+            line = lines[i]
+            idx = line.rfind(")")
+            before = line[:idx].rstrip()
+            if before.endswith("("):
+                lines[i] = before + "**kwargs" + line[idx:]
+            elif before.endswith(","):
+                lines[i] = before + " **kwargs" + line[idx:]
+            else:
+                lines[i] = before + ", **kwargs" + line[idx:]
+            return "\n".join(lines)
+    return func_code  # 找不到 )，放弃
+
+
 def apply_partial_code(original_code: str, partial_code: str) -> str:
     """将部分代码（函数级修改）合并到原始脚本中。
 
@@ -220,14 +259,30 @@ def apply_partial_code(original_code: str, partial_code: str) -> str:
     except SyntaxError:
         return partial_stripped  # 原始脚本语法错误，直接替换
 
-    # 收集 partial 中的定义名 → 源代码片段
+    # 新函数是否有 **kwargs（防止 LLM 重写时丢失）
+    new_kwargs_map = {}
+    for node in partial_top_defs:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            new_kwargs_map[node.name] = node.args.kwarg is not None
+
+    # 原函数是否有 **kwargs
+    orig_kwargs_map = {}
+    for node in ast.iter_child_nodes(orig_tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            orig_kwargs_map[node.name] = node.args.kwarg is not None
+
+    # 收集 partial 中的定义名 → 源代码片段（若旧有 **kwargs 新无 → 自动补回）
     partial_lines = partial_stripped.split("\n")
     replacements = {}
     for node in partial_top_defs:
         if hasattr(node, 'name'):
             start = node.lineno - 1
             end = node.end_lineno if hasattr(node, 'end_lineno') else start + 1
-            replacements[node.name] = "\n".join(partial_lines[start:end])
+            code_seg = "\n".join(partial_lines[start:end])
+            # 签名保护：旧函数有 **kwargs 但新函数丢了 → 补回（防 runner 传参 TypeError）
+            if orig_kwargs_map.get(node.name) and not new_kwargs_map.get(node.name):
+                code_seg = _ensure_var_kwargs(code_seg, node.name)
+            replacements[node.name] = code_seg
 
     if not replacements:
         return partial_stripped  # 没有可替换的定义

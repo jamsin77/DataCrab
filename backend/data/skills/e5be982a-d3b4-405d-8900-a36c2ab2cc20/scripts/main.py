@@ -199,9 +199,9 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
 # 核心业务函数
 # ============================================================
 def extract_image_info(
-    source_datasource_name: str,
-    source_table_name: str,
-    target_datasource_name: str,
+    source_datasource_name: str = "",
+    source_table_name: str = "",
+    target_datasource_name: str = "",
     target_table_name: str = "credential_extracted_info",
     image_column: str = "file_path",
     doc_type: str = "auto",
@@ -212,11 +212,26 @@ def extract_image_info(
     vector_table_name: str = "",
     enable_translation: bool = False,
     translation_target_lang: str = "",
+    **kwargs,
 ) -> Dict[str, Any]:
-    """从凭证库读取图片文件列表，提取关键信息，写入凭证检索库。
+    # 处理平台可能传入的别名参数
+    if not source_datasource_name and kwargs.get("datasource"):
+        source_datasource_name = kwargs["datasource"]
+    if not source_table_name and kwargs.get("table_name"):
+        source_table_name = kwargs["table_name"]
+    if not source_datasource_name and kwargs.get("source_datasource"):
+        source_datasource_name = kwargs["source_datasource"]
+    if not source_table_name and kwargs.get("source_table"):
+        source_table_name = kwargs["source_table"]
+    if not target_datasource_name and kwargs.get("target_datasource"):
+        target_datasource_name = kwargs["target_datasource"]
+    if not target_table_name or target_table_name == "credential_extracted_info":
+        if kwargs.get("target_table"):
+            target_table_name = kwargs["target_table"]
+    """从凭证库读取图片文件列表，使用OCR提取关键信息，写入凭证检索库。
 
-    从文件名中提取凭证类型（拼音→中文），因沙箱 llm_chat 不支持多模态图片输入，
-    所有记录标记为"待人工审核"。写入目标表时自动生成英文列名和中文备注，
+    从文件名中提取凭证类型（拼音→中文），使用 llm_vision 对每张图片进行OCR识别，
+    提取关键信息。写入目标表时自动生成英文列名和中文备注，
     添加 ID（8位零补齐）和时间戳列。
 
     Args:
@@ -298,11 +313,12 @@ def extract_image_info(
         full_map.update(translated)
         print(f"  LLM 翻译完成: 成功 {len(translated)} 个")
 
-    # ---- 4. 数据加工 ----
-    log("info", "开始数据加工: 生成ID、时间戳、凭证类型...")
+    # ---- 4. 数据加工 + OCR提取关键信息 ----
+    log("info", "开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信息...")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     processed_records: List[Dict[str, Any]] = []
-    pending_review_count = 0
+    ocr_success_count = 0
+    ocr_fail_count = 0
 
     for idx, row in enumerate(data):
         if isinstance(row, (list, tuple)):
@@ -313,30 +329,72 @@ def extract_image_info(
             row_dict = {}
 
         file_name = str(row_dict.get("file_name", ""))
+        file_path = str(row_dict.get("file_path", ""))
         pinyin_prefix = extract_pinyin_prefix(file_name)
         doc_type_cn = full_map.get(pinyin_prefix, pinyin_prefix if pinyin_prefix else "未知凭证类型")
+
+        # OCR提取关键信息
+        extracted_info = ""
+        extraction_status = "已提取"
+        review_note = ""
+
+        try:
+            # 使用llm_vision提取关键信息（llm_vision 第一个参数是图片路径，内部自动 base64 编码）
+            ocr_prompt = (
+                f"这是一张{doc_type_cn}的图片。请仔细识别并提取图片中所有可见的文字信息，"
+                f"包括但不限于：证件名称、证件号码、持有人/机构名称、有效期、发证机关、金额等关键字段。"
+                f"请以JSON格式返回提取的信息，不要有多余解释。"
+            )
+            ocr_result = llm_vision(file_path, ocr_prompt)
+            extracted_info = str(ocr_result).strip() if ocr_result else ""
+
+            if extracted_info:
+                extraction_status = "已提取"
+                ocr_success_count += 1
+            else:
+                extraction_status = "提取失败"
+                review_note = "OCR返回空结果"
+                ocr_fail_count += 1
+        except Exception as e:
+            extraction_status = "提取失败"
+            err_str = str(e)
+            if "Error code:" in err_str or "content.type" in err_str:
+                code_match = re.search(r"code['\"]:\s*['\"](\d+)['\"]", err_str)
+                error_code = code_match.group(1) if code_match else "未知"
+                review_note = f"OCR服务调用异常（错误码: {error_code}）"
+            else:
+                review_note = f"OCR异常: {err_str[:100]}"
+            extracted_info = ""
+            ocr_fail_count += 1
 
         # 构建新记录
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
         record["file_name"] = file_name
-        record["file_path"] = str(row_dict.get("file_path", ""))
+        record["file_path"] = file_path
         record["extension"] = str(row_dict.get("extension", ""))
-        record["size_bytes"] = row_dict.get("size_bytes", 0)
+        raw_size = row_dict.get("size_bytes", 0)
+        try:
+            record["size_bytes"] = int(raw_size)
+        except (ValueError, TypeError):
+            record["size_bytes"] = 0
         record["size_human"] = str(row_dict.get("size_human", ""))
         record["modified_time"] = str(row_dict.get("modified_time", ""))
         record["parent_dir"] = str(row_dict.get("parent_dir", ""))
         record["doc_type"] = doc_type_cn
         record["doc_type_pinyin"] = pinyin_prefix
-        record["extraction_status"] = "待人工审核"
-        record["review_note"] = "沙箱环境不支持图片OCR，需人工查看图片提取关键信息"
+        record["extraction_status"] = extraction_status
+        record["extracted_info"] = extracted_info
+        record["review_note"] = review_note
         record["timestamp"] = now_str
 
         processed_records.append(record)
-        pending_review_count += 1
+
+        if (idx + 1) % 10 == 0:
+            print(f"  已处理 {idx + 1}/{len(data)} 条 (OCR成功: {ocr_success_count}, 失败: {ocr_fail_count})")
 
     print(f"数据加工完成: {len(processed_records)} 条")
-    print(f"  待人工审核: {pending_review_count} 条")
+    print(f"  OCR成功: {ocr_success_count}, OCR失败: {ocr_fail_count}")
 
     # 统计凭证类型分布
     type_dist: Dict[str, int] = {}
@@ -378,7 +436,8 @@ def extract_image_info(
         "total_rows": len(processed_records),
         "target_table": target_table_name,
         "columns": list(COLUMN_REMARKS.keys()),
-        "pending_review": pending_review_count,
+        "ocr_success": ocr_success_count,
+        "ocr_fail": ocr_fail_count,
         "doc_type_distribution": type_dist,
         "write_method": "write_table_data",
         "sample": processed_records[:3],

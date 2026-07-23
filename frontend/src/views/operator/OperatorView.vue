@@ -1337,8 +1337,14 @@ async function handleOpSend() {
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
             msg.runResult = data.result
-            if (!msg.content) {
-              msg.content = data.result?.success ? '执行完成' : '执行失败'
+            const r = data.result || {}
+            const inner = typeof r.result === 'object' && r.result ? r.result : {}
+            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            if (failed) {
+              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+              msg.content += `\n❌ 执行失败：${errMsg}\n`
+            } else if (!msg.content) {
+              msg.content = '执行完成'
             }
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
@@ -1358,7 +1364,7 @@ async function handleOpSend() {
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **多次修复失败，无法自动修复**`
+            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -1613,6 +1619,11 @@ onMounted(() => {
   border-radius: 6px;
   overflow: hidden;
 
+  :deep(.el-collapse) {
+    border-top: none;
+    border-bottom: none;
+  }
+
   .runresult-header {
     display: flex;
     align-items: center;
@@ -1748,7 +1759,7 @@ onMounted(() => {
   }
 
   &.assistant {
-    align-self: flex-start;
+    align-self: stretch;
     max-width: 100%;
 
     .debug-msg-assistant {
@@ -1756,6 +1767,7 @@ onMounted(() => {
       border: 1px solid #e4e7ed;
       border-radius: 10px 10px 10px 2px;
       padding: 8px 12px;
+      width: 100%;
       max-width: 100%;
       min-width: 0;
       overflow-wrap: break-word;

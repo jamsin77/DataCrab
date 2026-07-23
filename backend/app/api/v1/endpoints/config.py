@@ -322,37 +322,37 @@ async def test_llm_connection(
         }
 
 
-@router.get("/agent/personal-md")
-async def get_personal_md():
-    """获取personal.md内容"""
+@router.get("/agent/soul-md")
+async def get_soul_md():
+    """获取soul.md内容"""
     try:
-        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "personal.md")
+        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "soul.md")
         if not os.path.exists(md_path):
             return {"content": "", "exists": False}
         with open(md_path, "r", encoding="utf-8") as f:
             content = f.read()
         return {"content": content, "exists": True}
     except Exception as e:
-        logger.error(f"读取personal.md失败: {e}")
-        raise HTTPException(status_code=500, detail=f"读取personal.md失败: {str(e)}")
+        logger.error(f"读取soul.md失败: {e}")
+        raise HTTPException(status_code=500, detail=f"读取soul.md失败: {str(e)}")
 
 
-@router.post("/agent/personal-md", response_model=ConfigUpdateResult)
-async def update_personal_md(
+@router.post("/agent/soul-md", response_model=ConfigUpdateResult)
+async def update_soul_md(
     req: AgentConfigRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """更新personal.md内容"""
+    """更新soul.md内容"""
     try:
-        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "personal.md")
+        md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "services", "soul.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(req.content)
         from app.services.agent_config import agent_config
         agent_config._load_from_md()
-        logger.info(f"personal.md已更新 by user {current_user.username}")
-        return ConfigUpdateResult(success=True, message="智能体配置已保存")
+        logger.info(f"soul.md已更新 by user {current_user.username}")
+        return ConfigUpdateResult(success=True, message="性格设定已保存")
     except Exception as e:
-        logger.error(f"更新personal.md失败: {e}")
+        logger.error(f"更新soul.md失败: {e}")
         return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
 
 

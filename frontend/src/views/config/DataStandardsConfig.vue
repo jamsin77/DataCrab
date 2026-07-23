@@ -1,7 +1,7 @@
 <template>
   <div class="standards-config">
     <el-tabs v-model="subTab">
-      <el-tab-pane label="数据标准库" name="standards">
+      <el-tab-pane label="数据标准规则" name="standards">
         <div class="editor-toolbar">
           <span class="toolbar-hint">字段级数据格式与约束标准（DataInspector 检查时引用 STD-xxx）</span>
           <div class="toolbar-btns">
@@ -13,13 +13,13 @@
         <el-input
           v-model="content.standards"
           type="textarea"
-          :autosize="{ minRows: 24, maxRows: 40 }"
+          :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
           :placeholder="'加载数据标准库...'"
         />
       </el-tab-pane>
 
-      <el-tab-pane label="数据质量库" name="quality">
+      <el-tab-pane label="数据质量规则" name="quality">
         <div class="editor-toolbar">
           <span class="toolbar-hint">规则级数据质量检查规则（DataInspector 检查时引用 DQ-xxx）</span>
           <div class="toolbar-btns">
@@ -31,7 +31,7 @@
         <el-input
           v-model="content.quality"
           type="textarea"
-          :autosize="{ minRows: 24, maxRows: 40 }"
+          :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
           :placeholder="'加载数据质量库...'"
         />
@@ -49,7 +49,7 @@
         <el-input
           v-model="content.security"
           type="textarea"
-          :autosize="{ minRows: 24, maxRows: 40 }"
+          :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
           :placeholder="'加载数据安全规则库...'"
         />
@@ -146,6 +146,8 @@ onMounted(() => {
       line-height: 1.6;
       white-space: pre-wrap;
       word-break: break-word;
+      max-height: calc(100vh - 280px);
+      overflow-y: auto;
     }
   }
 }

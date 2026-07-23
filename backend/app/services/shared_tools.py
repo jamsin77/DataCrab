@@ -201,8 +201,8 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
             try:
                 stats = await connector.get_table_stats(args["table_name"])
                 total = stats.get("row_count", 0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"query_table_data stats 获取失败: {e}")
             df = await connector.get_table_data(args["table_name"], page=1, page_size=limit or 100)
 
         await connector.close()
@@ -236,8 +236,8 @@ async def get_table_schema(args: dict, db: AsyncSession, user_id) -> str:
         stats = {}
         try:
             stats = await connector.get_table_stats(args["table_name"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"get_table_schema stats 获取失败: {e}")
         await connector.close()
 
         return json.dumps({
@@ -270,9 +270,15 @@ async def list_user_datasources(db: AsyncSession, user_id) -> str:
                 connector = get_connector(ds.type, ds.connection_config or {})
                 schema = await connector.get_schema()
                 item["tables"] = [s.get("table_name", "") for s in schema if s.get("table_name")]
-                await connector.close()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"数据源 '{ds.name}' schema 获取失败: {e}")
                 item["tables"] = []
+                item["error"] = str(e)
+            finally:
+                try:
+                    await connector.close()
+                except Exception:
+                    pass
             data.append(item)
         return json.dumps({"datasources": data}, ensure_ascii=False)
     except Exception as e:
@@ -452,6 +458,12 @@ async def execute_shared_tool(name: str, arguments: dict, db: AsyncSession, user
     else:
         return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
-    # 写入缓存（只读工具）
+    # 写入缓存（只读工具）— 跳过错误结果，避免瞬态错误被缓存 30 分钟
+    try:
+        _result_obj = json.loads(result)
+        if isinstance(_result_obj, dict) and _result_obj.get("error"):
+            return result  # 错误结果不缓存
+    except (json.JSONDecodeError, TypeError):
+        pass
     cache.put(name, arguments, result)
     return result

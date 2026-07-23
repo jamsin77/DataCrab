@@ -7,7 +7,7 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 from app.services.skill_parser import parse_skill_md, build_skill_md
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC
 from app.services.tool_guidance import get_tool_guidance
 from app.services.agent_utils import get_anti_hallucination_section
 
@@ -118,6 +118,8 @@ SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab
 """ + SKILL_SPEC + """
 
 """ + SANDBOX_TOOLS_DOC + """
+
+""" + PLATFORM_CONVENTIONS_DOC + """
 
 """ + _COMMON_PITFALLS + """
 

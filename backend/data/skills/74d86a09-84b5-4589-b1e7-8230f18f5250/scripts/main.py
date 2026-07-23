@@ -306,15 +306,32 @@ def main(input_data=None, **kwargs):
     matched_count = sum(1 for v in matched.values() if v is not None)
     log("info", f"匹配成功: {matched_count}/{len(source_df)}")
 
-    if merge_strategy == "merge_fields":
-        for src_idx, tgt_idx in matched.items():
-            if tgt_idx is not None:
-                for col in source_df.columns:
-                    if col in target_df.columns:
-                        tgt_val = target_df.loc[tgt_idx, col]
-                        src_val = source_df.loc[src_idx, col]
-                        if (pd.isna(tgt_val) or str(tgt_val).strip() == "") and not pd.isna(src_val):
-                            target_df.loc[tgt_idx, col] = src_val
+    # 合并逻辑：把被合并行各列信息尽可能都放到备注列
+    for src_idx, tgt_idx in matched.items():
+        if tgt_idx is not None:
+            # 收集源行所有非空列信息
+            merge_parts = []
+            for col in source_df.columns:
+                src_val = source_df.loc[src_idx, col]
+                if pd.isna(src_val) or str(src_val).strip() == "":
+                    continue
+                src_str = str(src_val).strip()
+                # 跳过与目标行完全相同的值（避免冗余）
+                if col in target_df.columns:
+                    tgt_val = target_df.loc[tgt_idx, col]
+                    if not pd.isna(tgt_val) and str(tgt_val).strip() == src_str:
+                        continue
+                merge_parts.append(f"{col}: {src_str}")
+
+            if merge_parts:
+                # 将所有信息拼接到备注列
+                merge_text = "；".join(merge_parts)
+                existing_remark = target_df.loc[tgt_idx, actual_merge_field]
+                if pd.isna(existing_remark) or str(existing_remark).strip() == "":
+                    target_df.loc[tgt_idx, actual_merge_field] = f"【已归并信息】{merge_text}"
+                else:
+                    target_df.loc[tgt_idx, actual_merge_field] = f"{existing_remark}【已归并信息】{merge_text}"
+                log("info", f"行 {tgt_idx} 备注列已追加归并信息: {merge_text[:80]}...")
 
     output_table = output_table_name or f"{table_name}_merged"
     records = target_df.to_dict(orient="records")

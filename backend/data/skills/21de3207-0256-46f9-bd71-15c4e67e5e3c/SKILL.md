@@ -169,6 +169,8 @@ tags:
 | `drop_columns` | list | ❌ | None | 要删除的列名列表 |
 | `add_columns` | dict | ❌ | None | 要添加的列 `{列名: 值}` |
 | `if_table_exists` | str | ❌ | `fail` | 目标表已存在时的处理策略：`fail`（报错）、`append`（追加）、`replace`（删表重建）、`overwrite`/`truncate`（清空+补列）、`delete_rows`（清空不补列）、`upsert`（按id更新或插入）、`delete_append`（删除后追加）、`update`（按主键更新） |
+| `auto_translate` | bool | ❌ | False | 中文→英文：将中文表名/列名自动翻译为英文标识符 |
+| `translate_to_cn` | bool | ❌ | False | 英文→中文：将英文表名/列名自动翻译为中文（使用 LLM 翻译） |
 | `batch_size` | int | ❌ | 1000 | 批量写入大小 |
 | `limit` | int | ❌ | 10000 | 读取行数上限 |
 | `output_dir` | str | ❌ | None | 输出目录（文件型数据源时使用） |

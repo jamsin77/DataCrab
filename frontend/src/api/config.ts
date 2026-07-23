@@ -9,12 +9,12 @@ export interface LlmConfig {
 }
 
 export const configApi = {
-  getAgentPersonalMd(): Promise<{ content: string }> {
-    return api.get('/config/agent/personal-md')
+  getAgentSoulMd(): Promise<{ content: string }> {
+    return api.get('/config/agent/soul-md')
   },
 
-  saveAgentPersonalMd(content: string): Promise<{ content: string }> {
-    return api.post('/config/agent/personal-md', { content })
+  saveAgentSoulMd(content: string): Promise<{ content: string }> {
+    return api.post('/config/agent/soul-md', { content })
   },
 
   getLlmConfig(): Promise<LlmConfig> {

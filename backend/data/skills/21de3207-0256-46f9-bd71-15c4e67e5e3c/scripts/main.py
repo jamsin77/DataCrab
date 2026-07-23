@@ -6,7 +6,6 @@
 
 import sys
 import io
-import inspect
 import re
 import time
 import traceback
@@ -323,6 +322,7 @@ def migrate_data(
     limit: int = 10000,
     output_dir: Optional[str] = None,
     auto_translate: bool = False,
+    translate_to_cn: bool = False,
     table_remark: Optional[str] = None,
     column_remarks: Optional[Dict[str, str]] = None,
     if_table_exists: str = "fail",
@@ -407,10 +407,8 @@ def migrate_data(
     print(f"  目标表已存在策略: {if_table_exists}")
     print("=" * 60)
 
-    # 不再使用 inspect.signature 探测平台函数签名（可能挂起导致超时）
-    # 改为写入时 try-except 试探参数支持情况
-    write_supported_params = {"if_table_exists", "table_remark", "column_remarks"}  # 假设支持，写入时自动降级
-    print("\n🔍 跳过签名探测，写入时自动适配参数")
+    # write_table_data 支持的参数（skill_runner 已支持 if_table_exists/table_remark/column_remarks）
+    write_supported_params = {"if_table_exists", "table_remark", "column_remarks"}
 
     # 步骤1: 获取数据源 ID（单次尝试，失败直接用名称）
     print("\n📡 步骤1: 获取数据源信息...")
@@ -477,6 +475,50 @@ def migrate_data(
 
     if not target_table_name:
         target_table_name = source_table_name
+
+    # 英文→中文翻译逻辑（translate_to_cn）——使用 llm_chat 批量翻译（对齐文本翻译算子）
+    if translate_to_cn:
+        print("\n  🌐 [英文→中文翻译] 使用 LLM 翻译表名和列名...")
+        llm_chat_func = _get_builtin_func('llm_chat')
+        # 收集需要翻译的名称（表名 + 未映射的列名）
+        _to_translate = []
+        _translate_table = False
+        if target_table_name and _is_english_identifier(target_table_name):
+            _to_translate.append(target_table_name)
+            _translate_table = True
+        for col in df.columns:
+            if col not in column_mapping and _is_english_identifier(col):
+                _to_translate.append(col)
+        if _to_translate:
+            _names_text = "\n".join(_to_translate)
+            _prompt = (
+                f"请将以下英文数据库表名/列名翻译为简洁准确的中文。\n"
+                f"只输出翻译结果，每行一个，保持原始顺序，不要添加编号或任何说明：\n\n{_names_text}"
+            )
+            try:
+                _reply = llm_chat_func(_prompt, system_prompt="你是数据库命名翻译助手，只输出中文翻译结果，每行一个。", temperature=0.3)
+                _translated = [line.strip() for line in _reply.strip().split("\n") if line.strip()]
+            except Exception as e:
+                print(f"    ⚠️ LLM 翻译失败: {e}，使用原始名称")
+                _translated = _to_translate
+            # 分配翻译结果
+            _idx = 0
+            if _translate_table and _idx < len(_translated):
+                original_table = target_table_name
+                target_table_name = _translated[_idx]
+                print(f"    📋 表名: '{original_table}' → '{target_table_name}'")
+                if not table_remark:
+                    table_remark = original_table
+                _idx += 1
+            for col in df.columns:
+                if col not in column_mapping and _is_english_identifier(col):
+                    if _idx < len(_translated):
+                        cn_name = _translated[_idx]
+                        column_mapping[col] = cn_name
+                        print(f"    📋 列名: '{col}' → '{cn_name}'")
+                        _idx += 1
+        else:
+            print("    ✅ 无需翻译（表名和列名已是中文）")
 
     # 3.1 删除指定列
     if drop_columns:
@@ -547,35 +589,38 @@ def migrate_data(
                     df[col_name] = col_value
                     print(f"    ✅ 已添加列: {col_name} = {col_value}")
 
-    # 3.5 强制标识符规范化
+    # 3.5 强制标识符规范化（translate_to_cn 时跳过，保留中文名）
     print(f"\n  🔒 [3.5] 标识符合法性检查...")
-    if not _is_english_identifier(target_table_name):
-        original_table_name = target_table_name
-        target_table_name = _sanitize_identifier(target_table_name, "migrated_table")
-        if not table_remark:
-            table_remark = original_table_name
-        print(f"    🔄 表名自动翻译: '{original_table_name}' → '{target_table_name}'")
-        if table_remark:
-            print(f"    📝 表备注: '{table_remark}'")
+    if translate_to_cn:
+        print(f"    ✅ 跳过标识符规范化（translate_to_cn=True，保留中文表名和列名）")
     else:
-        print(f"    ✅ 目标表名 '{target_table_name}' 合法")
+        if not _is_english_identifier(target_table_name):
+            original_table_name = target_table_name
+            target_table_name = _sanitize_identifier(target_table_name, "migrated_table")
+            if not table_remark:
+                table_remark = original_table_name
+            print(f"    🔄 表名自动翻译: '{original_table_name}' → '{target_table_name}'")
+            if table_remark:
+                print(f"    📝 表备注: '{table_remark}'")
+        else:
+            print(f"    ✅ 目标表名 '{target_table_name}' 合法")
 
-    col_rename_map = {}
-    has_chinese_cols = False
-    for col in df.columns:
-        if not _is_english_identifier(col):
-            has_chinese_cols = True
-            en_col = _sanitize_identifier(col, "column")
-            col_rename_map[col] = en_col
-            if en_col not in column_remarks:
-                column_remarks[en_col] = col
-    if has_chinese_cols:
-        df = df.rename(columns=col_rename_map)
-        print(f"    🔄 部分列名已自动翻译:")
-        for old, new in col_rename_map.items():
-            print(f"       '{old}' → '{new}'  (备注: {old})")
-    else:
-        print(f"    ✅ 所有列名均为合法英文标识符")
+        col_rename_map = {}
+        has_chinese_cols = False
+        for col in df.columns:
+            if not _is_english_identifier(col):
+                has_chinese_cols = True
+                en_col = _sanitize_identifier(col, "column")
+                col_rename_map[col] = en_col
+                if en_col not in column_remarks:
+                    column_remarks[en_col] = col
+        if has_chinese_cols:
+            df = df.rename(columns=col_rename_map)
+            print(f"    🔄 部分列名已自动翻译:")
+            for old, new in col_rename_map.items():
+                print(f"       '{old}' → '{new}'  (备注: {old})")
+        else:
+            print(f"    ✅ 所有列名均为合法英文标识符")
 
     print(f"\n  📊 预处理完成: 最终列名: {list(df.columns)}")
     if column_remarks:
@@ -596,23 +641,44 @@ def migrate_data(
     def _write_records(records, t_name):
         total_written = 0
         original_if_exists = write_extra_kwargs.get("if_table_exists", "fail")
-        clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows", "delete_append"}
         for i in range(0, len(records), batch_size):
             batch_num = i // batch_size + 1
             batch = records[i:i + batch_size]
             print(f"  📦 批次 {batch_num}: 写入 {len(batch)} 行...")
 
-            # 对于清空策略：第一批用原策略清空+写入，后续批次用 append
+            # 关键修复：所有策略下，第一批用原策略（建表/清空+写入），后续批次一律用 append 避免清空
             current_kwargs = dict(write_extra_kwargs)
-            if original_if_exists in clearing_strategies and batch_num > 1:
+            if batch_num > 1:
                 current_kwargs["if_table_exists"] = "append"
                 print(f"    📝 后续批次使用 append 策略")
 
-            write_result = write_table_data(
-                target_ds_id, t_name, records=batch, **current_kwargs
-            )
-            if not write_result.get("success"):
-                error_msg = write_result.get("error") or write_result.get("message", "未知错误")
+            try:
+                write_result = write_table_data(
+                    target_ds_id, t_name, records=batch, **current_kwargs
+                )
+            except TypeError:
+                print(f"    ⚠️ write_table_data 不支持额外参数，降级为基本参数...")
+                write_result = write_table_data(
+                    target_ds_id, t_name, records=batch
+                )
+            except Exception as e:
+                # 第一批失败时（如表已存在用 fail 策略），自动切换到 replace 策略重试
+                if batch_num == 1:
+                    print(f"    ⚠️ 第一批写入失败: {e}，尝试用 replace 策略重试...")
+                    retry_kwargs = dict(write_extra_kwargs)
+                    retry_kwargs["if_table_exists"] = "replace"
+                    try:
+                        write_result = write_table_data(
+                            target_ds_id, t_name, records=batch, **retry_kwargs
+                        )
+                    except TypeError:
+                        write_result = write_table_data(
+                            target_ds_id, t_name, records=batch
+                        )
+                else:
+                    raise
+            if not write_result or not write_result.get("success"):
+                error_msg = (write_result or {}).get("error") or (write_result or {}).get("message", "未知错误")
                 raise ValueError(f"写入目标表失败 (批次 {batch_num}): {error_msg}")
             batch_count = write_result.get("row_count", len(batch))
             total_written += batch_count
@@ -636,18 +702,18 @@ def migrate_data(
         # 检测是否为"文件/表不存在"错误 → 用 create 策略重试 write_table_data
         if "不存在" in err_str or "does not exist" in err_str.lower() or "no such" in err_str.lower():
             print(f"  ⚠️ write_table_data 写入失败: {e}")
-            print(f"  💡 目标表不存在，尝试用 create 策略自动创建并写入...")
+            print(f"  💡 目标表不存在，尝试用 fail 策略自动创建并写入...")
 
-            # 用 create 策略重试 write_table_data（让平台自动建表）
+            # 用 fail 策略重试 write_table_data（平台 fail = 表不存在则自动建表，表存在才报错）
             create_kwargs = dict(write_extra_kwargs)
-            create_kwargs["if_table_exists"] = "create"
+            create_kwargs["if_table_exists"] = "fail"
             try:
                 total_written = 0
                 for i in range(0, len(records), batch_size):
                     batch_num = i // batch_size + 1
                     batch = records[i:i + batch_size]
-                    print(f"  📦 [create重试] 批次 {batch_num}: 写入 {len(batch)} 行...")
-                    # 第一批用 create，后续用 append
+                    print(f"  📦 [自动建表] 批次 {batch_num}: 写入 {len(batch)} 行...")
+                    # 第一批用 fail（表不存在则建），后续用 append
                     if batch_num > 1:
                         create_kwargs["if_table_exists"] = "append"
                     write_result = write_table_data(
@@ -655,12 +721,12 @@ def migrate_data(
                     )
                     if not write_result.get("success"):
                         error_msg = write_result.get("error") or write_result.get("message", "未知错误")
-                        raise ValueError(f"create重试写入失败 (批次 {batch_num}): {error_msg}")
+                        raise ValueError(f"自动建表写入失败 (批次 {batch_num}): {error_msg}")
                     batch_count = write_result.get("row_count", len(batch))
                     total_written += batch_count
-                print(f"  ✅ create策略写入成功! 共 {total_written} 行")
+                print(f"  ✅ 自动建表写入成功! 共 {total_written} 行")
             except Exception as create_err:
-                print(f"  ❌ create策略也失败: {create_err}")
+                print(f"  ❌ 自动建表也失败: {create_err}")
                 # 最后兜底：尝试 execute_sql（仅对 DB 型数据源有效）
                 print(f"  💡 尝试使用 execute_sql 创建表并写入数据...")
                 try:
@@ -979,24 +1045,6 @@ def _smart_translate_en_to_cn(text: str) -> str:
     except Exception as e:
         print(f"  ⚠️ llm_chat 翻译失败: {e}")
     return text
-
-def _write_records(records, table_name, target_ds, if_table_exists="fail", batch_size=1000):
-    """分批写入记录到目标数据源。
-    
-    第一批用原策略（如 overwrite/replace/truncate），后续批次用 append。
-    """
-    clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}
-    total = 0
-    for i in range(0, len(records), batch_size):
-        batch_num = i // batch_size + 1
-        batch = records[i:i + batch_size]
-        current_strategy = if_table_exists
-        if batch_num > 1 and if_table_exists in clearing_strategies:
-            current_strategy = "append"
-        write_table_data(target_ds, table_name, records=batch, if_table_exists=current_strategy)
-        total += len(batch)
-        print(f"  📝 写入批次 {batch_num}: {len(batch)} 条 (累计 {total})")
-    return total
 
 if __name__ == "__main__":
     main()

@@ -38,7 +38,7 @@ from app.services.agent_utils import (
     build_pressure_warning,
 )
 from app.services.tool_guidance import get_tool_guidance
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
 
 DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的数据处理智能体（DataProcessor），一位数据处理专家。
 
@@ -194,16 +194,16 @@ READ_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_script",
-        "description": "读取代码的逐字内容（不压缩）。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围，用于查看错误生成的精确代码。平台代码只读，不可修改。",
+        "description": "读取代码的逐字内容（带行号，不压缩）。scope='script'（默认）读当前调试脚本；scope='platform' 读平台源码。**必须用 offset/limit 只读需要改的行**（grep_script 已定位行号后，offset=行号-5, limit=15 即可），不要读全文或整个函数。**修改脚本前必须先 read_script**，否则 edit_script/modify_script 会被拒绝。",
         "parameters": {
             "type": "object",
             "properties": {
                 "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=用户脚本（默认），platform=平台源码"},
                 "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
-                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
+                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数（大函数默认只返回前60行，需配合 offset/limit 翻页）"},
                 "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
-                "offset": {"type": "integer", "description": "起始行号（仅 scope=platform，1-indexed）"},
-                "limit": {"type": "integer", "description": "读取行数（仅 scope=platform，默认 50）"},
+                "offset": {"type": "integer", "description": "起始行号（1-indexed，默认1）"},
+                "limit": {"type": "integer", "description": "读取行数（默认全部）"},
             },
             "required": [],
         },
@@ -340,14 +340,24 @@ _PLATFORM_ISSUE_SIGNALS = [
 ]
 
 def _is_platform_issue_report(content: str) -> bool:
-    """检测 agent 输出是否明确判定为平台问题（而非脚本问题）。"""
+    """检测 agent 输出是否明确判定为平台问题（而非脚本问题）。
+    排除疑问句（"是不是"/"是否"/"让我看看"等），避免调查阶段误触发。"""
     if not content or len(content) < 4:
+        return False
+    # 疑问/调查句式 → 不是结论，不触发
+    _investigation_markers = ["是不是", "是否", "让我看看", "让我检查", "看一下", "检查一下", "确认一下", "需要确认"]
+    if any(m in content for m in _investigation_markers):
         return False
     return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
-看错误信息，修复脚本并执行。需要看代码用 read_script/grep_script，小改用 edit_and_run，大改用 modify_and_run。
-每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 次修改机会，执行错误最多 3 次。
+看错误信息，修复脚本并执行。工作流（对齐 OpenCode）：grep_script 搜关键词定位行号 → read_script(offset=N, limit=M) 只读相关行 → edit_and_run 修改并执行。不要读全文或整个函数，用 offset/limit 精确读取。大范围重写才 modify_and_run。
+每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 次修改机会，执行错误最多 3 次。调查（read_script/grep_script/query_table_data）不限次数。
+
+## 必须遵守
+- 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
+- 图片 OCR 用 llm_vision(image_path, prompt)，翻译用 call_operator("文本翻译", ...)
+- 下方「内置工具函数」文档列出了所有可用函数和签名，修改脚本前先看
 """
 
 # 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
@@ -916,6 +926,8 @@ class DataProcessorAgent(BaseAgent):
 
         # ---- 调试模式工具 ----
         if name == "modify_script":
+            if not context.get("_script_has_been_read"):
+                return json.dumps({"success": False, "error": "必须先调用 read_script 查看脚本内容，再修改。"}, ensure_ascii=False)
             code = arguments.get("code", "")
             if not code:
                 return json.dumps({"success": False, "error": "缺少 code"})
@@ -930,6 +942,8 @@ class DataProcessorAgent(BaseAgent):
                 return json.dumps({"success": False, "error": str(e)})
 
         if name == "edit_script":
+            if not context.get("_script_has_been_read"):
+                return json.dumps({"success": False, "error": "必须先调用 read_script 查看脚本内容，再修改。"}, ensure_ascii=False)
             # 行级补丁（对齐 OpenCode edit）：小修改只输出 old/new 片段，不重写整函数
             old_string = arguments.get("old_string", "")
             new_string = arguments.get("new_string", "")
@@ -983,10 +997,15 @@ class DataProcessorAgent(BaseAgent):
                                        "content": "\n".join(seg_lines)}, ensure_ascii=False)
                 except Exception as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-            # scope='script' — 读当前脚本逐字内容
+            # scope='script' — 读当前脚本逐字内容（带行号，对齐 OpenCode Read）
             script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
             current = context.get("debug_script_content", "")
             function_name = arguments.get("function_name")
+            offset = int(arguments.get("offset", 0))
+            limit = int(arguments.get("limit", 0))
+            # 标记脚本已读（edit_script/modify_script 前必须先 read）
+            context["_script_has_been_read"] = True
+
             if function_name:
                 try:
                     import ast as _ast
@@ -994,11 +1013,36 @@ class DataProcessorAgent(BaseAgent):
                     for node in _ast.iter_child_nodes(tree):
                         if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == function_name:
                             seg = _ast.get_source_segment(current, node) or ""
-                            return json.dumps({"success": True, "script_name": script_name, "function": function_name, "content": seg}, ensure_ascii=False)
+                            seg_lines = seg.splitlines()
+                            start_line = node.lineno
+                            total = len(seg_lines)
+                            # 支持 offset/limit（对齐 OpenCode Read），不传则返回整个函数
+                            if offset > 0 or limit > 0:
+                                s = max(0, (offset - 1) if offset > 0 else 0)
+                                e = min(total, s + limit) if limit > 0 else total
+                            else:
+                                s = 0
+                                e = total
+                            numbered = "\n".join(f"L{start_line + i}: {seg_lines[i]}" for i in range(s, e))
+                            return json.dumps({"success": True, "script_name": script_name, "function": function_name,
+                                               "start_line": start_line, "content": numbered, "total_lines": total,
+                                               "shown_lines": e - s}, ensure_ascii=False)
                     return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
                 except SyntaxError as _se:
                     return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
-            return json.dumps({"success": True, "script_name": script_name, "content": current}, ensure_ascii=False)
+            # 全文或行范围：加行号（默认返回全部，对齐 OpenCode Read 默认 2000 行）
+            all_lines = current.splitlines()
+            _total = len(all_lines)
+            if offset > 0 or limit > 0:
+                start = max(0, (offset - 1) if offset > 0 else 0)
+                end = min(_total, start + limit) if limit > 0 else _total
+            else:
+                start = 0
+                end = _total
+            numbered = "\n".join(f"L{i+1}: {all_lines[i]}" for i in range(start, end))
+            result = {"success": True, "script_name": script_name, "offset": start + 1,
+                      "limit": end - start, "total_lines": _total, "content": numbered}
+            return json.dumps(result, ensure_ascii=False)
 
         if name == "grep_script":
             scope = arguments.get("scope", "script")
@@ -1496,6 +1540,7 @@ class DataProcessorAgent(BaseAgent):
         # 沙箱函数签名契约（对齐 OpenCode：工具 schema 永远在 prompt 里，LLM 不必猜 API）
         # 放静态区保证字节稳定 → 命中 prefix cache；含 llm_vision(image_path,...) 等关键签名
         prompt += "\n\n" + SANDBOX_TOOLS_DOC
+        prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
 
         # 目标连接器能力（1-2 行，不放完整能力清单）
         target_ds_type = context.get("debug_output_datasource_type", "")
@@ -1619,8 +1664,7 @@ class DataProcessorAgent(BaseAgent):
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化
-        _total_llm_calls = 0
-        _MAX_LLM_CALLS = max_fix_attempts * 3 + 3  # 安全上限
+        _total_llm_calls = 0  # 仅用于日志，不作为限制条件（对齐 OpenCode：调查不限次）
         _MAX_EXEC_FAILURES = 3  # 首次执行成功前，最多 3 次执行失败
         _exec_failures_before_success = context.get("debug_exec_failures", 0)
         _execution_succeeded = context.get("debug_execution_succeeded", False)
@@ -1632,7 +1676,7 @@ class DataProcessorAgent(BaseAgent):
 
         yield {"type": "model", "content": llm_manager.pick_model(user_msg, history)}
 
-        while _fix_attempts < max_fix_attempts and _total_llm_calls < _MAX_LLM_CALLS:
+        while _fix_attempts < max_fix_attempts:
             _total_llm_calls += 1
             local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _fix_attempts + 1)}
 
@@ -1683,17 +1727,22 @@ class DataProcessorAgent(BaseAgent):
                 for tc in tool_calls:
                     _name = tc["function"]["name"]
                     _label = _TOOL_ACTION_MAP.get(_name, _name)
-                    # edit_and_run: 显示 old→new 代码变更（像 OpenCode 的 edit 输出）
-                    if _name == "edit_and_run":
+                    # edit_and_run/edit_script: 显示 old→new diff（对齐 OpenCode edit 输出）
+                    if _name in ("edit_and_run", "edit_script"):
                         try:
                             _args = json.loads(tc["function"]["arguments"])
-                            _old = str(_args.get("old_string", ""))[:100].replace("\n", "\\n")
-                            _new = str(_args.get("new_string", ""))[:100].replace("\n", "\\n")
+                            _old = _args.get("old_string", "")
+                            _new = _args.get("new_string", "")
                             if _old or _new:
-                                _label += f"\n  - {repr(_old)[:80]} → {repr(_new)[:80]}"
-                        except: pass
-                    # modify_and_run: 显示修改了哪个函数
-                    elif _name == "modify_and_run":
+                                _diff_lines = [f"- {l}" for l in _old.splitlines()]
+                                _diff_lines += [f"+ {l}" for l in _new.splitlines()]
+                                if len(_diff_lines) > 40:
+                                    _diff_lines = _diff_lines[:40] + ["..."]
+                                _label += "\n```diff\n" + "\n".join(_diff_lines) + "\n```"
+                        except Exception as e:
+                            logger.debug(f"edit diff 显示跳过: {e}")
+                    # modify_and_run/modify_script: 显示修改了哪些函数
+                    elif _name in ("modify_and_run", "modify_script"):
                         try:
                             _args = json.loads(tc["function"]["arguments"])
                             _code = str(_args.get("code", ""))
@@ -1701,15 +1750,19 @@ class DataProcessorAgent(BaseAgent):
                             _funcs = _re.findall(r'def\s+(\w+)', _code)
                             if _funcs:
                                 _label += f"（{', '.join(_funcs[:3])}）"
-                        except: pass
+                        except Exception as e:
+                            logger.debug(f"modify 函数名显示跳过: {e}")
                     _actions.append(_label)
                 yield {"type": "content", "content": '\n'.join(_actions) + '\n'}
 
             if not tool_calls:
-                # agent 判定为平台问题 → 终止修复循环，上报用户
+                # LLM 不调工具 = 在下结论。判定为平台问题 → 退出
                 if _is_platform_issue_report(content):
                     yield {"type": "platform_issue", "message": content}
                     yield {"type": "done", "result": {"agent": self.name, "content": content, "platform_issue": True}}
+                    return
+                if context.get("debug_analyze_only"):
+                    yield {"type": "done", "result": {"agent": self.name, "content": content}}
                     return
                 local_messages.append({"role": "assistant", "content": content})
                 local_messages.append({"role": "user", "content": "请调用工具修改并执行脚本。"})
@@ -1743,20 +1796,37 @@ class DataProcessorAgent(BaseAgent):
 
                 local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
 
-                # 调查工具结果摘要
+                # 调查工具结果显示（对齐 OpenCode：显示实际内容，不只是字符数摘要）
                 try:
                     _rd = json.loads(r["content"])
                     if tool_name == "grep_script" and _rd.get("success"):
                         _cnt = _rd.get("total_matches", 0)
-                        _first = ""
-                        for _m in _rd.get("matches", []):
-                            _first = _m.get("snippet", "").split("\n")[0][:80]
-                            break
-                        _result_lines.append(f"  搜索: {_cnt} 个匹配" + (f"，首个: {_first}" if _first else ""))
+                        _matches = _rd.get("matches", [])
+                        if _cnt == 0:
+                            _result_lines.append(f"  🔍 未找到匹配")
+                        else:
+                            _glines = [f"  🔍 {_cnt} 个匹配"]
+                            for _m in _matches[:10]:
+                                for _sl in _m.get("snippet", "").split("\n"):
+                                    if _sl.strip().startswith(">>"):
+                                        _glines.append(f"  {_sl.strip()}")
+                            if _cnt > 10:
+                                _glines.append(f"  ...（共 {_cnt} 个）")
+                            _result_lines.append("\n".join(_glines))
                     elif tool_name == "read_script" and _rd.get("success"):
+                        _content = _rd.get("content", "")
                         _func = _rd.get("function", "")
-                        _len = len(_rd.get("content", ""))
-                        _result_lines.append(f"  读取: {_func or '全文'} ({_len} 字符)")
+                        _total = _rd.get("total_lines", 0)
+                        _truncated = _rd.get("truncated", False)
+                        _header = f"  📖 {_script_name}"
+                        if _func:
+                            _header += f":{_func}"
+                        if _total:
+                            _header += f"（共 {_total} 行）"
+                        _cl = _content.split("\n")
+                        if len(_cl) > 40:
+                            _cl = _cl[:40] + ["..."]
+                        _result_lines.append(_header + "\n```\n" + "\n".join(_cl) + "\n```" + ("\n  （已截断，用 offset/limit 查看更多）" if _truncated else ""))
                     elif tool_name == "get_table_schema" and _rd.get("success"):
                         _cols = len(_rd.get("columns", []))
                         _result_lines.append(f"  表结构: {_cols} 列")
@@ -1766,75 +1836,85 @@ class DataProcessorAgent(BaseAgent):
                     elif tool_name == "list_user_datasources" and _rd.get("success"):
                         _cnt = len(_rd.get("datasources", _rd.get("data", [])))
                         _result_lines.append(f"  数据源: {_cnt} 个")
-                except: pass
+                except Exception as e:
+                    logger.warning(f"调查工具摘要生成失败(非致命): {e}")
 
                 if tool_name in ("modify_script", "edit_script", "modify_and_run", "edit_and_run"):
                     try:
                         rdata = json.loads(r["content"])
-                        _mdata = rdata.get("modify", rdata)
-                        if _mdata.get("success"):
-                            yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
-                            if _mdata.get("skill_md_updated"):
-                                yield {"type": "skill_md_updated"}
-                    except Exception:
-                        pass
+                    except json.JSONDecodeError as e:
+                        logger.error(f"工具 {tool_name} 结果 JSON 解析失败: {e}")
+                        yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n原始内容: {r['content'][:500]}\n"}
+                        continue
+                    _mdata = rdata.get("modify", rdata)
+                    if _mdata.get("success"):
+                        yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                        if _mdata.get("skill_md_updated"):
+                            yield {"type": "skill_md_updated"}
+                        if tool_name in ("modify_script", "modify_and_run"):
+                            _changed = _mdata.get("changed_lines", [])
+                            if _changed:
+                                _diff = "\n".join(_changed[:30])
+                                if len(_changed) > 30:
+                                    _diff += "\n..."
+                                yield {"type": "content", "content": f"📝 变更（{len(_changed)} 行改动）\n```diff\n{_diff}\n```"}
 
                 if tool_name in ("modify_and_run", "edit_and_run", "run_script"):
                     try:
                         rdata = json.loads(r["content"])
-                        yield {"type": "run_result", "result": rdata}
-                        _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
-                        _is_fail = (not rdata.get("success")
-                                    or ("success" in _inner_r and not _inner_r["success"])
-                                    or (rdata.get("error") and str(rdata.get("error")).strip())
-                                    or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
-                        if not _is_fail:
-                            _should_handoff = True
-                            _execution_succeeded = True
-                            context["debug_execution_succeeded"] = True
-                            _exec_failures_before_success = 0
-                            context["debug_exec_failures"] = 0
-                            _wt = rdata.get("written_tables")
-                            if _wt:
-                                _handoff_output_table = _wt[-1].get("table_name")
-                                context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
-                            else:
-                                _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
-                            context["debug_output_table"] = _handoff_output_table
-                            folder = context.get("debug_folder")
-                            if folder:
-                                try:
-                                    from app.services import experience as _exp
-                                    if _exp.read_negative(folder):
-                                        _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
-                                except Exception:
-                                    pass
+                    except json.JSONDecodeError as e:
+                        logger.error(f"工具 {tool_name} 结果 JSON 解析失败: {e}")
+                        yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n原始内容: {r['content'][:500]}\n"}
+                        continue
+                    yield {"type": "run_result", "result": rdata}
+                    _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
+                    _is_fail = (not rdata.get("success")
+                                or ("success" in _inner_r and not _inner_r["success"])
+                                or (rdata.get("error") and str(rdata.get("error")).strip())
+                                or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
+                    if not _is_fail:
+                        _should_handoff = True
+                        _execution_succeeded = True
+                        context["debug_execution_succeeded"] = True
+                        _exec_failures_before_success = 0
+                        context["debug_exec_failures"] = 0
+                        _wt = rdata.get("written_tables")
+                        if _wt:
+                            _handoff_output_table = _wt[-1].get("table_name")
+                            context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
                         else:
-                            _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
-                            _err_type = rdata.get("error_type") or _inner_r.get("error_type") or ""
-                            # 环境问题：修改脚本无法解决，直接报告
-                            if _err_type and "环境问题" in _err_type:
-                                yield {"type": "content", "content": f"\n❌ {_err_type}\n错误详情：{_err_msg[:300]}\n"}
-                                yield {"type": "give_up", "reason": _err_type}
-                                yield {"type": "done", "result": {"agent": self.name, "content": _err_type}}
+                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
+                        context["debug_output_table"] = _handoff_output_table
+                        folder = context.get("debug_folder")
+                        if folder:
+                            try:
+                                from app.services import experience as _exp
+                                if _exp.read_negative(folder):
+                                    _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
+                            except Exception as e:
+                                logger.warning(f"记录正例失败(非致命): {e}")
+                    else:
+                        _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
+                        _err_type = rdata.get("error_type") or _inner_r.get("error_type") or ""
+                        yield {"type": "content", "content": f"\n❌ 执行失败：{_err_msg[:300]}\n"}
+                        if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制", "数据问题")):
+                            yield {"type": "give_up", "reason": _err_type}
+                            yield {"type": "done", "result": {"agent": self.name, "content": _err_type}}
+                            return
+                        if not _execution_succeeded:
+                            _exec_failures_before_success += 1
+                            context["debug_exec_failures"] = _exec_failures_before_success
+                            if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
+                                yield {"type": "give_up", "reason": f"连续 {_exec_failures_before_success} 次执行失败，无法自动修复"}
+                                yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
                                 return
-                            # 执行错误子限制：首次成功前连续 3 次执行失败 → 停
-                            if not _execution_succeeded:
-                                _exec_failures_before_success += 1
-                                context["debug_exec_failures"] = _exec_failures_before_success
-                                if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
-                                    yield {"type": "give_up", "reason": f"连续 {_exec_failures_before_success} 次执行失败，无法自动修复"}
-                                    yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
-                                    return
-                            folder = context.get("debug_folder")
-                            if folder and _err_msg:
-                                try:
-                                    from app.services import experience as _exp
-                                    _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=f"工具: {tool_name}\nAI输出: {content[:200]}")
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                        folder = context.get("debug_folder")
+                        if folder and _err_msg:
+                            try:
+                                from app.services import experience as _exp
+                                _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=f"工具: {tool_name}\nAI输出: {content[:200]}")
+                            except Exception as e:
+                                logger.warning(f"记录反例失败(非致命): {e}")
 
                 try:
                     result_data = json.loads(r["content"])
@@ -1857,6 +1937,11 @@ class DataProcessorAgent(BaseAgent):
                     return
                 ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
+                # 目标表信息不能为空——空了 Inspector 不知道检查什么
+                if not ds_id or not tbl:
+                    yield {"type": "content", "content": f"\n⚠ 执行成功但无法确定检查目标（数据源ID={ds_id or '空'}, 表名={tbl or '空'}），跳过质量检查\n"}
+                    yield {"type": "done", "result": {"agent": self.name, "content": "执行成功，但无法启动质量检查：目标表信息缺失"}}
+                    return
                 _is_recheck = _inspection_round > 0
                 yield {
                     "type": "handoff", "to": "data_inspector",
@@ -1878,9 +1963,9 @@ class DataProcessorAgent(BaseAgent):
                 }
                 return
 
-        # 7次修改仍失败 → 让 LLM 判断是代码问题还是平台问题
+        # 修改次数用完 → 让 LLM 判断是代码问题还是平台问题
         _classify_msg = (
-            f"经过 {_fix_attempts} 次修改尝试（总计 {max_fix_attempts} 次上限），脚本仍然无法通过检查。\n"
+            f"经过 {_fix_attempts} 次修改尝试（上限 {max_fix_attempts} 次），脚本仍然无法通过检查。\n"
             f"最后的错误信息：{content[:500] if content else '无'}\n\n"
             "请判断这个错误属于以下哪类，一句话说明原因：\n"
             "1. 代码问题（可以通过修改脚本修复）\n"

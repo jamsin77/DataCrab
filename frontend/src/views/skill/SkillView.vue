@@ -2455,15 +2455,23 @@ async function handleDebugSend() {
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行脚本...'
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+          } else if (data.type === 'tool_result') {
+            const tc = data.content || ''
+            let brief = tc.substring(0, 200)
+            try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
+            msg.content += `\n  └ ${brief}\n`
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
             msg.runResult = data.result
-            if (!msg.content) {
-              const r = data.result || {}
-              const inner = typeof r.result === 'object' && r.result ? r.result : {}
-              const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
-              msg.content = failed ? '技能执行失败' : '技能执行完成'
+            const r = data.result || {}
+            const inner = typeof r.result === 'object' && r.result ? r.result : {}
+            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            if (failed) {
+              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+              msg.content += `\n❌ 执行失败：${errMsg}\n`
+            } else if (!msg.content) {
+              msg.content = '技能执行完成'
             }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name

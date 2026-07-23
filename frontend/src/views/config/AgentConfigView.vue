@@ -3,7 +3,7 @@
     <el-card class="config-card">
       <template #header>
         <div class="card-header">
-          <span>智能体人设配置 (personal.md)</span>
+          <span>性格设定 (soul.md)</span>
           <div style="display: flex; gap: 8px; align-items: center;">
             <el-tag :type="content ? 'success' : 'warning'">
               {{ content ? '已配置' : '未配置' }}
@@ -17,7 +17,7 @@
           v-model="content"
           type="textarea"
           :rows="20"
-          placeholder="请输入智能体人设配置内容（Markdown格式）..."
+          placeholder="请输入性格设定配置内容（Markdown格式）..."
           style="font-family: monospace;"
         />
       </div>
@@ -51,7 +51,7 @@
         <span>配置说明</span>
       </template>
       <div class="help-content">
-        <p><strong>personal.md</strong> 是智能体的"灵魂文件"，定义了智能体的身份、个性和行为准则。</p>
+        <p><strong>soul.md</strong> 是助手的"灵魂文件"，定义了助手的身份、性格和行为准则。</p>
         <h4>核心配置项</h4>
         <ul>
           <li><strong>你是谁</strong>：定义智能体的身份和角色定位</li>
@@ -83,7 +83,7 @@ const content = ref('')
 const originalContent = ref('')
 const saveResult = ref<any>(null)
 
-const DEFAULT_PERSONAL_MD = `# DataCrab 智能助手 - 身份与灵魂
+const DEFAULT_SOUL_MD = `# DataCrab 智能助手 - 身份与灵魂
 
 ## ⚠️ 关键行为规则（最高优先级，覆盖所有默认行为）
 
@@ -169,7 +169,7 @@ onMounted(async () => {
 async function loadConfig() {
   loading.value = true
   try {
-    const res = await api.get('/config/agent/personal-md')
+    const res = await api.get('/config/agent/soul-md')
     content.value = res.content || ''
     originalContent.value = content.value
   } catch (e: any) {
@@ -183,7 +183,7 @@ async function saveConfig() {
   saving.value = true
   saveResult.value = null
   try {
-    const res = await api.post('/config/agent/personal-md', { content: content.value })
+    const res = await api.post('/config/agent/soul-md', { content: content.value })
     saveResult.value = res
     if (res.success) {
       ElMessage.success('智能体配置已保存')
@@ -203,9 +203,9 @@ async function resetDefault() {
       '恢复默认',
       { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
     )
-    content.value = DEFAULT_PERSONAL_MD
+    content.value = DEFAULT_SOUL_MD
     saving.value = true
-    const res = await api.post('/config/agent/personal-md', { content: content.value })
+    const res = await api.post('/config/agent/soul-md', { content: content.value })
     if (res.success) {
       ElMessage.success('已恢复默认配置')
       originalContent.value = content.value

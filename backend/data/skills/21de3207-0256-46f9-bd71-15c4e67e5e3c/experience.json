@@ -694,6 +694,123 @@
       },
       "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T15:18:51.545941",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp4q0b9dft.py\", line 1152, in migrate_data\n    total_written = _write_records(records, target_table_name)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp4q0b9dft.py\", line 1135, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 文件不存在: national_key_cultural_relic_protection_units_merged\n\nDuring handlin",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "column_mapping": {
+          "national_key_cultural_relic_protection_units_merged": "national_key_cultural_relic_protection_units_merged"
+        }
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T16:21:08.638953",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2kx2fmk_.py\", line 1158, in migrate_data\n    total_written = _write_records(records, target_table_name)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2kx2fmk_.py\", line 1141, in _write_records\n    raise ValueError(f\"写入目标表失败 (批次 {batch_num}): {error_msg}\")\nValueError: 写入目标表失败 (批次 1): 文件不存在: national_key_cultural_relic_protection_units_merged\n\nDuring handlin",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "column_mapping": {
+          "national_key_cultural_relic_protection_units_merged": "national_key_cultural_relic_protection_units_merged"
+        }
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T16:49:01.312755",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（300秒）",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "column_mapping": {
+          "national_key_cultural_relic_protection_units_merged": "national_key_cultural_relic_protection_units_merged"
+        }
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T17:36:11.986456",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（300秒）",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "column_mapping": {
+          "national_key_cultural_relic_protection_units_merged": "national_key_cultural_relic_protection_units_merged"
+        }
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T19:41:21.013641",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmprghgh6r_.py\", line 1544, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n                                                                               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmprghgh6r_.py\", line 941, in migrate_data\n    result = query_table_data(source_ds_id, source_table_name, limit=limit)\n             ^^^^^",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units_merged"
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T19:48:15.957078",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Program Files\\Python311\\Lib\\socket.py\", line 836, in create_connection\n    sock.connect(sa)\nConnectionRefusedError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwp6gym20.py\", line 1544, in <module>\n    result = migrate_data(input_data, **params) if input_data is not None else migrate_data(**params)\n              ",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units_merged"
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-22T20:39:27.771335",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n============================================================\n\n📡 步骤1: 获取数据源信息...\n  ✅ 源数据源 ID: 3c55f752-191c-46c4-a5a9-1c959c3438bc\n  ✅ 目标数据源 ID: ee824f38-36da-46a7-9018-9176a4632745\n\n📊 步骤2: 从源表 'national_key_cultural_relic_protection_units_merged' 读取数据 (limit=10000)...\n[SkillRunner] query_table: ds=3c55f752-191c-4",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "stdout_preview": "============================================================\n🚀 数据迁移开始\n  源:   文物库 → national_key_cultural_relic_protection_units_merged\n  目标: 文物列表 → (自动生成)\n  自动翻译: False\n  目标表已存在策略: fail\n==============",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -1921,6 +2038,98 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'migrated_rows': 0, 'columns': [], 'message': '源表无数据'}"
+    },
+    {
+      "timestamp": "2026-07-22T18:52:24.329862",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "column_mapping": {
+          "national_key_cultural_relic_protection_units_merged": {
+            "national_key_cultural_relic_protection_units_merged": "national_key_cultural_relic_protection_units_merged"
+          }
+        }
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T19:00:49.669458",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '类别', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T19:43:04.915917",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units_merged"
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '类别', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T19:59:38.449908",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true,
+        "datasource": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
+        "table_name": "national_key_cultural_relic_protection_units_merged"
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T20:04:30.254439",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '类别', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T20:15:56.640976",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '类别', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位合并表', 'table_remark': 'national_key_cultural_relic_protection_units_me"
+    },
+    {
+      "timestamp": "2026-07-22T20:41:25.745025",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物库",
+        "source_table_name": "national_key_cultural_relic_protection_units_merged",
+        "target_datasource_name": "文物列表",
+        "translate_to_cn": true
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 4908, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位（合并）', 'table_remark': 'national_key_cultural_relic_protection_units_m"
     }
   ],
   "lessons": "",

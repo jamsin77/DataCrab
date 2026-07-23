@@ -74,6 +74,11 @@ def collect_experience(
     _inner = exec_result.get("result")
     if isinstance(_inner, dict) and _inner.get("success") is False:
         success = False
+    # 兜底：检查 result_summary 字符串中是否含 success: False（防止 dict 被 stringify 后漏判）
+    if success:
+        _summary = str(exec_result.get("result", ""))
+        if "'success': False" in _summary or '"success": false' in _summary.lower():
+            success = False
 
     if not success:
         try:

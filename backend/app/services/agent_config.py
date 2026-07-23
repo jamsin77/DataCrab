@@ -15,9 +15,9 @@ class AgentConfig:
         self._load_from_md()
     
     def _load_from_md(self):
-        """从personal.md加载配置"""
+        """从soul.md加载配置"""
         try:
-            md_path = Path(__file__).parent / "personal.md"
+            md_path = Path(__file__).parent / "soul.md"
             if not md_path.exists():
                 return
             

@@ -3793,7 +3793,7 @@ volumes:
 | User's business data | Business data in data sources | ✅ Allowed |
 
 This rule is written into:
-- personal.md (highest-priority behavior rule)
+- soul.md (highest-priority behavior rule)
 - chat.py _build_system_prompt (conversation prompt)
 - operator.py SYSTEM_PROMPT (operator prompt)
 - skill.py debug-assistant/modify prompt (skill prompt)
