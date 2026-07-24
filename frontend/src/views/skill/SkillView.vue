@@ -74,7 +74,7 @@
       </el-card>
     </div>
 
-    <el-empty v-if="filteredSkills.length === 0" description="暂无技能，请上传 Skill 包或使用 AI 生成" />
+    <el-empty v-if="filteredSkills.length === 0" description="暂无技能，请导入 SKILL 包" />
 
     <!-- ==================== 另存为对话框 ==================== -->
     <el-dialog v-model="showCloneDialog" title="另存为" width="450px" @closed="cloneName = ''; cloneTarget = null">
