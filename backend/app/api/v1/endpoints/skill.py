@@ -18,7 +18,6 @@ from loguru import logger
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.skill import Skill
-from app.models.operator import Operator
 from app.models.user import User
 from app.schemas.skill import (
     SkillCreate,
@@ -112,83 +111,6 @@ def _resolve_skill_folder(skill: Skill) -> Path:
         if p.exists():
             return p
     return _get_skill_folder(skill.id)
-
-
-async def _sync_scripts_to_operators(
-    skill: Skill,
-    folder: Path,
-    db: AsyncSession,
-    current_user: User,
-):
-    from app.services.operator_parser import parse_python_script_multi, extract_script_name
-
-    scripts_dir = folder / "scripts"
-    if not scripts_dir.is_dir():
-        return
-
-    for script_file in sorted(scripts_dir.glob("*.py")):
-        script_content = script_file.read_text(encoding="utf-8")
-        script_content = script_content.strip()
-        if script_content.startswith("```python"):
-            lines = script_content.split("\n")
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            script_content = "\n".join(lines).strip()
-        elif script_content.startswith("```"):
-            lines = script_content.split("\n")
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            script_content = "\n".join(lines).strip()
-        if not script_content.strip():
-            continue
-
-        try:
-            parsed_list = parse_python_script_multi(script_content)
-        except Exception:
-            continue
-
-        script_name = extract_script_name(script_file.name)
-
-        for parsed in parsed_list:
-            func_name = parsed.get("function_name")
-            if not func_name:
-                continue
-            if func_name == "main":
-                continue
-
-            operator_name = f"{skill.name}-{script_name}-{func_name}"
-
-            existing = await db.execute(
-                select(Operator).where(Operator.name == operator_name)
-            )
-            existing_op = existing.scalar_one_or_none()
-
-            op_data = dict(
-                display_name=f"{skill.display_name or skill.name} - {func_name}",
-                description=parsed.get("description") or skill.description or "",
-                category=skill.category or "skill",
-                inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
-                outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
-                parameters=parsed.get("parameters", []),
-                execution_config={"type": "python_script", "source": "skill", "skill_id": str(skill.id)},
-                script_content=script_content,
-                script_filename=script_file.name,
-                function_name=func_name,
-                tags=(skill.tags or []) + ["from_skill"],
-                visibility=skill.visibility or "public",
-                author=current_user.id,
-            )
-
-            if existing_op:
-                for k, v in op_data.items():
-                    setattr(existing_op, k, v)
-            else:
-                operator = Operator(name=operator_name, **op_data)
-                db.add(operator)
-
-    await db.flush()
 
 
 def _get_skill_relative_path(folder: Path) -> str:
@@ -305,7 +227,6 @@ async def create_skill(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
-    await _sync_scripts_to_operators(skill, _get_skill_folder(skill_id), db, current_user)
     logger.info(f"技能已创建: {skill.name} ({skill.id})")
     return _build_detail(skill)
 
@@ -351,30 +272,16 @@ async def delete_skill(
         shutil.rmtree(folder)
 
     skill_name = skill.name
-    prefix = f"{skill_name}-"
-    ops = await db.execute(select(Operator).where(Operator.name.startswith(prefix)))
-    for op in ops.scalars().all():
-        cfg = op.execution_config or {}
-        if cfg.get("source") == "skill" and cfg.get("skill_id") == str(skill_id):
-            await db.delete(op)
-
     await db.delete(skill)
     await db.flush()
-    logger.info(f"技能已删除: {skill_name} ({skill_id})，关联算子已清理")
+    logger.info(f"技能已删除: {skill_name} ({skill_id})")
 
 
 async def _delete_skill_completely(skill: Skill, skill_id: UUID, db: AsyncSession):
-    """彻底删除技能：文件夹 + DB 记录 + 关联算子"""
+    """彻底删除技能：文件夹 + DB 记录"""
     folder = _resolve_skill_folder(skill)
     if folder.exists():
         shutil.rmtree(folder)
-    skill_name = skill.name
-    prefix = f"{skill_name}-"
-    ops = await db.execute(select(Operator).where(Operator.name.startswith(prefix)))
-    for op in ops.scalars().all():
-        cfg = op.execution_config or {}
-        if cfg.get("source") == "skill" and cfg.get("skill_id") == str(skill_id):
-            await db.delete(op)
     await db.delete(skill)
     await db.flush()
 
@@ -482,7 +389,6 @@ async def upload_skill(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
-        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill 包已导入: {name} ({skill.id}) mode={mode}")
         return _build_detail(skill)
     except HTTPException:
@@ -621,7 +527,6 @@ async def update_skill_script(
     folder = _get_skill_folder(skill_id)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_script(folder, script_name, request.content)
-    await _sync_scripts_to_operators(skill, folder, db, current_user)
     return {"name": script_name, "ok": True}
 
 
@@ -1733,7 +1638,6 @@ async def generate_skill_endpoint(
     db.add(skill)
     await db.flush()
     await db.refresh(skill)
-    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"Skill Creator 已生成技能: {name} ({skill.id})")
     return _build_detail(skill)
 
@@ -1808,7 +1712,6 @@ async def generate_skill_stream_endpoint(
         db.add(skill)
         await db.flush()
         await db.refresh(skill)
-        await _sync_scripts_to_operators(skill, folder, db, current_user)
         logger.info(f"Skill Creator 流式生成技能: {name} ({skill.id})")
 
         from app.schemas.skill import SkillDetailResponse
@@ -1852,7 +1755,6 @@ async def clone_skill(
     db.add(clone)
     await db.flush()
     await db.refresh(clone)
-    await _sync_scripts_to_operators(clone, clone_folder, db, current_user)
     return _build_detail(clone)
 
 
@@ -1928,7 +1830,6 @@ async def modify_skill(
 
     await db.flush()
     await db.refresh(skill)
-    await _sync_scripts_to_operators(skill, folder, db, current_user)
     logger.info(f"技能已通过AI修改: {skill.name} ({skill.id})")
     return _build_detail(skill)
 
@@ -2011,7 +1912,6 @@ async def modify_skill_stream(
 
             await db.flush()
             await db.refresh(skill)
-            await _sync_scripts_to_operators(skill, folder, db, current_user)
             logger.info(f"技能已通过AI流式修改: {skill.name} ({skill.id})")
 
             detail = _build_detail(skill)
