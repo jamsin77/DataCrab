@@ -5,15 +5,15 @@ services:
   postgres:
     image: postgres:14-alpine
     environment:
-      POSTGRES_DB: easyflow
-      POSTGRES_USER: easyflow
-      POSTGRES_PASSWORD: easyflow123
+      POSTGRES_DB: datacrab
+      POSTGRES_USER: datacrab
+      POSTGRES_PASSWORD: datacrab123
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U easyflow"]
+      test: ["CMD-SHELL", "pg_isready -U datacrab"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -50,7 +50,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://easyflow:easyflow123@postgres:5432/easyflow
+      DATABASE_URL: postgresql+asyncpg://datacrab:datacrab123@postgres:5432/datacrab
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -71,7 +71,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://easyflow:easyflow123@postgres:5432/easyflow
+      DATABASE_URL: postgresql+asyncpg://datacrab:datacrab123@postgres:5432/datacrab
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
