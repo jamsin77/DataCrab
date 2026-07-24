@@ -356,7 +356,7 @@ DataProcessorAgent（统一入口）
 | 改进 | 文件 | 说明 |
 |------|------|------|
 | call_operator 内置函数 | skill_runner.py + sandbox_ns.py | 调用用户算子（按名称模糊匹配） |
-| grep 内置函数 | skill_runner.py + sandbox_ns.py | 文件搜索（正则+行号+上下文） |
+| grep 内置函数（后删除） | skill_runner.py + sandbox_ns.py | 文件搜索——因无技能使用，第十五轮删除 |
 | SANDBOX_TOOLS_DOC 全签名 | prompt_docs.py | 17 个函数签名全补全，对齐实际代码 |
 | PLATFORM_CONVENTIONS_DOC | prompt_docs.py | 平台规范文档（内置函数优先/不装扩展/不调外部API）注入生成+调试+NL推断三处 |
 | read_file 图片 fail-fast | datasource.py + sandbox_ns.py + skill_runner.py | 图片直接报错不静默返回空 |
@@ -377,3 +377,67 @@ DataProcessorAgent（统一入口）
 | Excel create_new_file 平台能力 | tool_guidance.py | 改为 False（不支持创建新 Excel 文件） |
 
 **与前轮关系**：第十~十三轮建立编辑原语（edit_and_run/apply_partial_code）+ 调试模式（极简 prompt/thinking/修改尝试正法）；本轮补齐静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出。read_script 无 cap 对齐 OpenCode（靠指令引导 offset/limit，不靠硬限制）；错误分级替代 LLM 文字判断（可靠退出靠错误消息分类，不靠关键词匹配）。
+
+### 第十五轮（规则全量实现 + 安装修复 + 资产打包 + 架构清理）
+
+**核心洞察**：第十四轮补齐了调试显示和错误分级，但规则检查只有 39% 有确定性实现（61% 靠 LLM 主观判断或完全没实现）；安装流程多处断裂（poetry-core 下载超时/passlib 与 bcrypt 4.x 冲突/npm run install 不装 devDependencies）；技能/流程/算子无法跨机器迁移。
+
+**规则全量实现（31 条新增确定性检查）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| standards_parser 扩展 | standards_parser.py | 解析合法值（合法值: 行）+ 不跳过无正则规则 + 检测逻辑解析；parse_security_rules 不再跳过无正则规则 |
+| STD 枚举检查 | inspector_tools.py | STD-ENUM-001~004（性别/证件/婚姻/国家代码）+ STD-HERITAGE-001~002（文物年代/保护级别）合法值校验 |
+| STD 数值约束 | inspector_tools.py | STD-NUM-001 金额（非负+上限）/ STD-NUM-002 百分比（0~100或0~1）/ STD-NUM-003 年龄（0~150整数）/ STD-NUM-004 数量（非负） |
+| STD 地理位置 | inspector_tools.py | STD-LOC-001 地址（长度≥5+无换行）/ STD-LOC-004 经纬度范围（经度-180~180/纬度-90~90） |
+| STD 时间 | inspector_tools.py | STD-TIME-003 Unix 时间戳（10/13位+范围）/ STD-TIME-004 时间范围一致性（end≥start 跨字段） |
+| DQ 完整性 | inspector_tools.py | DQ-COM-001 必填字段空值（0%阈值）/ DQ-COM-002 主键非空 |
+| DQ 唯一性 | inspector_tools.py | DQ-UNI-002 业务键唯一（order_no/id_card/bank_card 等列名匹配查重） |
+| DQ 有效性 | inspector_tools.py | DQ-VAL-002 枚举合法（复用 STD-ENUM 合法值） |
+| DQ 一致性 | inspector_tools.py | DQ-CON-001 跨字段逻辑（end_date≥start_date + age≈当前年-birth_year） |
+| DQ-ETL 扩展 | inspector_tools.py | DQ-ETL-007 目标表字段空值率（10%）/ DQ-ETL-008 目标表主键唯一 / DQ-ETL-009 源→目标字段类型一致 |
+| SEC PII 扩展 | inspector_tools.py | SEC-PII-006 完整地址明文（省/市/区+路/号正则）/ SEC-PII-007 姓名字段与强 PII 同表检测 |
+| SEC 敏感业务 | inspector_tools.py | SEC-BIZ-001 薪资字段 / SEC-BIZ-002 医疗字段 / SEC-BIZ-003 未成年人（age<18+PII） |
+| SEC 脱敏检测 | inspector_tools.py | SEC-MASK-001~004 手机/身份证/邮箱/银行卡未脱敏检测 |
+| SEC 分级 | inspector_tools.py | SEC-CLASS-001 数据分级标注缺失（TableMetadata.security_level 为空） |
+
+**Bug 修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| DQ-COM-003 阈值反转 | inspector_tools.py | MD 写"95%完整率"→解析出 0.95→代码当空值率阈值→`null_rate > 0.95` 才报警；修复为 `1 - 0.95 = 0.05` |
+| DQ-UNI-001 误报 | inspector_tools.py | "编号"列非主键被当主键检查→去掉"编号"，只认 `id` 和 `_id` 后缀（3 处） |
+| handoff 后 local_messages 未定义 | data_inspector_agent.py | `_execute_tool` 是独立方法访问不到 `run()` 的 `local_messages`；通过 `context["_local_messages"]` 传递 |
+| 会话列表不冒泡 | chat.py | 发消息时只插 ChatMessage 不更新 ChatSession→`updated_at` 不刷新；两处入口加 `session.updated_at = now()` |
+
+**安装修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| pyproject.toml poetry→setuptools | pyproject.toml | `pip install -e .` 不再依赖 poetry-core（下载超时根因） |
+| requirements.txt 补全 | requirements.txt + requirements-optional.txt | 补 openai/chromadb/minio/aiosqlite/pyyaml/croniter；chromadb+minio 拆为可选依赖 |
+| passlib→bcrypt 直用 | security.py + requirements.txt | passlib 1.7.4 与 bcrypt 4.x 不兼容（`__about__` 被删）；chromadb 要 bcrypt≥4，passlib 要 bcrypt<4，冲突；去掉 passlib，直接用 `bcrypt.hashpw`/`checkpw` |
+| npm install 修复 | package.json | `install` 脚本改成 `postinstall` 钩子；`npm install`（不带 run）先装 concurrently 再跑前后端安装 |
+| easyflow 清理 | .env.example + docker-compose.yml | 8 处 easyflow/EasyFlow → datacrab/DataCrab |
+| INSTALL.md 精简 | INSTALL.md + INSTALL.en.md | 5 步安装指南，可选依赖单独说明 |
+
+**资产打包（技能/流程/算子跨机器迁移）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 启动自动 seed 技能 | main.py | 扫描 `data/skills/` 文件夹，SKILL.md 解析元数据，DB 中不存在的自动创建记录 |
+| 启动自动 seed 流程 | main.py | pipelines 表为空时从 `data/seed/pipelines.json` 加载 |
+| 启动自动 seed 算子 | main.py | operators 表为空时从 `data/seed/operators.json` 加载 |
+| 流程导出端点 | pipeline.py | `POST /pipelines/export-seed` → 写 `data/seed/pipelines.json` |
+| 算子导出端点 | operator.py | `POST /operators/export-seed` → 写 `data/seed/operators.json` |
+| 前端导出按钮 | PipelineView.vue + OperatorView.vue | 「导出打包」按钮，点击后更新 seed 文件 |
+| TableMetadata 导入路径修复 | inspector_tools.py | `from app.models.table_metadata` → `from app.models.datasource`（模型定义在 datasource.py） |
+
+**架构清理**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 删除技能自动同步算子 | skill.py | 删除 `_sync_scripts_to_operators` 函数 + 8 处调用 + 2 处删除清理 + Operator import；技能和算子从此独立 |
+| 删除沙箱 grep 函数 | sandbox_ns.py + skill_runner.py + prompt_docs.py + tool_guidance.py + datasource.py | 因无技能使用，全量删除（函数定义/注册/文档/端点） |
+
+**与前轮关系**：第十四轮补齐调试显示和错误分级；本轮补齐规则实现（39%→78% 有确定性检查）+ 修复安装链路（3 个阻断性 bug）+ 资产打包机制。规则仍无法确定性实现的（DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP 等）保持 LLM prompt 判断。
