@@ -624,6 +624,46 @@
       },
       "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: c61ff69d-e891-492c-a7b5-aca7db2ae556\n[SkillRunner] iter_table_data page 1 failed: HTTP 500 关系 \"文物列表\" 不存在",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-24T09:01:20.561025",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \u001b[35m\"C:\\Users\\S00830~1\\AppData\\Local\\Temp\\tmpjmux2zre.py\"\u001b[0m, line \u001b[35m236\u001b[0m, in \u001b[35miter_table_data\u001b[0m\n    with \u001b[31murllib.request.urlopen\u001b[0m\u001b[1;31m(_url, timeout=120)\u001b[0m as resp:\n         \u001b[31m~~~~~~~~~~~~~~~~~~~~~~\u001b[0m\u001b[1;31m^^^^^^^^^^^^^^^^^^^\u001b[0m\n  File \u001b[35m\"D:\\Program Files\\Python\\Lib\\urllib\\request.py\"\u001b[0m, line \u001b[35m189\u001b[0m, in \u001b[35murlopen\u001b[0m\n    return \u001b[31mopener.open\u001b[0m\u001b[1;31m(url, data, timeout)\u001b[0m\n           \u001b[31m~~~~~~~~~~~\u001b[",
+      "parameters": {
+        "filter_condition": "备注 contains 国家级重点文物",
+        "merge_field": "备注",
+        "output_table_name": "文物列表_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "c61ff69d-e891-492c-a7b5-aca7db2ae556",
+        "table_name": "文物列表"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: c61ff69d-e891-492c-a7b5-aca7db2ae556\n[SkillRunner] iter_table_data page 1 failed: HTTP 500 关系 \"文物列表\" 不存在",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-24T09:06:21.832628",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \u001b[35m\"C:\\Users\\S00830~1\\AppData\\Local\\Temp\\tmpe2xazase.py\"\u001b[0m, line \u001b[35m236\u001b[0m, in \u001b[35miter_table_data\u001b[0m\n    with \u001b[31murllib.request.urlopen\u001b[0m\u001b[1;31m(_url, timeout=120)\u001b[0m as resp:\n         \u001b[31m~~~~~~~~~~~~~~~~~~~~~~\u001b[0m\u001b[1;31m^^^^^^^^^^^^^^^^^^^\u001b[0m\n  File \u001b[35m\"D:\\Program Files\\Python\\Lib\\urllib\\request.py\"\u001b[0m, line \u001b[35m189\u001b[0m, in \u001b[35murlopen\u001b[0m\n    return \u001b[31mopener.open\u001b[0m\u001b[1;31m(url, data, timeout)\u001b[0m\n           \u001b[31m~~~~~~~~~~~\u001b[",
+      "parameters": {
+        "filter_condition": "备注 contains 国家级重点文物",
+        "merge_field": "备注",
+        "output_table_name": "文物列表_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "c61ff69d-e891-492c-a7b5-aca7db2ae556",
+        "table_name": "文物列表"
+      },
+      "stdout_preview": "[INFO] 数据源参数为UUID，直接使用: c61ff69d-e891-492c-a7b5-aca7db2ae556\n[SkillRunner] iter_table_data page 1 failed: HTTP 500 关系 \"文物列表\" 不存在",
+      "context_summary": ""
     }
   ],
   "positive": [
@@ -884,6 +924,40 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'message': '无源数据需要归并', 'count': 5057}"
+    },
+    {
+      "timestamp": "2026-07-24T09:06:58.586461",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "备注",
+        "merge_field": "备注",
+        "output_table_name": "国家级重点文物_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "c61ff69d-e891-492c-a7b5-aca7db2ae556",
+        "table_name": "国家级重点文物"
+      },
+      "result_summary": "{'success': True, 'original_count': 5057, 'source_count': 149, 'merged_count': 3, 'final_count': 4908, 'output_table': '国家级重点文物_merged'}"
+    },
+    {
+      "timestamp": "2026-07-24T10:53:24.819603",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "filter_condition": "备注",
+        "merge_field": "备注",
+        "output_table_name": "国家级重点文物_merged",
+        "if_table_exists": "overwrite",
+        "merge_strategy": "keep_target",
+        "batch_size": 1000,
+        "llm_batch_size": 20,
+        "datasource": "c61ff69d-e891-492c-a7b5-aca7db2ae556",
+        "table_name": "国家级重点文物"
+      },
+      "result_summary": "{'success': True, 'original_count': 5057, 'source_count': 149, 'merged_count': 3, 'final_count': 4908, 'output_table': '国家级重点文物_merged'}"
     }
   ],
   "lessons": "让我先读取完整的 `main` 函数代码，看看当前列名解析逻辑，然后做出精确修改。",

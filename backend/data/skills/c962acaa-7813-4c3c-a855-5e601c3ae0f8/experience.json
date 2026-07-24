@@ -2348,6 +2348,42 @@
         "output_dir": null
       },
       "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units'"
+    },
+    {
+      "timestamp": "2026-07-24T09:01:22.326937",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "NationalKeyCulturalRelics",
+        "column_mapping": {
+          "全国重点文物保护单位": "NationalKeyCulturalRelics",
+          "备注": "Remark"
+        },
+        "translate_to_cn": true,
+        "if_table_exists": "overwrite"
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '年代', '地址', 'Remark', '编号', '时间戳'], 'target_table': '国家级重点文物', 'table_remark': 'NationalKeyCulturalRelics', 'column_remarks': {}}"
+    },
+    {
+      "timestamp": "2026-07-24T10:50:47.707910",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "文物列表",
+        "source_table_name": "全国重点文物保护单位",
+        "target_datasource_name": "文物库",
+        "target_table_name": "NationalKeyCulturalRelics",
+        "column_mapping": {
+          "全国重点文物保护单位": "NationalKeyCulturalRelics",
+          "备注": "Remark"
+        },
+        "translate_to_cn": true,
+        "if_table_exists": "overwrite"
+      },
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '年代', '地址', 'Remark', '编号', '时间戳'], 'target_table': '国家级重点文物', 'table_remark': 'NationalKeyCulturalRelics', 'column_remarks': {}}"
     }
   ],
   "lessons": "",

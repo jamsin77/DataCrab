@@ -194,7 +194,7 @@ READ_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_script",
-        "description": "读取代码的逐字内容（不压缩，带行号）。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围，用于查看错误生成的精确代码。平台代码只读，不可修改。grep_script 搜到行号后，用 offset/limit 只读相关行，不要读全文。",
+        "description": "读取代码的逐字内容（不压缩，带行号）。默认返回前 2000 行，大文件用 grep_script 搜关键词定位行号后，传 offset/limit 只读相关行。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围。平台代码只读，不可修改。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -203,7 +203,7 @@ READ_SCRIPT_TOOL = {
                 "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
                 "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
                 "offset": {"type": "integer", "description": "起始行号（1-indexed，grep 到行号后用 offset=行号-5）"},
-                "limit": {"type": "integer", "description": "读取行数（默认 50，配合 offset 只读相关行）"},
+                "limit": {"type": "integer", "description": "读取行数（不传时默认返回前 2000 行；配合 offset 只读相关行，如 limit=15）"},
             },
             "required": [],
         },
@@ -214,7 +214,7 @@ GREP_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "grep_script",
-        "description": "在代码中搜索（正则匹配），返回匹配行+行号+上下文。scope='script'（默认）搜当前调试脚本，定位 old_string 精确位置；scope='platform' 搜平台源码（connectors.py/skill_runner.py 等），追踪错误来源。例如：grep_script('文件不存在', scope='platform') 找到哪段平台代码生成了这个错误。",
+        "description": "在代码中搜索（正则匹配），返回匹配行+行号+上下文。定位行号后传给 read_script 的 offset 参数只读相关行。scope='script'（默认）搜当前调试脚本；scope='platform' 搜平台源码（connectors.py/skill_runner.py 等）。例如：grep_script('write_table_data') 找到行号 123，再 read_script(offset=118, limit=15) 读上下文。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1030,18 +1030,22 @@ class DataProcessorAgent(BaseAgent):
                     return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
                 except SyntaxError as _se:
                     return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
-            # 全文或行范围：加行号（默认返回全部，对齐 OpenCode Read 默认 2000 行）
+            # 默认返回前 2000 行（对齐 OpenCode Read），传 offset/limit 读指定范围
+            _DEFAULT_READ_CAP = 2000
             all_lines = current.splitlines()
             _total = len(all_lines)
             if offset > 0 or limit > 0:
                 start = max(0, (offset - 1) if offset > 0 else 0)
-                end = min(_total, start + limit) if limit > 0 else _total
+                end = min(_total, start + limit) if limit > 0 else min(_total, start + _DEFAULT_READ_CAP)
             else:
                 start = 0
-                end = _total
+                end = min(_total, _DEFAULT_READ_CAP)
             numbered = "\n".join(f"L{i+1}: {all_lines[i]}" for i in range(start, end))
             result = {"success": True, "script_name": script_name, "offset": start + 1,
                       "limit": end - start, "total_lines": _total, "content": numbered}
+            if end < _total:
+                result["has_more"] = True
+                result["hint"] = f"还有 {_total - end} 行未显示，用 grep_script 搜关键词定位行号后传 offset 读取"
             return json.dumps(result, ensure_ascii=False)
 
         if name == "grep_script":
