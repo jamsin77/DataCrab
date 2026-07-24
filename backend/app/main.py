@@ -144,15 +144,18 @@ async def _seed_skills_and_pipelines():
             existing_names = set()
             result = await db.execute(sa_select(Skill.name))
             existing_names = {r[0] for r in result.fetchall()}
+            _seen_in_this_scan = set()
             for skill_folder in sorted(skill_base.iterdir()):
                 if not skill_folder.is_dir() or not (skill_folder / "SKILL.md").exists():
                     continue
                 folder_name = skill_folder.name
-                if folder_name in existing_names:
-                    continue
                 info = get_skill_info_from_path(skill_folder)
+                skill_name = info.get("name") or folder_name
+                if skill_name in existing_names or skill_name in _seen_in_this_scan:
+                    continue
+                _seen_in_this_scan.add(skill_name)
                 skill = Skill(
-                    name=info.get("name") or folder_name,
+                    name=skill_name,
                     display_name=info.get("display_name") or folder_name,
                     description=info.get("description") or "",
                     skill_path=folder_name,
@@ -161,7 +164,7 @@ async def _seed_skills_and_pipelines():
                     visibility="public",
                 )
                 db.add(skill)
-                logger.info(f"Seed 技能: {folder_name}")
+                logger.info(f"Seed 技能: {skill_name}")
             await db.flush()
 
         seed_dir = Path(settings.SKILL_STORAGE_PATH).parent / "seed"
