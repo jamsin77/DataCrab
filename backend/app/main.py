@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(_migrate_skills)
         await conn.run_sync(_migrate_custom_extensions)
     logger.info("数据库表已创建")
+    await _seed_skills_and_pipelines()
     await _load_custom_extensions()
     await _init_llm_from_db()
     await start_scheduler()
@@ -125,6 +126,68 @@ def _migrate_custom_extensions(connection):
                 logger.info(f"{table}表已添加 is_public 列")
         except Exception as e:
             logger.warning(f"{table}表迁移跳过: {e}")
+
+
+async def _seed_skills_and_pipelines():
+    """首次启动时自动 seed 技能（从文件夹扫描）和流程（从 seed JSON）"""
+    from pathlib import Path
+    from sqlalchemy import select as sa_select, func
+    from app.models.skill import Skill
+    from app.models.pipeline import Pipeline
+    from app.services.skill_parser import get_skill_info_from_path
+
+    async with async_session() as db:
+        # 1. Seed skills：扫描技能文件夹，DB 中不存在的自动创建记录
+        skill_base = Path(settings.SKILL_STORAGE_PATH)
+        if skill_base.is_dir():
+            existing_names = set()
+            result = await db.execute(sa_select(Skill.name))
+            existing_names = {r[0] for r in result.fetchall()}
+            for skill_folder in sorted(skill_base.iterdir()):
+                if not skill_folder.is_dir() or not (skill_folder / "SKILL.md").exists():
+                    continue
+                folder_name = skill_folder.name
+                if folder_name in existing_names:
+                    continue
+                info = get_skill_info_from_path(skill_folder)
+                skill = Skill(
+                    name=info.get("name") or folder_name,
+                    display_name=info.get("display_name") or folder_name,
+                    description=info.get("description") or "",
+                    skill_path=folder_name,
+                    category="seed",
+                    tags=["seed"],
+                    visibility="public",
+                )
+                db.add(skill)
+                logger.info(f"Seed 技能: {folder_name}")
+            await db.flush()
+
+        # 2. Seed pipelines：表为空时从 seed JSON 加载
+        count_result = await db.execute(sa_select(func.count()).select_from(Pipeline))
+        pipeline_count = count_result.scalar()
+        if pipeline_count == 0:
+            seed_file = Path(settings.SKILL_STORAGE_PATH).parent / "seed" / "pipelines.json"
+            if seed_file.exists():
+                import json
+                pipelines = json.loads(seed_file.read_text(encoding="utf-8"))
+                for p in pipelines:
+                    pipe = Pipeline(
+                        name=p["name"],
+                        display_name=p.get("display_name") or p["name"],
+                        description=p.get("description") or "",
+                        main_code=p.get("main_code") or "",
+                        entry_function=p.get("entry_function") or "main",
+                        parameters=p.get("parameters") or [],
+                        skill_calls=p.get("skill_calls") or [],
+                        tags=p.get("tags") or [],
+                        category=p.get("category") or "seed",
+                        visibility="public",
+                        is_active=True,
+                    )
+                    db.add(pipe)
+                logger.info(f"Seed 流程: {len(pipelines)} 个")
+        await db.commit()
 
 
 app = FastAPI(

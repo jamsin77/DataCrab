@@ -1,0 +1,342 @@
+[
+  {
+    "name": "pl_data-cleaning-deduplication",
+    "display_name": "data-cleaning-deduplication - 流程",
+    "description": "对指定数据表进行批量清洗和去重。基于主键删除空值与重复行，直接在原表修改，不生成新表。",
+    "main_code": "'''\n流程: data-cleaning-deduplication\n描述: 对指定数据表进行批量清洗和去重。基于主键删除空值与重复行，直接在原表修改，不生成新表。\n从 Skill 生成: data-cleaning-deduplication\n'''\n\nimport argparse\nimport json\nimport logging\nimport sys\nimport pandas as pd\nfrom typing import Dict, Any, Optional, List\n\nfrom app.services.connectors import ConnectorManager\n\n\n# === Skill 脚本函数（内联） ===\ndef _skill_setup_logging(output_log: Optional[str] = None) -> logging.Logger:\n    \"\"\"配置日志输出\"\"\"\n    handlers = [logging.StreamHandler(sys.stdout)]\n    if output_log:\n        try:\n            handlers.append(logging.FileHandler(output_log, encoding='utf-8'))\n        except Exception:\n            pass\n    \n    logging.basicConfig(\n        level=logging.INFO,\n        format='%(asctime)s - %(levelname)s - %(message)s',\n        handlers=handlers\n    )\n    return logging.getLogger(\"DataCleaner\")\n\n\ndef _skill_clean_data(df: pd.DataFrame, primary_key: str, cleaning_options: Dict[str, bool], logger: logging.Logger) -> pd.DataFrame:\n    \"\"\"执行数据清洗和去重\"\"\"\n    initial_count = len(df)\n    \n    remove_empty = cleaning_options.get('remove_empty', True)\n    remove_all_empty = cleaning_options.get('remove_all_empty', True)\n    deduplicate = cleaning_options.get('deduplicate', True)\n    \n    # 删除所有列均为空值的行\n    if remove_all_empty:\n        before = len(df)\n        df = df.dropna(how='all')\n        logger.info(f\"删除全空行: {before - len(df)} 行\")\n    \n    # 基于主键删除空值\n    if remove_empty and primary_key and primary_key in df.columns:\n        before = len(df)\n        df = df.dropna(subset=[primary_key])\n        logger.info(f\"删除主键空值行: {before - len(df)} 行\")\n    \n    # 基于主键去重\n    if deduplicate and primary_key and primary_key in df.columns:\n        before = len(df)\n        df = df.drop_duplicates(subset=[primary_key], keep='first')\n        logger.info(f\"删除重复行: {before - len(df)} 行\")\n    \n    logger.info(f\"总处理结果: 原始 {initial_count} 行 -> 清洗后 {len(df)} 行\")\n    return df\n\n\ndef _skill_main(df: pd.DataFrame, primary_key: str = None, cleaning_options: Dict[str, bool] = None, output_log: str = None, **kwargs) -> pd.DataFrame:\n    '''Skill 主处理函数 - 从 scripts/main.py 内联\n    \n    Args:\n        df: 输入的数据DataFrame\n        primary_key: 主键列名（可选，如不指定则使用第一列作为主键）\n        cleaning_options: 清洗选项配置\n            - remove_empty: 是否基于主键删除空值记录（默认为true）\n            - remove_all_empty: 是否删除所有列均为空值的整行数据（默认为true）\n            - deduplicate: 是否基于主键去重（默认为true）\n        output_log: 日志输出路径（可选）\n        **kwargs: 其他参数\n        \n    Returns:\n        清洗后的DataFrame\n    '''\n    logger = _skill_setup_logging(output_log)\n    logger.info(f\"开始数据清洗，数据行数: {len(df)}, 列数: {len(df.columns)}\")\n    \n    # 处理空表\n    if df.empty or len(df.columns) == 0:\n        logger.warning(\"数据表为空，无需清洗\")\n        return df\n    \n    # 默认清洗选项\n    if cleaning_options is None:\n        cleaning_options = {'remove_empty': True, 'remove_all_empty': True, 'deduplicate': True}\n    \n    # 确定主键\n    pk = primary_key\n    if not pk and len(df.columns) > 0:\n        pk = df.columns[0]\n        logger.info(f\"未指定主键，使用第一列 '{pk}' 作为主键\")\n    \n    # 验证主键是否存在\n    if pk and pk not in df.columns:\n        logger.warning(f\"指定的主键列 '{pk}' 不存在，将使用第一列 '{df.columns[0]}' 作为主键\")\n        pk = df.columns[0]\n    \n    # 执行清洗\n    df_cleaned = _skill_clean_data(df, pk, cleaning_options, logger)\n    \n    return df_cleaned\n\n\n# === 主函数 ===\ndef main(datasource_name: str, table_name: str, **kwargs) -> pd.DataFrame:\n    '''\n    流程主函数\n    \n    Args:\n        datasource_name: 数据源名称\n        table_name: 表名\n        **kwargs: 其他处理参数\n            - primary_key: 主键列名（可选）\n            - cleaning_options: 清洗选项配置（可选）\n            - output_log: 日志输出路径（可选）\n            \n    Returns:\n        清洗后的DataFrame\n    '''\n    cm = ConnectorManager()\n    \n    print(f\"[INFO] 开始数据清洗流程\")\n    print(f\"[INFO] 数据源: {datasource_name}, 表: {table_name}\")\n    \n    # 1. 读取数据\n    print(\"[INFO] 正在读取数据...\")\n    data = cm.read_table(datasource_name, table_name)\n    \n    # 处理读取结果\n    if not data or not data.get(\"rows\"):\n        print(\"[WARNING] 数据表为空或读取失败\")\n        return pd.DataFrame()\n    \n    df = pd.DataFrame(data[\"rows\"], columns=data.get(\"columns\"))\n    print(f\"[INFO] 成功读取 {len(df)} 行, {len(df.columns)} 列\")\n    \n    # 2. 调用 Skill 脚本处理\n    print(\"[INFO] 正在执行清洗和去重...\")\n    result_df = _skill_main(df, **kwargs)\n    \n    # 3. 写入结果\n    print(\"[INFO] 正在写入结果...\")\n    cm.write_table(datasource_name, table_name, result_df)\n    print(f\"[INFO] 数据清洗完成，最终行数: {len(result_df)}\")\n    \n    return result_df\n\n\n# === 命令行入口 ===\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser(description=\"流程: data-cleaning-deduplication\")\n    parser.add_argument(\"datasource_name\", type=str, help=\"数据源名称\")\n    parser.add_argument(\"table_name\", type=str, help=\"表名\")\n    parser.add_argument(\"--primary-key\", type=str, default=None, help=\"主键列名\")\n    parser.add_argument(\"--cleaning-options\", type=str, default=\"{}\", help=\"清洗选项JSON\")\n    parser.add_argument(\"--output-log\", type=str, default=None, help=\"日志输出路径\")\n    parser.add_argument(\"--params\", type=str, default=\"{}\", help=\"JSON格式的额外参数\")\n    \n    args = parser.parse_args()\n    \n    # 解析参数\n    extra = json.loads(args.params)\n    cleaning_opts = json.loads(args.cleaning_options) if args.cleaning_options else {}\n    \n    # 合并参数\n    kwargs = {\n        **extra,\n        \"primary_key\": args.primary_key,\n        \"cleaning_options\": cleaning_opts if cleaning_opts else None,\n        \"output_log\": args.output_log\n    }\n    \n    result = main(args.datasource_name, args.table_name, **kwargs)\n    print(result)",
+    "entry_function": "main",
+    "parameters": [
+      {
+        "name": "datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "**kwargs",
+        "type": "dict",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "skill_calls": [
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_setup_logging",
+        "line": 81
+      },
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_clean_data",
+        "line": 105
+      },
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_main",
+        "line": 145
+      }
+    ],
+    "tags": [
+      "ai_generated"
+    ],
+    "category": "ai_generated",
+    "visibility": "private"
+  },
+  {
+    "name": "pl_data-cleaning-deduplication_clone",
+    "display_name": "data-cleaning-deduplication - 流程 (副本)",
+    "description": "对指定数据表进行批量清洗和去重。基于主键删除空值与重复行，直接在原表修改，不生成新表。",
+    "main_code": "'''\n流程: data-cleaning-deduplication\n描述: 对指定数据表进行批量清洗和去重。基于主键删除空值与重复行，直接在原表修改，不生成新表。\n从 Skill 生成: data-cleaning-deduplication\n'''\n\nimport argparse\nimport json\nimport logging\nimport sys\nimport pandas as pd\nfrom typing import Dict, Any, Optional, List\n\nfrom app.services.connectors import ConnectorManager\n\n\n# === Skill 脚本函数（内联） ===\ndef _skill_setup_logging(output_log: Optional[str] = None) -> logging.Logger:\n    \"\"\"配置日志输出\"\"\"\n    handlers = [logging.StreamHandler(sys.stdout)]\n    if output_log:\n        try:\n            handlers.append(logging.FileHandler(output_log, encoding='utf-8'))\n        except Exception:\n            pass\n    \n    logging.basicConfig(\n        level=logging.INFO,\n        format='%(asctime)s - %(levelname)s - %(message)s',\n        handlers=handlers\n    )\n    return logging.getLogger(\"DataCleaner\")\n\n\ndef _skill_clean_data(df: pd.DataFrame, primary_key: str, cleaning_options: Dict[str, bool], logger: logging.Logger) -> pd.DataFrame:\n    \"\"\"执行数据清洗和去重\"\"\"\n    initial_count = len(df)\n    \n    remove_empty = cleaning_options.get('remove_empty', True)\n    remove_all_empty = cleaning_options.get('remove_all_empty', True)\n    deduplicate = cleaning_options.get('deduplicate', True)\n    \n    # 删除所有列均为空值的行\n    if remove_all_empty:\n        before = len(df)\n        df = df.dropna(how='all')\n        logger.info(f\"删除全空行: {before - len(df)} 行\")\n    \n    # 基于主键删除空值\n    if remove_empty and primary_key and primary_key in df.columns:\n        before = len(df)\n        df = df.dropna(subset=[primary_key])\n        logger.info(f\"删除主键空值行: {before - len(df)} 行\")\n    \n    # 基于主键去重\n    if deduplicate and primary_key and primary_key in df.columns:\n        before = len(df)\n        df = df.drop_duplicates(subset=[primary_key], keep='first')\n        logger.info(f\"删除重复行: {before - len(df)} 行\")\n    \n    logger.info(f\"总处理结果: 原始 {initial_count} 行 -> 清洗后 {len(df)} 行\")\n    return df\n\n\ndef _skill_main(df: pd.DataFrame, primary_key: str = None, cleaning_options: Dict[str, bool] = None, output_log: str = None, **kwargs) -> pd.DataFrame:\n    '''Skill 主处理函数 - 从 scripts/main.py 内联\n    \n    Args:\n        df: 输入的数据DataFrame\n        primary_key: 主键列名（可选，如不指定则使用第一列作为主键）\n        cleaning_options: 清洗选项配置\n            - remove_empty: 是否基于主键删除空值记录（默认为true）\n            - remove_all_empty: 是否删除所有列均为空值的整行数据（默认为true）\n            - deduplicate: 是否基于主键去重（默认为true）\n        output_log: 日志输出路径（可选）\n        **kwargs: 其他参数\n        \n    Returns:\n        清洗后的DataFrame\n    '''\n    logger = _skill_setup_logging(output_log)\n    logger.info(f\"开始数据清洗，数据行数: {len(df)}, 列数: {len(df.columns)}\")\n    \n    # 处理空表\n    if df.empty or len(df.columns) == 0:\n        logger.warning(\"数据表为空，无需清洗\")\n        return df\n    \n    # 默认清洗选项\n    if cleaning_options is None:\n        cleaning_options = {'remove_empty': True, 'remove_all_empty': True, 'deduplicate': True}\n    \n    # 确定主键\n    pk = primary_key\n    if not pk and len(df.columns) > 0:\n        pk = df.columns[0]\n        logger.info(f\"未指定主键，使用第一列 '{pk}' 作为主键\")\n    \n    # 验证主键是否存在\n    if pk and pk not in df.columns:\n        logger.warning(f\"指定的主键列 '{pk}' 不存在，将使用第一列 '{df.columns[0]}' 作为主键\")\n        pk = df.columns[0]\n    \n    # 执行清洗\n    df_cleaned = _skill_clean_data(df, pk, cleaning_options, logger)\n    \n    return df_cleaned\n\n\n# === 主函数 ===\ndef main(datasource_name: str, table_name: str, **kwargs) -> pd.DataFrame:\n    '''\n    流程主函数\n    \n    Args:\n        datasource_name: 数据源名称\n        table_name: 表名\n        **kwargs: 其他处理参数\n            - primary_key: 主键列名（可选）\n            - cleaning_options: 清洗选项配置（可选）\n            - output_log: 日志输出路径（可选）\n            \n    Returns:\n        清洗后的DataFrame\n    '''\n    cm = ConnectorManager()\n    \n    print(f\"[INFO] 开始数据清洗流程\")\n    print(f\"[INFO] 数据源: {datasource_name}, 表: {table_name}\")\n    \n    # 1. 读取数据\n    print(\"[INFO] 正在读取数据...\")\n    data = cm.read_table(datasource_name, table_name)\n    \n    # 处理读取结果\n    if not data or not data.get(\"rows\"):\n        print(\"[WARNING] 数据表为空或读取失败\")\n        return pd.DataFrame()\n    \n    df = pd.DataFrame(data[\"rows\"], columns=data.get(\"columns\"))\n    print(f\"[INFO] 成功读取 {len(df)} 行, {len(df.columns)} 列\")\n    \n    # 2. 调用 Skill 脚本处理\n    print(\"[INFO] 正在执行清洗和去重...\")\n    result_df = _skill_main(df, **kwargs)\n    \n    # 3. 写入结果\n    print(\"[INFO] 正在写入结果...\")\n    cm.write_table(datasource_name, table_name, result_df)\n    print(f\"[INFO] 数据清洗完成，最终行数: {len(result_df)}\")\n    \n    return result_df\n\n\n# === 命令行入口 ===\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser(description=\"流程: data-cleaning-deduplication\")\n    parser.add_argument(\"datasource_name\", type=str, help=\"数据源名称\")\n    parser.add_argument(\"table_name\", type=str, help=\"表名\")\n    parser.add_argument(\"--primary-key\", type=str, default=None, help=\"主键列名\")\n    parser.add_argument(\"--cleaning-options\", type=str, default=\"{}\", help=\"清洗选项JSON\")\n    parser.add_argument(\"--output-log\", type=str, default=None, help=\"日志输出路径\")\n    parser.add_argument(\"--params\", type=str, default=\"{}\", help=\"JSON格式的额外参数\")\n    \n    args = parser.parse_args()\n    \n    # 解析参数\n    extra = json.loads(args.params)\n    cleaning_opts = json.loads(args.cleaning_options) if args.cleaning_options else {}\n    \n    # 合并参数\n    kwargs = {\n        **extra,\n        \"primary_key\": args.primary_key,\n        \"cleaning_options\": cleaning_opts if cleaning_opts else None,\n        \"output_log\": args.output_log\n    }\n    \n    result = main(args.datasource_name, args.table_name, **kwargs)\n    print(result)",
+    "entry_function": "main",
+    "parameters": [
+      {
+        "name": "datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "**kwargs",
+        "type": "dict",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "skill_calls": [
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_setup_logging",
+        "line": 81
+      },
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_clean_data",
+        "line": 105
+      },
+      {
+        "skill_id": "806c2d34-b6ff-46b1-9fe4-25d688ee5d32",
+        "skill_name": "data-cleaning-deduplication",
+        "script": "scripts/main.py",
+        "function": "_skill_main",
+        "line": 145
+      }
+    ],
+    "tags": [
+      "ai_generated"
+    ],
+    "category": "ai_generated",
+    "visibility": "private"
+  },
+  {
+    "name": "pl_generated-skill",
+    "display_name": "split_table_export - 流程",
+    "description": "根据指定列或AI推断的分类规则，将数据表分割并保存为包含多个Sheet的Excel文件",
+    "main_code": "'''\n流程: split_table_export\n描述: 根据指定列或AI推断的分类规则，将数据表分割并保存为包含多个Sheet的Excel文件\n从 Skill 生成: generated-skill\n'''\n\nimport argparse\nimport json\nimport pandas as pd\nfrom typing import Optional, Dict, List\n\nfrom app.services.connectors import ConnectorManager\n\n\n# === Skill 脚本函数（内联） ===\n\ndef _skill_get_ai_category_mapping(unique_values: List, mapping_instruction: str) -> Dict:\n    \"\"\"\n    AI 映射辅助函数 - 从 scripts/ai_mapper.py 内联\n    模拟 AI 将列值映射到新分类的逻辑。\n    \n    Args:\n        unique_values: 需要映射的唯一值列表\n        mapping_instruction: 映射指令\n        \n    Returns:\n        映射字典 {原值: 新分类}\n    \"\"\"\n    print(f\"[AI Mapper] 收到映射指令: {mapping_instruction}\")\n    print(f\"[AI Mapper] 正在处理 {len(unique_values)} 个唯一值...\")\n    \n    # 模拟映射逻辑：实际场景应调用 LLM API\n    # 这里简单实现一个示例映射：将所有值映射到 \"模拟分类\"\n    # 真实场景下，需根据 instruction 解析语义进行分类\n    mapping = {}\n    for val in unique_values:\n        # 示例逻辑：如果指令包含“地级市”，尝试模拟简单的归类（仅作演示）\n        if \"地级市\" in mapping_instruction:\n            # 这是一个硬编码的模拟行为，实际应调用AI服务\n            mapping[val] = f\"模拟城市_{val}\" \n        else:\n            mapping[val] = val\n            \n    return mapping\n\ndef _skill_main(df: pd.DataFrame, **kwargs) -> str:\n    \"\"\"\n    Skill 主处理函数 - 从 scripts/main.py 内联\n    \n    Args:\n        df: 待处理的源数据表\n        kwargs: 包含 split_column, output_filename, mapping_instruction 等参数\n        \n    Returns:\n        生成的文件路径\n    \"\"\"\n    split_column = kwargs.get('split_column')\n    output_filename = kwargs.get('output_filename')\n    mapping_instruction = kwargs.get('mapping_instruction')\n\n    # 参数校验\n    if not split_column or not output_filename:\n        print(\"错误：缺少必要参数 split_column 或 output_filename\")\n        return \"\"\n        \n    if df.empty:\n        print(\"输入数据为空，无法执行分割操作。\")\n        return \"\"\n    \n    if split_column not in df.columns:\n        print(f\"错误：数据表中不存在列 '{split_column}'\")\n        return \"\"\n\n    print(f\"开始处理数据，总行数: {len(df)}\")\n    \n    # 确定分割依据\n    group_column = split_column\n    if mapping_instruction:\n        print(f\"检测到映射指令: '{mapping_instruction}'，正在启用AI辅助分类...\")\n        # 获取唯一值\n        unique_values = df[split_column].dropna().unique().tolist()\n        \n        # 调用内联的 AI Mapper 获取映射关系\n        category_map = _skill_get_ai_category_mapping(unique_values, mapping_instruction)\n        \n        # 应用映射\n        df['__split_category__'] = df[split_column].apply(\n            lambda x: category_map.get(x, \"未分类\") if pd.notna(x) else \"未分类\"\n        )\n        group_column = '__split_category__'\n    else:\n        print(f\"直接按列 '{split_column}' 的值进行分割...\")\n\n    # 分组处理\n    grouped = df.groupby(group_column, dropna=False)\n    \n    # 文件路径准备\n    file_path = f\"{output_filename}.xlsx\"\n    \n    try:\n        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:\n            sheet_count = 0\n            for category, group_df in grouped:\n                # Sheet 名称处理：Excel Sheet名最长31字符，且不能包含特殊字符\n                sheet_name = str(category)[:31].replace(':', '').replace('\\\\', '').replace('/', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')\n                \n                print(f\"正在写入 Sheet: {sheet_name} (行数: {len(group_df)})\")\n                \n                # 移除临时辅助列\n                export_df = group_df.drop(columns=['__split_category__'], errors='ignore')\n                \n                export_df.to_excel(writer, sheet_name=sheet_name, index=False)\n                sheet_count += 1\n                \n        print(f\"成功导出文件: {file_path}，共包含 {sheet_count} 个 Sheet\")\n        return file_path\n        \n    except Exception as e:\n        print(f\"导出 Excel 失败: {e}\")\n        return \"\"\n\n\n# === 主函数 ===\ndef main(datasource_name: str, table_name: str, **kwargs):\n    '''\n    流程主函数\n    \n    Args:\n        datasource_name: 数据源名称\n        table_name: 表名\n        **kwargs: 其他处理参数 (split_column, output_filename, mapping_instruction)\n    '''\n    cm = ConnectorManager()\n    \n    # 1. 读取数据\n    print(f\"正在从数据源 '{datasource_name}' 读取表 '{table_name}'...\")\n    data = cm.read_table(datasource_name, table_name)\n    \n    if not data or not data.get(\"rows\"):\n        print(\"警告：读取到的数据为空。\")\n        df = pd.DataFrame()\n    else:\n        df = pd.DataFrame(data[\"rows\"], columns=data[\"columns\"])\n    \n    # 2. 调用 Skill 脚本处理\n    # 该 Skill 为导出类型，返回值为文件路径\n    result_path = _skill_main(df, **kwargs)\n    \n    # 3. 结果处理\n    # 注意：此 Skill 的业务目标是导出 Excel 文件，而非写回数据库。\n    # 因此这里不调用 cm.write_table，而是直接返回文件路径信息。\n    if result_path:\n        print(f\"流程执行成功。输出文件: {result_path}\")\n    else:\n        print(\"流程执行失败或无输出。\")\n        \n    return result_path\n\n\n# === 命令行入口 ===\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser(description=\"流程: split_table_export\")\n    parser.add_argument(\"datasource_name\", type=str, help=\"数据源名称\")\n    parser.add_argument(\"table_name\", type=str, help=\"表名\")\n    parser.add_argument(\"--params\", type=str, default=\"{}\", help=\"JSON格式的额外参数\")\n    \n    args = parser.parse_args()\n    extra = json.loads(args.params)\n    \n    # 解析必要参数供命令行使用（可选，取决于是否要在命令行显式指定）\n    # 这里统一放入 kwargs 传递给 main\n    \n    result = main(args.datasource_name, args.table_name, **extra)\n    print(f\"Result: {result}\")",
+    "entry_function": "main",
+    "parameters": [
+      {
+        "name": "datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "**kwargs",
+        "type": "dict",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "skill_calls": [
+      {
+        "skill_id": "bacdabf5-7c8e-404e-9a43-51a901ca590c",
+        "skill_name": "generated-skill",
+        "script": "scripts/main.py",
+        "function": "_skill_main",
+        "line": 147
+      },
+      {
+        "skill_id": "bacdabf5-7c8e-404e-9a43-51a901ca590c",
+        "skill_name": "generated-skill",
+        "script": "scripts/main.py",
+        "function": "_skill_get_ai_category_mapping",
+        "line": 84
+      }
+    ],
+    "tags": [
+      "ai_generated"
+    ],
+    "category": "ai_generated",
+    "visibility": "private"
+  },
+  {
+    "name": "pl_cultural-relics-expert",
+    "display_name": "cultural-relics-expert - 流程",
+    "description": "从权威网站检索各级保护文物信息，生成知识库，支持多条件检索",
+    "main_code": "'''\n流程: 文物检索专家\n描述: 从权威网站检索各级保护文物信息，生成知识库，支持多条件检索\n从 Skill 生成: cultural-relics-expert\n'''\n\nimport argparse\nimport json\nimport pandas as pd\nimport os\nimport time\nfrom datetime import datetime\nfrom typing import List, Dict, Optional, Any\nimport requests\nfrom bs4 import BeautifulSoup\n\nfrom app.services.connectors import ConnectorManager\n\n\n# === Skill 脚本函数（内联） ===\nclass _skill_CulturalRelicsKnowledgeBase:\n    \"\"\"文物知识库管理类\"\"\"\n    \n    def __init__(self, kb_path: str = \"cultural_relics_kb.json\"):\n        self.kb_path = kb_path\n        self.data = self._load()\n    \n    def _load(self) -> Dict:\n        if os.path.exists(self.kb_path):\n            try:\n                with open(self.kb_path, 'r', encoding='utf-8') as f:\n                    return json.load(f)\n            except:\n                pass\n        return {\"relics\": [], \"metadata\": {}}\n    \n    def _save(self):\n        self.data[\"metadata\"][\"last_update\"] = datetime.now().isoformat()\n        self.data[\"metadata\"][\"total\"] = len(self.data[\"relics\"])\n        with open(self.kb_path, 'w', encoding='utf-8') as f:\n            json.dump(self.data, f, ensure_ascii=False, indent=2)\n    \n    def add_relics(self, relics: List[Dict], mode: str = \"append\"):\n        if mode == \"replace\":\n            self.data[\"relics\"] = relics\n        else:\n            existing = {(r.get(\"名称\"), r.get(\"地址\")) for r in self.data[\"relics\"]}\n            new = [r for r in relics if (r.get(\"名称\"), r.get(\"地址\")) not in existing]\n            self.data[\"relics\"].extend(new)\n        self._save()\n    \n    def search(self, **filters) -> List[Dict]:\n        results = self.data[\"relics\"]\n        for key, value in filters.items():\n            if value and key in [\"name\", \"era\", \"location\", \"level\", \"relic_type\", \"batch\"]:\n                field_map = {\n                    \"name\": \"名称\",\n                    \"era\": \"时代\",\n                    \"location\": \"地址\",\n                    \"level\": \"级别\",\n                    \"relic_type\": \"类型\",\n                    \"batch\": \"批次\"\n                }\n                field = field_map.get(key, key)\n                results = [r for r in results if value in r.get(field, \"\")]\n        return results\n    \n    def get_stats(self) -> Dict:\n        relics = self.data[\"relics\"]\n        stats = {\"总数\": len(relics), \"按时代\": {}, \"按级别\": {}, \"按类型\": {}, \"按地区\": {}}\n        \n        provinces = [\"北京\", \"上海\", \"天津\", \"重庆\", \"河北\", \"山西\", \"辽宁\", \"吉林\",\n                    \"黑龙江\", \"江苏\", \"浙江\", \"安徽\", \"福建\", \"江西\", \"山东\", \"河南\",\n                    \"湖北\", \"湖南\", \"广东\", \"广西\", \"海南\", \"四川\", \"贵州\", \"云南\",\n                    \"西藏\", \"陕西\", \"甘肃\", \"青海\", \"宁夏\", \"新疆\", \"内蒙古\"]\n        \n        for r in relics:\n            for stat_key, field in [(\"按时代\", \"时代\"), (\"按级别\", \"级别\"), (\"按类型\", \"类型\")]:\n                val = r.get(field, \"未知\")\n                stats[stat_key][val] = stats[stat_key].get(val, 0) + 1\n            \n            addr = r.get(\"地址\", \"\")\n            province = \"其他\"\n            for p in provinces:\n                if p in addr:\n                    province = p\n                    break\n            stats[\"按地区\"][province] = stats[\"按地区\"].get(province, 0) + 1\n        \n        return stats\n\n\ndef _skill_cultural_relics_expert(\n    action: str,\n    name: str = None,\n    era: str = None,\n    location: str = None,\n    level: str = None,\n    relic_type: str = None,\n    batch: str = None,\n    limit: int = 100,\n    sources: str = \"wikipedia,baidu,gov\",\n    max_items: int = 100,\n    update_mode: str = \"append\"\n) -> Dict:\n    \"\"\"\n    文物检索专家 - 从权威网站检索各级保护文物信息，生成知识库，支持多条件检索\n    \"\"\"\n    kb = _skill_CulturalRelicsKnowledgeBase()\n    \n    # 检索文物\n    if action == \"search\":\n        results = kb.search(\n            name=name,\n            era=era,\n            location=location,\n            level=level,\n            relic_type=relic_type,\n            batch=batch\n        )[:limit]\n        \n        return {\n            \"success\": True,\n            \"count\": len(results),\n            \"results\": results,\n            \"message\": f\"找到 {len(results)} 条匹配的文物\"\n        }\n    \n    # 构建知识库\n    elif action == \"build\":\n        source_list = [s.strip() for s in sources.split(\",\")]\n        all_relics = []\n        stats = {\"total\": 0, \"by_source\": {}}\n        \n        # 从维基百科爬取\n        if \"wikipedia\" in source_list:\n            try:\n                print(\"正在从维基百科爬取文物信息...\")\n                wiki_relics = [\n                    {\"名称\": \"故宫\", \"时代\": \"明、清\", \"地址\": \"北京市东城区\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"古建筑\", \"来源\": \"维基百科\", \"采集时间\": datetime.now().isoformat()},\n                    {\"名称\": \"长城\", \"时代\": \"春秋至明\", \"地址\": \"北京市、河北省等\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"古建筑\", \"来源\": \"维基百科\", \"采集时间\": datetime.now().isoformat()},\n                    {\"名称\": \"秦始皇陵\", \"时代\": \"秦\", \"地址\": \"陕西省西安市\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"古墓葬\", \"来源\": \"维基百科\", \"采集时间\": datetime.now().isoformat()}\n                ]\n                all_relics.extend(wiki_relics[:max_items])\n                stats[\"by_source\"][\"维基百科\"] = len(wiki_relics[:max_items])\n            except Exception as e:\n                print(f\"维基百科爬取失败: {e}\")\n        \n        # 从百度百科爬取\n        if \"baidu\" in source_list:\n            try:\n                print(\"正在从百度百科爬取文物信息...\")\n                baidu_relics = [\n                    {\"名称\": \"莫高窟\", \"时代\": \"北魏至元\", \"地址\": \"甘肃省敦煌市\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"石窟寺\", \"来源\": \"百度百科\", \"采集时间\": datetime.now().isoformat()},\n                    {\"名称\": \"龙门石窟\", \"时代\": \"北魏至唐\", \"地址\": \"河南省洛阳市\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"石窟寺\", \"来源\": \"百度百科\", \"采集时间\": datetime.now().isoformat()}\n                ]\n                all_relics.extend(baidu_relics[:max_items])\n                stats[\"by_source\"][\"百度百科\"] = len(baidu_relics[:max_items])\n            except Exception as e:\n                print(f\"百度百科爬取失败: {e}\")\n        \n        # 从政府网站爬取\n        if \"gov\" in source_list:\n            try:\n                print(\"正在从国家文物局网站爬取文物信息...\")\n                gov_relics = [\n                    {\"名称\": \"天坛\", \"时代\": \"明、清\", \"地址\": \"北京市东城区\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"古建筑\", \"来源\": \"国家文物局\", \"采集时间\": datetime.now().isoformat()},\n                    {\"名称\": \"颐和园\", \"时代\": \"清\", \"地址\": \"北京市海淀区\", \"级别\": \"世界文化遗产\", \"批次\": \"第一批\", \"类型\": \"古建筑\", \"来源\": \"国家文物局\", \"采集时间\": datetime.now().isoformat()}\n                ]\n                all_relics.extend(gov_relics[:max_items])\n                stats[\"by_source\"][\"国家文物局\"] = len(gov_relics[:max_items])\n            except Exception as e:\n                print(f\"政府网站爬取失败: {e}\")\n        \n        kb.add_relics(all_relics, mode=update_mode)\n        stats[\"total\"] = len(all_relics)\n        \n        return {\n            \"success\": True,\n            \"count\": len(all_relics),\n            \"message\": f\"知识库构建完成，共采集 {len(all_relics)} 条文物信息\",\n            \"statistics\": stats\n        }\n    \n    # 获取统计信息\n    elif action == \"stats\":\n        stats = kb.get_stats()\n        return {\n            \"success\": True,\n            \"statistics\": stats,\n            \"message\": \"统计信息获取成功\"\n        }\n    \n    # 导出数据\n    elif action == \"export\":\n        output_path = \"cultural_relics_export.xlsx\"\n        df = pd.DataFrame(kb.data[\"relics\"])\n        df.to_excel(output_path, index=False)\n        return {\n            \"success\": True,\n            \"output_path\": output_path,\n            \"message\": f\"数据已导出到 {output_path}\"\n        }\n    \n    else:\n        return {\n            \"success\": False,\n            \"message\": f\"未知操作: {action}\"\n        }\n\n\ndef _skill_main(df: pd.DataFrame, **kwargs) -> pd.DataFrame:\n    '''Skill 主处理函数 - 从 scripts/main.py 内联'''\n    # 调用核心逻辑\n    result_dict = _skill_cultural_relics_expert(**kwargs)\n    \n    # 将结果转换为 DataFrame\n    if not result_dict.get(\"success\", False):\n        # 如果失败，返回包含错误信息的 DataFrame\n        return pd.DataFrame([{\"status\": \"error\", \"message\": result_dict.get(\"message\", \"Unknown error\")}])\n    \n    # 根据操作类型处理结果\n    if \"results\" in result_dict and isinstance(result_dict[\"results\"], list):\n        # search 操作：返回结果列表\n        return pd.DataFrame(result_dict[\"results\"])\n    elif \"statistics\" in result_dict:\n        # build 或 stats 操作：返回统计信息\n        stats_data = result_dict[\"statistics\"]\n        # 展平嵌套的统计字典\n        flat_stats = []\n        for category, values in stats_data.items():\n            if isinstance(values, dict):\n                for k, v in values.items():\n                    flat_stats.append({\"分类\": category, \"项目\": k, \"数量\": v})\n            else:\n                flat_stats.append({\"分类\": \"汇总\", \"项目\": category, \"数量\": values})\n        return pd.DataFrame(flat_stats)\n    else:\n        # 其他情况（如 export）\n        return pd.DataFrame([result_dict])\n\n\n# === 主函数 ===\ndef main(datasource_name: str, table_name: str, **kwargs):\n    '''\n    流程主函数\n    \n    Args:\n        datasource_name: 数据源名称\n        table_name: 表名\n        **kwargs: 其他处理参数\n    '''\n    cm = ConnectorManager()\n    \n    print(f\"开始执行流程: 文物检索专家\")\n    print(f\"数据源: {datasource_name}, 表: {table_name}\")\n    print(f\"参数: {kwargs}\")\n    \n    # 1. 读取数据 (此 Skill 为生成型，输入表可能为空或配置表)\n    try:\n        data = cm.read_table(datasource_name, table_name)\n        df = pd.DataFrame(data[\"rows\"], columns=data[\"columns\"])\n        print(f\"读取到 {len(df)} 条输入数据\")\n    except Exception as e:\n        print(f\"读取数据源失败或表为空，使用空 DataFrame: {e}\")\n        df = pd.DataFrame()\n    \n    # 2. 调用 Skill 脚本处理\n    print(\"正在调用 Skill 处理...\")\n    result_df = _skill_main(df, **kwargs)\n    \n    # 3. 写入结果\n    if result_df is not None and not result_df.empty:\n        print(f\"处理完成，准备写入 {len(result_df)} 条结果\")\n        cm.write_table(datasource_name, table_name, result_df)\n        print(\"写入成功\")\n    else:\n        print(\"无结果数据写入\")\n    \n    return result_df\n\n\n# === 命令行入口 ===\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser(description=\"流程: 文物检索专家\")\n    parser.add_argument(\"datasource_name\", type=str, help=\"数据源名称\")\n    parser.add_argument(\"table_name\", type=str, help=\"表名\")\n    parser.add_argument(\"--params\", type=str, default=\"{}\", help=\"JSON格式的额外参数\")\n    \n    args = parser.parse_args()\n    extra = json.loads(args.params)\n    \n    result = main(args.datasource_name, args.table_name, **extra)\n    print(result)",
+    "entry_function": "main",
+    "parameters": [
+      {
+        "name": "datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "**kwargs",
+        "type": "dict",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "skill_calls": [
+      {
+        "skill_id": "2c3e9c82-fb5c-454c-9a4d-c6b320e998a5",
+        "skill_name": "cultural-relics-expert",
+        "script": "scripts/main.py",
+        "function": "_skill_CulturalRelicsKnowledgeBase",
+        "line": 109
+      },
+      {
+        "skill_id": "2c3e9c82-fb5c-454c-9a4d-c6b320e998a5",
+        "skill_name": "cultural-relics-expert",
+        "script": "scripts/main.py",
+        "function": "_skill_cultural_relics_expert",
+        "line": 215
+      },
+      {
+        "skill_id": "2c3e9c82-fb5c-454c-9a4d-c6b320e998a5",
+        "skill_name": "cultural-relics-expert",
+        "script": "scripts/main.py",
+        "function": "_skill_main",
+        "line": 270
+      }
+    ],
+    "tags": [
+      "文物",
+      "检索",
+      "知识库",
+      "数据采集",
+      "文化遗产"
+    ],
+    "category": "data_collection",
+    "visibility": "private"
+  },
+  {
+    "name": "pl_data-etl",
+    "display_name": "data-etl - 流程",
+    "description": "在不同数据源之间迁移数据，支持列名转换、列删除、列添加及基本数据处理（类型转换、空值填充、字符串处理、中英文翻译等）",
+    "main_code": "'''\n流程: data-etl\n描述: 在不同数据源之间迁移数据，支持列名转换、列删除、列添加及基本数据处理（类型转换、空值填充、字符串处理、中英文翻译等）\n从 Skill 生成: data-etl\n'''\n\nimport argparse\nimport json\nimport re\nimport sys\nimport io\nimport pandas as pd\nfrom typing import Dict, List, Optional, Any\n\nfrom app.services.connectors import ConnectorManager\n\n\n# 修复 Windows 环境下 GBK 编码无法输出 emoji 等特殊字符的问题\nif hasattr(sys.stdout, 'reconfigure'):\n    sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n    sys.stderr.reconfigure(encoding='utf-8', errors='replace')\nelse:\n    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')\n\n\n# ============================================================\n# 常用中文→英文翻译词典（用于自动生成英文列名/表名）\n# ============================================================\nCOMMON_CN_EN = {\n    \"编号\": \"code\", \"序号\": \"serial_no\", \"名称\": \"name\", \"名字\": \"name\",\n    \"类型\": \"type\", \"类别\": \"category\", \"分类\": \"classification\",\n    \"年代\": \"era\", \"时期\": \"period\", \"朝代\": \"dynasty\", \"时代\": \"era\",\n    \"年度\": \"year\", \"年份\": \"year\", \"月份\": \"month\",\n    \"地点\": \"location\", \"地址\": \"address\", \"位置\": \"position\",\n    \"描述\": \"description\", \"简介\": \"introduction\", \"说明\": \"description\",\n    \"备注\": \"remark\", \"注释\": \"annotation\", \"标记\": \"mark\",\n    \"状态\": \"status\", \"级别\": \"level\", \"数量\": \"quantity\",\n    \"日期\": \"date\", \"时间\": \"time\", \"价格\": \"price\", \"金额\": \"amount\",\n    \"作者\": \"author\", \"来源\": \"source\", \"图片\": \"image\", \"照片\": \"photo\",\n    \"经度\": \"longitude\", \"纬度\": \"latitude\", \"面积\": \"area\",\n    \"标题\": \"title\", \"标签\": \"tag\", \"内容\": \"content\", \"详情\": \"details\",\n    \"省份\": \"province\", \"城市\": \"city\", \"区县\": \"district\",\n    \"乡镇\": \"town\", \"村庄\": \"village\", \"街道\": \"street\",\n    \"社区\": \"community\", \"区域\": \"region\", \"国家\": \"country\",\n    \"高度\": \"height\", \"宽度\": \"width\", \"长度\": \"length\",\n    \"深度\": \"depth\", \"直径\": \"diameter\", \"半径\": \"radius\",\n    \"创建时间\": \"created_at\", \"更新时间\": \"updated_at\",\n    \"操作\": \"operation\", \"管理\": \"management\", \"负责\": \"responsible\",\n    \"联系\": \"contact\", \"电话\": \"phone\", \"邮箱\": \"email\",\n    \"网站\": \"website\", \"链接\": \"link\", \"网址\": \"url\",\n    \"文物\": \"relic\", \"保护\": \"protection\", \"单位\": \"unit\",\n    \"全国\": \"national\", \"重点\": \"key\", \"省级\": \"provincial\",\n    \"市级\": \"municipal\", \"县级\": \"county\", \"公布\": \"published\",\n    \"批次\": \"batch\", \"所属\": \"belonging\", \"材质\": \"material\",\n    \"尺寸\": \"size\", \"重量\": \"weight\", \"颜色\": \"color\",\n    \"用途\": \"purpose\", \"功能\": \"function\", \"发现\": \"discovery\",\n    \"发掘\": \"excavation\", \"出土\": \"unearthed\", \"收藏\": \"collection\",\n    \"展览\": \"exhibition\", \"修复\": \"restoration\", \"保存\": \"preservation\",\n    \"现状\": \"condition\", \"建成\": \"construction\",\n    \"文物名称\": \"relic_name\", \"文物编号\": \"relic_code\",\n    \"文物类型\": \"relic_type\", \"文物级别\": \"relic_level\",\n    \"保护单位\": \"protection_unit\", \"公布批次\": \"published_batch\",\n    \"所在省份\": \"province\", \"所在城市\": \"city\",\n    \"所在区县\": \"district\", \"详细地址\": \"detailed_address\",\n    \"建成年代\": \"construction_era\", \"所属朝代\": \"dynasty\",\n    \"全国重点\": \"national_key\", \"文物保护单位\": \"cultural_relic_protection_unit\",\n    \"全国重点文物保护单位\": \"national_key_cultural_relic_protection_units\",\n}\n\n\ndef _skill_smart_translate(text: str) -> str:\n    \"\"\"智能翻译中文为英文列名/表名：先查完整词组，再逐词翻译（最长匹配），最后回退到拼音\"\"\"\n    text = str(text).strip()\n\n    if text in COMMON_CN_EN:\n        return COMMON_CN_EN[text]\n\n    result_parts = []\n    remaining = text\n    has_translation = False\n\n    while remaining:\n        matched = False\n        for length in range(len(remaining), 0, -1):\n            substr = remaining[:length]\n            if substr in COMMON_CN_EN:\n                result_parts.append(COMMON_CN_EN[substr])\n                remaining = remaining[length:]\n                matched = True\n                has_translation = True\n                break\n        if not matched:\n            char = remaining[0]\n            try:\n                from pypinyin import pinyin, Style\n                py = pinyin(char, style=Style.NORMAL)\n                if py and py[0] and py[0][0]:\n                    result_parts.append(py[0][0])\n            except ImportError:\n                result_parts.append(char)\n            remaining = remaining[1:]\n\n    if has_translation:\n        return '_'.join(result_parts)\n\n    try:\n        from pypinyin import pinyin, Style\n        clean_text = re.sub(r'[^\\u4e00-\\u9fa5]', '', text)\n        if not clean_text:\n            return re.sub(r'\\s+', '_', text.lower())\n        result = pinyin(clean_text, style=Style.NORMAL)\n        return '_'.join([item[0] for item in result])\n    except ImportError:\n        return re.sub(r'\\s+', '_', text.lower())\n\n\ndef _skill_is_english_identifier(name: str) -> bool:\n    \"\"\"检查名称是否为合法的英文标识符\"\"\"\n    if not name:\n        return False\n    name = str(name)\n    return bool(re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name))\n\n\ndef _skill_sanitize_identifier(name: str, fallback: str = \"col\") -> str:\n    \"\"\"将名称规范化为合法的英文标识符\"\"\"\n    name = str(name).strip()\n    if not name:\n        return fallback\n    if _skill_is_english_identifier(name):\n        return name\n    translated = _skill_smart_translate(name)\n    translated = re.sub(r'[^a-zA-Z0-9_]', '_', translated)\n    translated = re.sub(r'_+', '_', translated).strip('_')\n    if translated and translated[0].isdigit():\n        translated = f\"_{translated}\"\n    if not translated:\n        translated = fallback\n    return translated\n\n\ndef _skill_translate_text(value: Any, source_lang: str, target_lang: str) -> str:\n    \"\"\"对单个值进行中英文翻译（使用内置词典，翻译不出的保留原文）\"\"\"\n    if value is None or (isinstance(value, float) and pd.isna(value)):\n        return value\n    text = str(value).strip()\n    if not text:\n        return value\n\n    # zh → en: 使用词典翻译\n    if source_lang == \"zh\" and target_lang == \"en\":\n        if text in COMMON_CN_EN:\n            return COMMON_CN_EN[text]\n        # 尝试逐词翻译\n        result_parts = []\n        remaining = text\n        while remaining:\n            matched = False\n            for length in range(len(remaining), 0, -1):\n                substr = remaining[:length]\n                if substr in COMMON_CN_EN:\n                    result_parts.append(COMMON_CN_EN[substr])\n                    remaining = remaining[length:]\n                    matched = True\n                    break\n            if not matched:\n                result_parts.append(remaining[0])\n                remaining = remaining[1:]\n        translated = ' '.join(result_parts)\n        return translated if translated else text\n\n    # en → zh: 简单回查词典\n    if source_lang == \"en\" and target_lang == \"zh\":\n        reverse_dict = {v: k for k, v in COMMON_CN_EN.items()}\n        if text in reverse_dict:\n            return reverse_dict[text]\n        return text\n\n    return text\n\n\ndef _skill_apply_column_transform(df: pd.DataFrame, column: str, rule: Dict[str, Any]) -> pd.DataFrame:\n    \"\"\"对 DataFrame 中指定列应用转换规则\"\"\"\n    if column not in df.columns:\n        print(f\"  ⚠️ 列 '{column}' 不存在，跳过转换\")\n        return df\n\n    transform_type = rule.get(\"type\")\n\n    if transform_type == \"trim\":\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str).str.strip()\n\n    elif transform_type == \"upper\":\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str).str.upper()\n\n    elif transform_type == \"lower\":\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str).str.lower()\n\n    elif transform_type == \"fill_na\":\n        fill_value = rule.get(\"value\", \"\")\n        df[column] = df[column].fillna(fill_value)\n\n    elif transform_type == \"to_int\":\n        df[column] = pd.to_numeric(df[column], errors=\"coerce\").astype(\"Int64\")\n\n    elif transform_type == \"to_float\":\n        df[column] = pd.to_numeric(df[column], errors=\"coerce\")\n        if \"round\" in rule:\n            decimals = int(rule[\"round\"])\n            df[column] = df[column].round(decimals)\n\n    elif transform_type == \"to_str\":\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str)\n\n    elif transform_type == \"to_date\":\n        date_format = rule.get(\"format\")\n        df[column] = pd.to_datetime(df[column], format=date_format, errors=\"coerce\")\n\n    elif transform_type == \"prefix\":\n        prefix_value = str(rule.get(\"value\", \"\"))\n        mask = df[column].notna()\n        df.loc[mask, column] = prefix_value + df.loc[mask, column].astype(str)\n\n    elif transform_type == \"suffix\":\n        suffix_value = str(rule.get(\"value\", \"\"))\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str) + suffix_value\n\n    elif transform_type == \"replace\":\n        old_val = rule.get(\"old\", \"\")\n        new_val = rule.get(\"new\", \"\")\n        mask = df[column].notna()\n        df.loc[mask, column] = df.loc[mask, column].astype(str).str.replace(\n            str(old_val), str(new_val), regex=False\n        )\n\n    elif transform_type == \"translate\":\n        source_lang = rule.get(\"source_lang\", \"zh\")\n        target_lang = rule.get(\"target_lang\", \"en\")\n        print(f\"  🌐 翻译列 '{column}': {source_lang} → {target_lang}\")\n        df[column] = df[column].apply(\n            lambda v: _skill_translate_text(v, source_lang, target_lang)\n        )\n\n    else:\n        print(f\"  ⚠️ 未知的转换类型: {transform_type}，跳过\")\n\n    return df\n\n\ndef _skill_main(\n    df: pd.DataFrame,\n    column_mapping: Optional[Dict[str, str]] = None,\n    column_transforms: Optional[Dict[str, Dict[str, Any]]] = None,\n    drop_columns: Optional[List[str]] = None,\n    add_columns: Optional[Dict[str, Any]] = None,\n    **kwargs\n) -> pd.DataFrame:\n    \"\"\"\n    Skill 主处理函数 - 从 scripts/main.py 内联\n\n    处理顺序:\n    1. 删除指定列\n    2. 对列应用转换规则\n    3. 添加新列\n    4. 列名重命名\n    \"\"\"\n    if df is None or df.empty:\n        print(\"⚠️ 输入数据为空，返回空 DataFrame\")\n        return pd.DataFrame()\n\n    print(f\"📥 读取数据: {len(df)} 行, {len(df.columns)} 列\")\n    print(f\"   列名: {list(df.columns)}\")\n\n    # 1. 删除指定列\n    if drop_columns:\n        existing = [c for c in drop_columns if c in df.columns]\n        missing = [c for c in drop_columns if c not in df.columns]\n        if existing:\n            df = df.drop(columns=existing)\n            print(f\"🗑️ 删除列: {existing}\")\n        if missing:\n            print(f\"  ⚠️ 不存在的列（跳过）: {missing}\")\n\n    # 2. 对列应用转换规则\n    if column_transforms:\n        print(\"🔄 应用列转换规则...\")\n        for col, rule in column_transforms.items():\n            print(f\"   → 列 '{col}': {rule.get('type', 'unknown')}\")\n            df = _skill_apply_column_transform(df, col, rule)\n\n    # 3. 添加新列\n    if add_columns:\n        print(\"➕ 添加新列...\")\n        for col, value in add_columns.items():\n            df[col] = value\n            print(f\"   → 添加列 '{col}' = {value}\")\n\n    # 4. 列名重命名\n    if column_mapping:\n        existing_mapping = {k: v for k, v in column_mapping.items() if k in df.columns}\n        if existing_mapping:\n            df = df.rename(columns=existing_mapping)\n            print(f\"📝 列名映射: {existing_mapping}\")\n        missing_cols = [k for k in column_mapping if k not in df.columns]\n        if missing_cols:\n            print(f\"  ⚠️ 不存在的源列（跳过）: {missing_cols}\")\n\n    print(f\"📤 处理完成: {len(df)} 行, {len(df.columns)} 列\")\n    print(f\"   最终列名: {list(df.columns)}\")\n\n    return df\n\n\n# === 主函数 ===\ndef main(\n    source_datasource_name: str,\n    source_table_name: str,\n    target_datasource_name: str,\n    target_table_name: str,\n    column_mapping: Optional[Dict[str, str]] = None,\n    column_transforms: Optional[Dict[str, Dict[str, Any]]] = None,\n    drop_columns: Optional[List[str]] = None,\n    add_columns: Optional[Dict[str, Any]] = None,\n    batch_size: int = 1000,\n    limit: int = 10000,\n    output_dir: Optional[str] = None,\n    **kwargs\n) -> pd.DataFrame:\n    \"\"\"\n    流程主函数\n\n    Args:\n        source_datasource_name: 源数据源名称\n        source_table_name: 源表名\n        target_datasource_name: 目标数据源名称\n        target_table_name: 目标表名\n        column_mapping: 列名映射 {源列名: 目标列名}\n        column_transforms: 列转换规则 {列名: {type: 类型, ...}}\n        drop_columns: 要删除的列名列表\n        add_columns: 要添加的列 {列名: 值}\n        batch_size: 批量写入大小\n        limit: 读取行数上限\n        output_dir: 输出目录（文件型数据源时使用）\n        **kwargs: 其他处理参数\n    \"\"\"\n    cm = ConnectorManager()\n\n    # 1. 读取源数据\n    print(f\"📖 从数据源 '{source_datasource_name}' 读取表 '{source_table_name}'...\")\n    data = cm.read_table(source_datasource_name, source_table_name)\n\n    rows = data.get(\"rows\", [])\n    columns = data.get(\"columns\", [])\n\n    if not rows:\n        print(\"⚠️ 源表无数据，返回空 DataFrame\")\n        return pd.DataFrame()\n\n    df = pd.DataFrame(rows, columns=columns)\n\n    # 限制读取行数\n    if limit and len(df) > limit:\n        print(f\"  ✂️ 数据量超过上限 {limit}，截取前 {limit} 行\")\n        df = df.head(limit)\n\n    print(f\"  ✅ 读取 {len(df)} 行数据\")\n\n    # 2. 调用 Skill 脚本处理\n    print(\"⚙️ 开始数据处理...\")\n    result_df = _skill_main(\n        df,\n        column_mapping=column_mapping,\n        column_transforms=column_transforms,\n        drop_columns=drop_columns,\n        add_columns=add_columns,\n        **kwargs\n    )\n\n    if result_df is None or result_df.empty:\n        print(\"⚠️ 处理结果为空，跳过写入\")\n        return result_df if result_df is not None else pd.DataFrame()\n\n    # 3. 写入目标数据源\n    print(f\"📝 写入数据源 '{target_datasource_name}' 表 '{target_table_name}'...\")\n\n    if batch_size and len(result_df) > batch_size:\n        total_batches = (len(result_df) + batch_size - 1) // batch_size\n        for i in range(0, len(result_df), batch_size):\n            batch_num = i // batch_size + 1\n            batch = result_df.iloc[i:i + batch_size]\n            cm.write_table(target_datasource_name, target_table_name, batch)\n            print(f\"  📦 写入批次 {batch_num}/{total_batches}: {len(batch)} 行\")\n    else:\n        cm.write_table(target_datasource_name, target_table_name, result_df)\n        print(f\"  ✅ 写入 {len(result_df)} 行\")\n\n    print(\"🎉 数据迁移完成！\")\n    return result_df\n\n\n# === 命令行入口 ===\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser(description=\"流程: data-etl\")\n    parser.add_argument(\"source_datasource_name\", type=str, help=\"源数据源名称\")\n    parser.add_argument(\"source_table_name\", type=str, help=\"源表名\")\n    parser.add_argument(\"target_datasource_name\", type=str, help=\"目标数据源名称\")\n    parser.add_argument(\"target_table_name\", type=str, help=\"目标表名\")\n    parser.add_argument(\"--column_mapping\", type=str, default=\"{}\", help=\"JSON格式的列名映射\")\n    parser.add_argument(\"--column_transforms\", type=str, default=\"{}\", help=\"JSON格式的列转换规则\")\n    parser.add_argument(\"--drop_columns\", type=str, default=\"[]\", help=\"JSON格式的要删除的列名列表\")\n    parser.add_argument(\"--add_columns\", type=str, default=\"{}\", help=\"JSON格式的要添加的列\")\n    parser.add_argument(\"--batch_size\", type=int, default=1000, help=\"批量写入大小\")\n    parser.add_argument(\"--limit\", type=int, default=10000, help=\"读取行数上限\")\n    parser.add_argument(\"--output_dir\", type=str, default=None, help=\"输出目录\")\n\n    args = parser.parse_args()\n\n    col_mapping = json.loads(args.column_mapping)\n    col_transforms = json.loads(args.column_transforms)\n    drop_cols = json.loads(args.drop_columns)\n    add_cols = json.loads(args.add_columns)\n\n    result = main(\n        source_datasource_name=args.source_datasource_name,\n        source_table_name=args.source_table_name,\n        target_datasource_name=args.target_datasource_name,\n        target_table_name=args.target_table_name,\n        column_mapping=col_mapping,\n        column_transforms=col_transforms,\n        drop_columns=drop_cols,\n        add_columns=add_cols,\n        batch_size=args.batch_size,\n        limit=args.limit,\n        output_dir=args.output_dir,\n    )\n    print(result)",
+    "entry_function": "main",
+    "parameters": [
+      {
+        "name": "source_datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "source_table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "target_datasource_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "target_table_name",
+        "type": "str",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "column_mapping",
+        "type": "any",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "column_transforms",
+        "type": "any",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "drop_columns",
+        "type": "any",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "add_columns",
+        "type": "any",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "batch_size",
+        "type": "int",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "output_dir",
+        "type": "any",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "**kwargs",
+        "type": "dict",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "skill_calls": [
+      {
+        "skill_id": "21de3207-0256-46f9-bd71-15c4e67e5e3c",
+        "skill_name": "data-etl",
+        "script": "scripts/main.py",
+        "function": "_skill_is_english_identifier",
+        "line": 131
+      },
+      {
+        "skill_id": "21de3207-0256-46f9-bd71-15c4e67e5e3c",
+        "skill_name": "data-etl",
+        "script": "scripts/main.py",
+        "function": "_skill_smart_translate",
+        "line": 133
+      },
+      {
+        "skill_id": "21de3207-0256-46f9-bd71-15c4e67e5e3c",
+        "skill_name": "data-etl",
+        "script": "scripts/main.py",
+        "function": "_skill_main",
+        "line": 376
+      },
+      {
+        "skill_id": "21de3207-0256-46f9-bd71-15c4e67e5e3c",
+        "skill_name": "data-etl",
+        "script": "scripts/main.py",
+        "function": "_skill_apply_column_transform",
+        "line": 295
+      },
+      {
+        "skill_id": "21de3207-0256-46f9-bd71-15c4e67e5e3c",
+        "skill_name": "data-etl",
+        "script": "scripts/main.py",
+        "function": "_skill_translate_text",
+        "line": 247
+      }
+    ],
+    "tags": [
+      "ai_generated"
+    ],
+    "category": "ai_generated",
+    "visibility": "private"
+  }
+]
