@@ -17,6 +17,9 @@
           <el-icon><MagicStick /></el-icon>
           生成算子
         </el-button>
+        <el-button type="warning" plain @click="exportSeed" :loading="exporting">
+          <el-icon><Download /></el-icon> 导出打包
+        </el-button>
       </div>
       <div class="toolbar-right">
         <el-select v-model="sortBy" style="width: 120px" @change="loadOperators">
@@ -526,6 +529,19 @@ const debugInputValues = reactive<Record<string, string>>({})
 const debugParamValues = reactive<Record<string, string>>({})
 const debugRunning = ref(false)
 const saving = ref(false)
+const exporting = ref(false)
+
+const exportSeed = async () => {
+  exporting.value = true
+  try {
+    const res = await api.post('/operators/export-seed')
+    ElMessage.success(`已导出 ${res.data.exported} 个算子到 seed 文件`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 interface OpChatMessage {
   role: 'user' | 'assistant'

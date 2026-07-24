@@ -616,3 +616,38 @@ async def clone_pipeline(
     await db.flush()
     await db.refresh(clone)
     return _build_response(clone)
+
+
+@router.post("/export-seed")
+async def export_seed(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导出所有流程到 seed 文件（data/seed/pipelines.json），供新机器安装时自动加载"""
+    from pathlib import Path as _Path
+    from app.core.config import settings as _settings
+    result = await db.execute(select(Pipeline))
+    pipelines = result.scalars().all()
+    seen = set()
+    data = []
+    for p in pipelines:
+        if p.name in seen:
+            continue
+        seen.add(p.name)
+        data.append({
+            "name": p.name,
+            "display_name": p.display_name or p.name,
+            "description": p.description or "",
+            "main_code": p.main_code or "",
+            "entry_function": p.entry_function or "main",
+            "parameters": p.parameters or [],
+            "skill_calls": p.skill_calls or [],
+            "tags": p.tags or [],
+            "category": p.category or "seed",
+            "visibility": p.visibility or "public",
+        })
+    seed_dir = _Path(_settings.SKILL_STORAGE_PATH).parent / "seed"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    seed_file = seed_dir / "pipelines.json"
+    seed_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"exported": len(data), "path": str(seed_file)}

@@ -18,6 +18,9 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-button type="warning" plain @click="exportSeed" :loading="exporting">
+          <el-icon><Download /></el-icon> 导出打包
+        </el-button>
       </div>
       <div class="toolbar-right">
         <el-input
@@ -429,6 +432,19 @@ const executions = ref<Execution[]>([])
 const detailTab = ref('code')
 const flowCanvasRef = ref<HTMLElement | null>(null)
 const saving = ref(false)
+const exporting = ref(false)
+
+const exportSeed = async () => {
+  exporting.value = true
+  try {
+    const res = await api.post('/pipelines/export-seed')
+    ElMessage.success(`已导出 ${res.data.exported} 个流程到 seed 文件`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 const createForm = ref({
   name: '',
