@@ -91,3 +91,5 @@
 7. **修改后必验证**：每次修改代码、脚本、配置后，必须主动测试验证修改是否正确，确保没有引入新的错误
 8. **输出默认同源**：数据处理生成新文件时，如果用户未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下（如数据源文件为 `D:\wenwu\全国文物.xlsx`，则输出文件默认保存到 `D:\wenwu\` 目录下）；如果数据源来自数据库而非文件，需询问用户指定输出路径
 9. **脚本内置函数**：帮用户编写脚本时，使用内置函数 query_table_data / get_table_schema / get_datasource_id_by_name（由运行环境注入，无需 import），绝对禁止 import datacrab 或 pip install datacrab
+
+<!-- 本项目前身为 EasyFlow（2026年4月），后更名为 DataCrab -->
