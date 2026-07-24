@@ -12,6 +12,13 @@ from app.core.database import async_session
 async def _get_allowed_paths(db, user_id) -> list[str]:
     """收集授权路径：文件链接 + 数据源目录（用户建数据源即授权）。"""
     from sqlalchemy import select as _select
+    import uuid as _uuid
+    # user_id 可能是 str，转为 UUID 适配数据库列类型
+    if isinstance(user_id, str):
+        try:
+            user_id = _uuid.UUID(user_id)
+        except (ValueError, AttributeError):
+            pass
     allowed = []
 
     # 1. 文件链接
@@ -136,6 +143,8 @@ def build_operator_namespace(current_user_id):
                 return await llm_manager.chat(
                     prompt, temperature=temperature, max_tokens=max_tokens
                 )
+            except Exception as e:
+                raise RuntimeError(f"平台限制：llm_chat 调用失败 — {e}") from e
             finally:
                 reset_user_llm_config()
 
@@ -334,9 +343,20 @@ def build_operator_namespace(current_user_id):
                             {"type": "text", "text": prompt},
                         ],
                     })
-                    return await llm_manager.chat_with_messages(
-                        messages, temperature=temperature, max_tokens=max_tokens,
+                    # 视觉模型：文本模型不支持图片
+                    from app.services.llm import _PROVIDER_VISION_MODELS
+                    _vision_model = _PROVIDER_VISION_MODELS.get(llm_manager.provider, "")
+                    if not _vision_model:
+                        raise RuntimeError(f"Provider {llm_manager.provider} 未配置视觉模型")
+                    resp = await llm_manager._client.chat.completions.create(
+                        model=_vision_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
                     )
+                    return resp.choices[0].message.content
+                except Exception as e:
+                    raise RuntimeError(f"平台限制：llm_vision 调用失败 — {e}") from e
                 finally:
                     reset_user_llm_config()
 

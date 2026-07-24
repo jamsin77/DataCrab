@@ -152,6 +152,16 @@ _PROVIDER_EMBEDDING_MODELS: Dict[str, str] = {
     "moonshot": "",
 }
 
+# 按 provider 选视觉模型（文本模型不支持图片输入）
+_PROVIDER_VISION_MODELS: Dict[str, str] = {
+    "glm": "glm-4v-plus",
+    "qwen": "qwen-vl-plus",
+    "openai": "gpt-4o",
+    "siliconflow": "Qwen/Qwen2-VL-72B-Instruct",
+    "deepseek": "",
+    "moonshot": "",
+}
+
 # 预配置 Provider（启动时 seed 到 DB）
 _SEED_PROVIDERS = {
     "qwen": {
