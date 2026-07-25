@@ -4,7 +4,7 @@
       <div class="toolbar-left">
         <el-button type="primary" @click="showUploadDialog = true">
           <el-icon><Upload /></el-icon>
-          导入 Skill 包
+          导入技能
         </el-button>
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
@@ -100,10 +100,10 @@
     </el-dialog>
 
     <!-- ==================== 导入对话框 ==================== -->
-    <el-dialog v-model="showUploadDialog" title="导入 Skill 包" width="480px">
+    <el-dialog v-model="showUploadDialog" title="导入技能" width="480px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
-          请上传 .zip 格式的 Skill 包，包内需包含 SKILL.md 文件。同名技能可选择覆盖或重命名
+          请上传 .zip 格式的技能包，包内需包含 SKILL.md 文件。同名技能可选择覆盖或重命名
         </template>
       </el-alert>
       <el-upload
@@ -775,7 +775,7 @@ const importing = ref(false)
 
 function validateZip(file: any) {
   if (!file.name.toLowerCase().endsWith('.zip')) {
-    ElMessage.error('只支持 .zip 格式的 Skill 包')
+    ElMessage.error('只支持 .zip 格式的技能包')
     return false
   }
   return true
@@ -797,7 +797,7 @@ async function doImport(file: File, mode: string, newName?: string) {
       headers: { 'Content-Type': 'multipart/form-data' },
       params,
     })
-    ElMessage.success(`Skill 包 "${res.display_name || res.name}" 已导入`)
+    ElMessage.success(`技能 "${res.display_name || res.name}" 已导入`)
     showUploadDialog.value = false
     showConflictDialog.value = false
     pendingFile.value = null
