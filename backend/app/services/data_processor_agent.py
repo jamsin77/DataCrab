@@ -515,7 +515,7 @@ class DataProcessorAgent(BaseAgent):
         has_preinjected_data = context.get("has_preinjected_data", False)
 
         # 模型选择 + 降级链（与调试模式一致）
-        chosen_model = llm_manager.pick_model(user_msg, context.get("history", []))
+        chosen_model = await llm_manager.pick_model_async(user_msg, context.get("history", []))
         from app.services.llm import _circuit
         degradation_chain = llm_manager._degradation_chain(chosen_model)
 
@@ -1675,7 +1675,7 @@ class DataProcessorAgent(BaseAgent):
 
         logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
-        yield {"type": "model", "content": llm_manager.pick_model(user_msg, history)}
+        yield {"type": "model", "content": await llm_manager.pick_model_async(user_msg, history)}
 
         while _fix_attempts < max_fix_attempts:
             _total_llm_calls += 1

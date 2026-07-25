@@ -446,6 +446,29 @@
       "parameters": {},
       "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
       "context_summary": "工具: run_script\nAI输出: All three fixes applied successfully. Now let me run the script to re-execute the extraction with the vision model:"
+    },
+    {
+      "timestamp": "2026-07-25T10:58:04.490248",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": ""
     }
   ],
   "positive": [

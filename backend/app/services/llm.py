@@ -412,7 +412,13 @@ class LLMManager:
             return cfg["model"]
         return self.model
 
-    # 任务关键词分类
+    def _eff_vision_model(self, provider: str = "") -> str:
+        """根据 provider 选择视觉模型（空字符串=不支持）"""
+        cfg = get_user_llm_config()
+        p = provider or (cfg.get("provider") if cfg else self.provider)
+        return _PROVIDER_VISION_MODELS.get(p, "")
+
+    # 任务关键词分类（降级方案，LLM 分类失败时用）
     _COMPLEX_KEYWORDS = {
         "修改", "修复", "改一下", "帮我改", "fix", "优化", "重构", "改进", "重写", "改写",
         "optimize", "refactor", "improve", "rewrite", "生成", "创建", "写一个", "生成代码",
@@ -424,29 +430,64 @@ class LLMManager:
         "解释", "说明", "看看", "查看", "展示", "explain", "show", "describe",
         "分析", "analyze", "统计", "汇总", "总结", "summarize",
     }
+    _VISION_KEYWORDS = {
+        "图片", "识别", "ocr", "OCR", "身份证", "营业执照", "证件", "截图",
+        "图片识别", "图片分析", "图片信息", "image", "photo", "picture",
+    }
+    _EMBEDDING_KEYWORDS = {
+        "向量化", "向量", "embedding", "语义搜索", "相似度", "相似匹配",
+        "向量索引", "vector", "vectorize",
+    }
 
-    def pick_model(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
-        """根据消息内容和上下文选择模型。不按入口写死，所有端点统一调用。
+    _task_cache: Dict[str, str] = {}
 
-        判断优先级：
-        1. 重试（执行失败后） → 深度模型
-        2. 复杂关键词（修改/修复/报错/生成） → 深度模型
-        3. 上下文（最近在改代码） → 深度模型
-        4. 简单关键词（运行/执行/解释） → 快速模型
-        5. 不确定 → 深度模型（宁深不浅）
-        """
-        deep = self._eff_model()
-        if is_retry:
-            return deep
+    async def classify_task(self, message: str, history: List[Dict] = None) -> str:
+        """用快速模型推断任务类型：deep/fast/vision/embedding。失败回退关键词匹配。"""
+        cache_key = message[:200] if message else ""
+        if cache_key in self._task_cache:
+            return self._task_cache[cache_key]
 
-        msg_lower = message.lower() if message else ""
+        fast = self.fast_model
+        if not fast or fast == self._eff_model():
+            return self._keyword_classify(message, history)
 
-        # 1. 复杂任务 → 深度
+        try:
+            prompt = (
+                "根据用户消息判断任务类型，只返回一个词，不要其他内容：\n"
+                "- deep：深度推理（修改代码、修复bug、生成脚本、复杂分析、ETL设计、数据清洗）\n"
+                "- fast：简单操作（运行、执行、查看、统计、解释、列表）\n"
+                "- vision：图片识别（OCR、证件提取、图片分析、图片信息）\n"
+                "- embedding：向量化（语义搜索、相似度匹配、向量索引）\n\n"
+                f"用户消息：{message[:500]}\n\n任务类型："
+            )
+            resp = await self.chat(prompt, model=fast, temperature=0.0, max_tokens=10)
+            task_type = resp.strip().lower()
+            if task_type not in ("deep", "fast", "vision", "embedding"):
+                task_type = "deep"
+
+            self._task_cache[cache_key] = task_type
+            if len(self._task_cache) > 100:
+                self._task_cache.pop(next(iter(self._task_cache)))
+            return task_type
+        except Exception as e:
+            logger.warning(f"任务分类失败，回退关键词匹配: {e}")
+            return self._keyword_classify(message, history)
+
+    def _keyword_classify(self, message: str, history: List[Dict] = None) -> str:
+        """关键词匹配分类（降级方案）"""
+        if not message:
+            return "deep"
+        msg_lower = message.lower()
+        # vision/embedding 优先判断（特定能力词比 deep/fast 更明确）
+        for kw in self._VISION_KEYWORDS:
+            if kw in msg_lower or kw in message:
+                return "vision"
+        for kw in self._EMBEDDING_KEYWORDS:
+            if kw in msg_lower or kw in message:
+                return "embedding"
         for kw in self._COMPLEX_KEYWORDS:
             if kw in msg_lower or kw in message:
-                return deep
-
-        # 2. 上下文：最近 1 条 assistant 回复涉及代码修改 → 深度
+                return "deep"
         if history:
             for h in history[-3:]:
                 if h.get("role") != "assistant":
@@ -454,15 +495,42 @@ class LLMManager:
                 content = (h.get("content") or "").lower()
                 for kw in self._COMPLEX_KEYWORDS:
                     if kw in content:
-                        return deep
-
-        # 3. 简单任务 → 快速
+                        return "deep"
         for kw in self._SIMPLE_KEYWORDS:
             if kw in msg_lower or kw in message:
-                return self.fast_model
+                return "fast"
+        return "deep"
 
-        # 4. 不确定 → 深度（宁深不浅）
-        return deep
+    def pick_model(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
+        """同步模型选择（降级方案，用关键词匹配）。异步场景请用 pick_model_async。"""
+        if is_retry:
+            return self._eff_model()
+        task_type = self._keyword_classify(message, history)
+        if task_type == "fast":
+            return self.fast_model
+        return self._eff_model()
+
+    async def pick_model_async(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
+        """根据消息内容语义推断任务类型，选择模型。"""
+        if is_retry:
+            return self._eff_model()
+
+        task_type = await self.classify_task(message, history)
+
+        if task_type == "vision":
+            vision = self._eff_vision_model()
+            if not vision:
+                raise RuntimeError(f"当前 Provider 不支持视觉模型，无法处理图片识别任务")
+            return vision
+        elif task_type == "embedding":
+            emb = self._eff_embedding_model()
+            if not emb:
+                raise RuntimeError(f"当前 Provider 不支持嵌入模型，无法处理向量化任务")
+            return emb
+        elif task_type == "fast":
+            return self.fast_model
+        else:
+            return self._eff_model()
 
     def _resolve_model(self, model: Optional[str]) -> str:
         """解析模型：指定则用指定，断路器熔断则降级到另一个模型。"""
@@ -1013,6 +1081,8 @@ class LLMManager:
                 client = self._client_for(cfg)
                 provider = cfg.get("provider", "")
                 emb_model = self._eff_embedding_model(provider)
+                if not emb_model:
+                    raise RuntimeError(f"Provider {provider} 不支持嵌入模型，无法处理向量化任务")
                 response = await client.embeddings.create(
                     model=emb_model,
                     input=text,

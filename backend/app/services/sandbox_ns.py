@@ -343,11 +343,10 @@ def build_operator_namespace(current_user_id):
                             {"type": "text", "text": prompt},
                         ],
                     })
-                    # 视觉模型：文本模型不支持图片
-                    from app.services.llm import _PROVIDER_VISION_MODELS
-                    _vision_model = _PROVIDER_VISION_MODELS.get(llm_manager.provider, "")
+                    # 视觉模型：按 provider 自动选择，不支持则报环境错误
+                    _vision_model = llm_manager._eff_vision_model()
                     if not _vision_model:
-                        raise RuntimeError(f"Provider {llm_manager.provider} 未配置视觉模型")
+                        raise RuntimeError(f"Provider {llm_manager.provider} 不支持视觉模型，无法处理图片识别任务")
                     resp = await llm_manager._client.chat.completions.create(
                         model=_vision_model,
                         messages=messages,

@@ -319,7 +319,7 @@ class DataInspectorAgent(BaseAgent):
         had_any_tool_calls = False
         pressure_warned = False
 
-        yield {"type": "model", "content": llm_manager.pick_model(inspect_msg or "数据检查")}
+        yield {"type": "model", "content": await llm_manager.pick_model_async(inspect_msg or "数据检查")}
 
         for i in range(max_iterations):
             _llm_model = None
