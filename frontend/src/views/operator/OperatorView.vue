@@ -10,15 +10,12 @@
         >
           <el-button type="primary">
             <el-icon><Upload /></el-icon>
-            上传Python脚本
+            导入算子
           </el-button>
         </el-upload>
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
           生成算子
-        </el-button>
-        <el-button type="warning" plain @click="exportSeed" :loading="exporting">
-          <el-icon><Download /></el-icon> 导出打包
         </el-button>
       </div>
       <div class="toolbar-right">
@@ -83,7 +80,7 @@
         </el-card>
     </div>
 
-    <el-empty v-if="filteredOperators.length === 0" description="暂无算子，请上传Python脚本" />
+    <el-empty v-if="filteredOperators.length === 0" description="暂无算子，请导入算子" />
 
     <el-dialog
       v-model="debugDrawer"
@@ -529,19 +526,6 @@ const debugInputValues = reactive<Record<string, string>>({})
 const debugParamValues = reactive<Record<string, string>>({})
 const debugRunning = ref(false)
 const saving = ref(false)
-const exporting = ref(false)
-
-const exportSeed = async () => {
-  exporting.value = true
-  try {
-    const res = await api.post('/operators/export-seed')
-    ElMessage.success(`已导出 ${res.data.exported} 个算子到 seed 文件`)
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '导出失败')
-  } finally {
-    exporting.value = false
-  }
-}
 
 interface OpChatMessage {
   role: 'user' | 'assistant'
