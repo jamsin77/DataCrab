@@ -772,6 +772,61 @@ async def run_skill_stream(
                             logger.warning(f"数据质量检查失败: {inspect_err}")
                             yield f"data: {json_mod.dumps({'type': 'inspection_result', 'result': {'passed': True, 'error': str(inspect_err)[:200]}}, ensure_ascii=False)}\n\n"
 
+            # 执行失败时检查错误类型
+            if not _exec_success:
+                _err_type = exec_result.get("error_type") or ""
+                if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制", "数据问题")):
+                    _err_msg = str(exec_result.get("error", ""))[:500]
+                    _platform_msg = _err_type + "\n\n错误详情：" + _err_msg
+                    yield f"data: {json_mod.dumps({'type': 'platform_issue', 'message': _platform_msg}, ensure_ascii=False)}\n\n"
+                else:
+                    # L1/L2 脚本错误 → 自动进入调试修复
+                    _err_msg = str(exec_result.get("error", ""))[:500]
+                    yield f"data: {json_mod.dumps({'type': 'fixing', 'message': '执行失败，正在自动修复脚本...'}, ensure_ascii=False)}\n\n"
+                    try:
+                        from app.services.data_processor_agent import DataProcessorAgent
+                        from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
+                        if not agent_registry.get("data_processor"):
+                            agent_registry.register(DataProcessorAgent())
+                        _processor = agent_registry.get("data_processor")
+                        _skill_md_path = folder / "SKILL.md"
+                        _skill_md = _skill_md_path.read_text(encoding="utf-8") if _skill_md_path.exists() else ""
+                        _fix_context = {
+                            "debug_mode": True,
+                            "db": db,
+                            "user_id": current_user.id,
+                            "debug_folder": folder,
+                            "debug_script_name": request.script_name,
+                            "debug_script_content": folder.joinpath("scripts", request.script_name).read_text(encoding="utf-8") if folder.joinpath("scripts", request.script_name).exists() else "",
+                            "debug_skill_md": _skill_md[:1200],
+                            "debug_skill_md_full": _skill_md,
+                            "debug_type": "skill",
+                            "debug_datasource_id": request.datasource_id,
+                            "debug_datasource_name": ds_name,
+                            "debug_table_name": request.table_name,
+                            "debug_parameters": request.parameters,
+                            "debug_max_rounds": 7,
+                            "debug_max_inspections": 4,
+                        }
+                        _fix_msg = AgentMessage(
+                            from_agent="runner",
+                            to_agent="data_processor",
+                            reason=HandoffReason.DELEGATE,
+                            payload={"user_message": f"技能执行失败，错误信息：\n{_err_msg}"},
+                        )
+                        async for _evt in _processor.run(_fix_msg, _fix_context):
+                            _et = _evt.get("type")
+                            if _et == "done":
+                                _fix_result = _evt.get("result", {})
+                                if _fix_result.get("content") and "失败" not in str(_fix_result.get("content", "")):
+                                    exec_result = {"success": True, "result": _fix_result, "stdout": ""}
+                                break
+                            elif _et in ("thinking", "model", "clear_thinking", "content", "round", "executing", "run_result", "script_updated", "give_up", "platform_issue", "inspecting", "retry"):
+                                yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                    except Exception as fix_err:
+                        logger.warning(f"自动修复失败: {fix_err}")
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': f'\\n自动修复失败: {fix_err}\\n'}, ensure_ascii=False)}\n\n"
+
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
         except asyncio.CancelledError:
@@ -1256,13 +1311,61 @@ async def run_skill_nl_stream(
 
             logger.info(f"NL stream: exec_result success={exec_result.get('success')}, error={str(exec_result.get('error',''))[:100]}")
 
-            # 执行失败时检查错误类型：平台限制/数据问题/环境问题 → 明确报告
+            # 执行失败时检查错误类型
             if not _exec_success:
                 _err_type = exec_result.get("error_type") or ""
                 if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制", "数据问题")):
+                    # L4/L5/L6 → 明确报告，不修复
                     _err_msg = str(exec_result.get("error", ""))[:500]
                     _platform_msg = _err_type + "\n\n错误详情：" + _err_msg
                     yield f"data: {json_mod.dumps({'type': 'platform_issue', 'message': _platform_msg}, ensure_ascii=False)}\n\n"
+                else:
+                    # L1/L2 脚本错误 → 自动进入调试修复
+                    _err_msg = str(exec_result.get("error", ""))[:500]
+                    yield f"data: {json_mod.dumps({'type': 'fixing', 'message': '执行失败，正在自动修复脚本...'}, ensure_ascii=False)}\n\n"
+                    try:
+                        from app.services.data_processor_agent import DataProcessorAgent
+                        from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
+                        if not agent_registry.get("data_processor"):
+                            agent_registry.register(DataProcessorAgent())
+                        _processor = agent_registry.get("data_processor")
+                        _skill_md_path = folder / "SKILL.md"
+                        _skill_md = _skill_md_path.read_text(encoding="utf-8") if _skill_md_path.exists() else ""
+                        _fix_context = {
+                            "debug_mode": True,
+                            "db": db,
+                            "user_id": current_user.id,
+                            "debug_folder": folder,
+                            "debug_script_name": request.script_name,
+                            "debug_script_content": folder.joinpath("scripts", request.script_name).read_text(encoding="utf-8") if folder.joinpath("scripts", request.script_name).exists() else "",
+                            "debug_skill_md": _skill_md[:1200],
+                            "debug_skill_md_full": _skill_md,
+                            "debug_type": "skill",
+                            "debug_datasource_id": datasource_id,
+                            "debug_datasource_name": ds_name,
+                            "debug_table_name": inferred_table,
+                            "debug_parameters": parameters,
+                            "debug_max_rounds": 7,
+                            "debug_max_inspections": 4,
+                        }
+                        _fix_msg = AgentMessage(
+                            from_agent="runner",
+                            to_agent="data_processor",
+                            reason=HandoffReason.DELEGATE,
+                            payload={"user_message": f"技能执行失败，错误信息：\n{_err_msg}"},
+                        )
+                        async for _evt in _processor.run(_fix_msg, _fix_context):
+                            _et = _evt.get("type")
+                            if _et == "done":
+                                _fix_result = _evt.get("result", {})
+                                if _fix_result.get("content") and "失败" not in str(_fix_result.get("content", "")):
+                                    exec_result = {"success": True, "result": _fix_result, "stdout": ""}
+                                break
+                            elif _et in ("thinking", "model", "clear_thinking", "content", "round", "executing", "run_result", "script_updated", "give_up", "platform_issue", "inspecting", "retry"):
+                                yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
+                    except Exception as fix_err:
+                        logger.warning(f"自动修复失败: {fix_err}")
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': f'\\n自动修复失败: {fix_err}\\n'}, ensure_ascii=False)}\n\n"
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 

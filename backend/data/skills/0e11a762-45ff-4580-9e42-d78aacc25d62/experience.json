@@ -538,6 +538,76 @@
       },
       "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T14:39:22.635148",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwyubs3b1.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwyubs3b1.py\", line 826, in extract_image_info\n    ocr_result = llm_vision(file_path, ocr_prompt)\n             ",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T14:39:26.326463",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp9t5vrzk7.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp9t5vrzk7.py\", line 826, in extract_image_info\n    ocr_result = llm_vision(file_path, ocr_prompt)\n             ",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T14:53:47.692366",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpn23etn1e.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpn23etn1e.py\", line 903, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tm",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "",
+        "doc_type": "auto",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
     }
   ],
   "positive": [
