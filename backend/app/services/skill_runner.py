@@ -1038,8 +1038,12 @@ def run_skill_script_streaming(
         )
 
         # 逐行读 stdout，过滤标记行，yield 进度行
+        # 用 readline() 而非 for line in（Windows 上 for line 会缓冲）
         try:
-            for line in proc.stdout:
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
                 line = line.rstrip("\n\r")
                 if not line:
                     continue
