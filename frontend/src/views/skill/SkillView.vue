@@ -2035,6 +2035,8 @@ async function handleRunSkill() {
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
+          } else if (data.type === 'progress') {
+            msg.executingMsg = data.message || ''
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行技能脚本...'
           } else if (data.type === 'fixing') {
@@ -2339,6 +2341,8 @@ async function handleRunCmd() {
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
+          } else if (data.type === 'progress') {
+            msg.executingMsg = data.message || ''
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行技能脚本...'
           } else if (data.type === 'fixing') {

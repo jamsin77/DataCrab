@@ -914,3 +914,257 @@ async def run_skill_script_async(
                 result["error_type"] = _llm_type
                 logger.info(f"LLM 错误分类: script_error → {_llm_type}")
     return result
+
+
+_MARKER_PREFIXES = ("__RESULT__", "__WRITTEN_TABLES__", "__TOOL_CALL_LOG__")
+
+
+def run_skill_script_streaming(
+    skill_path: Path,
+    script_name: str = "main.py",
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    datasource_id: str = None,
+    table_name: str = None,
+    datasource_name: str = None,
+    timeout: int = None,
+    user_id: str = None,
+):
+    """流式执行 Skill 脚本，逐行 yield 进度行，最后 yield 完整结果 dict。
+
+    yield 格式：
+    - {"type": "progress", "message": "stdout 行内容"}  逐行进度
+    - {"type": "result", "result": {...}}                最终结果（同 run_skill_script 返回值）
+
+    标记行（__RESULT__/__WRITTEN_TABLES__/__TOOL_CALL_LOG__）不 yield 给前端，在内部提取。
+    """
+    parameters = parameters or {}
+    timeout = timeout or settings.SKILL_RUNNER_TIMEOUT
+    script_path = skill_path / "scripts" / script_name
+
+    if not script_path.exists():
+        yield {"type": "result", "result": {
+            "success": False, "error": f"脚本不存在: {script_path}", "stdout": "", "execution_time_ms": 0,
+        }}
+        return
+
+    script_content = script_path.read_text(encoding="utf-8")
+
+    import ast as _ast
+    function_name = "main"
+    uses_argparse = False
+    try:
+        tree = _ast.parse(script_content)
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                for alias in node.names:
+                    if alias.name == "argparse":
+                        uses_argparse = True
+                        break
+            elif isinstance(node, _ast.ImportFrom):
+                if node.module == "argparse":
+                    uses_argparse = True
+        if not uses_argparse:
+            func_defs = [(n.name, n) for n in _ast.iter_child_nodes(tree) if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not n.name.startswith("_")]
+            if func_defs:
+                def _param_count(fn):
+                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                best = max(func_defs, key=lambda f: _param_count(f[1]))
+                if "main" in [f[0] for f in func_defs]:
+                    main_node = next(f[1] for f in func_defs if f[0] == "main")
+                    if _param_count(main_node) > 0:
+                        function_name = "main"
+                    else:
+                        function_name = best[0]
+                else:
+                    function_name = best[0]
+        if uses_argparse:
+            function_name = "main"
+    except SyntaxError:
+        pass
+
+    if uses_argparse:
+        function_name = "main"
+    script_content = _strip_main_block(script_content)
+
+    if datasource_id and "datasource" not in parameters and "datasource_id" not in parameters:
+        if uses_argparse and datasource_name:
+            parameters["datasource"] = datasource_name
+        else:
+            parameters["datasource"] = datasource_id
+    if table_name and "tables" not in parameters and "table" not in parameters and "table_name" not in parameters and "table_names" not in parameters:
+        if uses_argparse:
+            parameters["tables"] = [table_name]
+            parameters["table_names"] = [table_name]
+        else:
+            parameters["table_name"] = table_name
+
+    data_literal = repr(input_data) if input_data is not None else "None"
+    params_literal = repr(parameters)
+
+    backend_path = Path(__file__).resolve().parent.parent.parent
+
+    runner_script = SKILL_RUNNER_TEMPLATE.format(
+        injected_data=data_literal,
+        injected_params=params_literal,
+        function_name=function_name,
+        uses_argparse=uses_argparse,
+        user_id=repr(str(user_id) if user_id else None),
+    )
+    runner_script = runner_script.replace("# __SCRIPT_CONTENT__", script_content)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(runner_script)
+        temp_path = f.name
+
+    stdout_lines = []
+    result = None
+    written_tables = None
+    tool_call_log = None
+
+    try:
+        import subprocess as _sp
+        start = time.perf_counter()
+
+        proc = _sp.Popen(
+            [sys.executable, temp_path],
+            stdout=_sp.PIPE,
+            stderr=_sp.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(skill_path),
+            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+        )
+
+        # 逐行读 stdout，过滤标记行，yield 进度行
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n\r")
+                if not line:
+                    continue
+                # 检查标记行
+                is_marker = False
+                for marker in _MARKER_PREFIXES:
+                    if marker in line:
+                        is_marker = True
+                        try:
+                            json_str = line.split(marker, 1)[1].strip()
+                            parsed = json.loads(json_str)
+                            if marker == "__RESULT__":
+                                result = _sanitize_nans(parsed)
+                            elif marker == "__WRITTEN_TABLES__":
+                                written_tables = parsed
+                            elif marker == "__TOOL_CALL_LOG__":
+                                tool_call_log = parsed
+                        except (json.JSONDecodeError, IndexError):
+                            pass
+                        break
+                if is_marker:
+                    continue
+                # 普通行 → yield 进度
+                stdout_lines.append(line)
+                yield {"type": "progress", "message": line}
+        except Exception:
+            pass
+
+        # 等待进程结束（带超时）
+        remaining = timeout - (time.perf_counter() - start)
+        if remaining <= 0:
+            remaining = 1
+        try:
+            proc.wait(timeout=remaining)
+        except _sp.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except _sp.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+        stderr = proc.stderr.read() if proc.stderr else ""
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        error_type = None
+        if proc.returncode != 0:
+            error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
+            error_type = _classify_execution_error(error_msg)
+        else:
+            error_msg = None
+
+        if stderr.strip() and proc.returncode == 0:
+            stdout_lines.append("[stderr]")
+            stdout_lines.append(stderr.strip())
+
+        stdout_text = "\n".join(stdout_lines)
+
+        yield {"type": "result", "result": {
+            "success": proc.returncode == 0,
+            "result": result,
+            "written_tables": written_tables,
+            "tool_calls": tool_call_log or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
+            "error": error_msg,
+            "error_type": error_type,
+            "stdout": stdout_text.strip(),
+            "execution_time_ms": round(elapsed_ms, 2),
+        }}
+
+    except Exception as e:
+        yield {"type": "result", "result": {
+            "success": False, "error": str(e), "stdout": "", "execution_time_ms": 0,
+        }}
+    finally:
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+
+
+async def run_skill_script_streaming_async(
+    skill_path: Path,
+    script_name: str = "main.py",
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    datasource_id: str = None,
+    table_name: str = None,
+    datasource_name: str = None,
+    timeout: int = None,
+    user_id: str = None,
+):
+    """异步流式执行 Skill 脚本。yield progress 事件 + 最终 result。"""
+    import asyncio as _asyncio
+    import queue as _queue
+
+    _q: _asyncio.Queue = _asyncio.Queue()
+
+    def _sync_gen():
+        for item in run_skill_script_streaming(
+            skill_path=skill_path, script_name=script_name, parameters=parameters,
+            input_data=input_data, datasource_id=datasource_id, table_name=table_name,
+            datasource_name=datasource_name, timeout=timeout, user_id=user_id,
+        ):
+            _q.put_nowait(item)
+        _q.put_nowait(None)  # sentinel
+
+    loop = _asyncio.get_event_loop()
+    task = loop.run_in_executor(None, _sync_gen)
+
+    while True:
+        try:
+            item = await _asyncio.wait_for(_q.get(), timeout=30.0)
+        except _asyncio.TimeoutError:
+            yield {"type": "ping"}
+            continue
+        if item is None:
+            break
+        yield item
+
+    await task

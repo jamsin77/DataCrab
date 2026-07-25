@@ -172,7 +172,7 @@ function renderMarkdown(content: string): string {
 
 function formatMsgTime(ts: string): string {
   try {
-    const d = new Date(ts)
+    const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z')
     return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   } catch { return '' }
 }

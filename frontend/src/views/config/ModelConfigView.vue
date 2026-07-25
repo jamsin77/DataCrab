@@ -54,6 +54,28 @@
           </div>
         </el-form-item>
 
+        <el-form-item label="深度模型">
+          <el-input
+            v-model="form.model"
+            placeholder="用于复杂推理，如 glm-5.2"
+            @input="clearAlerts"
+          />
+          <div class="form-tip">
+            <el-text size="small" type="info">用于数据分析、脚本生成/调试等深度推理任务</el-text>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="快速模型">
+          <el-input
+            v-model="form.fast_model"
+            placeholder="用于简单任务，如 glm-4-flash"
+            @input="clearAlerts"
+          />
+          <div class="form-tip">
+            <el-text size="small" type="info">用于参数推断、简单对话等快速响应任务（留空则用深度模型）</el-text>
+          </div>
+        </el-form-item>
+
         <el-form-item>
           <el-button type="primary" @click="saveConfig" :loading="saving">
             保存配置
@@ -104,7 +126,7 @@
           <li>点击"保存配置"保存设置</li>
         </ol>
         <el-text size="small" type="info">
-          模型由 DataCrab 根据任务类型自动选择（深度推理/快速响应/图片识别/向量化），无需手动配置。
+          深度模型用于复杂推理，快速模型用于简单任务。图片识别和向量化由平台按 Provider 自动选择。
         </el-text>
 
         <h4 style="margin-top: 16px">已注册的 Provider</h4>
@@ -165,6 +187,8 @@ const form = ref({
   provider: 'glm',
   api_key: '',
   api_base: '',
+  model: '',
+  fast_model: '',
 })
 
 const testResult = ref<any>(null)
@@ -199,6 +223,8 @@ async function loadConfig(preserveApiKey = false) {
       provider: res.provider,
       api_key: res.api_key_set ? '' : currentApiKey,
       api_base: res.api_base || '',
+      model: res.model || '',
+      fast_model: res.fast_model || '',
     }
   } catch (e: any) {
     ElMessage.error('加载配置失败')
@@ -216,6 +242,8 @@ async function saveConfig() {
       provider: form.value.provider,
       api_key: form.value.api_key,
       api_base: form.value.api_base,
+      model: form.value.model,
+      fast_model: form.value.fast_model,
     }
     const res = await api.post('/config/llm', payload)
     saveResult.value = res
@@ -245,6 +273,7 @@ async function testConnection() {
       provider: form.value.provider,
       api_key: form.value.api_key || undefined,
       api_base: form.value.api_base || undefined,
+      model: form.value.model || undefined,
     })
     testResult.value = res
     if (res.success) {

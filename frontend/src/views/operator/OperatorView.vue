@@ -1332,6 +1332,8 @@ async function handleOpSend() {
               const fresh = await api.get(`/operators/${debugOperator.value.id}`)
               debugOperator.value = fresh
             } catch { /* skip */ }
+          } else if (data.type === 'progress') {
+            msg.executingMsg = data.message || ''
           } else if (data.type === 'executing') {
             msg.executingMsg = data.message || '正在执行...'
           } else if (data.type === 'run_result') {

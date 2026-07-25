@@ -623,9 +623,10 @@ async def run_skill_stream(
             await init_user_llm_context(current_user.id)
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            # 用 ping 保活：技能执行可能耗时数分钟，SSE 无心跳会被超时断开
-            import asyncio as _asyncio
-            _exec_task = _asyncio.create_task(run_skill_script_async(
+            # 流式执行：逐行 yield 进度，最终拿到 exec_result
+            from app.services.skill_runner import run_skill_script_streaming_async
+            exec_result = None
+            async for _item in run_skill_script_streaming_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=request.parameters,
@@ -634,16 +635,14 @@ async def run_skill_stream(
                 datasource_name=ds_name,
                 table_name=request.table_name,
                 user_id=str(current_user.id),
-            ))
-            while True:
-                try:
-                    exec_result = await _asyncio.wait_for(_asyncio.shield(_exec_task), timeout=20.0)
-                    break
-                except _asyncio.TimeoutError:
+            ):
+                _it = _item.get("type")
+                if _it == "progress":
+                    yield f"data: {json_mod.dumps({'type': 'progress', 'message': _item.get('message', '')}, ensure_ascii=False)}\n\n"
+                elif _it == "ping":
                     yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                except _asyncio.CancelledError:
-                    _exec_task.cancel()
-                    raise
+                elif _it == "result":
+                    exec_result = _item["result"]
 
             # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
             from app.core.database import async_session as _new_session
@@ -1104,9 +1103,10 @@ async def run_skill_nl_stream(
 
             yield f"data: {json_mod.dumps({'type': 'executing', 'message': '正在执行技能脚本...'}, ensure_ascii=False)}\n\n"
 
-            # 用 ping 保活：技能执行可能耗时数分钟（如 OCR 71 张图），SSE 无心跳会被代理/浏览器超时断开
-            import asyncio as _asyncio
-            _exec_task = _asyncio.create_task(run_skill_script_async(
+            # 流式执行：逐行 yield 进度
+            from app.services.skill_runner import run_skill_script_streaming_async
+            exec_result = None
+            async for _item in run_skill_script_streaming_async(
                 skill_path=folder,
                 script_name=request.script_name,
                 parameters=parameters,
@@ -1115,16 +1115,14 @@ async def run_skill_nl_stream(
                 datasource_name=ds_name,
                 table_name=inferred_table,
                 user_id=str(current_user.id),
-            ))
-            while True:
-                try:
-                    exec_result = await _asyncio.wait_for(_asyncio.shield(_exec_task), timeout=20.0)
-                    break
-                except _asyncio.TimeoutError:
+            ):
+                _it = _item.get("type")
+                if _it == "progress":
+                    yield f"data: {json_mod.dumps({'type': 'progress', 'message': _item.get('message', '')}, ensure_ascii=False)}\n\n"
+                elif _it == "ping":
                     yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                except _asyncio.CancelledError:
-                    _exec_task.cancel()
-                    raise
+                elif _it == "result":
+                    exec_result = _item["result"]
 
             # 用独立 session 更新 usage_count，避免流式期间长时间持有 SQLite 写锁
             from app.core.database import async_session as _new_session
