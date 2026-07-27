@@ -1728,6 +1728,31 @@ class DataProcessorAgent(BaseAgent):
                 for tc in tool_calls:
                     _name = tc["function"]["name"]
                     _label = _TOOL_ACTION_MAP.get(_name, _name)
+                    # read_script: 显示读了哪些行（对齐 OpenCode Read 的 offset/limit 显示）
+                    if _name == "read_script":
+                        try:
+                            _args = json.loads(tc["function"]["arguments"])
+                            _offset = _args.get("offset", 0)
+                            _limit = _args.get("limit", 0)
+                            _func = _args.get("function_name", "")
+                            if _offset or _limit:
+                                _label += f" (L{_offset}"
+                                if _limit:
+                                    _label += f"-L{_offset + _limit - 1}"
+                                _label += ")"
+                            elif _func:
+                                _label += f" ({_func})"
+                        except Exception as e:
+                            logger.debug(f"read offset 显示跳过: {e}")
+                    # grep_script: 显示搜了什么
+                    elif _name == "grep_script":
+                        try:
+                            _args = json.loads(tc["function"]["arguments"])
+                            _pattern = _args.get("pattern", "")
+                            if _pattern:
+                                _label += f" \"{_pattern[:50]}\""
+                        except Exception as e:
+                            logger.debug(f"grep pattern 显示跳过: {e}")
                     # edit_and_run/edit_script: 显示 old→new diff（对齐 OpenCode edit 输出）
                     if _name in ("edit_and_run", "edit_script"):
                         try:
@@ -1803,14 +1828,17 @@ class DataProcessorAgent(BaseAgent):
                     if tool_name == "grep_script" and _rd.get("success"):
                         _cnt = _rd.get("total_matches", 0)
                         _matches = _rd.get("matches", [])
+                        _pattern = _rd.get("pattern", "")
                         if _cnt == 0:
-                            _result_lines.append(f"  🔍 未找到匹配")
+                            _result_lines.append(f'  🔍 搜索 "{_pattern[:30]}" → 无匹配')
                         else:
-                            _glines = [f"  🔍 {_cnt} 个匹配"]
+                            _glines = [f'  🔍 搜索 "{_pattern[:30]}" → {_cnt} 个匹配:']
                             for _m in _matches[:10]:
+                                _line = _m.get("line", "")
                                 for _sl in _m.get("snippet", "").split("\n"):
-                                    if _sl.strip().startswith(">>"):
-                                        _glines.append(f"  {_sl.strip()}")
+                                    _sl = _sl.strip()
+                                    if _sl.startswith(">>"):
+                                        _glines.append(f"  {_sl}")
                             if _cnt > 10:
                                 _glines.append(f"  ...（共 {_cnt} 个）")
                             _result_lines.append("\n".join(_glines))
@@ -1818,16 +1846,20 @@ class DataProcessorAgent(BaseAgent):
                         _content = _rd.get("content", "")
                         _func = _rd.get("function", "")
                         _total = _rd.get("total_lines", 0)
+                        _offset = _rd.get("offset", 0)
+                        _limit = _rd.get("limit", 0)
                         _truncated = _rd.get("truncated", False)
                         _header = f"  📖 {_script_name}"
-                        if _func:
+                        if _offset and _limit:
+                            _header += f" L{_offset}-L{_offset + _limit - 1}"
+                        elif _func:
                             _header += f":{_func}"
                         if _total:
-                            _header += f"（共 {_total} 行）"
+                            _header += f" (共{_total}行)"
                         _cl = _content.split("\n")
-                        if len(_cl) > 40:
-                            _cl = _cl[:40] + ["..."]
-                        _result_lines.append(_header + "\n```\n" + "\n".join(_cl) + "\n```" + ("\n  （已截断，用 offset/limit 查看更多）" if _truncated else ""))
+                        if len(_cl) > 50:
+                            _cl = _cl[:50] + ["..."]
+                        _result_lines.append(_header + "\n```\n" + "\n".join(_cl) + "\n```")
                     elif tool_name == "get_table_schema" and _rd.get("success"):
                         _cols = len(_rd.get("columns", []))
                         _result_lines.append(f"  表结构: {_cols} 列")

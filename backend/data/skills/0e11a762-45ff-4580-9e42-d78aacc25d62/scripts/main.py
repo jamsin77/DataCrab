@@ -173,7 +173,8 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         if isinstance(write_result, dict) and not write_result.get("success", True):
             err_msg = write_result.get("error", write_result.get("message", str(write_result)))
             # 如果 fail 策略因表已存在失败，自动重试 truncate
-            if current_strategy == "fail" and "已存在" in str(err_msg):
+            err_str = str(err_msg)
+            if current_strategy == "fail" and any(kw in err_str for kw in ["已存在", "already exists", "exists", "表已存在", "table"]):
                 log("warn", f"表已存在，fail 策略失败，自动切换为 truncate 重试...")
                 try:
                     write_result = write_table_data(
@@ -367,6 +368,16 @@ def extract_image_info(
             extracted_info = ""
             ocr_fail_count += 1
 
+        # ---- PII 脱敏处理 ----
+        if extracted_info:
+            extracted_info = _sanitize_pii(extracted_info)
+
+        # ---- 数据质量验证 ----
+        if extracted_info:
+            validation_note = _validate_extracted_data(extracted_info)
+            if validation_note:
+                review_note = (review_note + "; " + validation_note).strip("; ") if review_note else validation_note
+
         # 构建新记录
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
@@ -408,7 +419,10 @@ def extract_image_info(
     table_exists = False
     try:
         schema_result = get_table_schema(target_ds, target_table_name)
-        if isinstance(schema_result, dict) and schema_result.get("columns"):
+        # get_table_schema 可能返回 list 或 dict
+        if isinstance(schema_result, list) and len(schema_result) > 0:
+            table_exists = True
+        elif isinstance(schema_result, dict) and schema_result.get("columns"):
             table_exists = True
     except Exception:
         table_exists = False
@@ -517,3 +531,98 @@ def _probe_ocr_functions():
     return {"ocr_related": ocr_related}
 
 _probe_ocr_functions()
+
+
+def _sanitize_pii(text: str) -> str:
+    """对文本中的PII信息进行脱敏处理。
+
+    - 手机号: 保留前3后4，中间用**** (如 138****0081)
+    - 银行卡号/账号(16-19位): 仅保留后4位，前面用*号 (如 ************0405)
+    - 邮箱: 保留首字符与域名 (如 x***@qq.com)
+    """
+    if not text:
+        return text
+
+    # 1. 手机号脱敏: 1[3-9]开头共11位数字
+    text = re.sub(r'1[3-9]\d{9}', lambda m: m.group()[:3] + '****' + m.group()[-4:], text)
+
+    # 2. 银行卡号/账号脱敏: 16-19位连续数字，仅保留后4位
+    def _mask_long_number(m):
+        num = m.group()
+        return '*' * (len(num) - 4) + num[-4:]
+    text = re.sub(r'\b\d{16,19}\b', _mask_long_number, text)
+
+    # 3. 邮箱脱敏: 保留首字符与域名
+    def _mask_email(m):
+        email = m.group()
+        at_idx = email.index('@')
+        return email[0] + '***' + email[at_idx:]
+    text = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', _mask_email, text)
+
+    return text
+
+
+def _validate_extracted_data(extracted_info: str) -> str:
+    """验证提取数据的质量，返回审核备注字符串。
+
+    检查项:
+    - 统一社会信用代码格式合规性 (标准: 2位登记码+6位行政区划码+10位主体标识码)
+    - 日期范围一致性（开始日期不晚于截止日期）
+    """
+    notes = []
+    if not extracted_info:
+        return ""
+
+    # 尝试解析JSON
+    info_dict = None
+    try:
+        json_match = re.search(r'\{.*\}', extracted_info, re.DOTALL)
+        if json_match:
+            info_dict = json.loads(json_match.group())
+    except (json.JSONDecodeError, ValueError):
+        info_dict = None
+
+    # 1. 验证统一社会信用代码格式
+    uscc_pattern = re.compile(r'^[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}$')
+    uscc_candidates = re.findall(r'[A-Z0-9]{18}', extracted_info)
+    for uscc in uscc_candidates:
+        if not uscc_pattern.match(uscc):
+            notes.append(
+                f"统一社会信用代码 {uscc} 格式不合规（第3-8位应为6位数字行政区划码），疑似OCR识别异常，待人工复核"
+            )
+
+    # 2. 验证日期范围一致性
+    if info_dict and isinstance(info_dict, dict):
+        date_fields = {}
+        for key, val in info_dict.items():
+            if isinstance(val, str):
+                # 匹配 YYYY年MM月DD日 格式
+                m = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', val)
+                if m:
+                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    continue
+                # 匹配 YYYY-MM-DD 格式
+                m = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', val)
+                if m:
+                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    continue
+                # 匹配 YYYY/MM/DD 格式
+                m = re.search(r'(\d{4})/(\d{1,2})/(\d{1,2})', val)
+                if m:
+                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+        # 查找开始/截止日期对
+        start_keywords = ['开始', '起始', 'start', 'from', '签发', '发证']
+        end_keywords = ['截止', '到期', 'end', 'until', '结束', '失效']
+
+        start_keys = [k for k in date_fields if any(w in k.lower() for w in start_keywords)]
+        end_keys = [k for k in date_fields if any(w in k.lower() for w in end_keywords)]
+
+        for sk in start_keys:
+            for ek in end_keys:
+                if date_fields[sk] > date_fields[ek]:
+                    notes.append(
+                        f"日期范围异常: {sk}({date_fields[sk]})晚于{ek}({date_fields[ek]})，疑似OCR识别颠倒，待人工复核"
+                    )
+
+    return "; ".join(notes) if notes else ""

@@ -825,7 +825,8 @@ async def run_skill_stream(
                                 yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                     except Exception as fix_err:
                         logger.warning(f"自动修复失败: {fix_err}")
-                        yield f"data: {json_mod.dumps({'type': 'content', 'content': f'\\n自动修复失败: {fix_err}\\n'}, ensure_ascii=False)}\n\n"
+                        _fix_err_msg = "\n自动修复失败: " + str(fix_err) + "\n"
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _fix_err_msg}, ensure_ascii=False)}\n\n"
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 
@@ -1365,7 +1366,8 @@ async def run_skill_nl_stream(
                                 yield f"data: {json_mod.dumps(_evt, ensure_ascii=False, default=str)}\n\n"
                     except Exception as fix_err:
                         logger.warning(f"自动修复失败: {fix_err}")
-                        yield f"data: {json_mod.dumps({'type': 'content', 'content': f'\\n自动修复失败: {fix_err}\\n'}, ensure_ascii=False)}\n\n"
+                        _fix_err_msg = "\n自动修复失败: " + str(fix_err) + "\n"
+                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _fix_err_msg}, ensure_ascii=False)}\n\n"
 
             yield f"data: {json_mod.dumps({'type': 'done', 'result': _sanitize_nans(exec_result)}, ensure_ascii=False, default=str)}\n\n"
 

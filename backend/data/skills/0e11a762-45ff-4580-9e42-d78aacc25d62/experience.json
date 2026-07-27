@@ -608,6 +608,140 @@
       },
       "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T15:00:40.067545",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe10ulqwa.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe10ulqwa.py\", line 826, in extract_image_info\n    ocr_result = llm_vision(file_path, ocr_prompt)\n             ",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "",
+        "doc_type": "auto",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T15:37:19.217947",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplzzaxfp8.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplzzaxfp8.py\", line 903, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tm",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T15:54:33.434960",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgd23q440.py\", line 1008, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgd23q440.py\", line 903, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tm",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "",
+        "doc_type": "auto",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T15:56:01.839028",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: edit_and_run\nAI输出: 错误发生在 `_write_records` 内部，回溯信息被截断了。根本原因很可能是 `get_table_schema` 返回的是一个 **list**（根据文档说明），但代码检查的是 `isinstance(schema_result, dict)`。这导致 `table_exists` 始终为 False，`if_table_exists` 被强制设为 \"fail\"，当表已存在时写入失败，"
+    },
+    {
+      "timestamp": "2026-07-25T15:56:17.646621",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: edit_and_run\nAI输出: 脚本已更新，但执行时因缺少数据源参数而提前返回（这是预期的——没有传入实际数据源名）。不过我还需要增强 `_write_records` 中的错误匹配逻辑，因为原始错误可能不仅仅是 \"已存在\" 这个关键词。让我让错误匹配更健壮："
+    },
+    {
+      "timestamp": "2026-07-25T16:43:42.025079",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpoqkv7kwc.py\", line 1012, in <module>\n    result = extract_image_info(input_data, **params) if input_data is not None else extract_image_info(**params)\n                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpoqkv7kwc.py\", line 907, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tm",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "danweicunkuanzhengmingshenqingshu_6b5a0060-b787-4380-beb0-c6699e06c693",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-25T16:44:25.762369",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: run_script\nAI输出: 错误信息被截断了，让我直接运行脚本看看完整的错误。"
+    },
+    {
+      "timestamp": "2026-07-25T17:55:58.203034",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: edit_and_run\nAI输出: "
     }
   ],
   "positive": [
@@ -1544,6 +1678,33 @@
         "translation_target_lang": ""
       },
       "result_summary": "{'success': True, 'total_rows': 71, 'target_table': '关键信息提取表', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type"
+    },
+    {
+      "timestamp": "2026-07-25T17:51:47.058849",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '*', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pinyin"
+    },
+    {
+      "timestamp": "2026-07-25T17:56:46.823621",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
     }
   ],
   "lessons": "让我先阅读完整的脚本以了解当前的实现，然后对其进行修改以使用 `llm_vision` 进行 OCR。",

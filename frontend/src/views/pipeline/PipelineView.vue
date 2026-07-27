@@ -1043,14 +1043,15 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 20px;
   gap: 12px;
+  flex-wrap: wrap;
 
-  .toolbar-left { display: flex; gap: 12px; align-items: center; }
-  .toolbar-right { display: flex; gap: 12px; align-items: center; }
+  .toolbar-left { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .toolbar-right { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 }
 
 .op-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
   align-items: stretch;
 }

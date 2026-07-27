@@ -64,8 +64,6 @@
             <el-button size="small" @click="downloadSkill(skill)">
               <el-icon><Download /></el-icon> 下载
             </el-button>
-          </div>
-          <div class="skill-actions-row">
             <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
               <el-icon><Delete /></el-icon> 删除
             </el-button>
@@ -2687,23 +2685,26 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 20px;
   gap: 12px;
+  flex-wrap: wrap;
   
   .toolbar-left {
     display: flex;
     gap: 12px;
     align-items: center;
+    flex-wrap: wrap;
   }
   
   .toolbar-right {
     display: flex;
     gap: 12px;
     align-items: center;
+    flex-wrap: wrap;
   }
 }
 
 .op-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
   align-items: stretch;
 }
@@ -2764,9 +2765,16 @@ onMounted(() => {
     padding-top: 12px;
 
     .skill-actions-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
       gap: 4px;
       align-items: center;
+
+      .el-button {
+        margin-left: 0;
+        padding: 5px 8px;
+        font-size: 12px;
+      }
     }
   }
 }

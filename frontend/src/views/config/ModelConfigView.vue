@@ -54,27 +54,30 @@
           </div>
         </el-form-item>
 
-        <el-form-item label="深度模型">
-          <el-input
-            v-model="form.model"
-            placeholder="用于复杂推理，如 glm-5.2"
-            @input="clearAlerts"
-          />
-          <div class="form-tip">
-            <el-text size="small" type="info">用于数据分析、脚本生成/调试等深度推理任务</el-text>
-          </div>
-        </el-form-item>
+        <el-divider content-position="left">备用模型（主模型不可用时自动降级）</el-divider>
 
-        <el-form-item label="快速模型">
-          <el-input
-            v-model="form.fast_model"
-            placeholder="用于简单任务，如 glm-4-flash"
-            @input="clearAlerts"
-          />
-          <div class="form-tip">
-            <el-text size="small" type="info">用于参数推断、简单对话等快速响应任务（留空则用深度模型）</el-text>
-          </div>
-        </el-form-item>
+        <div v-for="(fb, idx) in fallbackModels" :key="idx" class="fallback-item">
+          <el-form-item :label="`备用 ${idx + 1}`">
+            <div style="display: flex; gap: 8px; width: 100%; align-items: center;">
+              <el-select v-model="fb.provider" placeholder="选择提供商" style="width: 160px">
+                <el-option
+                  v-for="p in providers"
+                  :key="p.provider_name"
+                  :label="p.display_name"
+                  :value="p.provider_name"
+                />
+              </el-select>
+              <el-input v-model="fb.api_key" type="password" show-password placeholder="API Key" style="flex: 1" />
+              <el-button type="danger" circle size="small" @click="fallbackModels.splice(idx, 1)">
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </div>
+            <el-input v-model="fb.api_base" placeholder="API 地址（留空用默认）" style="margin-top: 8px" />
+          </el-form-item>
+        </div>
+        <el-button type="primary" plain size="small" @click="addFallback" style="margin-bottom: 16px">
+          <el-icon><Plus /></el-icon> 添加备用模型
+        </el-button>
 
         <el-form-item>
           <el-button type="primary" @click="saveConfig" :loading="saving">
@@ -126,7 +129,7 @@
           <li>点击"保存配置"保存设置</li>
         </ol>
         <el-text size="small" type="info">
-          深度模型用于复杂推理，快速模型用于简单任务。图片识别和向量化由平台按 Provider 自动选择。
+          主模型不可用时（如 API 故障、限流），自动降级到备用模型。图片识别和向量化由平台按 Provider 自动选择。
         </el-text>
 
         <h4 style="margin-top: 16px">已注册的 Provider</h4>
@@ -149,6 +152,7 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
+import { Delete, Plus } from '@element-plus/icons-vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -187,9 +191,13 @@ const form = ref({
   provider: 'glm',
   api_key: '',
   api_base: '',
-  model: '',
-  fast_model: '',
 })
+
+const fallbackModels = ref<any[]>(([]))
+
+function addFallback() {
+  fallbackModels.value.push({ provider: '', api_key: '', api_base: '' })
+}
 
 const testResult = ref<any>(null)
 const saveResult = ref<any>(null)
@@ -223,9 +231,12 @@ async function loadConfig(preserveApiKey = false) {
       provider: res.provider,
       api_key: res.api_key_set ? '' : currentApiKey,
       api_base: res.api_base || '',
-      model: res.model || '',
-      fast_model: res.fast_model || '',
     }
+    fallbackModels.value = (res.fallback_models || []).map((f: any) => ({
+      provider: f.provider || '',
+      api_key: f.api_key || '',
+      api_base: f.api_base || '',
+    }))
   } catch (e: any) {
     ElMessage.error('加载配置失败')
   } finally {
@@ -238,12 +249,15 @@ async function saveConfig() {
   saveResult.value = null
   const hasNewApiKey = form.value.api_key && form.value.api_key.trim() !== ''
   try {
-    const payload = {
+    const payload: any = {
       provider: form.value.provider,
       api_key: form.value.api_key,
       api_base: form.value.api_base,
-      model: form.value.model,
-      fast_model: form.value.fast_model,
+    }
+    // 只发送有 provider 的备用模型
+    const validFallbacks = fallbackModels.value.filter(f => f.provider)
+    if (validFallbacks.length > 0) {
+      payload.fallback_models = validFallbacks
     }
     const res = await api.post('/config/llm', payload)
     saveResult.value = res
@@ -273,7 +287,6 @@ async function testConnection() {
       provider: form.value.provider,
       api_key: form.value.api_key || undefined,
       api_base: form.value.api_base || undefined,
-      model: form.value.model || undefined,
     })
     testResult.value = res
     if (res.success) {
@@ -300,6 +313,14 @@ async function testConnection() {
     justify-content: space-between;
     align-items: center;
   }
+}
+
+.fallback-item {
+  padding: 8px 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  background: #fafafa;
 }
 
 .form-tip {
