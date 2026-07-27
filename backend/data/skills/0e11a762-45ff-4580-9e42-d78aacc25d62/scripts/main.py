@@ -175,12 +175,12 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
             # 如果 fail 策略因表已存在失败，自动重试 truncate
             err_str = str(err_msg)
             if current_strategy == "fail" and any(kw in err_str for kw in ["已存在", "already exists", "exists", "表已存在", "table"]):
-                log("warn", f"表已存在，fail 策略失败，自动切换为 truncate 重试...")
+                log("warn", f"表已存在，fail 策略失败，自动切换为 replace 重试...")
                 try:
                     write_result = write_table_data(
                         target_ds, table_name,
                         records=batch,
-                        if_table_exists="truncate",
+                        if_table_exists="replace",
                         table_remark=table_remark,
                         column_remarks=column_remarks,
                     )
@@ -206,7 +206,7 @@ def extract_image_info(
     target_table_name: str = "credential_extracted_info",
     image_column: str = "file_path",
     doc_type: str = "auto",
-    if_table_exists: str = "truncate",
+    if_table_exists: str = "replace",
     batch_size: int = 500,
     enable_vectorization: bool = False,
     vector_datasource_name: str = "",
@@ -226,9 +226,21 @@ def extract_image_info(
         source_table_name = kwargs["source_table"]
     if not target_datasource_name and kwargs.get("target_datasource"):
         target_datasource_name = kwargs["target_datasource"]
-    if not target_table_name or target_table_name == "credential_extracted_info":
+    if not target_table_name or target_table_name == "credential_extracted_info" or target_table_name == "*":
         if kwargs.get("target_table"):
             target_table_name = kwargs["target_table"]
+
+    # 兜底默认值（防止 main() 未被调用时参数为空，* 表示自动生成）
+    if not source_datasource_name or source_datasource_name == "*":
+        source_datasource_name = "凭证库"
+    if not source_table_name or source_table_name == "*":
+        source_table_name = "所有的图片"
+    if not target_datasource_name or target_datasource_name == "*":
+        target_datasource_name = "凭证检索库"
+    if not target_table_name or target_table_name == "credential_extracted_info" or target_table_name == "*":
+        target_table_name = "关键信息"
+    if not image_column or image_column == "*":
+        image_column = "file_path"
     """从凭证库读取图片文件列表，使用OCR提取关键信息，写入凭证检索库。
 
     从文件名中提取凭证类型（拼音→中文），使用 llm_vision 对每张图片进行OCR识别，
@@ -264,14 +276,27 @@ def extract_image_info(
     if not target_ds:
         return {"success": False, "error": f"找不到目标数据源: {target_datasource_name}", "message": "数据源名称校验失败"}
 
-    # ---- 2. 读取源数据 ----
+    # ---- 2. 读取源数据（分块读取避免超时）----
     log("info", f"读取源表数据: {source_table_name}")
-    result = query_table_data(source_ds, source_table_name, limit=10000)
-    if not isinstance(result, dict) or not result.get("success"):
-        return {"success": False, "error": f"读取源表失败: {result}", "message": "数据读取异常"}
-
-    data = result.get("data", [])
-    source_columns = result.get("columns", [])
+    data = []
+    source_columns = []
+    try:
+        for chunk in iter_table_data(source_ds, source_table_name, chunk_size=2000):
+            chunk_rows = chunk.get("rows", chunk.get("data", []))
+            if not source_columns:
+                source_columns = chunk.get("columns", [])
+            data.extend(chunk_rows)
+            print(f"  已读取 {len(data)} 条...")
+        if not source_columns and data:
+            if isinstance(data[0], dict):
+                source_columns = list(data[0].keys())
+    except Exception as e:
+        log("warn", f"分块读取失败，尝试单次小批量读取: {e}")
+        result = query_table_data(source_ds, source_table_name, limit=2000)
+        if not isinstance(result, dict) or not result.get("success"):
+            return {"success": False, "error": f"读取源表失败: {result}", "message": "数据读取异常"}
+        data = result.get("data", [])
+        source_columns = result.get("columns", [])
 
     if not data:
         return {"success": False, "error": "源表无数据", "message": f"源表 {source_table_name} 返回空数据"}
@@ -372,9 +397,9 @@ def extract_image_info(
         if extracted_info:
             extracted_info = _sanitize_pii(extracted_info)
 
-        # ---- 数据质量验证 ----
+        # ---- 数据质量验证与修复 ----
         if extracted_info:
-            validation_note = _validate_extracted_data(extracted_info)
+            extracted_info, validation_note = _validate_extracted_data(extracted_info)
             if validation_note:
                 review_note = (review_note + "; " + validation_note).strip("; ") if review_note else validation_note
 
@@ -487,20 +512,25 @@ def main(**kwargs):
                 resolved[canonical] = kwargs[alias]
                 break
     
-    # 默认值
-    resolved.setdefault('source_datasource_name', '凭证库')
-    resolved.setdefault('source_table_name', '所有的图片')
-    resolved.setdefault('target_datasource_name', '凭证检索库')
-    resolved.setdefault('target_table_name', '关键信息')
-    resolved.setdefault('image_column', 'file_path')
-    resolved.setdefault('doc_type', 'auto')
-    resolved.setdefault('if_table_exists', 'truncate')
-    resolved.setdefault('batch_size', 500)
-    resolved.setdefault('enable_vectorization', False)
-    resolved.setdefault('vector_datasource_name', '')
-    resolved.setdefault('vector_table_name', '')
-    resolved.setdefault('enable_translation', False)
-    resolved.setdefault('translation_target_lang', '')
+    # 默认值（空字符串也视为缺失，使用默认值）
+    defaults = {
+        'source_datasource_name': '凭证库',
+        'source_table_name': '所有的图片',
+        'target_datasource_name': '凭证检索库',
+        'target_table_name': '关键信息',
+        'image_column': 'file_path',
+        'doc_type': 'auto',
+        'if_table_exists': 'replace',
+        'batch_size': 500,
+        'enable_vectorization': False,
+        'vector_datasource_name': '',
+        'vector_table_name': '',
+        'enable_translation': False,
+        'translation_target_lang': '',
+    }
+    for key, val in defaults.items():
+        if key not in resolved or resolved[key] is None or resolved[key] == '' or resolved[key] == '*':
+            resolved[key] = val
     
     return extract_image_info(**resolved)
 
@@ -562,25 +592,34 @@ def _sanitize_pii(text: str) -> str:
     return text
 
 
-def _validate_extracted_data(extracted_info: str) -> str:
-    """验证提取数据的质量，返回审核备注字符串。
+def _validate_extracted_data(extracted_info: str) -> tuple:
+    """验证并修复提取数据的质量问题。
+
+    返回 (修复后的extracted_info, 审核备注字符串)。
 
     检查项:
     - 统一社会信用代码格式合规性 (标准: 2位登记码+6位行政区划码+10位主体标识码)
     - 日期范围一致性（开始日期不晚于截止日期）
+
+    修复策略:
+    - 日期颠倒: 自动交换开始/截止日期值，在JSON中添加_dq_flags标记
+    - USCC格式不合规: 在JSON中添加_dq_flags标记为待人工复核
     """
     notes = []
     if not extracted_info:
-        return ""
+        return extracted_info, ""
 
     # 尝试解析JSON
     info_dict = None
+    json_match = None
     try:
         json_match = re.search(r'\{.*\}', extracted_info, re.DOTALL)
         if json_match:
             info_dict = json.loads(json_match.group())
     except (json.JSONDecodeError, ValueError):
         info_dict = None
+
+    dq_flags = []
 
     # 1. 验证统一社会信用代码格式
     uscc_pattern = re.compile(r'^[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}$')
@@ -590,26 +629,37 @@ def _validate_extracted_data(extracted_info: str) -> str:
             notes.append(
                 f"统一社会信用代码 {uscc} 格式不合规（第3-8位应为6位数字行政区划码），疑似OCR识别异常，待人工复核"
             )
+            # 在JSON中标记该字段为待人工复核
+            if info_dict and isinstance(info_dict, dict):
+                for key, val in info_dict.items():
+                    if isinstance(val, str) and uscc in val:
+                        dq_flags.append({
+                            "field": key,
+                            "value": uscc,
+                            "issue": "格式不合规（第3-8位应为6位数字行政区划码），疑似OCR识别异常",
+                            "status": "pending_review"
+                        })
+                        break
 
     # 2. 验证日期范围一致性
     if info_dict and isinstance(info_dict, dict):
-        date_fields = {}
+        date_fields = {}  # key -> (normalized_date, original_value)
         for key, val in info_dict.items():
             if isinstance(val, str):
                 # 匹配 YYYY年MM月DD日 格式
                 m = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', val)
                 if m:
-                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    date_fields[key] = (f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", val)
                     continue
                 # 匹配 YYYY-MM-DD 格式
                 m = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', val)
                 if m:
-                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    date_fields[key] = (f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", val)
                     continue
                 # 匹配 YYYY/MM/DD 格式
                 m = re.search(r'(\d{4})/(\d{1,2})/(\d{1,2})', val)
                 if m:
-                    date_fields[key] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                    date_fields[key] = (f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", val)
 
         # 查找开始/截止日期对
         start_keywords = ['开始', '起始', 'start', 'from', '签发', '发证']
@@ -620,9 +670,25 @@ def _validate_extracted_data(extracted_info: str) -> str:
 
         for sk in start_keys:
             for ek in end_keys:
-                if date_fields[sk] > date_fields[ek]:
+                if date_fields[sk][0] > date_fields[ek][0]:
+                    # 自动交换日期值（OCR识别颠倒）
+                    info_dict[sk], info_dict[ek] = info_dict[ek], info_dict[sk]
                     notes.append(
-                        f"日期范围异常: {sk}({date_fields[sk]})晚于{ek}({date_fields[ek]})，疑似OCR识别颠倒，待人工复核"
+                        f"日期范围异常: {sk}({date_fields[sk][0]})晚于{ek}({date_fields[ek][0]})，已自动交换日期，待人工复核确认"
                     )
+                    dq_flags.append({
+                        "field": f"{sk}/{ek}",
+                        "issue": f"开始日期({date_fields[sk][0]})晚于截止日期({date_fields[ek][0]})，已自动交换",
+                        "status": "auto_corrected"
+                    })
 
-    return "; ".join(notes) if notes else ""
+    # 如果有数据质量标记，更新JSON
+    if dq_flags and info_dict and isinstance(info_dict, dict):
+        info_dict["_dq_flags"] = dq_flags
+        fixed_json = json.dumps(info_dict, ensure_ascii=False)
+        if json_match:
+            extracted_info = extracted_info[:json_match.start()] + fixed_json + extracted_info[json_match.end():]
+        else:
+            extracted_info = fixed_json
+
+    return extracted_info, "; ".join(notes) if notes else ""

@@ -1104,7 +1104,7 @@ async def run_skill_nl_stream(
         try:
             # LLM 推断参数
             full_content = ""
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=llm_manager.fast_model, temperature=0.2):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, context="参数推断"):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":
@@ -1990,7 +1990,7 @@ async def modify_skill_stream(
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, model=llm_manager.model, temperature=0.3):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, context="技能修改"):
                 event = {"type": chunk["type"], "content": chunk["content"]}
                 yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
                 if chunk["type"] == "content":

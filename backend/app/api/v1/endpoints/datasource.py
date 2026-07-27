@@ -516,6 +516,7 @@ async def internal_llm_chat(body: dict):
             messages,
             temperature=body.get("temperature", 0.7),
             max_tokens=int(body.get("max_tokens", 2000)),
+            context="技能脚本调用",
         )
         return {"content": result}
     except Exception as e:

@@ -351,8 +351,8 @@ def _is_platform_issue_report(content: str) -> bool:
     return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
-看错误信息，修复脚本并执行。工作流（对齐 OpenCode）：grep_script 搜关键词定位行号 → read_script(offset=行号-5, limit=15) 只读相关行 → edit_and_run 修改并执行。不要读全文或整个函数，用 offset/limit 精确读取。大范围重写才 modify_and_run。
-每次修改都要全力解决问题，不要指望下一次。执行成功后自动交接 Inspector。总共 {max_rounds} 轮（调查和修改都算），执行错误最多 3 次。
+看错误信息，修复脚本并执行。工作流：grep_script 搜关键词定位行号 → read_script(offset=行号-5, limit=15) 只读相关行 → edit_script 修改 → run_script 执行验证。
+每次修改都要全力解决问题，不要指望下一次。执行成功后系统自动检查数据质量，无需手动操作。总共 {max_rounds} 轮，执行错误最多 3 次。
 
 ## 必须遵守
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
@@ -999,7 +999,17 @@ class DataProcessorAgent(BaseAgent):
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
             # scope='script' — 读当前脚本逐字内容（带行号，对齐 OpenCode Read）
             script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            current = context.get("debug_script_content", "")
+            # 每次从磁盘刷新（确保行号和文件一致，不受内存旧版本影响）
+            _folder = context.get("debug_folder")
+            if _folder:
+                _file_path = Path(_folder) / "scripts" / script_name
+                if _file_path.exists():
+                    current = _file_path.read_text(encoding="utf-8")
+                    context["debug_script_content"] = current
+                else:
+                    current = context.get("debug_script_content", "")
+            else:
+                current = context.get("debug_script_content", "")
             function_name = arguments.get("function_name")
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 0))
@@ -1557,13 +1567,8 @@ class DataProcessorAgent(BaseAgent):
             if not _can_create:
                 prompt += "。标❌的能力修改脚本无法绕过，直接报告"
 
-        # 动态信息（只留必需的）
+        # 动态信息（精简：不放脚本摘要，LLM 需要时用 read_script 读）
         parts = []
-        script_content = context.get("debug_script_content", "")
-        script_name = context.get("debug_script_name", "main.py")
-        if script_content:
-            parts.append(self._script_summary(script_content, script_name))
-
         last_params = context.get("debug_last_success_params")
         if last_params:
             parts.append(f"最近成功参数: {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
@@ -1658,10 +1663,11 @@ class DataProcessorAgent(BaseAgent):
                 return
             local_messages.append({"role": "user", "content": user_msg})
 
-        # 调试模式工具选择（对齐 OpenCode：只给看代码+改代码的工具，不给查数据工具）
-        # OpenCode 只有 Read/Grep/Edit/Bash，没有 query_table_data/execute_sql
-        # 给太多工具 LLM 会被带偏：不去改脚本而是反复查数据
-        debug_tools = [MODIFY_AND_RUN_TOOL, EDIT_AND_RUN_TOOL, MODIFY_SCRIPT_TOOL, EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL, HANDOFF_TOOL]
+        # 调试模式工具（对齐 OpenCode：5 个工具，职责清晰）
+        # read_script=Read, grep_script=Grep, edit_script=Edit, run_script=Bash
+        # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
+        # edit_and_run/modify_and_run 已删除：先 edit_script 改，再 run_script 跑
+        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化，只数 fix 工具
@@ -1700,8 +1706,8 @@ class DataProcessorAgent(BaseAgent):
 
             logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "返回 content_len=" + str(len(content)) + " tool_calls=" + str(len(tool_calls)))
 
-            # 检测是否为修改尝试（edit_and_run/modify_and_run/run_script）
-            _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_and_run", "modify_and_run", "run_script") for tc in tool_calls)
+            # 检测是否为修改尝试（edit_script/run_script）
+            _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
             if _has_fix:
                 _fix_attempts += 1
                 context["debug_total_rounds"] = _fix_attempts
@@ -1710,75 +1716,19 @@ class DataProcessorAgent(BaseAgent):
                 if _fix_attempts == max_fix_attempts:
                     yield {"type": "content", "content": f"⚠️ 这是最后一次修改尝试（第 {max_fix_attempts}/{max_fix_attempts} 次）。如果错误来自平台限制，请直接报告。\n"}
 
-            # 只显示关键动作摘要（带脚本名，对齐 OpenCode 的简洁风格）
+            # 工具调用显示（简洁：只显示工具名+关键参数，详情在工具结果里）
             _script_name = context.get("debug_script_name", "main.py")
             _TOOL_ACTION_MAP = {
-                "read_script": f"读取 {_script_name}",
-                "grep_script": f"搜索 {_script_name}",
-                "get_table_schema": "查看表结构",
-                "query_table_data": "查询数据",
-                "edit_and_run": f"修改并执行 {_script_name}",
-                "modify_and_run": f"修改并执行 {_script_name}",
-                "run_script": f"执行 {_script_name}",
-                "handoff_to_inspector": "交接检查",
-                "list_user_datasources": "列出数据源",
+                "read_script": f"📖 {_script_name}",
+                "grep_script": f"🔍 {_script_name}",
+                "edit_script": f"✏️ {_script_name}",
+                "run_script": f"▶️ {_script_name}",
             }
             if tool_calls:
                 _actions = []
                 for tc in tool_calls:
                     _name = tc["function"]["name"]
-                    _label = _TOOL_ACTION_MAP.get(_name, _name)
-                    # read_script: 显示读了哪些行（对齐 OpenCode Read 的 offset/limit 显示）
-                    if _name == "read_script":
-                        try:
-                            _args = json.loads(tc["function"]["arguments"])
-                            _offset = _args.get("offset", 0)
-                            _limit = _args.get("limit", 0)
-                            _func = _args.get("function_name", "")
-                            if _offset or _limit:
-                                _label += f" (L{_offset}"
-                                if _limit:
-                                    _label += f"-L{_offset + _limit - 1}"
-                                _label += ")"
-                            elif _func:
-                                _label += f" ({_func})"
-                        except Exception as e:
-                            logger.debug(f"read offset 显示跳过: {e}")
-                    # grep_script: 显示搜了什么
-                    elif _name == "grep_script":
-                        try:
-                            _args = json.loads(tc["function"]["arguments"])
-                            _pattern = _args.get("pattern", "")
-                            if _pattern:
-                                _label += f" \"{_pattern[:50]}\""
-                        except Exception as e:
-                            logger.debug(f"grep pattern 显示跳过: {e}")
-                    # edit_and_run/edit_script: 显示 old→new diff（对齐 OpenCode edit 输出）
-                    if _name in ("edit_and_run", "edit_script"):
-                        try:
-                            _args = json.loads(tc["function"]["arguments"])
-                            _old = _args.get("old_string", "")
-                            _new = _args.get("new_string", "")
-                            if _old or _new:
-                                _diff_lines = [f"- {l}" for l in _old.splitlines()]
-                                _diff_lines += [f"+ {l}" for l in _new.splitlines()]
-                                if len(_diff_lines) > 40:
-                                    _diff_lines = _diff_lines[:40] + ["..."]
-                                _label += "\n```diff\n" + "\n".join(_diff_lines) + "\n```"
-                        except Exception as e:
-                            logger.debug(f"edit diff 显示跳过: {e}")
-                    # modify_and_run/modify_script: 显示修改了哪些函数
-                    elif _name in ("modify_and_run", "modify_script"):
-                        try:
-                            _args = json.loads(tc["function"]["arguments"])
-                            _code = str(_args.get("code", ""))
-                            import re as _re
-                            _funcs = _re.findall(r'def\s+(\w+)', _code)
-                            if _funcs:
-                                _label += f"（{', '.join(_funcs[:3])}）"
-                        except Exception as e:
-                            logger.debug(f"modify 函数名显示跳过: {e}")
-                    _actions.append(_label)
+                    _actions.append(_TOOL_ACTION_MAP.get(_name, _name))
                 yield {"type": "content", "content": '\n'.join(_actions) + '\n'}
 
             if not tool_calls:
@@ -1846,17 +1796,37 @@ class DataProcessorAgent(BaseAgent):
                         _content = _rd.get("content", "")
                         _func = _rd.get("function", "")
                         _total = _rd.get("total_lines", 0)
-                        _offset = _rd.get("offset", 0)
-                        _limit = _rd.get("limit", 0)
                         _truncated = _rd.get("truncated", False)
                         _header = f"  📖 {_script_name}"
-                        if _offset and _limit:
-                            _header += f" L{_offset}-L{_offset + _limit - 1}"
-                        elif _func:
+                        if _func:
                             _header += f":{_func}"
-                        if _total:
-                            _header += f" (共{_total}行)"
+                        # 从 content 提取实际行号范围（确保和内容一致）
                         _cl = _content.split("\n")
+                        _first_line = ""
+                        _last_line = ""
+                        for _cl_line in _cl:
+                            if _cl_line.strip().startswith("L"):
+                                _first_line = _cl_line.strip().split(":")[0]
+                                break
+                        for _cl_line in reversed(_cl):
+                            if _cl_line.strip().startswith("L"):
+                                _last_line = _cl_line.strip().split(":")[0]
+                                break
+                        if _first_line and _last_line:
+                            _header += f" {_first_line}-{_last_line}"
+                            # 计算实际读取行数
+                            try:
+                                _n1 = int(_first_line.lstrip("L"))
+                                _n2 = int(_last_line.lstrip("L"))
+                                _header += f" (读了{_n2 - _n1 + 1}行"
+                                if _total:
+                                    _header += f"/共{_total}行"
+                                _header += ")"
+                            except ValueError:
+                                if _total:
+                                    _header += f" (共{_total}行)"
+                        elif _total:
+                            _header += f" (共{_total}行)"
                         if len(_cl) > 50:
                             _cl = _cl[:50] + ["..."]
                         _result_lines.append(_header + "\n```\n" + "\n".join(_cl) + "\n```")
@@ -1872,7 +1842,7 @@ class DataProcessorAgent(BaseAgent):
                 except Exception as e:
                     logger.warning(f"调查工具摘要生成失败(非致命): {e}")
 
-                if tool_name in ("modify_script", "edit_script", "modify_and_run", "edit_and_run"):
+                if tool_name == "edit_script":
                     try:
                         rdata = json.loads(r["content"])
                     except json.JSONDecodeError as e:
@@ -1892,7 +1862,7 @@ class DataProcessorAgent(BaseAgent):
                                     _diff += "\n..."
                                 yield {"type": "content", "content": f"📝 变更（{len(_changed)} 行改动）\n```diff\n{_diff}\n```"}
 
-                if tool_name in ("modify_and_run", "edit_and_run", "run_script"):
+                if tool_name == "run_script":
                     try:
                         rdata = json.loads(r["content"])
                     except json.JSONDecodeError as e:

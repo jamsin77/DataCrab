@@ -742,6 +742,45 @@
       "parameters": {},
       "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
       "context_summary": "工具: edit_and_run\nAI输出: "
+    },
+    {
+      "timestamp": "2026-07-27T10:52:08.776716",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpwc_26var.py\", line 80, in _dc_query_table_data\n    with urllib.request.urlopen(url, timeout=30) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 525, in open\n    response = meth(req",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "",
+        "image_column": "",
+        "doc_type": "auto",
+        "if_table_exists": "truncate",
+        "translate_to_cn": true
+      },
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticError",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-07-27T10:53:13.118652",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: edit_and_run\nAI输出: "
+    },
+    {
+      "timestamp": "2026-07-27T10:53:49.054881",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
+      "context_summary": "工具: edit_and_run\nAI输出: "
     }
   ],
   "positive": [
@@ -1701,6 +1740,94 @@
     },
     {
       "timestamp": "2026-07-25T17:56:46.823621",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T10:55:21.899105",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T14:17:18.543958",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '*', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pinyin"
+    },
+    {
+      "timestamp": "2026-07-27T14:23:27.257675",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T14:30:44.429904",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T14:35:23.129787",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T14:39:21.598405",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T14:42:19.650495",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},

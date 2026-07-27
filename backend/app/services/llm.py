@@ -175,8 +175,6 @@ _SEED_PROVIDERS = {
             {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro"},
             {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash"},
         ],
-        "default_model": "qwen3.7-max",
-        "fast_model": "qwen3.6-flash",
     },
     "glm": {
         "display_name": "智谱AI (GLM)",
@@ -190,8 +188,6 @@ _SEED_PROVIDERS = {
             {"label": "GLM-4", "value": "glm-4"},
             {"label": "GLM-4 Flash", "value": "glm-4-flash"},
         ],
-        "default_model": "glm-5.2",
-        "fast_model": "glm-4-flash",
     },
     "siliconflow": {
         "display_name": "硅基流动",
@@ -202,8 +198,6 @@ _SEED_PROVIDERS = {
             {"label": "Qwen2.5-72B", "value": "Qwen/Qwen2.5-72B-Instruct"},
             {"label": "Qwen2.5-Coder-32B", "value": "Qwen/Qwen2.5-Coder-32B-Instruct"},
         ],
-        "default_model": "deepseek-ai/DeepSeek-V3",
-        "fast_model": "Qwen/Qwen2.5-7B-Instruct",
     },
 }
 
@@ -230,8 +224,8 @@ async def load_providers_from_db():
                     description=info["description"],
                     api_base=info["api_base"],
                     models=info["models"],
-                    default_model=info["default_model"],
-                    fast_model=info["fast_model"],
+                    default_model=info.get("default_model", ""),
+                    fast_model="",
                     code=None,
                     is_public=True,
                     created_at=_seed_time,
@@ -391,26 +385,50 @@ class LLMManager:
         self._client_cache: Dict[tuple, Any] = {}
         self._initialized = False
 
-    @property
-    def fast_model(self) -> str:
-        """快速模型名（系统内部任务 + 降级兜底）。用户配置优先。"""
+    def _available_models(self) -> List[str]:
+        """当前 Provider 可用的文本模型列表"""
         cfg = get_user_llm_config()
-        if cfg and cfg.get("fast_model"):
-            return cfg["fast_model"]
-        configured = getattr(settings, 'LLM_FAST_MODEL', '') or ''
-        if configured.strip():
-            return configured.strip()
-        info = _provider_registry.get(cfg["provider"] if cfg else self.provider)
-        if info and info.get("fast_model"):
-            return info["fast_model"]
-        return cfg["model"] if cfg else self.model
-
-    def _eff_model(self) -> str:
-        """当前生效的深度模型名（用户配置优先，否则全局）"""
-        cfg = get_user_llm_config()
+        provider = cfg.get("provider") if cfg else self.provider
+        info = _provider_registry.get(provider)
+        if info and info.get("models"):
+            return [m["value"] for m in info["models"] if m.get("value")]
         if cfg and cfg.get("model"):
-            return cfg["model"]
-        return self.model
+            return [cfg["model"]]
+        return [self.model] if self.model else []
+
+    def _available_models_with_desc(self) -> List[tuple]:
+        """返回 (model_value, description) 列表，description 包含能力提示"""
+        cfg = get_user_llm_config()
+        provider = cfg.get("provider") if cfg else self.provider
+        info = _provider_registry.get(provider)
+        result = []
+        if info and info.get("models"):
+            for m in info["models"]:
+                val = m.get("value", "")
+                label = m.get("label", val)
+                if not val:
+                    continue
+                # 根据模型名推断能力描述
+                desc = label
+                name_lower = val.lower()
+                if "flash" in name_lower:
+                    desc += "（轻量快速，适合简单任务）"
+                elif "v" in name_lower and ("plus" in name_lower or "flash" in name_lower):
+                    desc += "（视觉模型，图片识别）"
+                elif "5.2" in val or "max" in name_lower or "plus" in name_lower:
+                    desc += "（最强，复杂推理）"
+                else:
+                    desc += "（通用）"
+                result.append((val, desc))
+        if not result:
+            m = self._first_model()
+            result.append((m, "通用"))
+        return result
+
+    def _first_model(self) -> str:
+        """取第一个可用模型（兜底）"""
+        models = self._available_models()
+        return models[0] if models else self.model or "gpt-3.5-turbo"
 
     def _eff_vision_model(self, provider: str = "") -> str:
         """根据 provider 选择视觉模型（空字符串=不支持）"""
@@ -418,135 +436,131 @@ class LLMManager:
         p = provider or (cfg.get("provider") if cfg else self.provider)
         return _PROVIDER_VISION_MODELS.get(p, "")
 
-    # 任务关键词分类（降级方案，LLM 分类失败时用）
-    _COMPLEX_KEYWORDS = {
-        "修改", "修复", "改一下", "帮我改", "fix", "优化", "重构", "改进", "重写", "改写",
-        "optimize", "refactor", "improve", "rewrite", "生成", "创建", "写一个", "生成代码",
-        "generate", "create", "modify", "报错", "错误", "失败", "异常", "error", "exception",
-        "traceback", "fail", "failed", "不对", "不正确", "有问题", "不工作", "bug", "wrong",
-    }
-    _SIMPLE_KEYWORDS = {
-        "运行", "执行", "试一下", "跑一下", "跑个", "run", "execute", "试跑",
-        "解释", "说明", "看看", "查看", "展示", "explain", "show", "describe",
-        "分析", "analyze", "统计", "汇总", "总结", "summarize",
-    }
-    _VISION_KEYWORDS = {
-        "图片", "识别", "ocr", "OCR", "身份证", "营业执照", "证件", "截图",
-        "图片识别", "图片分析", "图片信息", "image", "photo", "picture",
-    }
-    _EMBEDDING_KEYWORDS = {
-        "向量化", "向量", "embedding", "语义搜索", "相似度", "相似匹配",
-        "向量索引", "vector", "vectorize",
-    }
+    _model_cache: Dict[str, str] = {}
 
-    _task_cache: Dict[str, str] = {}
+    _SIMPLE_CONTEXTS = {"参数推断", "对话"}
 
-    async def classify_task(self, message: str, history: List[Dict] = None) -> str:
-        """用快速模型推断任务类型：deep/fast/vision/embedding。失败回退关键词匹配。"""
-        cache_key = message[:200] if message else ""
-        if cache_key in self._task_cache:
-            return self._task_cache[cache_key]
+    def _find_flash_model(self) -> str:
+        """从可用模型列表中找一个轻量模型（名称含 flash）"""
+        for m in self._available_models():
+            if "flash" in m.lower():
+                return m
+        return ""
 
-        fast = self.fast_model
-        if not fast or fast == self._eff_model():
-            return self._keyword_classify(message, history)
+    async def pick_model_async(self, message: str, history: List[Dict] = None, context: str = "") -> str:
+        """根据任务上下文自动推断选择最合适且最经济的模型。
 
+        Args:
+            message: 用户消息
+            context: 任务场景描述（如"参数推断"、"代码生成"、"调试修复"、"对话"）
+        """
+        if not message and not context:
+            return self._first_model()
+
+        # 简单场景（参数推断/对话）直接用轻量模型，不问 LLM
+        if context in self._SIMPLE_CONTEXTS:
+            flash = self._find_flash_model()
+            if flash:
+                return flash
+
+        cache_key = (context or "") + "|" + (message[:200] if message else "")
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
+
+        models = self._available_models()
+        if len(models) <= 1:
+            return models[0] if models else self._first_model()
+
+        # 构建模型列表（含能力描述）
+        model_descs = self._available_models_with_desc()
+        model_list = "\n".join(f"- {val}：{desc}" for val, desc in model_descs)
+        vision = self._eff_vision_model()
+        embedding = self._eff_embedding_model()
+        if vision and vision not in models:
+            model_list += f"\n- {vision}：图片识别/OCR专用"
+        if embedding and embedding not in models:
+            model_list += f"\n- {embedding}：向量化专用"
+
+        ctx_desc = ""
+        if context:
+            _ctx_map = {
+                "参数推断": "简单任务：根据用户指令拼装参数，不需要复杂推理",
+                "技能脚本调用": "技能脚本中的 LLM 调用，根据脚本逻辑判断",
+                "技能修改": "复杂任务：修改技能规范和脚本，需要强推理",
+                "算子生成": "复杂任务：生成代码，需要强推理",
+                "算子修改": "复杂任务：修改代码，需要强推理",
+                "算子调试": "复杂任务：调试修复代码，需要强推理",
+                "流程生成": "复杂任务：生成流程代码，需要强推理",
+                "调试修复": "复杂任务：调试修复代码，需要强推理",
+                "对话": "简单任务：日常对话，不需要复杂推理",
+            }
+            ctx_desc = f"\n任务场景：{context}（{_ctx_map.get(context, context)}）"
         try:
             prompt = (
-                "根据用户消息判断任务类型，只返回一个词，不要其他内容：\n"
-                "- deep：深度推理（修改代码、修复bug、生成脚本、复杂分析、ETL设计、数据清洗）\n"
-                "- fast：简单操作（运行、执行、查看、统计、解释、列表）\n"
-                "- vision：图片识别（OCR、证件提取、图片分析、图片信息）\n"
-                "- embedding：向量化（语义搜索、相似度匹配、向量索引）\n\n"
-                f"用户消息：{message[:500]}\n\n任务类型："
+                f"以下是当前可用的模型列表：\n{model_list}\n"
+                f"{ctx_desc}"
+                f"\n用户消息：{message[:500] if message else '(无)'}\n\n"
+                f"请选择最合适且最经济的模型。原则：能用轻量模型完成的不用重量模型，"
+                f"图片任务必须选视觉模型，向量化必须选嵌入模型。"
+                f"只返回模型名称，不要其他内容。"
             )
-            resp = await self.chat(prompt, model=fast, temperature=0.0, max_tokens=10)
-            task_type = resp.strip().lower()
-            if task_type not in ("deep", "fast", "vision", "embedding"):
-                task_type = "deep"
-
-            self._task_cache[cache_key] = task_type
-            if len(self._task_cache) > 100:
-                self._task_cache.pop(next(iter(self._task_cache)))
-            return task_type
+            resp = await self.chat(prompt, model=models[0], temperature=0.0, max_tokens=50)
+            chosen = resp.strip().strip('"').strip("'")
+            all_models = set(models)
+            if vision:
+                all_models.add(vision)
+            if embedding:
+                all_models.add(embedding)
+            if chosen in all_models:
+                self._model_cache[cache_key] = chosen
+                if len(self._model_cache) > 100:
+                    self._model_cache.pop(next(iter(self._model_cache)))
+                return chosen
+            return self._fallback_model(message)
         except Exception as e:
-            logger.warning(f"任务分类失败，回退关键词匹配: {e}")
-            return self._keyword_classify(message, history)
+            logger.warning(f"模型推断失败，回退: {e}")
+            return self._fallback_model(message)
 
-    def _keyword_classify(self, message: str, history: List[Dict] = None) -> str:
-        """关键词匹配分类（降级方案）"""
-        if not message:
-            return "deep"
-        msg_lower = message.lower()
-        # vision/embedding 优先判断（特定能力词比 deep/fast 更明确）
-        for kw in self._VISION_KEYWORDS:
-            if kw in msg_lower or kw in message:
-                return "vision"
-        for kw in self._EMBEDDING_KEYWORDS:
-            if kw in msg_lower or kw in message:
-                return "embedding"
-        for kw in self._COMPLEX_KEYWORDS:
-            if kw in msg_lower or kw in message:
-                return "deep"
-        if history:
-            for h in history[-3:]:
-                if h.get("role") != "assistant":
-                    continue
-                content = (h.get("content") or "").lower()
-                for kw in self._COMPLEX_KEYWORDS:
-                    if kw in content:
-                        return "deep"
-        for kw in self._SIMPLE_KEYWORDS:
-            if kw in msg_lower or kw in message:
-                return "fast"
-        return "deep"
+    def _fallback_model(self, message: str) -> str:
+        """兜底模型选择：检查是否涉及图片/向量，否则用第一个可用模型"""
+        if message:
+            msg_lower = message.lower()
+            _vision_kw = {"图片", "识别", "ocr", "OCR", "身份证", "营业执照", "证件", "截图", "image", "photo"}
+            _embedding_kw = {"向量化", "向量", "embedding", "语义搜索", "相似度", "vector"}
+            for kw in _vision_kw:
+                if kw in msg_lower or kw in message:
+                    v = self._eff_vision_model()
+                    if v:
+                        return v
+            for kw in _embedding_kw:
+                if kw in msg_lower or kw in message:
+                    e = self._eff_embedding_model()
+                    if e:
+                        return e
+        return self._first_model()
 
-    def pick_model(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
-        """同步模型选择（降级方案，用关键词匹配）。异步场景请用 pick_model_async。"""
-        if is_retry:
-            return self._eff_model()
-        task_type = self._keyword_classify(message, history)
-        if task_type == "fast":
-            return self.fast_model
-        return self._eff_model()
-
-    async def pick_model_async(self, message: str, history: List[Dict] = None, is_retry: bool = False) -> str:
-        """根据消息内容语义推断任务类型，选择模型。"""
-        if is_retry:
-            return self._eff_model()
-
-        task_type = await self.classify_task(message, history)
-
-        if task_type == "vision":
-            vision = self._eff_vision_model()
-            if not vision:
-                raise RuntimeError(f"当前 Provider 不支持视觉模型，无法处理图片识别任务")
-            return vision
-        elif task_type == "embedding":
-            emb = self._eff_embedding_model()
-            if not emb:
-                raise RuntimeError(f"当前 Provider 不支持嵌入模型，无法处理向量化任务")
-            return emb
-        elif task_type == "fast":
-            return self.fast_model
-        else:
-            return self._eff_model()
+    def pick_model(self, message: str, history: List[Dict] = None) -> str:
+        """同步模型选择（兜底，用关键词）。异步场景用 pick_model_async。"""
+        return self._fallback_model(message or "")
 
     def _resolve_model(self, model: Optional[str]) -> str:
-        """解析模型：指定则用指定，断路器熔断则降级到另一个模型。"""
-        target = model or self._eff_model()
+        """解析模型：指定则用指定，断路器熔断则降级。"""
+        target = model or self._first_model()
         if _circuit.is_available(target):
             return target
-        fallback = self.fast_model if target != self.fast_model else self._eff_model()
-        logger.warning(f"断路器降级: {target} 不可用，切换到 {fallback}")
-        return fallback
+        models = self._available_models()
+        for m in models:
+            if m != target and _circuit.is_available(m):
+                logger.warning(f"断路器降级: {target} 不可用，切换到 {m}")
+                return m
+        return target
 
     def _degradation_chain(self, target: str) -> List[str]:
-        """构建降级链：目标模型 → 另一个模型，去重。"""
-        other = self.fast_model if target != self.fast_model else self._eff_model()
+        """构建降级链：目标模型 → 其他可用模型，去重。"""
         chain = [target]
-        if other != target:
-            chain.append(other)
+        for m in self._available_models():
+            if m != target and m not in chain:
+                chain.append(m)
         return chain
 
     # ---------- 客户端管理 ----------
@@ -678,10 +692,14 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        context: str = "",
     ) -> str:
-        """与大模型对话"""
+        """与大模型对话。model=None 时自动推断。"""
         if not self._initialized:
             await self.initialize()
+
+        if model is None:
+            model = await self.pick_model_async(prompt, context=context)
 
         last_err = None
         for cfg in self._model_configs():
@@ -708,10 +726,19 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        context: str = "",
     ) -> str:
-        """多轮对话，支持 system/user/assistant 消息列表"""
+        """多轮对话，支持 system/user/assistant 消息列表。model=None 时自动推断。"""
         if not self._initialized:
             await self.initialize()
+
+        if model is None:
+            _last_user = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    _last_user = m.get("content", "")[:500]
+                    break
+            model = await self.pick_model_async(_last_user, context=context)
 
         last_err = None
         for cfg in self._model_configs():
@@ -823,10 +850,19 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
+        context: str = "",
     ) -> AsyncGenerator[str, None]:
-        """多轮流式对话"""
+        """多轮流式对话。model=None 时自动推断。"""
         if not self._initialized:
             await self.initialize()
+
+        if model is None:
+            _last_user = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    _last_user = m.get("content", "")[:500]
+                    break
+            model = await self.pick_model_async(_last_user, context=context)
 
         last_err = None
         for cfg in self._model_configs():
@@ -860,10 +896,19 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
+        context: str = "",
     ) -> AsyncGenerator[Dict[str, str], None]:
-        """流式对话（含推理过程）。"""
+        """流式对话（含推理过程）。model=None 时自动推断。"""
         if not self._initialized:
             await self.initialize()
+
+        if model is None:
+            _last_user = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    _last_user = m.get("content", "")[:500]
+                    break
+            model = await self.pick_model_async(_last_user, context=context)
 
         target_model = self._resolve_model(model)
         chain = self._degradation_chain(target_model)
