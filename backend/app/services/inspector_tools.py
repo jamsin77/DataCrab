@@ -15,7 +15,12 @@ from app.services.connectors import get_connector
 
 
 class DataInspectorTools:
-    async def _load_data(self, datasource_id: str, table_name: str, db: AsyncSession, page_size: int = 50000) -> pd.DataFrame:
+    _cache: dict = {}
+
+    async def _load_data(self, datasource_id: str, table_name: str, db: AsyncSession, page_size: int = 50000, use_cache: bool = True) -> pd.DataFrame:
+        cache_key = f"{datasource_id}:{table_name}"
+        if use_cache and cache_key in self._cache:
+            return self._cache[cache_key]
         result = await db.execute(
             select(DataSource).where(DataSource.id == _uuid.UUID(datasource_id))
         )
@@ -38,6 +43,9 @@ class DataInspectorTools:
             raise
         finally:
             await connector.close()
+        if use_cache:
+            self._cache[cache_key] = df
+        return df
 
     async def _resolve_table_name(self, connector, table_name: str) -> str:
         """当目标表名不存在时，从数据源的所有表中查找最相似的表名"""
@@ -862,6 +870,253 @@ class DataInspectorTools:
         except Exception as e:
             logger.error(f"check_data_security 失败: {e}")
             return {"dimension": "security", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
+
+    # ==================== 预执行入口（对齐 OpenCode：先执行再分析） ====================
+
+    def _profile_from_df(self, df) -> dict:
+        """从 DataFrame 生成数据概览（同步，不加载 DB）"""
+        try:
+            real_row_count = len(df)
+            profile = {
+                "row_count": real_row_count,
+                "column_count": len(df.columns),
+                "columns": {},
+            }
+            for col in df.columns:
+                profile["columns"][col] = {
+                    "dtype": str(df[col].dtype),
+                    "null_rate": round(float(df[col].isna().mean()), 4),
+                    "unique_count": int(df[col].nunique()),
+                }
+            return profile
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _check_standards_from_df(self, df, standard_rules=None) -> dict:
+        """从 DataFrame 执行标准检查（同步，不加载 DB）"""
+        import pandas as pd
+        try:
+            issues = []
+            columns = list(df.columns)
+            # 命名规范
+            if not standard_rules or "naming_convention" in standard_rules:
+                for col in df.columns:
+                    if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
+                        suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
+                        issues.append({"dimension": "naming_convention", "rule_id": "DQ-VAL-001", "column": col, "severity": "warning", "description": f"列名 '{col}' 不符合 snake_case 命名规范", "suggestion": f"建议重命名为 '{suggestion}'"})
+            # 类型一致性
+            if not standard_rules or "type_consistency" in standard_rules:
+                for col in df.columns:
+                    non_null = df[col].dropna()
+                    if len(non_null) > 0 and non_null.apply(type).nunique() > 1:
+                        issues.append({"dimension": "type_consistency", "rule_id": "DQ-CON-003", "column": col, "severity": "warning", "description": f"列 '{col}' 存在混合类型", "suggestion": "建议统一数据类型"})
+            # 编码检查
+            if not standard_rules or "encoding_check" in standard_rules:
+                for col in df.columns:
+                    if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
+                        sample = df[col].dropna().head(100).astype(str)
+                        garbled = sample.str.contains(r'[\ufffd\uffef\u00bf]', na=False, regex=True)
+                        if garbled.any():
+                            issues.append({"dimension": "encoding_check", "rule_id": "DQ-VAL-001", "column": col, "severity": "warning", "description": f"列 '{col}' 疑似包含乱码字符（{garbled.sum()}条）", "suggestion": "建议检查编码格式并转换"})
+            # 引用数据标准库做格式正则检查
+            try:
+                from app.services.standards_parser import parse_standards, match_columns
+                for std in parse_standards():
+                    matched = match_columns(columns, std.get("fields", []))
+                    for col in matched:
+                        non_null = df[col].dropna().astype(str)
+                        if len(non_null) == 0:
+                            continue
+                        try:
+                            invalid = ~non_null.str.match(std["regex"])
+                            invalid_count = int(invalid.sum())
+                            if invalid_count > 0:
+                                issues.append({"dimension": "standard_format", "standard_id": std["id"], "rule_id": "DQ-VAL-001", "column": col, "severity": std.get("severity", "warning"), "description": f"列 '{col}' 有 {invalid_count}/{len(non_null)} 条不符合 {std['id']} {std['name']}", "suggestion": f"按 {std['id']} 格式修正"})
+                        except re.error:
+                            pass
+            except Exception as e:
+                logger.warning(f"标准库格式检查失败: {e}")
+            return {"dimension": "standards", "passed": len(issues) == 0, "issues": issues}
+        except Exception as e:
+            logger.error(f"_check_standards_from_df 失败: {e}")
+            return {"dimension": "standards", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
+
+    def _check_quality_from_df(self, df, quality_dimensions=None) -> dict:
+        """从 DataFrame 执行质量检查（同步，不加载 DB）"""
+        import pandas as pd
+        try:
+            issues = []
+            total = len(df)
+            null_thr = 0.05
+            dupe_thr = 0.01
+            try:
+                from app.services.standards_parser import parse_quality_rules
+                dq_rules = {r["id"]: r for r in parse_quality_rules()}
+                null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value", 0.9))
+                dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value", 0.01)
+            except Exception:
+                pass
+
+            # 完整性
+            if not quality_dimensions or "completeness" in quality_dimensions:
+                for col in df.columns:
+                    null_rate = df[col].isna().mean()
+                    if null_rate > null_thr:
+                        _sev = "critical" if null_rate >= 1.0 else ("error" if null_rate > null_thr * 3 else "warning")
+                        issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _sev, "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行"})
+
+            # 唯一性
+            if not quality_dimensions or "uniqueness" in quality_dimensions:
+                _id_cols = [c for c in df.columns if str(c).lower().strip() == "id" or str(c).lower().strip().endswith("_id")]
+                for col in _id_cols:
+                    dup_count = int(df[col].dropna().duplicated().sum())
+                    if dup_count > 0:
+                        issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-001", "column": col, "severity": "critical", "description": f"主键列 '{col}' 存在 {dup_count} 个重复值", "suggestion": "去重或修正主键生成逻辑"})
+                dupe_count = total - len(df.drop_duplicates())
+                dupe_rate = dupe_count / total if total else 0
+                if dupe_count > 0 and dupe_rate > dupe_thr:
+                    issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-003", "severity": "error", "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）", "suggestion": "建议执行去重操作"})
+
+            # 有效性
+            if not quality_dimensions or "validity" in quality_dimensions:
+                for col in df.columns:
+                    if pd.api.types.is_numeric_dtype(df[col]):
+                        non_null = df[col].dropna()
+                        if len(non_null) > 0:
+                            q1, q3 = non_null.quantile(0.25), non_null.quantile(0.75)
+                            iqr = q3 - q1
+                            if iqr > 0:
+                                lower, upper = q1 - 3 * iqr, q3 + 3 * iqr
+                                outlier_count = ((non_null < lower) | (non_null > upper)).sum()
+                                if outlier_count > 0 and outlier_count / len(non_null) > 0.01:
+                                    issues.append({"dimension": "validity", "rule_id": "DQ-VAL-004", "column": col, "severity": "warning", "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法）", "suggestion": "建议检查极值是否合理"})
+
+            # 一致性
+            if not quality_dimensions or "consistency" in quality_dimensions:
+                cols_low = {str(c).lower(): c for c in df.columns}
+                for s_name, e_name in [("start_date", "end_date"), ("start_time", "end_time"), ("begin_date", "end_date"), ("created_at", "updated_at")]:
+                    s_col, e_col = cols_low.get(s_name), cols_low.get(e_name)
+                    if s_col and e_col:
+                        s = pd.to_datetime(df[s_col], errors="coerce")
+                        e = pd.to_datetime(df[e_col], errors="coerce")
+                        invalid = s.notna() & e.notna() & (e < s)
+                        if invalid.any():
+                            issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": "error", "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录"})
+
+            return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
+        except Exception as e:
+            logger.error(f"_check_quality_from_df 失败: {e}")
+            return {"dimension": "quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
+
+    def _check_security_from_df(self, df) -> dict:
+        """从 DataFrame 执行安全检查（同步，不加载 DB）"""
+        import pandas as pd
+        try:
+            issues = []
+            try:
+                from app.services.standards_parser import parse_security_rules
+                sec_rules = parse_security_rules()
+            except Exception:
+                sec_rules = []
+            if not sec_rules:
+                sec_rules = [
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "fatal"},
+                    {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
+                    {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
+                ]
+            for col in df.columns:
+                if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
+                    sample = df[col].dropna().head(200).astype(str)
+                    if len(sample) == 0:
+                        continue
+                    for sec in sec_rules:
+                        if not sec.get("regex"):
+                            continue
+                        try:
+                            match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
+                        except re.error:
+                            continue
+                        if match_count > 0:
+                            issues.append({"dimension": "security", "rule_id": sec["id"], "column": col, "severity": sec.get("severity", "critical"), "description": f"列 '{col}' 疑似包含 {sec['name']}（{match_count}/{len(sample)} 条样本命中）", "suggestion": f"按 {sec['id']} 处置建议脱敏/加密"})
+            # 薪资/医疗字段
+            for col in df.columns:
+                cl = str(col).lower()
+                if any(kw in cl for kw in ("salary", "wage", "income", "薪资", "收入", "工资")):
+                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-001", "column": col, "severity": "error", "description": f"列 '{col}' 含薪资/收入数据，需访问控制+脱敏", "suggestion": "按机密级管控"})
+                if any(kw in cl for kw in ("diagnosis", "medical", "health", "病历", "诊断", "病情")):
+                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-002", "column": col, "severity": "error", "description": f"列 '{col}' 含医疗健康数据，需授权访问", "suggestion": "按机密/秘密级管控"})
+            return {"dimension": "security", "passed": len(issues) == 0, "issues": issues}
+        except Exception as e:
+            logger.error(f"_check_security_from_df 失败: {e}")
+            return {"dimension": "security", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
+
+    async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
+        """预执行入口：加载数据1次 → 跑4项检查 → 返回紧凑报告"""
+        # 清缓存（复查时需要最新数据）
+        cache_key = f"{datasource_id}:{table_name}"
+        self._cache.pop(cache_key, None)
+        
+        try:
+            df = await self._load_data(datasource_id, table_name, db, use_cache=True)
+        except Exception as e:
+            return {"error": f"数据加载失败: {e}", "profile": None, "standards": None, "quality": None, "security": None}
+
+        # 同步检查（纯 pandas，共享同一 DataFrame）
+        profile = self._profile_from_df(df)
+        standards = self._check_standards_from_df(df)
+        quality = self._check_quality_from_df(df)
+        security = self._check_security_from_df(df)
+
+        return {
+            "profile": profile,
+            "standards": standards,
+            "quality": quality,
+            "security": security,
+        }
+
+    def format_report(self, results: dict) -> str:
+        """格式化检查结果为紧凑报告（注入 user message）"""
+        lines = []
+        
+        # 数据概览
+        profile = results.get("profile") or {}
+        if "error" in profile:
+            lines.append(f"## 数据概览\n❌ {profile['error']}")
+        else:
+            row_count = profile.get("row_count", 0)
+            col_count = profile.get("column_count", 0)
+            lines.append(f"## 数据概览\n行数: {row_count}, 列数: {col_count}")
+            cols = profile.get("columns", {})
+            col_parts = []
+            for name, info in cols.items():
+                col_parts.append(f"  {name}(null={info.get('null_rate',0):.1%}, unique={info.get('unique_count',0)})")
+            if col_parts:
+                lines.append("\n".join(col_parts))
+
+        # 三项检查
+        for dim, label in [("standards", "标准检查"), ("quality", "质量检查"), ("security", "安全检查")]:
+            result = results.get(dim) or {}
+            issues = result.get("issues", [])
+            passed = result.get("passed", len(issues) == 0)
+            if passed and not issues:
+                lines.append(f"\n## {label}\n✅ 通过")
+            elif issues:
+                error_count = sum(1 for i in issues if i.get("severity") in ("error", "critical", "fatal"))
+                warning_count = sum(1 for i in issues if i.get("severity") == "warning")
+                lines.append(f"\n## {label}\n❌ {len(issues)} 个问题（{error_count} error/critical, {warning_count} warning）:")
+                for idx, issue in enumerate(issues, 1):
+                    sev = issue.get("severity", "warning")
+                    desc = issue.get("description", "")
+                    col = issue.get("column", "")
+                    sug = issue.get("suggestion", "")
+                    line = f"{idx}. [{sev}] {desc}"
+                    if col:
+                        line += f" (列: {col})"
+                    if sug:
+                        line += f" → {sug}"
+                    lines.append(line)
+
+        return "\n".join(lines)
 
 
 inspector_tools = DataInspectorTools()

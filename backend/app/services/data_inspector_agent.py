@@ -231,24 +231,8 @@ class DataInspectorAgent(BaseAgent):
     capabilities = ["data_quality", "data_standards", "data_security", "inspection"]
 
     def build_system_prompt(self, context: Dict[str, Any]) -> str:
-        """注入数据标准库 + 数据质量库，检查时引用 STD-xxx / DQ-xxx 编号"""
+        """精简 system prompt（规则文件移到 user message，不在每轮重复）"""
         base = self.instructions
-        try:
-            from pathlib import Path
-            from app.core.config import settings
-            std_dir = Path(settings.SKILL_STORAGE_PATH).parent / "standards"
-            for name, title in [
-                ("data_standards.md", "数据标准库（字段格式/约束，检查时引用 STD-xxx）"),
-                ("data_quality_rules.md", "数据质量库（质量检查规则，检查时引用 DQ-xxx）"),
-                ("data_security_rules.md", "数据安全规则库（安全检查规则，检查时引用 SEC-xxx）"),
-            ]:
-                p = std_dir / name
-                if p.exists():
-                    base += f"\n\n## {title}\n{p.read_text(encoding='utf-8')}"
-        except Exception:
-            pass
-        # 三级反幻觉注入：DataInspector 用 strict 级别（T）
-        # Inspector 有自己的工具集，不注入共享工具能力表（P2 优化）
         anti_hallucination = get_anti_hallucination_section("strict")
         return base + anti_hallucination
 
@@ -281,25 +265,35 @@ class DataInspectorAgent(BaseAgent):
             op_desc = message.payload.get("operation_description", "")
             result_summary = message.payload.get("result_summary", "")
 
-            inspect_prompt = f"请对以下数据进行全面检查：\n\n"
-            inspect_prompt += f"- 数据源ID: {ds_id}\n"
-            inspect_prompt += f"- 表名: {table_name}\n"
+            # 预执行所有检查（加载数据1次 → 4项检查 → 紧凑报告）
+            yield {"type": "content", "content": "\n🔍 正在执行数据质量检查...\n"}
+            from app.services.inspector_tools import inspector_tools
+            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            report = inspector_tools.format_report(check_results)
+
+            inspect_prompt = f"数据已自动检查完成，结果如下：\n\n{report}\n\n"
             if op_desc:
-                inspect_prompt += f"- 操作描述: {op_desc}\n"
-            if result_summary:
-                inspect_prompt += f"- 处理结果摘要: {result_summary}\n"
-            inspect_prompt += "\n请先使用 profile_data 获取数据概览，然后依次执行标准检查、质量检查和安全检查。"
+                inspect_prompt += f"操作描述: {op_desc}\n"
+            inspect_prompt += "\n请分析以上检查结果。发现 error/critical 问题请调用 handoff_to_processor 交接修复；仅 warning 问题请列出建议用户处理；无问题请说明检查通过。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
+            yield {"type": "content", "content": report + "\n"}
+
         elif message.reason == HandoffReason.FIX_COMPLETED:
             ds_id = message.payload.get("datasource_id", "")
             table_name = message.payload.get("table_name", "")
-            inspect_prompt = f"数据已修复，请对以下数据进行复查：\n\n"
-            inspect_prompt += f"- 数据源ID: {ds_id}\n"
-            inspect_prompt += f"- 表名: {table_name}\n"
-            inspect_prompt += "\n请确认之前的问题是否已修复，并检查是否引入新问题。"
+
+            # 复查：重新预执行（清缓存，加载最新数据）
+            yield {"type": "content", "content": "\n🔍 正在复查数据质量...\n"}
+            from app.services.inspector_tools import inspector_tools
+            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            report = inspector_tools.format_report(check_results)
+
+            inspect_prompt = f"数据已修复并重新检查，结果如下：\n\n{report}\n\n请确认之前的问题是否已修复，并检查是否引入新问题。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
+            yield {"type": "content", "content": report + "\n"}
+
         else:
             user_msg = message.payload.get("user_message", message.payload.get("content", ""))
             if user_msg:
