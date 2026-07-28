@@ -1257,7 +1257,7 @@ async def get_skill_experience(
     await assert_resource_access(db, current_user, "skill", skill, "view")
 
     from app.services import experience
-    folder = Path(settings.SKILL_STORAGE_PATH) / str(skill_id)
+    folder = _resolve_skill_folder(skill)
     data = experience.read_experience(folder)
     return {
         "lessons": data.get("lessons", ""),

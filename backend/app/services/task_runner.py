@@ -231,6 +231,12 @@ async def _run_skill(
                 return False, None, f"用户无权执行技能 {skill.name}", None
 
     folder = Path(settings.SKILL_STORAGE_PATH) / str(skill_id)
+    if skill.skill_path:
+        _p = Path(skill.skill_path)
+        if not _p.is_absolute():
+            _p = Path(settings.SKILL_STORAGE_PATH) / _p
+        if _p.exists():
+            folder = _p
     script_name = params.get("script_name", "main.py")
     parameters = params.get("parameters", {})
     input_data = params.get("input_data")
