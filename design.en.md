@@ -2647,7 +2647,7 @@ DataProcessor (Orchestrator + lightweight tools)
 ```
 
 **Granularity principle**: Agents for complex reasoning, Tools for simple operations.
-- `modify_script` (code merge) / `run_script` (sandbox execution) are simple ops → Tool, no separate Agent needed
+- `edit_script` (line-level patch) / `run_script` (sandbox execution) are simple ops → Tool, no separate Agent needed
 - Data quality inspection is complex reasoning (decide what to check, interpret results, judge severity) → Agent (Worker)
 - Making simple ops into separate Workers would add 2 agent hops + 2 extra LLM calls per modify+run, doubling latency
 
@@ -2662,7 +2662,7 @@ Added `chat_stream_with_tools_and_thinking()` (`llm.py`), supporting streaming r
 | Streaming reasoning (thinking) | chat_stream_with_thinking | yield reasoning_content chunk by chunk |
 | Streaming content | chat_stream_with_thinking | yield content chunk by chunk |
 | Tool calls (tool_calls) | chat_with_tools | accumulate tool_call deltas, yield once after the stream ends |
-| No-tool redirection | added in Round 8 (replaces former length escalation) | reasoning model emits no tool call / reasoning truncated (finish_reason=length) → switch to fast model + tool_choice=required to force a tool call |
+| Multi-model degradation chain | simplified in Round 17 (replaces L2/L3/L4 truncation contract) | per-model attempt + CircuitBreaker (trips after 3 consecutive failures for 60s) + transient retry (429/timeout/500 exponential backoff); finish_reason=length returns directly without continuation |
 | Circuit-breaker fallback + timeout guard | chat_stream_with_thinking + added in Round 8 | model failure / 120s first-chunk timeout / 60s subsequent-chunk timeout → switch to the fallback chain |
 
 ##### DataProcessor Debug Mode
@@ -2672,7 +2672,7 @@ DataProcessor adds a `run_debug()` method, dispatched in `run()` when `context["
 | Feature | run() (main chat flow) | run_debug() (debug assistant) |
 |------|-------------------|------------------------|
 | LLM call | chat_with_tools() (non-streaming) | chat_stream_with_tools_and_thinking() (streaming) |
-| Toolset | shared tools + handoff_to_inspector | shared tools + handoff + modify_script + run_script |
+| Toolset | shared tools + handoff_to_inspector | edit_script + run_script + read_script + grep_script (4 tools, aligning with OpenCode Grep/Read/Edit/Bash) |
 | system prompt | general data-processing instructions | debug-specific instructions (script content, sandbox function list, parameter memory) |
 | Self-healing | handoff back-and-forth (DataInspector ↔ DataProcessor) | autonomous within the tool-call loop (run_script fails → LLM sees error → auto modify → run again) |
 
@@ -2680,9 +2680,10 @@ DataProcessor adds a `run_debug()` method, dispatched in `run()` when `context["
 
 | Tool | Type | Description |
 |------|------|------|
-| `modify_script` | Tool | Modify script code (function-level merge via apply_partial_code); supports skill (file) / operator (DB) / pipeline (DB) modes |
-| `run_script` | Tool | Sandbox-execute the script; skill uses subprocess, operator uses exec(), pipeline does not support direct execution |
-| `handoff_to_inspector` | Tool | Hand off to DataInspector for quality inspection (existing, also available in debug mode) |
+| `edit_script` | Tool | Line-level patch to modify the script (old_string/new_string, aligning with OpenCode Edit); supports skill (file) / operator (DB) / pipeline (DB) modes |
+| `run_script` | Tool | Sandbox-execute the script; skill uses subprocess, operator uses exec(), pipeline does not support direct execution; auto-hands off to DataInspector on success |
+| `read_script` | Tool | Read script content (with line numbers, aligning with OpenCode Read); supports offset/limit for precise reads |
+| `grep_script` | Tool | Search script content (aligning with OpenCode Grep); locates keyword line numbers |
 
 ##### Code Volume Before/After
 
@@ -2699,11 +2700,11 @@ user message → DataProcessor.run_debug()
     ↓
 model / thinking / content (streaming reasoning + content)
     ↓
-tool_calls → modify_script → script_updated event
+tool_calls → edit_script → script_updated event
     ↓
 tool_calls → run_script → executing + run_result events
     ↓
-tool_calls → handoff_to_inspector → agent_switch event
+run_script succeeds → runtime auto-handoff → agent_switch event
     ↓ (AgentRuntime auto-switch)
 inspecting event → DataInspector.run()
     ↓
@@ -3959,9 +3960,9 @@ This section records engineering improvements made to DataCrab after drawing on 
 - **Problem**: `redis`, `celery`, `minio`, `elasticsearch` were declared but unused in code
 - **Improvement**: removed the 4 unused dependencies from `pyproject.toml`
 
-#### CLAUDE.md
+#### AGENTS.md
 - **Problem**: the project had no AI-collaboration config file
-- **Improvement**: created `CLAUDE.md` recording the tech stack, key-file navigation, run commands, and coding standards
+- **Improvement**: created `AGENTS.md` recording the tech stack, key-file navigation, run commands, and coding standards
 
 ### 11.8 New File List
 
@@ -3973,7 +3974,7 @@ This section records engineering improvements made to DataCrab after drawing on 
 | `backend/tests/test_agent_utils.py` | agent_utils unit tests |
 | `backend/tests/test_experience.py` | experience unit tests |
 | `backend/tests/test_shared_tools.py` | shared_tools + tool_guidance unit tests |
-| `CLAUDE.md` | project-level AI collaboration config |
+| `AGENTS.md` | project-level AI collaboration config |
 
 ### 11.9 Reasoning Truncation Fix
 
@@ -4244,3 +4245,174 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | timeout back to 300s | config.py | SKILL_RUNNER_TIMEOUT 60→300 |
 
 **Relationship to prior rounds**: Rounds 10-11 aligned the editing primitive layer (edit_and_run + apply_partial_code); this round aligns the debug mode layer (minimal prompt + thinking + context-based locating). Complementary: primitives make small edits not truncate, mode makes LLM modify directly without investigating.
+
+### 11.24 Round 13 — Fix-Attempt Right Fix (3-execution-failure cap + 7-total-fix cap, investigation doesn't count)
+
+**Core insight**: The user corrected the design philosophy — "7 fix attempts = modify 7 times, not call LLM 7 times, not freely choose to investigate-then-fix; equivalent to OpenCode interacting 7 times to make modifications". Only actual code modifications (edit_and_run/modify_and_run/run_script) count as a fix attempt; investigation (read/grep) is preparation and doesn't count. Two limits: **3 = consecutive execution-failure cap before first success**, **7 = total fix-attempt cap** (including inspection-driven fixes).
+
+| Change | File | Notes |
+|------|------|------|
+| **3-execution-failure sub-limit** | data_processor_agent.py | `_exec_failures_before_success`: 3 consecutive failures before first success → stop; resets after success |
+| **7-total-fix cap** | data_processor_agent.py | `while _fix_attempts < 7`: all fixes (execution-error + inspection fixes) counted together |
+| **cross-handoff persistent counters** | data_processor_agent.py | `_fix_attempts`/`_execution_succeeded`/`_exec_failures` persisted via `context` |
+| **round event counts fix attempts** | data_processor_agent.py | `yield {"type":"round","round":_fix_attempts}` only on fix-tool detection; investigation rounds have no round event |
+| **removed fast model** | data_processor_agent.py | Always deep model (glm-5.2); fast model (glm-4-flash) too weak, reads but doesn't modify |
+| **removed investigate-without-fix detector** | data_processor_agent.py | Removed `_no_fix_rounds` counter + 3-idle give_up logic; investigation is legitimate, no penalty |
+| **DEBUG_INSTRUCTIONS rewrite** | data_processor_agent.py | Added "judge fixability first" + "fix fully each time, don't rely on next" + "max 3 execution errors" |
+| **removed enable_thinking dead code** | llm.py | Param removed (default True, no one passes False) + `extra_body={"thinking":"disabled"}` removed |
+| **removed frequency_penalty dead code** | llm.py | Residual `if frequency_penalty is not None` removed |
+| **removed max_tokens=12000** | data_processor_agent.py + llm.py | Use platform default (align with OpenCode); L2 continuation (max_continues=5) backs up truncation |
+| **debug_max_rounds default 7** | skill.py + pipeline.py + operator.py | 5 places `"debug_max_rounds": 7` |
+| **frontend "round"→"fix attempt"** | SkillView/OperatorView/PipelineView.vue | `─── Round N ───`→`─── Fix attempt N ───` (3 places) |
+| **tool-result display** | data_processor_agent.py | Investigation tools (grep/read/query/schema) result summary yielded to frontend (like OpenCode showing grep/read) |
+
+**Relationship to prior rounds**: Round 12 aligned debug mode with OpenCode (minimal prompt + thinking + context locating); this round rights the fix-count design — 3-execution cap + 7-total-fix cap, investigation doesn't count. Removing fast model + investigate-without-fix detector lets LLM freely investigate + fix. Dead-code cleanup of enable_thinking/frequency_penalty/max_tokens.
+
+### 11.25 Round 14 — Silent-Failure Audit + OpenCode Debug-Display Alignment + Error-Classification Exit + Sandbox Completion
+
+**Core insight**: Comparing with OpenCode, audited DataCrab silent failures (6 types) + debug-info gaps. OpenCode debug flow: Grep locates line → Read(offset/limit) reads only relevant lines → Edit(old_string/new_string) modifies. DataCrab previously Read full file (22828 chars), display showed only char-count summary, Edit display truncated 80 chars, errors unclassified relying on LLM text judgment.
+
+**Silent-failure audit**:
+
+| Change | File | Notes |
+|------|------|------|
+| UUID type mismatch | datasource.py | 4 internal endpoints UUID→str fix |
+| CSV/Excel fail silent overwrite | connectors.py | `write_table_data` fail strategy → raise, no silent overwrite |
+| error result caching | shared_tools.py | Tool-execution failures not cached, avoid reuse of bad results |
+| connection-failure raise | connectors.py | 8 places: return None → raise ConnectionError |
+| list_user_datasources close | shared_tools.py | close() moved to finally, avoid leak |
+| stats except: pass | connectors.py | 2 places `except: pass` → `logger.warning` |
+| skill_runner empty return | skill_runner.py | 6 tool functions return empty → raise explicit error |
+| VALID_WRITE_STRATEGIES | connectors.py | Validate write strategy at entry, invalid → raise |
+
+**Error-classification exit** (replacing LLM text judgment):
+
+| Change | File | Notes |
+|------|------|------|
+| `_classify_execution_error` L4/L5/L6 | skill_runner.py | L4 env (DLL/ModuleNotFound) / L5 platform-limit (unsupported write strategy/NotImplementedError) / L6 data (table/file not found); L1/L2 script errors continue fixing |
+| run_debug three-level exit | data_processor_agent.py | `any(kw in _err_type for kw in ("env","platform","data"))` → give_up + return; before `_exec_failures` (doesn't consume the 3 budget) |
+| `_is_platform_issue_report` kept as fallback | data_processor_agent.py | Only checked when `not tool_calls` (fallback for LLM concluding without executing); main exit relies on error classification |
+
+**OpenCode debug-display alignment**:
+
+| Change | File | Notes |
+|------|------|------|
+| read_script no cap | data_processor_agent.py | Default returns full text (align OpenCode Read default 2000 lines); offset/limit optional; removed 60-line hard cap |
+| read_script with line numbers | data_processor_agent.py | `L1: content` format (align OpenCode Read) |
+| read_script shows actual content | data_processor_agent.py | Was `read: func (22828 chars)` → now shows actual content code block (cap 40 lines) |
+| grep_script shows matching lines | data_processor_agent.py | Was `search: 3 matches, first: ...` → now all matching lines `>> L636: content` (cap 10) |
+| edit_and_run action shows diff | data_processor_agent.py | Was truncated 80 chars `repr(old)→repr(new)` → now ```diff``` block full old(-)/new(+) (cap 40 lines) |
+| modify_and_run result shows diff | data_processor_agent.py | Was only function name → now also `changed_lines` diff block |
+| DEBUG_INSTRUCTIONS workflow | data_processor_agent.py | Explicit `grep → read(offset/limit) → edit` workflow, no full-file/full-function reads |
+
+**Sandbox completion + doc unification**: call_operator builtin (skill_runner.py + sandbox_ns.py); SANDBOX_TOOLS_DOC full signatures (prompt_docs.py, 17 functions); PLATFORM_CONVENTIONS_DOC (platform-conventions doc injected into generation+debug+NL-inference); read_file image fail-fast; DQ-UNI-001 primary-key uniqueness check (inspector_tools.py).
+
+**Other**: personal.md → soul.md full rename; frontend label renames; give_up shows reason (6 places); SSE ping keepalive; execution-failure yield content; NL-inference injects datasource list; extract-image-info / data-etl skill fixes; Excel create_new_file platform-capability → False.
+
+**Relationship to prior rounds**: Rounds 10-13 built editing primitives + debug mode; this round fills in silent-failure audit + OpenCode debug-display alignment + error-classification exit. read_script no-cap aligns OpenCode (guide offset/limit via instructions, not hard limits); error classification replaces LLM text judgment (reliable exit via error-message classification, not keyword matching).
+
+### 11.26 Round 15 — Full Rule Implementation + Install Fixes + Asset Packaging + Architecture Cleanup
+
+**Core insight**: Round 14 filled in debug display and error classification, but rule checks were only 39% deterministically implemented (61% relied on LLM subjective judgment or unimplemented); install flow broke in multiple places (poetry-core download timeout / passlib vs bcrypt 4.x conflict / npm run install not installing devDependencies); skills/pipelines/operators couldn't migrate across machines.
+
+**Full rule implementation (31 new deterministic checks)**:
+
+| Change | File | Notes |
+|------|------|------|
+| standards_parser extension | standards_parser.py | Parse legal values + don't skip no-regex rules + parse detection logic |
+| STD enum checks | inspector_tools.py | STD-ENUM-001~004 (gender/id/marriage/country) + STD-HERITAGE-001~002 (era/protection-level) |
+| STD numeric constraints | inspector_tools.py | STD-NUM-001 amount / -002 percent / -003 age / -004 quantity |
+| STD geo | inspector_tools.py | STD-LOC-001 address / -004 lat-lng range |
+| STD time | inspector_tools.py | STD-TIME-003 Unix timestamp / -004 time-range consistency |
+| DQ completeness/uniqueness/validity/consistency | inspector_tools.py | DQ-COM-001/002, DQ-UNI-002, DQ-VAL-002, DQ-CON-001 |
+| DQ-ETL extension | inspector_tools.py | DQ-ETL-007/008/009 target-table null-rate/primary-key-unique/field-type-consistency |
+| SEC PII/sensitive-business/masking/classification | inspector_tools.py | SEC-PII-006/007, SEC-BIZ-001~003, SEC-MASK-001~004, SEC-CLASS-001 |
+
+**Bug fixes**: DQ-COM-003 threshold inversion (`null_rate > 0.95`→`0.05`); DQ-UNI-001 false-positive (removed "编号" column); local_messages undefined after handoff (passed via `context["_local_messages"]`); session-list not bubbling (two entry points add `session.updated_at = now()`).
+
+**Install fixes**: pyproject.toml poetry→setuptools (no poetry-core download dependency); requirements.txt completion (openai/chromadb/minio/aiosqlite/pyyaml/croniter); passlib→bcrypt direct (resolves passlib vs bcrypt 4.x conflict); npm install fix (postinstall hook); easyflow→datacrab cleanup; INSTALL.md slimmed.
+
+**Asset packaging (skill/pipeline/operator cross-machine migration)**: startup auto-seed skills/pipelines/operators (main.py); pipeline/operator export endpoints; frontend export buttons; TableMetadata import-path fix.
+
+**Architecture cleanup**: removed skill-auto-sync-operator (skill.py, skills and operators now independent); removed sandbox grep function (unused, full removal).
+
+**Relationship to prior rounds**: Round 14 filled in debug display and error classification; this round fills in rule implementation (39%→78% deterministic checks) + fixes install chain (3 blocking bugs) + asset-packaging mechanism. Rules still not deterministically implementable (DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP etc.) remain LLM-prompt judgment.
+
+### 11.27 Round 16 — Context Compaction + Prefix Cache Stability + SSE Fix + Image Compression + traceback Line-Number Fix
+
+**Core insight** (vs OpenCode): Round 9's L2 continuation solved "output truncation", but the other side of long sessions — unbounded context growth blowing the window — remained untreated. Comparing with OpenCode revealed two fundamental gaps: ①OpenCode has compaction (old-message summary + keep recent verbatim + mechanical identifier protection), DataCrab only had static pressure warnings with no actual compression; ②OpenCode's system prompt is byte-stable to hit provider prefix cache, DataCrab stuffed real-time data previews into system prompt, recomputing prefix cache every message, high input cost. This round fills in context lifecycle management + cache stability.
+
+**Context compaction (aligning with OpenCode)**:
+
+| Change | File | Notes |
+|------|------|------|
+| `should_compact` + `compact_messages` | agent_utils.py | Trigger at ≥75% context usage: keep system + LLM-summarize old messages + keep last 2 turns verbatim + mechanical identifier extraction (no LLM dependency); fallback to mechanical summary if LLM unavailable |
+| `extract_identifiers_from_messages` | agent_utils.py | Reuses `extract_identifiers(text)` full pattern set to extract UUID/table-name/datasource-ID per message; after compaction Agent doesn't forget already-queried tables |
+| Processor main-loop integration | data_processor_agent.py | `run()` + `run_debug()` check `should_compact` at loop top; debug mode yields a notice before compacting |
+| Inspector integration | data_inspector_agent.py | Compaction check at loop top |
+
+**Prefix cache stability**:
+
+| Change | File | Notes |
+|------|------|------|
+| data preview moved out of system | chat.py | Real-time data preview from system prompt → one-shot user message (`{preview}\n\n---\n\n{user_msg}`); system byte-stable to hit GLM context cache, input down 30%+ |
+| `build_datasource_context` split | chat.py | Returns `(context, preview)` tuple; `_build_system_prompt` drops real-time-data hint section |
+| `has_preinjected_data` fix | chat.py | From string-containment check → `bool(data_preview)`, more reliable |
+
+**Inspector anti-hallucination content suppression**: streaming content buffering (data_inspector_agent.py) — don't yield content tokens immediately; decide after stream ends: ungrounded data claims → suppress this turn's content + inject warning to retry; has tool calls / final conclusion → output.
+
+**SSE ping fix**: `ensure_future` + `wait` pattern (operator.py + pipeline.py + skill.py) — `asyncio.wait_for(anext, timeout)` timeout cancels the underlying coroutine, which corrupts async-generator state; changed to `ensure_future` to create a task + `asyncio.wait` (no cancel), on timeout send ping then keep waiting the same task.
+
+**Other improvements**:
+
+| Change | File | Notes |
+|------|------|------|
+| `execute_query` signature cleanup | connectors.py + datasource.py | Removed unused `params` param from 8 connectors + BaseConnector |
+| image compression | datasource.py + sandbox_ns.py | llm_vision images scaled to max 1024px + JPEG quality 85, saves 60-70% tokens; falls back to original if PIL unavailable |
+| query_table_data/execute_sql split format | shared_tools.py | `to_dict(orient="records")` → `values.tolist()` + `"format":"split"` (no repeated column names, more token-efficient) |
+| traceback line-number fix | skill_runner.py | `_fix_traceback_lines`: subprocess temp-file line numbers → original-script line numbers (minus template preamble 478 lines); run_skill_script + streaming integrated |
+| datasource tables sorted by update time | datasource.py + DataSourceView.vue | `get_datasource_tree` joins TableMetadata.updated_at desc (newest first); table items show update time |
+| `debug_max_exec_failures` configurable | data_processor_agent.py | 3→context-configurable; DEBUG_INSTRUCTIONS uses `{max_exec_failures}` placeholder |
+| debug tool-display refinement | data_processor_agent.py | read shows line range / grep shows keyword / edit shows diff block; removed duplicate modify_script diff; line cap 50→20; execution success shows explicit ✅ |
+| anti-hallucination warning wording | agent_utils.py | `should_warn_ungrounded_claim` now directly demands calling inspection tools (no explanation, no admitting error) |
+| CLAUDE.md → AGENTS.md | AGENTS.md + design.md + design.en.md | Title + references updated, align with universal agent-collaboration file naming |
+
+**Relationship to prior rounds**: Round 9's L2 continuation treats "output truncation" (single-turn overlong output); this round treats "context growth" (cross-turn history bloat) — the two are orthogonal, together covering the full long-session lifecycle. Prefix-cache stability extends Round 9's static/dynamic partitioning (system must be byte-stable to hit provider cache). The SSE ping fix resolves the latent bug of `wait_for` cancelling an async generator (previously the generator could corrupt after timeout).
+
+### 11.28 Round 17 — OpenCode Debug Alignment: Tool Simplification + Runtime Auto-Handoff + Vision Models + LLM Error Classification + Backup Models + SSE Fixes
+
+**Core insight** (vs. OpenCode): Rounds 10–16 established the line-level patch primitive + fix-attempt discipline + context compaction, but debug tools still exposed 7 (edit_and_run/modify_and_run/modify_script/edit_script/run_script/read_script/grep_script) and relied on the LLM actively calling the handoff_to_inspector tool to hand off inspection. Compared to OpenCode's 5-tool model (Grep/Read/Edit/Bash/Task), this round slimmed debug tools to 4 and made handoff runtime-triggered. It also simplified the streaming methods — Round 9's L2/L3/L4 truncation guarantee contract (max_continues / tool_choice=required / frequency_penalty) was high-complexity, low-payoff and was replaced by a simple multi-model degradation chain.
+
+| Improvement | File | Description |
+|------|------|------|
+| **Debug tools slimmed to 4** | data_processor_agent.py | `run_debug` exposes only `edit_script`/`run_script`/`read_script`/`grep_script` (aligning with OpenCode Grep/Read/Edit/Bash); `edit_and_run`/`modify_and_run`/`modify_script` schema+handlers retained but no longer exposed to the debug LLM |
+| **Removed handoff_to_inspector tool** | data_processor_agent.py | Debug mode no longer exposes a handoff tool; after `run_script` succeeds the runtime auto-hands off to DataInspector (reason=FIX_COMPLETED/INSPECT_RESULT), extracting the target table from written_tables/output_table |
+| **Removed script summary** | data_processor_agent.py | Deleted `_script_summary`, forcing the LLM to use `read_script` for real code (aligning with OpenCode's no-pre-summary) |
+| **Simplified action summary** | data_processor_agent.py | Shows only tool-name icons, no diff/pattern/offset details (less noise) |
+| **Streaming methods simplified to degradation chain** | llm.py | `chat_stream_with_thinking`/`chat_stream_with_tools_and_thinking` removed L2 continuation (max_continues)/L3 force-progress (tool_choice=required)/L4 frequency_penalty; now per-model attempt + CircuitBreaker + transient retry; finish_reason=length returns directly without continuation |
+| **Vision model support** | llm.py + sandbox_ns.py + skill_runner.py | `_PROVIDER_VISION_MODELS` (glm→glm-4v-plus/qwen→qwen-vl-plus etc.); `llm_vision` sandbox function picks model by provider; image compression 1024px+JPEG85; failures prefixed with "platform limitation" |
+| **LLM error classification** | skill_runner.py | `_llm_classify_error`: when keyword match returns script_error, re-classify into 4 categories via LLM (environment/platform/data/script); source file missing→data issue, target file missing→script error |
+| **Backup model (degradation) config** | llm.py + ModelConfigView.vue | `_model_configs` main model + fallback_models; `_degradation_chain`; CircuitBreaker trips after 3 consecutive failures for 60s; frontend restores backup-model management UI |
+| **Inspector removes forced handoff** | data_inspector_agent.py | `_collect_severe_issues` no longer called by run() (dead code); handoff entirely decided by the LLM via the handoff_to_processor tool |
+| **Inspector severity correction** | data_inspector_agent.py | `_correct_severity`: overrides LLM-tampered severity with the tool's original severity |
+| **SSE handler fixes** | skill.py + operator.py + pipeline.py | done event forwarded (no longer swallows result.content); tool_result forwarded (Inspector tool results visible); platform_issue event handled on frontend |
+| **read_script refreshes from disk** | data_processor_agent.py | No longer uses stale context copy; reads latest from disk; offset/limit applies to script scope |
+
+**Relationship to prior rounds**: Rounds 10–11 line-level patch (edit_script/apply_partial_code) + Round 13 fix-attempt discipline (3 execution / 7 total fixes) retained; this round slimmed the exposed tool surface (7→4) + automated handoff (removed handoff tool). Round 9's L2/L3/L4 truncation guarantee contract was simplified to a degradation chain (measured high-complexity, low-payoff; multi-model degradation + CircuitBreaker suffices). Round 8's `_stream_with_timeout`/written_tables/provider-aware embedding retained.
+
+### 11.29 Round 18 — Model Auto-Selection: Remove fast_model/default_model, Infer by Context + Rule Fallback
+
+**Core insight**: Round 4 introduced the deep+fast dual-model architecture (fast_model/default_model); Round 13 removed fast_model to always use the deep model. But "always deep" is wasteful — simple scenarios (parameter inference / chat) don't need glm-5.2. This round eliminates the fast_model/default_model concept entirely, replacing it with `pick_model_async` which lets the LLM pick the most suitable and economical model by context; simple scenarios use a flash-model rule fallback without asking the LLM.
+
+| Improvement | File | Description |
+|------|------|------|
+| **pick_model_async model auto-selection** | llm.py | Builds available-model list (with capability descriptions) + task scenario → asks LLM to pick the most suitable and economical model → result cached (100 entries); simple scenarios (parameter inference / chat) use a flash-model rule fallback without asking the LLM |
+| **Removed fast_model/default_model/classify_task** | llm.py | `fast_model` property / `default_model` concept / `classify_task` task classification all deleted; seed providers drop fast_model/default_model fields |
+| **chat methods model=None auto-infer** | llm.py | `chat`/`chat_with_messages`/`chat_stream_*` all call `pick_model_async` when model=None; new `context` parameter propagates the task scenario |
+| **context parameter end-to-end propagation** | skill.py + operator.py + pipeline.py + datasource.py | NL inference / skill modification / operator generate-modify-debug / pipeline generation / script llm_chat all add context parameter |
+| **Inspector system prompt slimmed** | data_inspector_agent.py | Rule files moved out of system prompt; `run_all_checks` pre-execution + `format_report` generates a compact report injected as a user message |
+| **inspector_tools full rule implementation** | inspector_tools.py | 31 deterministic checks (STD-ENUM/NUM/LOC/TIME + DQ-COM/UNI/VAL/CON/ETL + SEC-PII/BIZ/MASK/CLASS); `_resolve_table_name` fuzzy matching |
+
+**Relationship to prior rounds**: Round 4's dual-model architecture + Round 13's "remove fast_model, always deep" are replaced by `pick_model_async` — no longer a binary choice (deep or fast), but selecting the most suitable and economical from the available-model list by context. Round 17's degradation chain + CircuitBreaker retained (execution-layer fault tolerance after model selection).
+
+**Known leftovers**: `data_processor_agent.py`'s `_handle_get_llm_config` still references the deleted `llm_manager.fast_model` property (AttributeError when calling the get_llm_config tool); DB model/config layers still retain the fast_model column (empty value, no runtime impact).

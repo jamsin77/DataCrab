@@ -23,7 +23,6 @@ class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     model: str = "gpt-4"
-    fast_model: Optional[str] = None
     embedding_model: str = "text-embedding-ada-002"
     fallback_models: Optional[List[Dict[str, str]]] = None
 
@@ -33,7 +32,6 @@ class FallbackModelItem(BaseModel):
     provider: str
     api_base: Optional[str] = None
     model: str = ""
-    fast_model: str = ""
     api_key_set: bool = False
 
 
@@ -43,7 +41,6 @@ class LLMConfigResponse(BaseModel):
     api_key_set: bool  # 不返回实际key，只返回是否已设置
     api_base: Optional[str] = None
     model: str
-    fast_model: Optional[str] = None
     embedding_model: str
     is_configured: bool
     fallback_models: List[FallbackModelItem] = []
@@ -107,7 +104,6 @@ async def get_llm_config(
             provider = rec.provider
             api_base = rec.api_base or ""
             model = rec.model or ""
-            fast_model = rec.fast_model or ""
             embedding_model = rec.embedding_model or ""
             api_key_set = bool(rec.api_key_encrypted)
             fb_items = [
@@ -115,7 +111,6 @@ async def get_llm_config(
                     provider=f.get("provider") or "",
                     api_base=f.get("api_base"),
                     model=f.get("model") or "",
-                    fast_model=f.get("fast_model") or "",
                     api_key_set=bool(f.get("api_key_encrypted")),
                 )
                 for f in (rec.fallback_models or [])
@@ -125,7 +120,6 @@ async def get_llm_config(
             provider = llm_manager.provider or settings.LLM_PROVIDER
             api_base = llm_manager.api_base or settings.OPENAI_API_BASE
             model = llm_manager.model or settings.OPENAI_MODEL
-            fast_model = getattr(settings, 'LLM_FAST_MODEL', '') or ''
             embedding_model = llm_manager.embedding_model or settings.OPENAI_EMBEDDING_MODEL
             api_key_set = provider_key_map.get(provider, False)
             fb_items = [
@@ -133,7 +127,6 @@ async def get_llm_config(
                     provider=f.get("provider") or "",
                     api_base=f.get("api_base"),
                     model=f.get("model") or "",
-                    fast_model=f.get("fast_model") or "",
                     api_key_set=provider_key_map.get(f.get("provider", ""), False),
                 )
                 for f in (getattr(llm_manager, "fallback_models", []) or [])
@@ -144,7 +137,6 @@ async def get_llm_config(
             api_key_set=api_key_set,
             api_base=api_base,
             model=model,
-            fast_model=fast_model,
             embedding_model=embedding_model,
             is_configured=api_key_set,
             fallback_models=fb_items,
@@ -174,7 +166,6 @@ async def update_llm_config(
                     "provider": f.get("provider") or "",
                     "api_base": f.get("api_base"),
                     "model": f.get("model") or "",
-                    "fast_model": f.get("fast_model") or "",
                 }
                 fb_key = f.get("api_key") or ""
                 if fb_key.strip():
@@ -193,7 +184,6 @@ async def update_llm_config(
             rec.api_key_encrypted = api_key_encrypted
             rec.api_base = config.api_base or ""
             rec.model = config.model
-            rec.fast_model = config.fast_model or ""
             rec.embedding_model = config.embedding_model
             rec.fallback_models = fallback_models
         else:
@@ -203,7 +193,6 @@ async def update_llm_config(
                 api_key_encrypted=api_key_encrypted,
                 api_base=config.api_base or "",
                 model=config.model,
-                fast_model=config.fast_model or "",
                 embedding_model=config.embedding_model,
                 fallback_models=fallback_models,
             )

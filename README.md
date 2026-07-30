@@ -39,7 +39,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 | **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后自主 handoff |
 
 - **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走 DataProcessor → DataInspector 多智能体流程
-- **Orchestrator-Worker 粒度**：简单操作（modify_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
+- **Orchestrator-Worker 粒度**：简单操作（edit_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
 - **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
 - 动态轮次预算：按任务复杂度分配迭代上限（simple=15/medium=25/complex=40）
@@ -83,7 +83,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 - **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
 - **调试/执行**：在沙盒命名空间中运行算子，注入工具函数（query_table_data、llm_chat 等）
-- **AI 调试助手**：Chat 风格交互式调试，AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；根据消息内容自动选择深度模型或快速模型
+- **AI 调试助手**：Chat 风格交互式调试，4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；执行成功后 runtime 自动交接 DataInspector 质量检查
 - **下载**：导出为 `.py` 文件
 - **自我进化经验库**：调试失败自动记录反例、修错后成功采集正例，LLM 归纳经验（常见错误+成功模式）并注入后续生成/修改/调试提示词，越用越聪明
 
@@ -158,16 +158,17 @@ assets/           # 静态资源
 | 提供商 | 说明 |
 |--------|------|
 | 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash 等 |
-| 阿里百炼 | Qwen3.7-Max（默认深度）/ Qwen3.6-Flash（快速）等 |
-| 硅基流动 | DeepSeek-V3（默认）/ Qwen2.5-7B-Instruct（快速）等 |
+| 阿里百炼 | Qwen3.7-Max / Qwen3.6-Flash 等 |
+| 硅基流动 | DeepSeek-V3 / Qwen2.5-7B-Instruct 等 |
 | Azure OpenAI | 客户端支持（配置 azure_endpoint + api_version） |
 | 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等），可上传适配器代码 |
 
 - 运行时动态切换模型提供商/密钥/模型
 - 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
-- **深度模型 + 快速模型双模型架构**：深度模型（如 GLM-5.2）用于生成/修改脚本、流程生成等深度推理场景；快速模型（如 GLM-4-Flash）用于调试对话等轻量场景。调试助手根据消息内容自动选择合适模型（含修改/修复/报错关键词→深度模型，运行/执行/解释→快速模型），配置页面可分别设置
+- **模型自动选择**：`pick_model_async` 按任务上下文从可用模型列表中选最合适且最经济的模型（LLM 推断 + 结果缓存）；简单场景（参数推断/对话）规则兜底用 flash 模型不问 LLM；所有 chat 方法 `model=None` 时自动推断
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
+- 视觉/嵌入模型按 provider 自动选择（GLM→glm-4v-plus/embedding-3 等）；备用模型降级链 + CircuitBreaker 熔断
 
 ### 13. 数据标准 / 质量 / 安全规则库
 

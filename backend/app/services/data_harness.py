@@ -95,13 +95,12 @@ def collect_experience(
             logger.warning(f"采集反例失败: {e}")
     else:
         try:
-            if experience.read_negative(base):
-                experience.append_positive(
-                    base,
-                    source=source,
-                    parameters=params,
-                    result_summary=str(exec_result.get("result", ""))[:200],
-                    script_name=script_name,
-                )
+            experience.append_positive(
+                base,
+                source=source,
+                parameters=params,
+                result_summary=str(exec_result.get("result", ""))[:200],
+                script_name=script_name,
+            )
         except Exception as e:
             logger.warning(f"采集正例失败: {e}")

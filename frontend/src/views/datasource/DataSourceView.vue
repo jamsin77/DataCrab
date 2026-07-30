@@ -129,6 +129,7 @@
             >
               <el-icon style="margin-right: 6px; flex-shrink: 0;"><Grid /></el-icon>
               <span class="browse-table-label">{{ item.label }}</span>
+              <span v-if="item.metadata?.updated_at" class="browse-table-time">{{ formatUpdateTime(item.metadata.updated_at) }}</span>
             </div>
           </el-tooltip>
           <el-empty v-if="browseTree.length === 0 && !browseLoading" description="暂无数据表" :image-size="60" />
@@ -530,6 +531,21 @@ async function selectBrowseTable(tableName: string) {
   }
 }
 
+function formatUpdateTime(ts: string): string {
+  try {
+    const d = new Date(ts)
+    if (isNaN(d.getTime())) return ''
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    if (d.getFullYear() === now.getFullYear()) {
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  } catch {
+    return ''
+  }
+}
+
 async function refreshCurrentTable() {
   if (selectedTable.value) {
     await selectBrowseTable(selectedTable.value)
@@ -726,9 +742,17 @@ async function deleteConnector(c: any) {
   overflow: hidden;
 
   .browse-table-label {
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .browse-table-time {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #909399;
   }
 
   &:hover {

@@ -1832,6 +1832,153 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T16:28:39.551604",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T16:38:15.764776",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260727_163738', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-07-27T16:55:29.214161",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-27T19:32:22.129360",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260727_193145', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-07-27T19:37:41.038386",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260727_193703', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-07-28T10:41:13.200031",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260728_104029', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-07-28T16:29:49.000442",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "所有的图片",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "关键信息",
+        "image_column": "图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': '关键信息', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir', 'doc_type', 'doc_type_pin"
+    },
+    {
+      "timestamp": "2026-07-28T17:47:36.855475",
+      "source": "run-nl-stream",
+      "script_name": "main.py",
+      "parameters": {
+        "source_datasource_name": "凭证库",
+        "source_table_name": "*",
+        "target_datasource_name": "凭证检索库",
+        "target_table_name": "*",
+        "image_column": "所有图片",
+        "if_table_exists": "truncate",
+        "batch_size": 500,
+        "enable_vectorization": false,
+        "vector_datasource_name": "",
+        "vector_table_name": "",
+        "enable_translation": false,
+        "translation_target_lang": ""
+      },
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260728_174652', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": "让我先阅读完整的脚本以了解当前的实现，然后对其进行修改以使用 `llm_vision` 进行 OCR。",

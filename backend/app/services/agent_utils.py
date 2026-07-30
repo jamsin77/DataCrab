@@ -7,6 +7,7 @@
 - 标识符机械抽取（压缩保护）
 - 反幻觉检查工具
 - 动态轮次预算（进度感知替代硬上限）
+- 上下文压缩（Compaction，对齐 OpenCode）
 - 上下文压力主动告警
 - 三级反幻觉注入（basic/standard/strict）
 - 搜索饱和检测（SearchSaturationDetector）
@@ -14,7 +15,10 @@
 import re
 import json
 import hashlib
+import logging
 from typing import Dict, Any, List, Set, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Token 估算（CJK 感知）====================
@@ -204,9 +208,9 @@ def should_warn_ungrounded_claim(output_text: str, had_tool_calls_this_turn: boo
         return None
     if has_data_claims(output_text) and not had_tool_calls_this_turn:
         return (
-            "你的输出包含数据结论（数字/统计），但本轮未调用任何数据查询工具。"
-            "请确认数据来源：是用工具查到的，还是基于记忆/推测？"
-            "如果是后者，请先调用工具查询实际数据。"
+            "你的输出包含数据结论，但本轮未调用任何检查工具。"
+            "请直接调用检查工具（profile_data/check_data_standards/check_data_quality/check_data_security）"
+            "获取实际数据，不要解释或承认错误，直接调用工具。"
         )
     return None
 
@@ -306,6 +310,123 @@ def build_pressure_warning(level: int, ratio: float) -> str:
             "优先保存关键结论到文件，避免冗长的中间过程描述。"
         )
     return ""
+
+
+# ==================== 上下文压缩（Compaction，对齐 OpenCode） ====================
+
+COMPACTION_THRESHOLD = 0.75  # 上下文使用 75% 时触发压缩
+COMPACTION_TAIL_TURNS = 2    # 保留最近 2 轮对话原文
+
+
+def should_compact(messages: List[Dict[str, Any]], context_window: int = DEFAULT_CONTEXT_WINDOW) -> bool:
+    """检查是否需要压缩上下文。"""
+    total = estimate_messages_tokens(messages)
+    ratio = total / context_window if context_window > 0 else 0.0
+    return ratio >= COMPACTION_THRESHOLD
+
+
+def extract_identifiers_from_messages(messages: List[Dict[str, Any]]) -> str:
+    """从消息列表中机械抽取标识符（UUID/表名/数据源ID等），压缩时不丢失。
+
+    复用 extract_identifiers(text) 的完整模式集，逐条消息抽取后去重排序。
+    """
+    identifiers: Set[str] = set()
+    for m in messages:
+        content = m.get("content", "")
+        if not isinstance(content, str) or not content:
+            continue
+        identifiers |= extract_identifiers(content)
+    return "\n".join(sorted(identifiers)) if identifiers else ""
+
+
+async def compact_messages(
+    messages: List[Dict[str, Any]],
+    llm_manager=None,
+    tail_turns: int = COMPACTION_TAIL_TURNS,
+    context_window: int = DEFAULT_CONTEXT_WINDOW,
+) -> List[Dict[str, Any]]:
+    """压缩上下文：旧消息摘要 + 最近 N 轮原文。
+
+    对齐 OpenCode compaction：
+    - system prompt 保留
+    - 最近 tail_turns 轮对话保留原文
+    - 旧消息用 LLM 压缩成摘要
+    - 标识符机械抽取，不依赖 LLM
+    """
+    if len(messages) <= tail_turns * 2 + 1:
+        return messages  # 消息太少，不需要压缩
+
+    # 分割：system + 旧消息 + 最近 N 轮
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+
+    # 计算 tail_turns 对应的消息数（1 轮 = user + assistant[+ tool]）
+    # 以 user 消息作为轮次边界，倒序数到第 tail_turns 个 user 即为保留区起点
+    tail_count = 0
+    split_idx = len(non_system)
+    for i in range(len(non_system) - 1, -1, -1):
+        if non_system[i].get("role") == "user":
+            tail_count += 1
+            if tail_count >= tail_turns:
+                split_idx = i
+                break
+
+    old_messages = non_system[:split_idx]
+    recent_messages = non_system[split_idx:]
+
+    if not old_messages:
+        return messages
+
+    # 机械抽取标识符
+    id_hint = extract_identifiers_from_messages(old_messages)
+
+    # 构建压缩 prompt
+    old_text = []
+    for m in old_messages:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if isinstance(content, str) and content:
+            old_text.append(f"[{role}] {content[:500]}")
+        elif m.get("tool_calls"):
+            tc_names = [tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]]
+            old_text.append(f"[{role}] 调用工具: {', '.join(tc_names)}")
+
+    old_summary = "\n".join(old_text)[-4000:]  # 最多 4000 字符给 LLM 压缩
+
+    compact_prompt = (
+        "请将以下对话历史压缩成简洁摘要，保留：关键发现、错误信息、已做的修改、重要参数值。"
+        "丢弃：冗余的工具调用细节、重复的调查过程。"
+        f"\n\n标识符（必须保留）：\n{id_hint}\n"
+        f"\n\n对话历史：\n{old_summary}\n\n"
+        "输出摘要（500字以内）："
+    )
+
+    summary = ""
+    if llm_manager:
+        try:
+            summary = await llm_manager.generate(compact_prompt, temperature=0.1)
+            summary = summary.strip()[:1000]
+        except Exception as e:
+            logger.warning(f"上下文压缩 LLM 调用失败，使用机械摘要: {e}")
+            summary = ""
+
+    if not summary:
+        # 兜底：机械摘要
+        summary = f"[上下文压缩] 之前 {len(old_messages)} 条消息已压缩。关键标识符:\n{id_hint}"
+
+    # 构建压缩后的消息列表
+    compacted = list(system_msgs)
+    compacted.append({
+        "role": "user",
+        "content": f"## 之前对话摘要（自动压缩）\n{summary}\n\n--- 以上为压缩的历史，以下是最近的对话 ---",
+    })
+    compacted.extend(recent_messages)
+
+    _old_tokens = estimate_messages_tokens(messages)
+    _new_tokens = estimate_messages_tokens(compacted)
+    logger.info(f"上下文压缩: {len(messages)} 条 → {len(compacted)} 条, {_old_tokens} → {_new_tokens} tokens (省 {_old_tokens - _new_tokens})")
+
+    return compacted
 
 
 # ==================== 三级反幻觉注入 ====================

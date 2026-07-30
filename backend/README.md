@@ -25,7 +25,7 @@ DataCrab 数据工程智能体后端服务
 - FastAPI + Uvicorn
 - SQLAlchemy 2.0（async）
 - pandas / numpy
-- 智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容（深度+快速双模型架构）
+- 智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容（模型自动选择 pick_model_async + 多模型降级链 + CircuitBreaker 熔断）
 - SQLite（开发）/ PostgreSQL 14+（生产）
 - ChromaDB（文档知识库向量库）
 

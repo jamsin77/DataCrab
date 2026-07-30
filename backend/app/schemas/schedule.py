@@ -21,6 +21,7 @@ class ScheduleCreate(BaseModel):
     retry_interval: int = 60
     timeout: int = 3600
     concurrent_runs: int = 1
+    run_mode: str = Field("normal", pattern="^(normal|auto_fix)$")
 
 
 class ScheduleUpdate(BaseModel):
@@ -35,6 +36,7 @@ class ScheduleUpdate(BaseModel):
     retry_interval: Optional[int] = None
     timeout: Optional[int] = None
     concurrent_runs: Optional[int] = None
+    run_mode: Optional[str] = Field(None, pattern="^(normal|auto_fix)$")
     status: Optional[str] = None
 
 
@@ -54,6 +56,7 @@ class ScheduleResponse(BaseModel):
     retry_interval: int = 60
     timeout: int = 3600
     concurrent_runs: int = 1
+    run_mode: str = "normal"
     status: Optional[str] = None
     last_run_at: Optional[datetime] = None
     next_run_at: Optional[datetime] = None

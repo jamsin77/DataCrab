@@ -39,10 +39,6 @@
         </template>
         <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
 
-        <div v-if="skill.skill_md" class="skill-md-preview">
-          {{ truncateMarkdown(skill.skill_md) }}
-        </div>
-
         <div class="skill-meta">
           <el-tag v-if="skill.scripts?.length" size="small" effect="plain">
             {{ skill.scripts.length }} 个脚本
@@ -874,20 +870,6 @@ async function openExperience() {
 async function convertToPipeline() {
   if (!debugSkill.value || convertingPipeline.value) return
 
-  const defaultName = `${debugSkill.value.display_name || debugSkill.value.name} - 流程`
-  let pipelineName = defaultName
-  try {
-    const { value } = await ElMessageBox.prompt('请输入流程名称', '转为流程', {
-      confirmButtonText: '生成',
-      cancelButtonText: '取消',
-      inputValue: defaultName,
-      inputValidator: (v: string) => !!v?.trim() || '名称不能为空',
-    })
-    pipelineName = value.trim()
-  } catch {
-    return
-  }
-
   convertingPipeline.value = true
 
   const assistantIdx = debugMessages.value.length
@@ -902,6 +884,7 @@ async function convertToPipeline() {
   scrollSkillDebugToBottom(true)
 
   let streamOk = false
+  let pipelineName = ''
 
   try {
     const token = localStorage.getItem('access_token')
@@ -911,7 +894,7 @@ async function convertToPipeline() {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ display_name: pipelineName }),
+      body: JSON.stringify({}),
     })
 
     if (!response.ok) {
@@ -930,7 +913,7 @@ async function convertToPipeline() {
         const data = JSON.parse(trimmed.slice(6))
         const msg = debugMessages.value[assistantIdx]
         if (data.type === 'status') {
-          msg.thinking = (msg.thinking || '') + data.message + '\n'
+          msg.content = (msg.content || '') + data.message + '\n'
         } else if (data.type === 'thinking') {
           msg.thinking = (msg.thinking || '') + data.content
         } else if (data.type === 'content') {
@@ -964,7 +947,7 @@ async function convertToPipeline() {
     if (streamOk) {
       const msg = debugMessages.value[assistantIdx]
       if (msg.thinking) msg.thinkingOpen = false
-      if (!msg.content) msg.content = `流程 "${pipelineName}" 已生成，可在流程页面查看。`
+      msg.content = (msg.content || '') + `\n\n✅ 流程 "${pipelineName}" 已生成，可在流程页面查看。`
       ElMessage.success(`流程 "${pipelineName}" 已生成`)
       await loadSkills()
     }
@@ -2045,7 +2028,7 @@ async function handleRunSkill() {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
             msg.runResult = data.result
@@ -2180,7 +2163,7 @@ async function handleRunSkillNL() {
           } else if (data.type === 'round') {
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
             msg.runResult = data.result
           } else if (data.type === 'script_updated') {
@@ -2351,7 +2334,7 @@ async function handleRunCmd() {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
             msg.runResult = data.result
@@ -2569,7 +2552,7 @@ async function handleDebugSend() {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
@@ -2736,19 +2719,6 @@ onMounted(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .skill-md-preview {
-    color: #909399;
-    font-size: 12px;
-    line-height: 1.6;
-    margin: 6px 0 0;
-    padding: 8px 10px;
-    background: #f9fafb;
-    border-left: 3px solid #409eff;
-    border-radius: 0 4px 4px 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-height: 48px;
   }
   .skill-meta {
     margin: 8px 0;

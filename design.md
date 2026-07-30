@@ -2647,7 +2647,7 @@ DataProcessor（Orchestrator + 轻量工具）
 | 流式推理（thinking） | chat_stream_with_thinking | 逐 chunk yield reasoning_content |
 | 流式正文（content） | chat_stream_with_thinking | 逐 chunk yield content |
 | 工具调用（tool_calls） | chat_with_tools | 累积 tool_call deltas，流结束后一次性 yield |
-| 无工具重定向 | 第八轮新增（替代原长度升级） | 思维模型无工具调用 / 推理截断（finish_reason=length）→ 切快速模型 + tool_choice=required 强制工具调用 |
+| 多模型降级链 | 第十七轮简化（替代 L2/L3/L4 截断保证契约） | 逐模型尝试 + CircuitBreaker 熔断（连续 3 次失败熔断 60s）+ 瞬态重试（429/超时/500 指数退避）；finish_reason=length 直接返回不续写 |
 | 断路器降级 + 超时保护 | chat_stream_with_thinking + 第八轮新增 | 模型失败 / 首 chunk 120s 超时 / 后续 60s 超时 → 切换降级链 |
 
 ##### DataProcessor 调试模式
@@ -2657,7 +2657,7 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
 | 特性 | run()（主对话流） | run_debug()（调试助手） |
 |------|-------------------|------------------------|
 | LLM 调用 | chat_with_tools()（非流式） | chat_stream_with_tools_and_thinking()（流式） |
-| 工具集 | 共享工具 + handoff_to_inspector | 共享工具 + handoff + modify_script + run_script |
+| 工具集 | 共享工具 + handoff_to_inspector | edit_script + run_script + read_script + grep_script（4 个，对齐 OpenCode Grep/Read/Edit/Bash） |
 | system prompt | 通用数据处理指令 | 调试专用指令（含脚本内容、沙箱函数清单、参数记忆） |
 | 自愈 | handoff 来回（DataInspector ↔ DataProcessor） | 工具调用循环内自治（run_script 失败 → LLM 看到错误 → 自动 modify → 再 run） |
 
@@ -2665,9 +2665,10 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
 
 | 工具 | 类型 | 说明 |
 |------|------|------|
-| `modify_script` | Tool | 修改脚本代码（函数级合并 apply_partial_code）；支持 skill（文件）/ operator（DB）/ pipeline（DB）三种模式 |
-| `run_script` | Tool | 沙箱执行脚本；skill 用 subprocess，operator 用 exec()，pipeline 不支持直接执行 |
-| `handoff_to_inspector` | Tool | 交接给 DataInspector 质量检查（原有，调试模式也可用） |
+| `edit_script` | Tool | 行级补丁修改脚本（old_string/new_string，对齐 OpenCode Edit）；支持 skill（文件）/ operator（DB）/ pipeline（DB）三种模式 |
+| `run_script` | Tool | 沙箱执行脚本；skill 用 subprocess，operator 用 exec()，pipeline 不支持直接执行；执行成功后 runtime 自动交接 DataInspector |
+| `read_script` | Tool | 读取脚本内容（带行号，对齐 OpenCode Read）；支持 offset/limit 精确读 |
+| `grep_script` | Tool | 搜索脚本内容（对齐 OpenCode Grep）；定位关键词行号 |
 
 ##### 改造前后代码量
 
@@ -2684,11 +2685,11 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
     ↓
 model / thinking / content（流式推理 + 正文）
     ↓
-tool_calls → modify_script → script_updated 事件
+tool_calls → edit_script → script_updated 事件
     ↓
 tool_calls → run_script → executing + run_result 事件
     ↓
-tool_calls → handoff_to_inspector → agent_switch 事件
+run_script 执行成功 → runtime 自动交接 → agent_switch 事件
     ↓ (AgentRuntime 自动切换)
 inspecting 事件 → DataInspector.run()
     ↓
@@ -2703,7 +2704,7 @@ done 事件
 
 ##### 支持的调试类型
 
-| 类型 | debug_type | 脚本存储 | 执行方式 | modify_script | run_script |
+| 类型 | debug_type | 脚本存储 | 执行方式 | edit_script | run_script |
 |------|-----------|----------|----------|:---:|:---:|
 | 技能 | (默认) | 文件（folder/scripts/） | subprocess 沙箱 | ✅ 文件写入 | ✅ skill_runner |
 | 算子 | "operator" | 数据库（Operator.script_content） | exec() 沙箱 | ✅ DB 更新 | ✅ exec() + _build_operator_namespace |
@@ -4054,9 +4055,9 @@ volumes:
 - **问题**：`redis`、`celery`、`minio`、`elasticsearch` 声明了但代码里没用
 - **改进**：从 `pyproject.toml` 移除 4 个未使用依赖
 
-#### CLAUDE.md
+#### AGENTS.md
 - **问题**：项目没有 AI 协作配置文件
-- **改进**：创建 `CLAUDE.md`，记录技术栈、关键文件导航、运行命令、编码规范
+- **改进**：创建 `AGENTS.md`，记录技术栈、关键文件导航、运行命令、编码规范
 
 ### 11.8 新增文件清单
 
@@ -4068,7 +4069,7 @@ volumes:
 | `backend/tests/test_agent_utils.py` | agent_utils 单元测试 |
 | `backend/tests/test_experience.py` | experience 单元测试 |
 | `backend/tests/test_shared_tools.py` | shared_tools + tool_guidance 单元测试 |
-| `CLAUDE.md` | 项目级 AI 协作配置 |
+| `AGENTS.md` | 项目级 AI 协作配置 |
 
 ### 11.9 推理截断修复
 
@@ -4339,3 +4340,182 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | 超时改回 300 秒 | config.py | SKILL_RUNNER_TIMEOUT 60→300（60 秒太短，正常脚本可能需要更久） |
 
 **与前轮的关系**：第十~十一轮的行级补丁（edit_and_run）+ 函数级合并（apply_partial_code）是编辑原语层面的对齐；本轮是调试模式层面的对齐——极简 prompt + thinking + 上下文定位（不靠经验库/调查）。两者互补：原语让小修改不截断，模式让 LLM 直接修改不调查。
+
+### 11.24 第十三轮：修改尝试正法（3 次执行上限 + 7 次总修改上限，调查不算次数）
+
+**核心洞察**：用户纠正设计理念——"7 次修改尝试 = 修改 7 次，不是调用 LLM 七次，不是自由选择调查修好就行，相当于 OpenCode 跟人交互了 7 次做修改"。只有实际修改代码（edit_and_run/modify_and_run/run_script）才算一次修改尝试，调查（read/grep）是修改前的准备不算次数。两个限制：**3 = 首次成功前连续执行错误上限**，**7 = 总修改次数上限**（含检查修复）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **3 次执行错误子限制** | data_processor_agent.py | `_exec_failures_before_success`：首次执行成功前连续 3 次执行失败→停；成功后重置，不再受此限制 |
+| **7 次总修改上限** | data_processor_agent.py | `while _fix_attempts < 7`：所有修改（执行错误修复+检查修复）合计达 7 次→停 |
+| **跨 handoff 持久化计数器** | data_processor_agent.py | `_fix_attempts`/`_execution_succeeded`/`_exec_failures` 通过 `context` 持久化，Inspector 回交后继续计数 |
+| **round 事件按修改尝试计数** | data_processor_agent.py | `yield {"type":"round","round":_fix_attempts}` 只在 fix 工具检测到时 yield，调查轮无 round 事件 |
+| **删 fast model** | data_processor_agent.py | 始终用 deep model（glm-5.2），fast model（glm-4-flash）太弱只读不改 |
+| **删"只调查不修改"检测器** | data_processor_agent.py | 删 `_no_fix_rounds` 计数器 + 3 次只读 give_up 逻辑；调查是合法行为不应用惩罚 |
+| **DEBUG_INSTRUCTIONS 改写** | data_processor_agent.py | 加"修复前先判断可修复性"+"每次全力修复不指望下一次"+"执行错误最多3次"；`{max_rounds} 次修改机会` |
+| **删 enable_thinking 死代码** | llm.py | 参数删（默认 True 无人传 False）+ `extra_body={"thinking":"disabled"}` 删 + docstring 更新 |
+| **删 frequency_penalty 死代码** | llm.py | body 中残留 `if frequency_penalty is not None` 删（参数已在之前轮删除） |
+| **删 max_tokens=12000** | data_processor_agent.py + llm.py | 用平台默认值（对齐 OpenCode 不设 max_tokens）；L2 续写（max_continues=5）兜底截断 |
+| **debug_max_rounds 默认 7** | skill.py + pipeline.py + operator.py | 5 处 `"debug_max_rounds": 7`（总修改次数上限） |
+| **前端"轮"→"修改尝试"** | SkillView/OperatorView/PipelineView.vue | `─── 第N轮 ───`→`─── 第N次修改尝试 ───`（3 处） |
+| **工具结果显示** | data_processor_agent.py | 调查工具（grep/read/query/schema）结果摘要 yield 给前端（像 OpenCode 显示 grep/read 结果） |
+
+**与前轮的关系**：第十二轮极简 prompt+thinking+上下文定位对齐 OpenCode；本轮正法修改次数设计——3 次执行上限 + 7 次总修改上限，调查不算次数。删 fast model + 删"只调查不修改"检测器让 LLM 自由调查+修复。删 enable_thinking/frequency_penalty/max_tokens 死代码清理。
+
+### 11.25 第十四轮：静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出 + 沙箱补全
+
+**核心洞察**：对照 OpenCode 审查 DataCrab 静默失败（6 类）+ 调试提示信息差距。OpenCode 调试流程：Grep 定位行号 → Read(offset/limit) 只读相关行 → Edit(old_string/new_string) 修改。DataCrab 之前 Read 读全文（22828字符）、显示只有字符数摘要、Edit 显示截断 80 字符、错误不分级全靠 LLM 文字判断。
+
+**静默失败审查**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| UUID 类型不匹配 | datasource.py | 4 个 internal 端点 UUID 转 str 修复 |
+| CSV/Excel fail 静默覆盖 | connectors.py | `write_table_data` fail 策略改为 raise，不再静默覆盖 |
+| 错误结果缓存 | shared_tools.py | 工具执行失败不缓存，避免错误结果被重复使用 |
+| 连接失败 raise | connectors.py | 8 处连接失败从 return None 改为 raise ConnectionError |
+| list_user_datasources close | shared_tools.py | close() 移到 finally，避免异常泄漏 |
+| stats except: pass | connectors.py | 2 处 `except: pass` 改为 `logger.warning` |
+| skill_runner 空 return | skill_runner.py | 6 个工具函数 return 空→raise 明确错误 |
+| VALID_WRITE_STRATEGIES | connectors.py | 入口校验写入策略，无效策略直接 raise |
+
+**错误分级退出**（替代 LLM 文字判断）：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `_classify_execution_error` L4/L5/L6 | skill_runner.py | L4 环境问题（DLL/ModuleNotFound）/ L5 平台限制（不支持写入策略/NotImplementedError）/ L6 数据问题（表/文件不存在）；L1/L2 脚本错误继续修复 |
+| run_debug 三级退出 | data_processor_agent.py | `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` → give_up + return；在 `_exec_failures` 之前（不消耗 3 次额度） |
+| `_is_platform_issue_report` 保留为兜底 | data_processor_agent.py | 仅在 `not tool_calls` 时检查（LLM 不执行下结论的兜底），主要退出靠错误分级 |
+
+**OpenCode 调试显示对齐**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| read_script 无 cap | data_processor_agent.py | 默认返回全文（对齐 OpenCode Read 默认 2000 行）；offset/limit 可选用于精确读；删 60 行硬 cap |
+| read_script 带行号 | data_processor_agent.py | `L1: content` 格式（对齐 OpenCode Read） |
+| read_script 结果显示实际内容 | data_processor_agent.py | 之前 `读取: func (22828 字符)` → 现在显示实际内容 code block（cap 40 行显示） |
+| grep_script 结果显示匹配行 | data_processor_agent.py | 之前 `搜索: 3 个匹配，首个: ...` → 现在显示所有匹配行 `>> L636: content`（cap 10 个） |
+| edit_and_run action 显示 diff | data_processor_agent.py | 之前截断 80 字符 `repr(old)→repr(new)` → 现在 ```diff``` 代码块完整 old(-)/new(+)（cap 40 行） |
+| modify_and_run result 显示 diff | data_processor_agent.py | 之前只显示函数名 → 现在额外显示 `changed_lines` diff 代码块 |
+| DEBUG_INSTRUCTIONS 工作流 | data_processor_agent.py | 明确 `grep → read(offset/limit) → edit` 工作流，禁止读全文/整个函数 |
+
+**沙箱补全 + 文档统一**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| call_operator 内置函数 | skill_runner.py + sandbox_ns.py | 调用用户算子（按名称模糊匹配） |
+| SANDBOX_TOOLS_DOC 全签名 | prompt_docs.py | 17 个函数签名全补全，对齐实际代码 |
+| PLATFORM_CONVENTIONS_DOC | prompt_docs.py | 平台规范文档（内置函数优先/不装扩展/不调外部API）注入生成+调试+NL推断三处 |
+| read_file 图片 fail-fast | datasource.py + sandbox_ns.py + skill_runner.py | 图片直接报错不静默返回空 |
+| DQ-UNI-001 主键唯一检查 | inspector_tools.py | 确定性主键唯一性检查实现 |
+
+**其他改进**：personal.md → soul.md 全量 rename；前端标签改名；give_up 显示 reason（6 处）；SSE ping 保活；执行失败 yield content；NL 推断注入数据源列表；extract-image-info / data-etl 技能修复；Excel create_new_file 平台能力改 False。
+
+**与前轮的关系**：第十~十三轮建立编辑原语 + 调试模式；本轮补齐静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出。read_script 无 cap 对齐 OpenCode（靠指令引导 offset/limit，不靠硬限制）；错误分级替代 LLM 文字判断（可靠退出靠错误消息分类，不靠关键词匹配）。
+
+### 11.26 第十五轮：规则全量实现 + 安装修复 + 资产打包 + 架构清理
+
+**核心洞察**：第十四轮补齐了调试显示和错误分级，但规则检查只有 39% 有确定性实现（61% 靠 LLM 主观判断或完全没实现）；安装流程多处断裂（poetry-core 下载超时/passlib 与 bcrypt 4.x 冲突/npm run install 不装 devDependencies）；技能/流程/算子无法跨机器迁移。
+
+**规则全量实现（31 条新增确定性检查）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| standards_parser 扩展 | standards_parser.py | 解析合法值（合法值: 行）+ 不跳过无正则规则 + 检测逻辑解析 |
+| STD 枚举检查 | inspector_tools.py | STD-ENUM-001~004（性别/证件/婚姻/国家代码）+ STD-HERITAGE-001~002（文物年代/保护级别） |
+| STD 数值约束 | inspector_tools.py | STD-NUM-001 金额 / STD-NUM-002 百分比 / STD-NUM-003 年龄 / STD-NUM-004 数量 |
+| STD 地理位置 | inspector_tools.py | STD-LOC-001 地址 / STD-LOC-004 经纬度范围 |
+| STD 时间 | inspector_tools.py | STD-TIME-003 Unix 时间戳 / STD-TIME-004 时间范围一致性 |
+| DQ 完整性/唯一性/有效性/一致性 | inspector_tools.py | DQ-COM-001/002、DQ-UNI-002、DQ-VAL-002、DQ-CON-001 |
+| DQ-ETL 扩展 | inspector_tools.py | DQ-ETL-007/008/009 目标表空值率/主键唯一/字段类型一致 |
+| SEC PII/敏感业务/脱敏/分级 | inspector_tools.py | SEC-PII-006/007、SEC-BIZ-001~003、SEC-MASK-001~004、SEC-CLASS-001 |
+
+**Bug 修复**：DQ-COM-003 阈值反转（`null_rate > 0.95`→`0.05`）；DQ-UNI-001 误报（去掉"编号"列）；handoff 后 local_messages 未定义（通过 `context["_local_messages"]` 传递）；会话列表不冒泡（两处入口加 `session.updated_at = now()`）。
+
+**安装修复**：pyproject.toml poetry→setuptools（不再依赖 poetry-core 下载）；requirements.txt 补全（openai/chromadb/minio/aiosqlite/pyyaml/croniter）；passlib→bcrypt 直用（解决 passlib 与 bcrypt 4.x 冲突）；npm install 修复（postinstall 钩子）；easyflow→datacrab 清理；INSTALL.md 精简。
+
+**资产打包（技能/流程/算子跨机器迁移）**：启动自动 seed 技能/流程/算子（main.py）；流程/算子导出端点（pipeline.py/operator.py）；前端导出按钮（PipelineView/OperatorView.vue）；TableMetadata 导入路径修复。
+
+**架构清理**：删除技能自动同步算子（skill.py，技能和算子从此独立）；删除沙箱 grep 函数（因无技能使用，全量删除）。
+
+**与前轮的关系**：第十四轮补齐调试显示和错误分级；本轮补齐规则实现（39%→78% 有确定性检查）+ 修复安装链路（3 个阻断性 bug）+ 资产打包机制。规则仍无法确定性实现的（DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP 等）保持 LLM prompt 判断。
+
+### 11.27 第十六轮：上下文压缩 + Prefix Cache 稳定 + SSE 修复 + 图片压缩 + traceback 行号修正
+
+**核心洞察**（对照 OpenCode）：第九轮 L2 续写解决「输出截断」，但长会话的另一面——上下文无限增长撑爆窗口——一直没有治理。对照 OpenCode 发现两个本质差距：①OpenCode 有 compaction（旧消息摘要 + 保留近期原文 + 标识符机械保护），DataCrab 只有静态压力告警没有实际压缩；②OpenCode 的 system prompt 字节稳定命中 provider prefix cache，DataCrab 把实时数据预览塞进 system prompt，每条消息都重算前缀缓存，input 成本高。本轮补齐上下文生命周期管理 + 缓存稳定性。
+
+**上下文压缩（Compaction，对齐 OpenCode）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `should_compact` + `compact_messages` | agent_utils.py | 上下文使用≥75% 触发：system 保留 + 旧消息 LLM 摘要 + 最近 2 轮原文 + 标识符机械抽取（不依赖 LLM）；LLM 不可用时兜底机械摘要 |
+| `extract_identifiers_from_messages` | agent_utils.py | 复用 `extract_identifiers(text)` 完整模式集逐条抽取 UUID/表名/数据源ID，压缩后 Agent 不忘已查过的表 |
+| Processor 主循环接入 | data_processor_agent.py | `run()` + `run_debug()` 每轮开头 `should_compact` 检查；debug 模式压缩前 yield 提示 |
+| Inspector 接入 | data_inspector_agent.py | 每轮开头压缩检查 |
+
+**Prefix Cache 稳定性**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 数据预览移出 system | chat.py | 实时数据预览从 system prompt → 一次性 user message（`{preview}\n\n---\n\n{user_msg}`）；system 字节稳定命中 GLM context cache，input 降 30%+ |
+| `build_datasource_context` 拆分 | chat.py | 返回 `(context, preview)` 元组；`_build_system_prompt` 删实时数据提示段 |
+| `has_preinjected_data` 修正 | chat.py | 从字符串包含判断 → `bool(data_preview)`，更可靠 |
+
+**Inspector 反幻觉内容抑制**：流式 content 缓冲（data_inspector_agent.py）——不立即 yield content token，流式结束后决定：无工具支撑的数据声明→抑制本轮 content + 注入警告重试；有工具调用/最终结论→输出。
+
+**SSE ping 修复**：`ensure_future` + `wait` 模式（operator.py + pipeline.py + skill.py）——`asyncio.wait_for(anext, timeout)` 超时会取消底层协程，对 async generator 会损坏状态；改为 `ensure_future` 创建任务 + `asyncio.wait` 不取消，超时发 ping 后继续等同一任务。
+
+**其他改进**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `execute_query` 签名清理 | connectors.py + datasource.py | 删除 8 个连接器 + BaseConnector 未使用的 `params` 参数 |
+| 图片压缩 | datasource.py + sandbox_ns.py | llm_vision 图片缩到最大 1024px + JPEG quality 85，省 60-70% token；PIL 不可用回退原图 |
+| query_table_data/execute_sql split 格式 | shared_tools.py | `to_dict(orient="records")` → `values.tolist()` + `"format":"split"`（无重复列名，更省 token） |
+| traceback 行号修正 | skill_runner.py | `_fix_traceback_lines`：子进程临时文件行号→原始脚本行号（减模板前缀 478 行）；run_skill_script + streaming 接入 |
+| 数据源表按更新时间排序 | datasource.py + DataSourceView.vue | `get_datasource_tree` 关联 TableMetadata.updated_at 降序（最新在前）；表项显示更新时间 |
+| `debug_max_exec_failures` 可配置 | data_processor_agent.py | 3→context 可配置；DEBUG_INSTRUCTIONS 用 `{max_exec_failures}` 占位符 |
+| 调试工具显示优化 | data_processor_agent.py | read 显示行号范围 / grep 显示关键词 / edit 显示 diff 代码块；删 modify_script 重复 diff；行数 cap 50→20；执行成功显式 ✅ |
+| 反幻觉警告措辞 | agent_utils.py | `should_warn_ungrounded_claim` 改为直接要求调检查工具（不解释不承认错误） |
+| CLAUDE.md → AGENTS.md | AGENTS.md + design.md + design.en.md | 标题 + 引用更新，对齐通用 agent 协作文件命名 |
+
+**与前轮的关系**：第九轮 L2 续写治理「输出截断」（单轮输出过长）；本轮治理「上下文增长」（跨轮历史膨胀）——两者正交，共同覆盖长会话全生命周期。Prefix Cache 稳定是对第九轮静态/动态分区的延伸（system 字节稳定才能命中 provider 缓存）。SSE ping 修复解决 `wait_for` 取消 async generator 的隐性 bug（之前超时后 generator 可能损坏）。
+
+### 11.28 第十七轮：对齐 OpenCode 调试优化——工具精简 + runtime 自动交接 + 视觉模型 + 错误分类 LLM 推断 + 备用模型 + SSE 修复
+
+**核心洞察**（对照 OpenCode）：第十~十六轮建立了行级补丁原语 + 修改尝试正法 + 上下文压缩，但调试工具仍暴露 7 个（edit_and_run/modify_and_run/modify_script/edit_script/run_script/read_script/grep_script），且依赖 LLM 主动调 handoff_to_inspector 工具交接检查。对照 OpenCode 的 5 工具模型（Grep/Read/Edit/Bash/Task），本轮精简调试工具到 4 个，交接改为 runtime 自动触发。同时简化流式方法——第九轮的 L2/L3/L4 截断保证契约（max_continues 续写 / tool_choice=required / frequency_penalty）复杂度高收益低，改为简单多模型降级链。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **调试工具精简至 4 个** | data_processor_agent.py | `run_debug` 只暴露 `edit_script`/`run_script`/`read_script`/`grep_script`（对齐 OpenCode Grep/Read/Edit/Bash）；`edit_and_run`/`modify_and_run`/`modify_script` 的 schema+处理器保留但不再暴露给调试 LLM |
+| **删 handoff_to_inspector 工具** | data_processor_agent.py | 调试模式不暴露 handoff 工具；`run_script` 执行成功后 runtime 自动交接 DataInspector（reason=FIX_COMPLETED/INSPECT_RESULT），从 written_tables/output_table 提取目标表 |
+| **删脚本摘要** | data_processor_agent.py | 删 `_script_summary`，逼 LLM 用 `read_script` 读真实代码（对齐 OpenCode 不预摘要） |
+| **action summary 精简** | data_processor_agent.py | 只显示工具名图标，不显示 diff/pattern/offset 详情（降低噪声） |
+| **流式方法简化为降级链** | llm.py | `chat_stream_with_thinking`/`chat_stream_with_tools_and_thinking` 删 L2 续写（max_continues）/L3 强制推进（tool_choice=required）/L4 frequency_penalty；改为逐模型尝试 + CircuitBreaker 熔断 + 瞬态重试；finish_reason=length 直接返回不续写 |
+| **视觉模型支持** | llm.py + sandbox_ns.py + skill_runner.py | `_PROVIDER_VISION_MODELS`（glm→glm-4v-plus/qwen→qwen-vl-plus 等）；`llm_vision` 沙箱函数按 provider 选模型；图片压缩 1024px+JPEG85；失败加"平台限制"前缀 |
+| **错误分类 LLM 推断** | skill_runner.py | `_llm_classify_error`：关键词匹配返回 script_error 时用 LLM 重新分 4 类（环境/平台/数据/脚本）；源文件不存在→数据问题，目标文件不存在→脚本错误 |
+| **备用模型（降级）配置** | llm.py + ModelConfigView.vue | `_model_configs` 主模型+fallback_models；`_degradation_chain` 降级链；CircuitBreaker 连续 3 次失败熔断 60s；前端恢复备用模型管理 UI |
+| **Inspector 删强制交接** | data_inspector_agent.py | `_collect_severe_issues` 不再被 run() 调用（死代码）；交接完全由 LLM 通过 handoff_to_processor 工具决定 |
+| **Inspector severity 校正** | data_inspector_agent.py | `_correct_severity`：用工具原始 severity 覆盖 LLM 可能篡改的 severity |
+| **SSE handler 修复** | skill.py + operator.py + pipeline.py | done 事件转发（不再吞 result.content）；tool_result 转发（Inspector 工具结果可见）；platform_issue 事件前端处理 |
+| **read_script 从磁盘刷新** | data_processor_agent.py | 不用 context 旧版本，从磁盘读最新；offset/limit 适用于 script scope |
+
+**与前轮的关系**：第十~十一轮行级补丁（edit_script/apply_partial_code）+ 第十三轮修改尝试正法（3 次执行/7 次修改）保留；本轮精简工具暴露面（7→4）+ 交接自动化（删 handoff 工具）。第九轮 L2/L3/L4 截断保证契约被简化为降级链（实测复杂度高收益低，多模型降级 + CircuitBreaker 已足够兜底）。第八轮的 `_stream_with_timeout`/written_tables/embedding 按 provider 选保留。
+
+### 11.29 第十八轮：模型自动选择——去 fast_model/default_model，按上下文推断 + 规则兜底
+
+**核心洞察**：第四轮引入深度+快速双模型架构（fast_model/default_model），第十三轮删 fast_model 改始终用 deep model。但"始终用 deep model"浪费——简单场景（参数推断/对话）不需要 glm-5.2。本轮彻底去掉 fast_model/default_model 概念，改为 `pick_model_async` 按上下文让 LLM 选最合适且最经济的模型，简单场景规则兜底用 flash 模型不问 LLM。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **pick_model_async 模型自动选择** | llm.py | 构建可用模型列表（含能力描述）+ 任务场景 → 调 LLM 选最合适且最经济模型 → 结果缓存（100 条）；简单场景（参数推断/对话）规则兜底用 flash 模型不问 LLM |
+| **删 fast_model/default_model/classify_task** | llm.py | `fast_model` 属性/`default_model` 概念/`classify_task` 任务分类全删；seed providers 去掉 fast_model/default_model 字段 |
+| **chat 方法 model=None 自动推断** | llm.py | `chat`/`chat_with_messages`/`chat_stream_*` 所有方法 model=None 时调 `pick_model_async`；新增 `context` 参数透传任务场景 |
+| **context 参数全链路透传** | skill.py + operator.py + pipeline.py + datasource.py | NL 推断/技能修改/算子生成修改调试/流程生成/脚本 llm_chat 全加 context 参数 |
+| **Inspector system prompt 精简** | data_inspector_agent.py | 规则文件移出 system prompt；`run_all_checks` 预执行 + `format_report` 生成紧凑报告作为 user message 注入 |
+| **inspector_tools 规则全量实现** | inspector_tools.py | 31 条确定性检查（STD-ENUM/NUM/LOC/TIME + DQ-COM/UNI/VAL/CON/ETL + SEC-PII/BIZ/MASK/CLASS）；`_resolve_table_name` 模糊匹配 |
+
+**与前轮的关系**：第四轮双模型架构 + 第十三轮"删 fast_model 始终用 deep model"被本轮 `pick_model_async` 替代——不再二选一（deep 或 fast），而是按上下文从可用模型列表中选最合适且最经济的。第十七轮的降级链 + CircuitBreaker 保留（模型选完后的执行层容错）。
+
+**已知遗留**：`data_processor_agent.py` 的 `_handle_get_llm_config` 仍引用已删除的 `llm_manager.fast_model` 属性（调用 get_llm_config 工具时会 AttributeError）；DB 模型/配置层仍保留 fast_model 列（值为空，运行时不影响）。

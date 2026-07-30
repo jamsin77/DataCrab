@@ -39,7 +39,7 @@ DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architectur
 | **DataInspector** (Worker) | Performs standard, quality, and security inspections on processed data | Auto-handoff after DataProcessor succeeds |
 
 - **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the DataProcessor → DataInspector multi-agent flow
-- **Orchestrator-Worker granularity**: simple operations (modify_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
+- **Orchestrator-Worker granularity**: simple operations (edit_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
 - **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
 - Dynamic turn budget: iteration limit by task complexity (simple=15/medium=25/complex=40)
@@ -103,7 +103,7 @@ assets/           # Static assets
 - **AI modification**: natural-language instructions modify SKILL.md content (SSE streaming, showing the thinking process)
 - **Execution**: run scripts in a subprocess sandbox with timeout control and SSE streaming status
 - **Natural-language execution**: the LLM infers execution parameters (with reasoning shown), then runs the skill
-- **AI debug assistant**: chat-style interactive debugging; the AI can auto-execute or modify scripts
+- **AI debug assistant**: chat-style interactive debugging with a 4-tool model (edit_script/run_script/read_script/grep_script, aligning with OpenCode Grep/Read/Edit/Bash); the AI auto-executes or modifies scripts, with results shown in the message stream; on execution success the runtime auto-hands off to DataInspector for quality inspection
 - **Skill self-evolution**: failures record negative examples, successes after a fix record positive examples; the LLM distills lessons into SKILL.md; shares a unified experience library with operators, auto-injected when generating new skills
 - **Skill JSON parameter examples**: parameter definitions support an `example` field; the frontend auto-fills example values
 
@@ -156,15 +156,16 @@ The platform exposes underlying LLM capabilities as a RESTful API:
 | Provider | Description |
 |--------|------|
 | Zhipu GLM | Zhipu AI (default), GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash, etc. |
-| Alibaba Bailian | Qwen3.7-Max (default deep) / Qwen3.6-Flash (fast), etc. |
-| SiliconFlow | DeepSeek-V3 (default) / Qwen2.5-7B-Instruct (fast), etc. |
+| Alibaba Bailian | Qwen3.7-Max / Qwen3.6-Flash, etc. |
+| SiliconFlow | DeepSeek-V3 / Qwen2.5-7B-Instruct, etc. |
 | Azure OpenAI | Client support (configure azure_endpoint + api_version) |
 | Custom endpoint | Any OpenAI-API-compatible endpoint (vLLM, Ollama, etc.); adapter code can be uploaded |
 
 - Dynamically switch provider/key/model at runtime
-- **Deep + fast dual-model architecture**: the deep model (e.g. GLM-5.2) is used for generation/modification/flow generation and other deep-reasoning scenarios; the fast model (e.g. GLM-4-Flash) for debug conversations and other lightweight scenarios. The debug assistant auto-selects by message content (modify/fix/error keywords → deep model; run/execute/explain → fast model); configurable separately
+- **Model auto-selection**: `pick_model_async` picks the most suitable and economical model from the available-model list by task context (LLM inference + result caching); simple scenarios (parameter inference / chat) use a flash-model rule fallback without asking the LLM; all chat methods auto-infer when `model=None`
 - Streaming output supports chain-of-thought / reasoning content
 - Function Calling support
+- Vision/embedding models auto-selected by provider (GLM→glm-4v-plus/embedding-3 etc.); backup-model degradation chain + CircuitBreaker
 
 ### 13. Data Standards / Quality / Security Rule Libraries
 

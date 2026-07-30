@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_API_BASE: Optional[str] = None
     OPENAI_MODEL: str = "glm-5.2"
-    # 快速模型（用于调试对话等不需要深度推理的场景，为空时自动按 provider 选择）
+    # 已废弃：业务代码改用 pick_model_async 按上下文自动选模型。
+    # 保留此字段仅为兼容已有 .env 中的 LLM_FAST_MODEL 变量（避免 pydantic extra_forbidden 报错）。
     LLM_FAST_MODEL: str = ""
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-ada-002"
     # 降级模型链：JSON 数组，如 [{"provider":"qwen","api_key":"...","model":"qwen-plus"}, {...}]

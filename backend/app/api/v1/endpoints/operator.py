@@ -1090,14 +1090,17 @@ async def debug_operator_chat(
         _inspector_summary = ""
         _inspector_content_sent = False
         try:
+            _task = asyncio.ensure_future(runtime_gen.__anext__())
             while True:
-                try:
-                    event = await asyncio.wait_for(runtime_gen.__anext__(), timeout=20.0)
-                except asyncio.TimeoutError:
+                done, _pending = await asyncio.wait({_task}, timeout=20.0)
+                if _task not in done:
                     yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
                     continue
+                try:
+                    event = _task.result()
                 except StopAsyncIteration:
                     break
+                _task = asyncio.ensure_future(runtime_gen.__anext__())
 
                 t = event.get("type")
                 if t == "agent_switch":
@@ -1251,103 +1254,6 @@ async def summarize_operator_experience(
         "error_count": len(errors),
         "lessons": lessons_text.strip(),
     }
-
-
-@router.post("/{operator_id}/to-pipeline-stream")
-async def operator_to_pipeline_stream(
-    operator_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """将算子脚本转为流程（SSE 流式，推送推理过程）"""
-    result = await db.execute(select(Operator).where(Operator.id == operator_id))
-    operator = result.scalar_one_or_none()
-    if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
-
-    if not operator.script_content:
-        raise HTTPException(status_code=400, detail="该算子没有脚本内容")
-
-    from app.services.llm import llm_manager
-    from app.services.pipeline_builder import (
-        _extract_python_code, _extract_main_params, _analyze_skill_calls,
-        PIPELINE_BUILDER_SYSTEM_PROMPT,
-    )
-    from app.models.pipeline import Pipeline
-    from uuid import uuid4
-
-    await init_user_llm_context(current_user.id)
-    await llm_manager.initialize()
-
-    script_content = operator.script_content
-    op_name = operator.name
-    op_display = operator.display_name or operator.name
-    op_desc = operator.description or ""
-
-    async def generate():
-        import json as json_mod
-        try:
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在分析算子脚本...'}, ensure_ascii=False)}\n\n"
-
-            user_prompt = (
-                f"请将以下算子脚本转化为一个完整的数据处理流程（Pipeline）主函数。\n\n"
-                f"## 算子信息\n"
-                f"- 名称: {op_display}\n"
-                f"- 描述: {op_desc}\n\n"
-                f"## 算子脚本\n```python\n{script_content[:8000]}\n```\n\n"
-                f"请生成完整的 Python 流程主函数文件。算子中的核心处理函数请内联到主文件中（函数名加 _skill_ 前缀）。"
-            )
-
-            messages = [
-                {"role": "system", "content": PIPELINE_BUILDER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
-
-            full_content = ""
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, context="算子调试"):
-                event = {"type": chunk["type"], "content": chunk["content"]}
-                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if chunk["type"] == "content":
-                    full_content += chunk["content"]
-
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在解析生成代码并创建流程...'}, ensure_ascii=False)}\n\n"
-
-            main_code = _extract_python_code(full_content)
-            params = _extract_main_params(main_code)
-            skill_calls = _analyze_skill_calls(main_code, str(operator_id), op_name)
-
-            display_name = f"{op_display} - 流程"
-            pipeline = Pipeline(
-                id=uuid4(),
-                name=f"pl_{op_name}",
-                display_name=display_name,
-                description=op_desc,
-                main_code=main_code,
-                entry_function="main",
-                parameters=params,
-                skill_calls=skill_calls,
-                tags=operator.tags or [],
-                category=operator.category,
-                created_by=current_user.id,
-            )
-            db.add(pipeline)
-            await db.flush()
-            await db.refresh(pipeline)
-            logger.info(f"算子转流程完成: {pipeline.display_name} ({pipeline.id})")
-
-            yield f"data: {json_mod.dumps({'type': 'done', 'pipeline_name': display_name, 'pipeline_id': str(pipeline.id)}, ensure_ascii=False)}\n\n"
-
-        except asyncio.CancelledError:
-            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.error(f"算子转流程失败: {e}")
-            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
 
 
 # ============================================================

@@ -1362,7 +1362,7 @@ async function handleOpSend() {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
@@ -1513,8 +1513,6 @@ onMounted(() => {
     flex-wrap: wrap;
     gap: 4px;
     min-height: 26px;
-    max-height: 56px;
-    overflow: hidden;
   }
   .op-actions {
     display: flex;

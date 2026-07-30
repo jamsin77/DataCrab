@@ -1,10 +1,6 @@
-"""Pipeline Executor - 编译并直接运行 Python 主函数"""
+"""Pipeline Executor - 复用 skill_runner 子进程沙箱执行流程主函数"""
 
 import asyncio
-import io
-import sys
-import contextlib
-import builtins
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, Optional
 
@@ -20,7 +16,7 @@ async def execute_pipeline(
     db: AsyncSession,
     user_id: Optional[str] = None,
 ) -> PipelineExecution:
-    """同步执行流程主函数"""
+    """同步执行流程（子进程沙箱，复用 skill_runner 执行框架）"""
     execution = PipelineExecution(
         pipeline_id=pipeline.id,
         status="running",
@@ -32,21 +28,29 @@ async def execute_pipeline(
     await db.flush()
 
     try:
-        stdout_capture = io.StringIO()
-        stderr_capture = io.StringIO()
+        from app.services.skill_runner import run_skill_script_by_content
 
-        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-            result = await _run_main_code(pipeline.main_code, pipeline.entry_function or "main", inputs)
+        result = await asyncio.to_thread(
+            run_skill_script_by_content,
+            script_content=pipeline.main_code,
+            parameters=inputs,
+            user_id=str(user_id) if user_id else None,
+            entry_function=pipeline.entry_function,
+        )
 
-        execution.status = "success"
-        execution.outputs = _safe_serialize(result)
-        execution.logs = stdout_capture.getvalue()
-        if stderr_capture.getvalue():
-            execution.logs = (execution.logs or "") + "\n[stderr]\n" + stderr_capture.getvalue()
+        if result.get("success"):
+            execution.status = "success"
+            execution.outputs = _safe_serialize(result.get("result"))
+            execution.logs = result.get("stdout", "")
+        else:
+            execution.status = "failed"
+            execution.error_message = result.get("error") or "执行失败"
+            execution.logs = result.get("stdout", "")
+            logger.error(f"Pipeline 执行失败 [{pipeline.id}]: {execution.error_message}")
     except Exception as e:
         execution.status = "failed"
         execution.error_message = str(e)
-        logger.error(f"Pipeline 执行失败 [{pipeline.id}]: {e}")
+        logger.error(f"Pipeline 执行异常 [{pipeline.id}]: {e}")
     finally:
         execution.finished_at = datetime.utcnow()
         if execution.started_at:
@@ -64,7 +68,7 @@ async def execute_pipeline_stream(
     db: AsyncSession,
     user_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """SSE 流式执行流程主函数"""
+    """SSE 流式执行流程（子进程沙箱，逐行推送 stdout 进度）"""
     execution = PipelineExecution(
         pipeline_id=pipeline.id,
         status="running",
@@ -76,25 +80,59 @@ async def execute_pipeline_stream(
     await db.flush()
 
     yield {"type": "status", "status": "running", "message": "流程开始执行..."}
-    yield {"type": "status", "status": "running", "message": "正在编译主函数..."}
 
+    from app.services.skill_runner import run_skill_script_streaming_by_content
+
+    _q: asyncio.Queue = asyncio.Queue()
+
+    def _sync_gen():
+        try:
+            for item in run_skill_script_streaming_by_content(
+                script_content=pipeline.main_code,
+                parameters=inputs,
+                user_id=str(user_id) if user_id else None,
+                entry_function=pipeline.entry_function,
+            ):
+                _q.put_nowait(item)
+        except Exception as e:
+            _q.put_nowait({"type": "result", "result": {
+                "success": False, "error": str(e), "stdout": "", "execution_time_ms": 0,
+            }})
+        _q.put_nowait(None)
+
+    loop = asyncio.get_event_loop()
+    task = loop.run_in_executor(None, _sync_gen)
+
+    final_result = None
     try:
-        stdout_capture = io.StringIO()
+        while True:
+            try:
+                item = await asyncio.wait_for(_q.get(), timeout=30.0)
+            except asyncio.TimeoutError:
+                yield {"type": "ping"}
+                continue
+            if item is None:
+                break
+            if item["type"] == "progress":
+                yield {"type": "progress", "message": item["message"]}
+            elif item["type"] == "result":
+                final_result = item["result"]
 
-        with contextlib.redirect_stdout(stdout_capture):
-            yield {"type": "status", "status": "running", "message": "正在执行..."}
-            result = await _run_main_code(pipeline.main_code, pipeline.entry_function or "main", inputs)
-
-        execution.status = "success"
-        execution.outputs = _safe_serialize(result)
-        execution.logs = stdout_capture.getvalue()
-
-        yield {
-            "type": "done",
-            "status": "success",
-            "outputs": execution.outputs,
-            "logs": execution.logs,
-        }
+        if final_result and final_result.get("success"):
+            execution.status = "success"
+            execution.outputs = _safe_serialize(final_result.get("result"))
+            execution.logs = final_result.get("stdout", "")
+            yield {
+                "type": "done",
+                "status": "success",
+                "outputs": execution.outputs,
+                "logs": execution.logs,
+            }
+        else:
+            execution.status = "failed"
+            execution.error_message = (final_result or {}).get("error", "执行失败")
+            execution.logs = (final_result or {}).get("stdout", "")
+            yield {"type": "error", "status": "failed", "message": execution.error_message}
     except Exception as e:
         execution.status = "failed"
         execution.error_message = str(e)
@@ -106,23 +144,7 @@ async def execute_pipeline_stream(
                 (execution.finished_at - execution.started_at).total_seconds() * 1000
             )
         await db.flush()
-
-
-async def _run_main_code(code: str, entry: str, inputs: Dict[str, Any]) -> Any:
-    """编译并运行主函数代码"""
-    module_code = compile(code, "<pipeline>", "exec")
-    namespace: Dict[str, Any] = {
-        "__name__": "__pipeline__",
-        "__builtins__": builtins,
-    }
-    exec(module_code, namespace)
-
-    func = namespace.get(entry)
-    if not callable(func):
-        raise ValueError(f"入口函数 '{entry}' 不可调用")
-
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: func(**inputs))
+        await task
 
 
 def _safe_serialize(obj: Any) -> Any:

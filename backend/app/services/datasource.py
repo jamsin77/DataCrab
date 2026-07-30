@@ -50,7 +50,6 @@ class BaseConnector(ABC):
     async def execute_query(
         self,
         query: str,
-        params: Optional[Dict] = None,
     ) -> "pd.DataFrame":
         """执行查询（仅数据库型连接器需覆盖此方法；非结构化数据源默认不支持，返回空 DataFrame）"""
         import pandas as pd

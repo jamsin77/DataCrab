@@ -1,184 +1,249 @@
-"""Pipeline Builder - 从 Skill 生成 Python 主函数"""
+"""Pipeline Builder - 从 Skill 机械转换流程（保留调试好的脚本，不重新生成）"""
 
 import ast
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from loguru import logger
 
-from app.services.llm import llm_manager
 from app.services.skill_parser import read_skill_md, read_skill_script, list_skill_scripts
+from app.services.skill_runner import _strip_main_block
 
 
-PIPELINE_BUILDER_SYSTEM_PROMPT = """你是一个 Python 代码生成器，专门为 DataCrab 数据工程智能体生成数据处理流程的主函数。
+async def build_pipeline_from_skill(
+    skill_path_str: str,
+    skill_id: str,
+    skill_name: str,
+    skill_display_name: str,
+    fixed_parameters: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """从 Skill 机械转换 Pipeline：保留调试好的脚本原样，固化参数调用。
 
-## 流程定义
-流程（Pipeline）就是一个完整的 Python 主函数，它负责：
-1. 从数据源读取数据（使用 ConnectorManager）
-2. 调用 Skill 脚本中的函数处理数据
-3. 将处理结果写回数据源
-
-## 安全红线 🚫
-- 流程只能处理用户的业务数据，绝不能修改 DataCrab 平台自身
-- 不得生成访问或修改平台系统表（users, roles, permissions, data_sources等）的代码
-- 不得生成修改平台源代码、配置文件的代码
-- 如果用户要求修改平台本身，抛出 ValueError("不允许修改平台自身")
-- 脚本中只能操作用户数据源的业务数据，不能操作平台系统数据
-
-## 流程属于用户内容，可以自由创建和修改 ✅
-- 用户可以自由创建、修改、执行、删除自己的流程
-- 流程脚本可以查询和处理用户数据源中的业务数据
-- 流程脚本可以使用 ConnectorManager 访问用户数据
-
-## 修改后必验证 ✅
-- 生成或修改流程代码后，必须在末尾包含 if __name__ == "__main__" 自测块
-- 自测块中用示例数据调用 main 函数，验证流程能正常执行
-- 如果自测失败，分析错误原因并提供修复方案
-
-## 输出默认同源 📂
-- 数据处理生成新文件时，如果用户未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下
-- 流程的 main 函数应提供 output_dir 参数，默认值推断为 DataSource 文件所在目录
-- 如果 DataSource 来自数据库而非文件，需要用户明确指定输出路径
-
-## 输出格式（严格遵守）
-只输出一个完整的 Python 文件，不要包含任何解释性文字。格式如下：
-
-```python
-'''
-流程: {display_name}
-描述: {description}
-从 Skill 生成: {skill_name}
-'''
-
-import argparse
-import json
-import pandas as pd
-
-from app.services.connectors import ConnectorManager
-
-
-# === Skill 脚本函数（内联） ===
-def _skill_main(df, **kwargs):
-    '''Skill 主处理函数 - 从 scripts/main.py 内联'''
-    ...
-
-
-# === 主函数 ===
-def main(datasource_name, table_name, **kwargs):
-    '''
-    流程主函数
-    
-    Args:
-        datasource_name: 数据源名称
-        table_name: 表名
-        **kwargs: 其他处理参数
-    '''
-    cm = ConnectorManager()
-    
-    # 1. 读取数据
-    data = cm.read_table(datasource_name, table_name)
-    df = pd.DataFrame(data["rows"], columns=data["columns"])
-    
-    # 2. 调用 Skill 脚本处理
-    result_df = _skill_main(df, **kwargs)
-    
-    # 3. 写入结果
-    cm.write_table(datasource_name, table_name, result_df)
-    
-    return result_df
-
-
-# === 命令行入口 ===
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="流程: {display_name}")
-    parser.add_argument("datasource_name", type=str, help="数据源名称")
-    parser.add_argument("table_name", type=str, help="表名")
-    parser.add_argument("--params", type=str, default="{}", help="JSON格式的额外参数")
-    
-    args = parser.parse_args()
-    extra = json.loads(args.params)
-    
-    result = main(args.datasource_name, args.table_name, **extra)
-    print(result)
-```
-
-## 规则
-1. 必须使用 ConnectorManager.read_table() 读数据，write_table() 写数据
-2. 数据源参数用名称（ConnectorManager 内部自动解析为 UUID）
-3. Skill 脚本中的函数内联到主文件中，函数名加 _skill_ 前缀避免冲突
-4. 保留 Skill 脚本的完整业务逻辑，不要简化
-5. 处理边界情况（空表返回、列不存在等）
-6. 函数签名和参数使用类型注解
-7. 使用 print() 输出处理进度"""
-
-
-async def build_pipeline_from_skill(skill_path_str: str, skill_id: str, skill_name: str, skill_display_name: str) -> Dict[str, Any]:
-    """从 Skill 生成 Pipeline 主函数"""
-    await llm_manager.initialize()
-
+    不调用 LLM，不重新生成代码。main_code = skill 脚本内容（剥 if __name__ 块）。
+    如果提供 fixed_parameters（最近成功执行参数），在末尾追加 _pipeline_entry
+    函数固化参数调用 main，流程执行时不需要用户填参数。
+    """
     skill_path = Path(skill_path_str)
 
     skill_md = read_skill_md(skill_path) or ""
+
     scripts = {}
     for script_info in list_skill_scripts(skill_path):
         name = script_info["name"] if isinstance(script_info, dict) else script_info
         content = script_info.get("content") if isinstance(script_info, dict) else read_skill_script(skill_path, script_info)
         scripts[name] = content
 
-    params_info = _extract_skill_params(skill_md)
-    scripts_text = ""
-    for name, content in scripts.items():
-        scripts_text += f"\n### scripts/{name}\n```python\n{content}\n```\n"
+    main_script = scripts.get("main.py") or next(iter(scripts.values()), "")
+    if not main_script:
+        raise ValueError("Skill 没有可执行脚本")
 
-    user_prompt = f"""请根据以下 Skill 信息生成一个完整的 Python 流程主函数。
+    main_code = _strip_main_block(main_script)
 
-## Skill 信息
-- 名称: {skill_name}
-- 显示名称: {skill_display_name}
-- 参数: {params_info}
+    uses_argparse, function_name = _detect_entry(main_code)
 
-## SKILL.md 内容
-{skill_md[:3000]}
+    parameters = _extract_parameters_from_skill(skill_md, main_code, uses_argparse)
 
-## 脚本内容
-{scripts_text[:8000]}
-
-请生成完整的 Python 主函数文件。"""
-
-    full_response = ""
-    async for chunk in llm_manager.chat_stream_with_messages(
-        messages=[
-            {"role": "system", "content": PIPELINE_BUILDER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-    ):
-        full_response += chunk
-
-    main_code = _extract_python_code(full_response)
     skill_calls = _analyze_skill_calls(main_code, skill_id, skill_name)
-    params = _extract_main_params(main_code)
+
+    entry_function = function_name
+    if fixed_parameters:
+        for p in parameters:
+            if p["name"] in fixed_parameters:
+                p["default"] = fixed_parameters[p["name"]]
+        main_code += _build_pipeline_entry(fixed_parameters, uses_argparse)
+        entry_function = "_pipeline_entry"
+
+    logger.info(
+        f"Pipeline 从 Skill 机械转换: {skill_name}, "
+        f"argparse={uses_argparse}, entry={entry_function}, "
+        f"params={len(parameters)}, fixed={bool(fixed_parameters)}, "
+        f"code={len(main_code)} 字符"
+    )
 
     return {
         "main_code": main_code,
-        "entry_function": "main",
-        "parameters": params,
+        "entry_function": entry_function,
+        "parameters": parameters,
         "skill_calls": skill_calls,
     }
 
 
-def _extract_python_code(raw: str) -> str:
-    """从 LLM 响应中提取 Python 代码块"""
-    if "```python" in raw:
-        start = raw.index("```python") + 10
-        end = raw.rindex("```")
-        return raw[start:end].strip()
-    if "```" in raw:
-        parts = raw.split("```")
-        for i in range(1, len(parts), 2):
-            if "import" in parts[i] or "def " in parts[i]:
-                return parts[i].strip()
-    return raw.strip()
+def _build_pipeline_entry(fixed_parameters: Dict[str, Any], uses_argparse: bool) -> str:
+    """构建流程入口函数 _pipeline_entry，固化参数调用 main。
+
+    argparse 脚本：把参数转为 sys.argv 后调用 main()
+    非 argparse 脚本：直接 main(**fixed_parameters)
+    """
+    if uses_argparse:
+        argv_parts = ["'script'"]
+        for key, val in fixed_parameters.items():
+            k = key if key.startswith("--") else "--" + key
+            if isinstance(val, bool):
+                if val:
+                    argv_parts.append(repr(k))
+            elif isinstance(val, list):
+                argv_parts.append(repr(k))
+                for v in val:
+                    argv_parts.append(repr(str(v)))
+            else:
+                argv_parts.append(repr(k))
+                argv_parts.append(repr(str(val)))
+        argv_str = ", ".join(argv_parts)
+        return f"""
+
+# === 流程入口：固化参数调用 main ===
+def _pipeline_entry(**kwargs):
+    import sys as _sys
+    _sys.argv = [{argv_str}]
+    return main()
+"""
+    else:
+        params_repr = repr(fixed_parameters)
+        return f"""
+
+# === 流程入口：固化参数调用 main ===
+def _pipeline_entry(**kwargs):
+    return main(**{params_repr})
+"""
+
+
+def _detect_entry(script_content: str) -> tuple:
+    """AST 检测脚本入口。
+
+    Returns:
+        (uses_argparse, function_name)
+        - argparse 脚本 → (True, "main")，执行器靠 _build_argv_from_params 转 argv
+        - 非 argparse → (False, function_name)，直接 func(**params) 调用
+    """
+    uses_argparse = False
+    function_name = "main"
+    try:
+        tree = ast.parse(script_content)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(a.name == "argparse" for a in node.names):
+                uses_argparse = True
+            elif isinstance(node, ast.ImportFrom) and node.module == "argparse":
+                uses_argparse = True
+        if uses_argparse:
+            return True, "main"
+        func_defs = [
+            (n.name, n)
+            for n in ast.iter_child_nodes(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
+        ]
+        if func_defs:
+            def _pc(fn):
+                return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+
+            best = max(func_defs, key=lambda f: _pc(f[1]))
+            if "main" in [f[0] for f in func_defs]:
+                main_node = next(f[1] for f in func_defs if f[0] == "main")
+                function_name = "main" if _pc(main_node) > 0 else best[0]
+            else:
+                function_name = best[0]
+    except SyntaxError:
+        pass
+    return uses_argparse, function_name
+
+
+def _extract_parameters_from_skill(
+    skill_md: str, script_content: str, uses_argparse: bool
+) -> List[Dict[str, Any]]:
+    """提取参数列表。
+
+    argparse 脚本：从 add_argument 调用提取 name/required/type/description
+    非 argparse：从 main() 函数签名提取
+    补充：从 SKILL.md 参数表匹配描述和类型
+    """
+    if uses_argparse:
+        params = _extract_argparse_params(script_content)
+    else:
+        params = _extract_main_params(script_content)
+
+    md_params = _parse_skill_md_param_table(skill_md)
+    for p in params:
+        md_info = md_params.get(p["name"])
+        if md_info:
+            if not p.get("description"):
+                p["description"] = md_info.get("description", "")
+            if (not p.get("type") or p["type"] == "any") and md_info.get("type"):
+                p["type"] = md_info["type"]
+    return params
+
+
+def _extract_argparse_params(script_content: str) -> List[Dict[str, Any]]:
+    """AST 提取 argparse add_argument 调用的参数定义。"""
+    params = []
+    try:
+        tree = ast.parse(script_content)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "add_argument":
+                    name = None
+                    required = False
+                    description = ""
+                    ptype = "any"
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            val = arg.value
+                            if val.startswith("--"):
+                                name = val.lstrip("-")
+                            elif val.startswith("-") and name is None:
+                                name = val.lstrip("-")
+                    for kw in node.keywords:
+                        if kw.arg == "required" and isinstance(kw.value, ast.Constant):
+                            required = bool(kw.value.value)
+                        elif kw.arg == "help" and isinstance(kw.value, ast.Constant):
+                            description = kw.value.value or ""
+                        elif kw.arg == "type":
+                            if isinstance(kw.value, ast.Name):
+                                ptype = kw.value.id
+                            elif isinstance(kw.value, ast.Attribute):
+                                ptype = kw.value.attr
+                    if name:
+                        params.append({
+                            "name": name,
+                            "type": ptype,
+                            "required": required,
+                            "description": description,
+                        })
+    except SyntaxError:
+        logger.warning("argparse 参数提取失败（语法错误），返回空列表")
+    return params
+
+
+def _parse_skill_md_param_table(skill_md: str) -> Dict[str, Dict[str, Any]]:
+    """从 SKILL.md 参数表（markdown table）解析参数信息。
+
+    格式：
+    | 参数名 | 类型 | 必填 | 说明 |
+    | :--- | :--- | :--- | :--- |
+    | datasource | string | 是 | 数据源名称 |
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+    lines = skill_md.split("\n")
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if "|" in stripped and ("参数" in stripped or "类型" in stripped or "必填" in stripped):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if not stripped.startswith("|"):
+            break
+        if "---" in stripped:
+            continue
+        parts = [p.strip() for p in stripped.split("|")]
+        parts = [p for p in parts if p]
+        if len(parts) >= 4:
+            name = parts[0]
+            ptype = parts[1]
+            required = "是" in parts[2]
+            desc = parts[3]
+            result[name] = {"type": ptype, "required": required, "description": desc}
+    return result
 
 
 def _analyze_skill_calls(code: str, skill_id: str, skill_name: str) -> List[Dict[str, Any]]:
@@ -305,20 +370,3 @@ def _annotation_to_str(ann) -> str:
     if isinstance(ann, ast.Constant):
         return str(ann.value)
     return "any"
-
-
-def _extract_skill_params(skill_md: str) -> str:
-    """从 SKILL.md 中提取参数表格文本"""
-    lines = skill_md.split("\n")
-    in_table = False
-    params = []
-    for line in lines:
-        if "|" in line and ("参数" in line or "类型" in line or "必填" in line):
-            in_table = True
-            continue
-        if in_table:
-            if "|" in line and not line.strip().startswith("#"):
-                params.append(line.strip())
-            else:
-                break
-    return "\n".join(params) if params else "无参数定义"

@@ -326,7 +326,27 @@ def build_operator_namespace(current_user_id):
                 mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                             ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
                 mime = mime_map.get(ext, "image/jpeg")
-                image_data = _b64.b64encode(resolved.read_bytes()).decode("utf-8")
+
+                # 图片压缩：缩到最大宽度 1024px，OCR 不需要原始分辨率，省 60-70% token
+                raw_bytes = resolved.read_bytes()
+                try:
+                    import io as _io
+                    from PIL import Image as _PILImage
+                    img = _PILImage.open(_io.BytesIO(raw_bytes))
+                    if img.width > 1024 or img.height > 1024:
+                        ratio = min(1024 / img.width, 1024 / img.height)
+                        new_size = (int(img.width * ratio), int(img.height * ratio))
+                        img = img.resize(new_size, _PILImage.LANCZOS)
+                    buf = _io.BytesIO()
+                    # 统一转 JPEG 压缩（质量 85，文件小且 OCR 效果不受影响）
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    img.save(buf, format="JPEG", quality=85)
+                    image_data = _b64.b64encode(buf.getvalue()).decode("utf-8")
+                    mime = "image/jpeg"  # 压缩后统一为 JPEG
+                except Exception:
+                    # PIL 不可用时回退到原始图片
+                    image_data = _b64.b64encode(raw_bytes).decode("utf-8")
 
                 from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
                 if current_user_id:

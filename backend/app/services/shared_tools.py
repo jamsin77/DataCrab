@@ -211,7 +211,8 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
             "total_matched": total or len(df),
             "returned_rows": len(df),
             "columns": list(df.columns),
-            "rows": df.fillna("").to_dict(orient="records"),
+            "rows": df.fillna("").values.tolist(),
+            "format": "split",
             "_source": f"datasource:{args['datasource_id']}/table:{args['table_name']}",
         }, ensure_ascii=False, default=str)
 
@@ -405,17 +406,12 @@ async def execute_sql(args: dict, db: AsyncSession, user_id) -> str:
         if len(df) > limit:
             df = df.head(limit)
         columns = list(df.columns)
-        rows = df.fillna("").to_dict(orient="records")
-        for r in rows:
-            for k, v in list(r.items()):
-                if hasattr(v, "isoformat"):
-                    r[k] = v.isoformat()
-                elif not isinstance(v, (str, int, float, bool, type(None))):
-                    r[k] = str(v)
+        rows = df.fillna("").values.tolist()
 
         result_str = json.dumps({
             "columns": columns,
             "rows": rows,
+            "format": "split",
             "row_count": len(rows),
             "truncated": len(df) >= limit,
             "_source": "sql",

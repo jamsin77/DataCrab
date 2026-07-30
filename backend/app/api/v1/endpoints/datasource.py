@@ -1,6 +1,7 @@
 """数据源管理API端点"""
 
 import json
+from datetime import datetime
 from uuid import UUID
 from typing import Optional
 
@@ -13,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.services.permission_service import get_accessible_resource_ids, check_permission
 
 from app.core.database import get_db
-from app.models.datasource import DataSource
+from app.models.datasource import DataSource, TableMetadata
 from app.models.user import User
 from app.schemas.datasource import (
     DataSourceCreate,
@@ -230,7 +231,7 @@ async def get_datasource_tree(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取数据源树形结构"""
+    """获取数据源树形结构（表按最后更新时间降序，最新的在前）"""
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
@@ -241,19 +242,38 @@ async def get_datasource_tree(
         schema = await connector.get_schema()
         await connector.close()
 
-        tree_nodes = []
+        # 关联 TableMetadata 获取最后更新时间，按更新时间降序排序（最新的在前）
+        table_names = [item.get("table_name", "") for item in schema if item.get("table_name")]
+        meta_map: dict = {}
+        if table_names:
+            meta_result = await db.execute(
+                select(TableMetadata.table_name, TableMetadata.updated_at).where(
+                    TableMetadata.data_source_id == datasource_id,
+                    TableMetadata.table_name.in_(table_names),
+                )
+            )
+            meta_map = {row[0]: row[1] for row in meta_result.all() if row[1]}
+
+        nodes_with_ts = []
         for item in schema:
             table_name = item.get("table_name", "")
             table_type = item.get("table_type", "")
+            ts = meta_map.get(table_name)
+            meta = dict(item)
+            if ts:
+                meta["updated_at"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             node = TreeNode(
                 id=f"{datasource_id}:{table_name}",
                 label=table_name,
                 type=table_type,
-                metadata=item,
+                metadata=meta,
             )
-            tree_nodes.append(node)
+            nodes_with_ts.append((node, ts))
 
-        return tree_nodes
+        # 有更新时间的在前（按时间降序），无更新时间的排后（保持原顺序）
+        nodes_with_ts.sort(key=lambda x: x[1] or datetime.min, reverse=True)
+
+        return [n for n, _ in nodes_with_ts]
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
@@ -557,7 +577,24 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
     mime = mime_map.get(ext, "image/jpeg")
 
     try:
-        image_data = base64.b64encode(p.read_bytes()).decode("utf-8")
+        # 图片压缩：缩到最大宽度 1024px，OCR 不需要原始分辨率，省 60-70% token
+        raw_bytes = p.read_bytes()
+        try:
+            import io as _io
+            from PIL import Image as _PILImage
+            img = _PILImage.open(_io.BytesIO(raw_bytes))
+            if img.width > 1024 or img.height > 1024:
+                ratio = min(1024 / img.width, 1024 / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, _PILImage.LANCZOS)
+            buf = _io.BytesIO()
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85)
+            image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+            mime = "image/jpeg"
+        except Exception:
+            image_data = base64.b64encode(raw_bytes).decode("utf-8")
         if user_id:
             await init_user_llm_context(user_id)
         await llm_manager.initialize()

@@ -41,6 +41,7 @@ class Schedule(Base):
     retry_interval = Column(Integer, default=60)
     timeout = Column(Integer, default=3600)
     concurrent_runs = Column(Integer, default=1)  # 允许并发数
+    run_mode = Column(String(20), default="normal")  # normal: 普通运行, auto_fix: 自修复运行(走 DataProcessor+DataInspector)
 
     # 状态
     status = Column(String(20), index=True, default="active")  # active, paused, stopped

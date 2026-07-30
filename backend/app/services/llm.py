@@ -18,7 +18,7 @@ from loguru import logger
 _TRANSIENT_ERRORS = None
 
 # 当前请求用户的 LLM 配置覆盖（contextvars，请求级隔离，线程/协程安全）
-# 设置后 LLMManager 的 _model_configs/fast_model/pick_model 优先使用用户配置（含其私有 API Key）
+# 设置后 LLMManager 的 _model_configs/pick_model 优先使用用户配置（含其私有 API Key）
 _user_llm_config: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "_user_llm_config", default=None
 )
@@ -83,7 +83,6 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
             "provider": fb.get("provider", ""),
             "api_base": fb.get("api_base", ""),
             "model": fb.get("model", ""),
-            "fast_model": fb.get("fast_model", ""),
             "api_key": fb_key,
         })
 
@@ -92,7 +91,6 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
         "api_key": api_key,
         "api_base": rec.api_base or "",
         "model": rec.model or "",
-        "fast_model": rec.fast_model or "",
         "embedding_model": rec.embedding_model or "",
         "fallback_models": fallback,
     }
@@ -225,7 +223,6 @@ async def load_providers_from_db():
                     api_base=info["api_base"],
                     models=info["models"],
                     default_model=info.get("default_model", ""),
-                    fast_model="",
                     code=None,
                     is_public=True,
                     created_at=_seed_time,
@@ -249,7 +246,6 @@ async def load_providers_from_db():
                 "api_base": p.api_base,
                 "models": p.models or [],
                 "default_model": p.default_model,
-                "fast_model": p.fast_model,
                 "code": p.code,
             }
         logger.info(f"已加载 {len(_provider_registry)} 个 Provider: {list(_provider_registry.keys())}")
@@ -291,7 +287,6 @@ def _parse_fallback_models(raw: str) -> List[Dict[str, str]]:
                     "api_key": item.get("api_key") or "",
                     "api_base": item.get("api_base"),
                     "model": item.get("model"),
-                    "fast_model": item.get("fast_model") or "",
                 })
         return out
     except Exception as e:

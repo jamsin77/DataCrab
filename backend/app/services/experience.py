@@ -25,6 +25,13 @@ def operator_experience_dir(operator_id) -> Path:
     return base
 
 
+def pipeline_experience_dir(pipeline_id) -> Path:
+    """流程经验目录：backend/data/pipeline_experiences/{pipeline_id}"""
+    from app.core.config import settings
+    base = Path(settings.SKILL_STORAGE_PATH).parent / "pipeline_experiences" / str(pipeline_id)
+    return base
+
+
 def read_experience(base: Path) -> Dict[str, Any]:
     """读取统一经验。base 为技能目录或算子经验目录。"""
     p = base / EXPERIENCE_FILE

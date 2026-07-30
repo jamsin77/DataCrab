@@ -2,24 +2,8 @@
   <div class="pipeline-page">
     <div class="toolbar">
       <div class="toolbar-left">
-        <el-button type="primary" @click="showCreateDialog = true">
-          <el-icon><Plus /></el-icon> 新建流程
-        </el-button>
-        <el-dropdown @command="handleFromSkill">
-          <el-button type="success">
-            <el-icon><MagicStick /></el-icon> 从Skill生成
-            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-for="s in skills" :key="s.id" :command="s.id">
-                {{ s.display_name || s.name }}
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-button type="warning" plain @click="exportSeed" :loading="exporting">
-          <el-icon><Download /></el-icon> 导出打包
+        <el-button type="primary" @click="showImportDialog = true">
+          <el-icon><UploadFilled /></el-icon> 导入流程
         </el-button>
       </div>
       <div class="toolbar-right">
@@ -50,21 +34,30 @@
           <el-tag v-else size="small" type="info" effect="plain">无 Skill 依赖</el-tag>
           <el-tag v-if="pl.source_skill_id" size="small" type="warning" effect="plain">从 Skill 生成</el-tag>
         </div>
+        <div v-if="pl.parameters?.some((p: any) => p.default !== undefined)" class="op-params">
+          <el-tag
+            v-for="p in pl.parameters.filter((p: any) => p.default !== undefined)"
+            :key="p.name"
+            size="small"
+            type="success"
+            effect="plain"
+          >
+            {{ p.name }}={{ formatParamValue(p.default) }}
+          </el-tag>
+        </div>
         <div class="op-actions">
           <div class="op-actions-row">
+            <el-button size="small" type="primary" @click="viewCode(pl)">
+              <el-icon><Document /></el-icon> 查看
+            </el-button>
             <el-button size="small" type="success" plain @click="openDebug(pl)">
               <el-icon><VideoPlay /></el-icon> 调试
             </el-button>
-            <el-button size="small" type="primary" @click="viewCode(pl)">
-              <el-icon><Document /></el-icon> 查看代码
-            </el-button>
-            <el-button size="small" @click="downloadPipeline(pl)">
-              <el-icon><Download /></el-icon> 下载
-            </el-button>
-          </div>
-          <div class="op-actions-row">
             <el-button size="small" @click="clonePipeline(pl)">
               <el-icon><CopyDocument /></el-icon> 另存
+            </el-button>
+            <el-button size="small" @click="downloadPipeline(pl)">
+              <el-icon><Download /></el-icon> 导出
             </el-button>
             <el-button size="small" type="danger" plain @click="deletePipeline(pl)">
               <el-icon><Delete /></el-icon> 删除
@@ -75,25 +68,25 @@
     </div>
     <el-empty v-else description="暂无流程" />
 
-    <!-- 新建流程对话框 -->
-    <el-dialog v-model="showCreateDialog" title="新建流程" width="600px">
-      <el-form label-width="80px">
-        <el-form-item label="名称">
-          <el-input v-model="createForm.name" placeholder="英文名称，如 data_cleaning_flow" />
-        </el-form-item>
-        <el-form-item label="显示名称">
-          <el-input v-model="createForm.display_name" placeholder="中文显示名称" />
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="createForm.description" type="textarea" :rows="2" />
-        </el-form-item>
-        <el-form-item label="主函数代码">
-          <el-input v-model="createForm.main_code" type="textarea" :rows="12" placeholder="def main(...): ..." style="font-family:monospace;font-size:13px" />
-        </el-form-item>
-      </el-form>
+    <!-- 导入流程对话框 -->
+    <el-dialog v-model="showImportDialog" title="导入流程" width="480px">
+      <el-alert type="info" :closable="false" style="margin-bottom:16px">
+        <template #title>
+          请上传 .json 格式的流程文件，包含 main_code、parameters 等字段
+        </template>
+      </el-alert>
+      <el-upload
+        drag
+        :show-file-list="false"
+        :before-upload="validateJson"
+        :http-request="handleImportJson"
+        accept=".json"
+      >
+        <el-icon style="font-size: 48px"><UploadFilled /></el-icon>
+        <div class="upload-text">拖拽或点击上传 .json 文件</div>
+      </el-upload>
       <template #footer>
-        <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="doCreate">创建</el-button>
+        <el-button @click="showImportDialog = false">取消</el-button>
       </template>
     </el-dialog>
 
@@ -111,10 +104,22 @@
       <div v-if="debugPipeline" class="debug-layout">
         <div class="debug-left">
           <div class="debug-section-title">
-            <span>流程参数</span>
-            <el-button size="small" text type="primary" @click="refreshPipelineScript" :loading="saving">
-              <el-icon><Refresh /></el-icon> 刷新
-            </el-button>
+            <span>流程说明</span>
+            <div>
+              <el-button size="small" text type="warning" @click="openScheduleDialog">
+                <el-icon><Clock /></el-icon> 调度设置
+              </el-button>
+              <el-button size="small" text type="primary" @click="refreshPipelineScript" :loading="saving">
+                <el-icon><Refresh /></el-icon> 刷新
+              </el-button>
+            </div>
+          </div>
+
+          <div v-if="debugPipeline?.description" class="pipeline-desc">{{ debugPipeline.description }}</div>
+          <el-alert v-else type="info" :closable="false" style="margin-bottom: 4px"><template #title>暂无描述</template></el-alert>
+
+          <div v-if="debugPipeline?.source_skill_id" class="pipeline-source">
+            <el-tag size="small" type="warning" effect="plain">从 Skill 生成</el-tag>
           </div>
 
           <div class="func-signature">
@@ -132,10 +137,25 @@
                 <el-tag v-else-if="typeof p === 'object'" size="small" effect="plain">可选</el-tag>
               </div>
               <div v-if="typeof p === 'object' && p.description" class="param-desc">{{ p.description }}</div>
+              <div v-if="typeof p === 'object' && p.default !== undefined" class="param-default">固化值: {{ formatParamValue(p.default) }}</div>
             </div>
           </div>
 
-          <div class="param-group">
+          <div v-if="debugPipeline?.entry_function === '_pipeline_entry'" class="param-group">
+            <div class="group-title">固化参数</div>
+            <div class="fixed-params-list">
+              <div v-for="p in fixedParamList" :key="p.name" class="fixed-param-row">
+                <span class="fixed-param-name">{{ p.name }}</span>
+                <span class="fixed-param-value">{{ formatParamValue(p.value) }}</span>
+              </div>
+              <div v-if="!fixedParamList.length" class="fixed-param-empty">无法解析固化参数，请查看下方代码</div>
+            </div>
+            <el-alert type="success" :closable="false" style="margin-top: 8px">
+              <template #title>参数已固化，直接点击执行</template>
+            </el-alert>
+          </div>
+
+          <div v-if="debugPipeline?.entry_function !== '_pipeline_entry'" class="param-group">
             <div class="group-title">输入参数 (JSON)</div>
             <el-input
               v-model="debugInputs"
@@ -146,9 +166,18 @@
             />
           </div>
 
-          <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%; margin-top: 8px">
+          <el-button type="primary" @click="runDebug" :loading="plStreaming" :disabled="plStreaming" style="width: 100%; margin-top: 8px">
             <el-icon><CaretRight /></el-icon> 执行调试
           </el-button>
+
+          <el-collapse class="debug-code-collapse">
+            <el-collapse-item name="code">
+              <template #title>
+                <span class="collapse-label">流程代码</span>
+              </template>
+              <pre class="debug-code-block" v-html="highlightedDebugCode"></pre>
+            </el-collapse-item>
+          </el-collapse>
         </div>
 
         <div class="debug-right">
@@ -157,7 +186,7 @@
             <span>AI 调试助手</span>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onDebugListScroll">
-            <div v-if="debugMessages.length === 0 && !debugRunning" class="debug-empty">
+            <div v-if="debugMessages.length === 0 && !plStreaming" class="debug-empty">
               <p>输入消息调试流程代码，例如"帮我修一下这个报错"、"优化这段代码"</p>
             </div>
             <div
@@ -189,6 +218,10 @@
                       <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                     </el-collapse-item>
                   </el-collapse>
+                  <div v-if="msg.executingMsg" class="debug-msg-executing">
+                    <el-icon class="thinking-spin"><Loading /></el-icon>
+                    <span>{{ msg.executingMsg }}</span>
+                  </div>
                   <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
@@ -233,7 +266,7 @@
                 </div>
               </div>
             </div>
-            <div v-if="(plStreaming || debugRunning) && !debugMessages.length" class="debug-message assistant">
+            <div v-if="plStreaming && !debugMessages.length" class="debug-message assistant">
               <div class="debug-msg-avatar"><el-avatar :size="32" style="background:#409eff">AI</el-avatar></div>
               <div class="debug-msg-body">
                 <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -271,6 +304,90 @@
           </div>
         </div>
       </div>
+    </el-dialog>
+
+    <!-- 调度设置对话框 -->
+    <el-dialog v-model="showScheduleDialog" title="调度设置" width="520px">
+      <el-alert v-if="existingSchedule" type="warning" :closable="false" style="margin-bottom: 16px">
+        <template #title>该流程已有调度配置，保存将更新现有调度</template>
+      </el-alert>
+      <el-form label-width="100px" class="schedule-dialog-form">
+        <el-form-item label="调度名称" required>
+          <el-input v-model="scheduleForm.name" />
+        </el-form-item>
+        <el-form-item label="运行模式">
+          <el-radio-group v-model="scheduleForm.run_mode">
+            <el-radio value="normal">普通运行</el-radio>
+            <el-radio value="auto_fix">自修复运行</el-radio>
+          </el-radio-group>
+          <div class="form-hint">{{ scheduleForm.run_mode === 'auto_fix' ? '执行失败时自动修复代码，走双智能体检查' : '直接执行流程脚本' }}</div>
+        </el-form-item>
+        <el-form-item label="调度方式">
+          <el-radio-group v-model="scheduleForm.schedule_type">
+            <el-radio value="cron">定时</el-radio>
+            <el-radio value="interval">周期</el-radio>
+            <el-radio value="continuous">永久在线</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <!-- 定时：可视化选择，支持多个时间点 -->
+        <template v-if="scheduleForm.schedule_type === 'cron'">
+          <el-form-item label="执行时间">
+            <div class="cron-times">
+              <div v-for="(t, i) in cronTimes" :key="i" class="cron-time-row">
+                <el-time-select v-model="cronTimes[i]" start="00:00" step="00:15" end="23:45" placeholder="选择时间" style="width: 120px" />
+                <el-button v-if="cronTimes.length > 1" size="small" text type="danger" @click="cronTimes.splice(i, 1)">
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </div>
+              <el-button size="small" text type="primary" @click="cronTimes.push('12:00')">
+                <el-icon><Plus /></el-icon> 添加时间
+              </el-button>
+            </div>
+          </el-form-item>
+          <el-form-item label="重复频率">
+            <el-select v-model="cronFrequency" style="width: 120px">
+              <el-option label="每天" value="daily" />
+              <el-option label="每周" value="weekly" />
+              <el-option label="每月" value="monthly" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="cronFrequency === 'weekly'" label="星期">
+            <el-checkbox-group v-model="cronWeekdays">
+              <el-checkbox v-for="(d, i) in ['一','二','三','四','五','六','日']" :key="i" :value="i+1" :label="d">{{ d }}</el-checkbox>
+            </el-checkbox-group>
+          </el-form-item>
+          <el-form-item v-if="cronFrequency === 'monthly'" label="日期">
+            <el-input-number v-model="cronMonthDay" :min="1" :max="28" /> 号
+          </el-form-item>
+          <el-form-item label="预览">
+            <el-tag type="info" size="small">{{ cronHumanReadable }}</el-tag>
+          </el-form-item>
+        </template>
+
+        <!-- 周期 -->
+        <el-form-item v-if="scheduleForm.schedule_type === 'interval'" label="执行间隔">
+          <div class="interval-row">
+            <el-input-number v-model="scheduleIntervalValue" :min="1" />
+            <el-select v-model="scheduleIntervalUnit" style="width: 90px">
+              <el-option label="秒" :value="1" />
+              <el-option label="分钟" :value="60" />
+              <el-option label="小时" :value="3600" />
+              <el-option label="天" :value="86400" />
+            </el-select>
+          </div>
+        </el-form-item>
+
+        <!-- 永久在线 -->
+        <el-form-item v-if="scheduleForm.schedule_type === 'continuous'" label="说明">
+          <span class="form-hint">流程执行完成后自动重新启动，保持持续运行。并发数为 1，不会重叠执行。</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showScheduleDialog = false">取消</el-button>
+        <el-button v-if="existingSchedule" type="danger" plain @click="deleteSchedule">删除调度</el-button>
+        <el-button type="primary" @click="saveSchedule" :loading="scheduleSaving">保存</el-button>
+      </template>
     </el-dialog>
 
     <!-- 代码查看抽屉 -->
@@ -349,8 +466,9 @@
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Plus, ArrowDown, MagicStick, Search, VideoPlay, Document, CopyDocument,
+  Search, VideoPlay, Document, CopyDocument,
   Delete, Download, CaretRight, ChatDotRound, Promotion, VideoPause, Refresh,
+  UploadFilled, Loading, Clock, Plus,
 } from '@element-plus/icons-vue'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -419,43 +537,76 @@ interface DebugMessage {
   runResult?: any
   scriptUpdated?: string
   model?: string
+  executingMsg?: string
   created_at?: string
 }
 
 const pipelines = ref<Pipeline[]>([])
-const skills = ref<any[]>([])
 const searchText = ref('')
-const showCreateDialog = ref(false)
+const showImportDialog = ref(false)
+const importing = ref(false)
 const showCodeDrawer = ref(false)
 const codePipeline = ref<Pipeline | null>(null)
 const executions = ref<Execution[]>([])
 const detailTab = ref('code')
 const flowCanvasRef = ref<HTMLElement | null>(null)
 const saving = ref(false)
-const exporting = ref(false)
-
-const exportSeed = async () => {
-  exporting.value = true
-  try {
-    const res = await api.post('/pipelines/export-seed')
-    ElMessage.success(`已导出 ${res.data.exported} 个流程到 seed 文件`)
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '导出失败')
-  } finally {
-    exporting.value = false
-  }
-}
-
-const createForm = ref({
-  name: '',
-  display_name: '',
-  description: '',
-  main_code: '',
-})
 
 const highlightedCode = computed(() => {
   if (!codePipeline.value?.main_code) return ''
   return hljs.highlight(codePipeline.value.main_code, { language: 'python' }).value
+})
+
+const highlightedDebugCode = computed(() => {
+  if (!debugPipeline.value?.main_code) return ''
+  return hljs.highlight(debugPipeline.value.main_code, { language: 'python' }).value
+})
+
+const fixedParamList = computed<{ name: string; value: any }[]>(() => {
+  if (!debugPipeline.value || debugPipeline.value.entry_function !== '_pipeline_entry') return []
+  const code = debugPipeline.value.main_code || ''
+
+  // 非 argparse: return main(**{...})
+  const dictMatch = code.match(/return\s+main\(\*\*(\{[^}]*\})\s*\)/)
+  if (dictMatch) {
+    try {
+      const jsonStr = dictMatch[1]
+        .replace(/\bTrue\b/g, 'true')
+        .replace(/\bFalse\b/g, 'false')
+        .replace(/\bNone\b/g, 'null')
+        .replace(/'/g, '"')
+      const obj = JSON.parse(jsonStr)
+      return Object.entries(obj).map(([name, value]) => ({ name, value }))
+    } catch { /* fall through */ }
+  }
+
+  // argparse: _sys.argv = ['script', '--key', 'value', ...]
+  const argvMatch = code.match(/_sys\.argv\s*=\s*\[([^\]]*)\]/)
+  if (argvMatch) {
+    try {
+      const argv = JSON.parse('[' + argvMatch[1].replace(/'/g, '"') + ']')
+      const params: { name: string; value: any }[] = []
+      for (let i = 0; i < argv.length; i++) {
+        if (typeof argv[i] === 'string' && argv[i].startsWith('--')) {
+          const name = argv[i].slice(2)
+          const next = argv[i + 1]
+          if (next !== undefined && (typeof next !== 'string' || !next.startsWith('--'))) {
+            params.push({ name, value: next })
+            i++
+          } else {
+            params.push({ name, value: true })
+          }
+        }
+      }
+      if (params.length) return params
+    } catch { /* fall through */ }
+  }
+
+  // 兜底: parameters 数组中有 default 的
+  const params = debugPipeline.value.parameters || []
+  return params
+    .filter((p: any) => typeof p === 'object' && p.default !== undefined)
+    .map((p: any) => ({ name: p.name, value: p.default }))
 })
 
 const flowElements = ref<any[]>([])
@@ -524,6 +675,51 @@ watch(codePipeline, (pl) => {
   if (pl) buildFlowGraph(pl)
 })
 
+function validateJson(file: any): boolean {
+  if (!file.name.toLowerCase().endsWith('.json')) {
+    ElMessage.error('只能上传 .json 文件')
+    return false
+  }
+  return true
+}
+
+async function handleImportJson(options: any) {
+  const file = options.file as File
+  importing.value = true
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    if (!data.main_code && !data.name) {
+      ElMessage.error('JSON 文件缺少必要字段（name 或 main_code）')
+      return
+    }
+    const payload = {
+      name: data.name || 'imported_pipeline',
+      display_name: data.display_name || data.name || '',
+      description: data.description || '',
+      main_code: data.main_code || '',
+      entry_function: data.entry_function || 'main',
+      parameters: data.parameters || [],
+      skill_calls: data.skill_calls || [],
+      tags: data.tags || [],
+      category: data.category || null,
+      visibility: data.visibility || 'private',
+    }
+    const res = await api.post('/pipelines/import', payload)
+    ElMessage.success(`流程 "${(res as any).display_name || (res as any).name}" 导入成功`)
+    showImportDialog.value = false
+    await loadPipelines()
+  } catch (e: any) {
+    if (e instanceof SyntaxError) {
+      ElMessage.error('JSON 解析失败，请检查文件格式')
+    } else {
+      ElMessage.error(e.response?.data?.detail || '导入失败')
+    }
+  } finally {
+    importing.value = false
+  }
+}
+
 async function loadPipelines() {
   try {
     const params: any = {}
@@ -531,39 +727,6 @@ async function loadPipelines() {
     pipelines.value = await api.get('/pipelines', { params }) as any
   } catch {
     ElMessage.error('加载流程列表失败')
-  }
-}
-
-async function loadSkills() {
-  try {
-    skills.value = await api.get('/skills', { params: { limit: 100 } }) as any
-  } catch {}
-}
-
-async function doCreate() {
-  if (!createForm.value.name) { ElMessage.warning('请输入名称'); return }
-  try {
-    await api.post('/pipelines', createForm.value)
-    ElMessage.success('流程已创建')
-    showCreateDialog.value = false
-    createForm.value = { name: '', display_name: '', description: '', main_code: '' }
-    await loadPipelines()
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '创建失败')
-  }
-}
-
-async function handleFromSkill(skillId: string) {
-  const skill = skills.value.find(s => s.id === skillId)
-  if (!skill) return
-  try {
-    await ElMessageBox.confirm(`从 Skill "${skill.display_name || skill.name}" 生成流程？`, '生成流程', { type: 'info' })
-    const data = await api.post(`/pipelines/from-skill/${skillId}`)
-    ElMessage.success(`流程 "${(data as any).display_name || (data as any).name}" 已生成`)
-    await loadPipelines()
-  } catch (e: any) {
-    if (e === 'cancel') return
-    ElMessage.error(e.response?.data?.detail || '生成失败')
   }
 }
 
@@ -602,18 +765,28 @@ async function clonePipeline(pl: Pipeline) {
 }
 
 function downloadPipeline(pl: Pipeline) {
-  const code = pl.main_code || ''
-  if (!code) { ElMessage.warning('该流程没有可下载的代码'); return }
-  const blob = new Blob([code], { type: 'text/x-python;charset=utf-8' })
+  const data = {
+    name: pl.name || 'pipeline',
+    display_name: pl.display_name || pl.name || '',
+    description: pl.description || '',
+    main_code: pl.main_code || '',
+    entry_function: pl.entry_function || 'main',
+    parameters: pl.parameters || [],
+    skill_calls: pl.skill_calls || [],
+    tags: pl.tags || [],
+    category: pl.category || null,
+    visibility: pl.visibility || 'private',
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${pl.name || 'pipeline'}.py`
+  a.download = `${pl.name || 'pipeline'}.json`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-  ElMessage.success('代码已下载')
+  ElMessage.success('流程已导出')
 }
 
 async function deletePipeline(pl: Pipeline) {
@@ -651,6 +824,7 @@ const debugMsgListRef = ref<HTMLElement>()
 let debugAbortController: AbortController | null = null
 
 const signatureParams = computed(() => {
+  if (debugPipeline.value?.entry_function === '_pipeline_entry') return ''
   const params = debugPipeline.value?.parameters as any[] | undefined
   if (!params || !params.length) return 'inputs'
   return params.map(p => {
@@ -659,6 +833,14 @@ const signatureParams = computed(() => {
     return required ? name : `${name}=...`
   }).join(', ')
 })
+
+function formatParamValue(v: any): string {
+  if (v === null || v === undefined) return ''
+  if (Array.isArray(v)) return v.join(',')
+  if (typeof v === 'object') return JSON.stringify(v)
+  const s = String(v)
+  return s.length > 30 ? s.slice(0, 30) + '...' : s
+}
 const debugPinnedToBottom = ref(true)
 
 // 输入历史
@@ -705,21 +887,27 @@ function openDebug(pl: Pipeline) {
   debugPipeline.value = { ...pl }
   debugMessages.value = []
   debugInput.value = ''
-  const params = (pl as any).parameters as any[] | undefined
-  if (params && params.length) {
-    const example: Record<string, any> = {}
-    for (const p of params) {
-      const name = typeof p === 'string' ? p : p.name
-      if (!name || name.startsWith('*')) continue
-      const required = typeof p === 'object' ? p.required !== false : true
-      if (required) {
-        example[name] = typeof p === 'object' && p.description ? p.description : ''
-      }
-    }
-    debugInputs.value = JSON.stringify(example, null, 2)
-  } else {
+
+  if (pl.entry_function === '_pipeline_entry') {
     debugInputs.value = '{}'
+  } else {
+    const params = (pl as any).parameters as any[] | undefined
+    if (params && params.length) {
+      const example: Record<string, any> = {}
+      for (const p of params) {
+        const name = typeof p === 'string' ? p : p.name
+        if (!name || name.startsWith('*')) continue
+        const required = typeof p === 'object' ? p.required !== false : true
+        if (required) {
+          example[name] = typeof p === 'object' && p.description ? p.description : ''
+        }
+      }
+      debugInputs.value = JSON.stringify(example, null, 2)
+    } else {
+      debugInputs.value = '{}'
+    }
   }
+
   debugDrawer.value = true
   debugPinnedToBottom.value = true
 }
@@ -733,7 +921,7 @@ function resetDebug() {
 }
 
 function handleDebugBeforeClose(done: () => void) {
-  if (plStreaming.value || debugRunning.value) {
+  if (plStreaming.value) {
     ElMessage.warning('正在执行中，请先等待完成或点击停止')
     return
   }
@@ -756,42 +944,9 @@ async function refreshPipelineScript() {
 }
 
 async function runDebug() {
-  if (!debugPipeline.value) return
-  let inputs: any = {}
-  try {
-    inputs = JSON.parse(debugInputs.value || '{}')
-  } catch {
-    ElMessage.warning('输入参数 JSON 格式错误')
-    return
-  }
-  debugRunning.value = true
-  try {
-    const res = await api.post(`/pipelines/${debugPipeline.value.id}/run`, { inputs }) as any
-    const success = res?.status === 'success'
-    debugMessages.value.push({
-      role: 'assistant',
-      content: success ? '执行完成' : '执行失败',
-      runResult: {
-        success,
-        result: res?.outputs ?? null,
-        error: res?.error_message || null,
-        stdout: res?.logs || null,
-        execution_time_ms: res?.duration_ms ?? null,
-      },
-    })
-    if (codePipeline.value?.id === debugPipeline.value.id) {
-      await loadExecutions(debugPipeline.value.id)
-    }
-  } catch (e: any) {
-    debugMessages.value.push({
-      role: 'assistant',
-      content: '执行失败',
-      runResult: { success: false, error: e.response?.data?.detail || String(e) },
-    })
-  } finally {
-    debugRunning.value = false
-    nextTick(() => scrollDebugToBottom(true))
-  }
+  if (!debugPipeline.value || plStreaming.value) return
+  debugInput.value = '执行流程并检查结果'
+  await handleDebugSend()
 }
 
 function formatResult(result: any): string {
@@ -931,6 +1086,27 @@ async function handleDebugSend() {
           } else if (data.type === 'content') {
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false; }
             msg.content += data.content
+          } else if (data.type === 'executing') {
+            msg.executingMsg = data.message || '正在执行流程...'
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+          } else if (data.type === 'tool_result') {
+            const tc = data.content || ''
+            let brief = tc.substring(0, 200)
+            try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
+            msg.content += `\n  └ ${brief}\n`
+          } else if (data.type === 'run_result') {
+            msg.executingMsg = ''
+            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
+            msg.runResult = data.result
+            const r = data.result || {}
+            const inner = typeof r.result === 'object' && r.result ? r.result : {}
+            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            if (failed) {
+              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+              msg.content += `\n❌ 执行失败：${errMsg}\n`
+            } else if (!msg.content) {
+              msg.content = '流程执行完成'
+            }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
             scriptChanged = true
@@ -941,20 +1117,26 @@ async function handleDebugSend() {
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           } else if (data.type === 'inspecting') {
+            msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
+            msg.executingMsg = ''
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
+            msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次修改尝试 ───\n`
+            const _label = data.action === 'execute' ? '执行' : '修改尝试'
+            msg.content += `\n\n─── 第${data.round}次${_label} ───\n`
           } else if (data.type === 'give_up') {
+            msg.executingMsg = ''
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
+            msg.executingMsg = ''
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
             for (const issue of issues) {
@@ -963,6 +1145,7 @@ async function handleDebugSend() {
             }
             msg.content += fatalText
           } else if (data.type === 'warning_confirmation') {
+            msg.executingMsg = ''
             const issues = data.issues || []
             let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
             for (const issue of issues) {
@@ -973,6 +1156,7 @@ async function handleDebugSend() {
             warnText += '\n\n> 如需修复，请回复"修复警告问题"'
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
+            msg.executingMsg = ''
             msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
@@ -1009,23 +1193,166 @@ async function handleDebugSend() {
     await nextTick()
     scrollDebugToBottom()
   }
+}
 
-  // 代码被 AI 更新后，若左侧有输入参数，自动重跑一次流程查看结果
-  if (scriptChanged && streamOk && debugPipeline.value) {
-    const assistantMsg = debugMessages.value[assistantIdx]
-    try {
-      JSON.parse(debugInputs.value || '{}')
-      if (assistantMsg) assistantMsg.content += '\n\n> 代码已更新，正在重新执行流程…'
-      await runDebug()
-    } catch {
-      if (assistantMsg) assistantMsg.content += '\n\n> 代码已更新。左侧填写有效 JSON 参数后点击「执行调试」查看结果。'
-    }
+// ==================== 调度设置 ====================
+const showScheduleDialog = ref(false)
+const existingSchedule = ref<any>(null)
+const scheduleSaving = ref(false)
+const scheduleIntervalValue = ref(5)
+const scheduleIntervalUnit = ref(60)
+const cronTimes = ref<string[]>(['08:00'])
+const cronFrequency = ref('daily')
+const cronWeekdays = ref<number[]>([1])
+const cronMonthDay = ref(1)
+
+const scheduleForm = ref({
+  name: '',
+  run_mode: 'normal',
+  schedule_type: 'cron',
+  cron_expression: '',
+})
+
+const cronHumanReadable = computed(() => {
+  const times = cronTimes.value.filter(t => t).map(t => {
+    const [h, m] = t.split(':')
+    return `${h.padStart(2,'0')}:${m.padStart(2,'0')}`
+  })
+  if (!times.length) return ''
+  const timeStr = times.join('、')
+  if (cronFrequency.value === 'daily') return `每天 ${timeStr}`
+  if (cronFrequency.value === 'weekly') {
+    const names = ['一','二','三','四','五','六','日']
+    const days = cronWeekdays.value.map(d => '周' + names[d-1]).join('、')
+    return `每${days} ${timeStr}`
   }
+  if (cronFrequency.value === 'monthly') return `每月${cronMonthDay.value}号 ${timeStr}`
+  return ''
+})
+
+function buildCronExpression(): string {
+  const exprs = cronTimes.value.filter(t => t).map(t => {
+    const [h, m] = t.split(':')
+    if (cronFrequency.value === 'daily') return `${m} ${h} * * *`
+    if (cronFrequency.value === 'weekly') {
+      const days = cronWeekdays.value.length ? cronWeekdays.value.sort().join(',') : '*'
+      return `${m} ${h} * * ${days}`
+    }
+    if (cronFrequency.value === 'monthly') return `${m} ${h} ${cronMonthDay.value} * *`
+    return ''
+  }).filter(e => e)
+  return exprs.join(';')
+}
+
+function parseCronExpression(expr: string) {
+  const parts = expr.trim().split(';')
+  const times: string[] = []
+  let freq = 'daily'
+  let weekdays: number[] = [1]
+  let monthDay = 1
+  for (const p of parts) {
+    const f = p.trim().split(/\s+/)
+    if (f.length !== 5) continue
+    const [m, h, dom, , dow] = f
+    times.push(`${h.padStart(2,'0')}:${m.padStart(2,'0')}`)
+    if (dom !== '*') { freq = 'monthly'; monthDay = parseInt(dom) }
+    else if (dow !== '*') { freq = 'weekly'; weekdays = dow.split(',').map(Number) }
+    else { freq = 'daily' }
+  }
+  cronTimes.value = times.length ? times : ['08:00']
+  cronFrequency.value = freq
+  cronWeekdays.value = weekdays
+  cronMonthDay.value = monthDay
+}
+
+async function openScheduleDialog() {
+  if (!debugPipeline.value) return
+  const pipeName = debugPipeline.value.display_name || debugPipeline.value.name || '流程'
+  scheduleForm.value = {
+    name: pipeName + '_调度',
+    run_mode: 'normal',
+    schedule_type: 'cron',
+    cron_expression: '',
+  }
+  cronTimes.value = ['08:00']
+  cronFrequency.value = 'daily'
+  cronWeekdays.value = [1]
+  cronMonthDay.value = 1
+  scheduleIntervalValue.value = 5
+  scheduleIntervalUnit.value = 60
+  existingSchedule.value = null
+
+  try {
+    const all: any[] = await api.get('/schedules', { params: { limit: 200 } }) as any
+    const found = all.find((s: any) => s.task_target_id === debugPipeline.value!.id)
+    if (found) {
+      existingSchedule.value = found
+      scheduleForm.value.name = found.name
+      scheduleForm.value.run_mode = found.run_mode || 'normal'
+      scheduleForm.value.schedule_type = found.schedule_type === 'manual' ? 'cron' : found.schedule_type
+      if (found.cron_expression) {
+        scheduleForm.value.cron_expression = found.cron_expression
+        parseCronExpression(found.cron_expression)
+      }
+      if (found.interval_seconds) {
+        if (found.interval_seconds >= 86400 && found.interval_seconds % 86400 === 0) { scheduleIntervalValue.value = found.interval_seconds / 86400; scheduleIntervalUnit.value = 86400 }
+        else if (found.interval_seconds >= 3600 && found.interval_seconds % 3600 === 0) { scheduleIntervalValue.value = found.interval_seconds / 3600; scheduleIntervalUnit.value = 3600 }
+        else if (found.interval_seconds >= 60 && found.interval_seconds % 60 === 0) { scheduleIntervalValue.value = found.interval_seconds / 60; scheduleIntervalUnit.value = 60 }
+        else { scheduleIntervalValue.value = found.interval_seconds; scheduleIntervalUnit.value = 1 }
+      }
+    }
+  } catch {}
+  showScheduleDialog.value = true
+}
+
+async function saveSchedule() {
+  if (!debugPipeline.value) return
+  if (!scheduleForm.value.name) { ElMessage.warning('请填写调度名称'); return }
+  scheduleSaving.value = true
+  try {
+    const payload: any = {
+      name: scheduleForm.value.name,
+      task_type: 'pipeline',
+      task_target_id: debugPipeline.value.id,
+      run_mode: scheduleForm.value.run_mode,
+    }
+    if (scheduleForm.value.schedule_type === 'cron') {
+      payload.schedule_type = 'cron'
+      payload.cron_expression = buildCronExpression()
+    } else if (scheduleForm.value.schedule_type === 'interval') {
+      payload.schedule_type = 'interval'
+      payload.interval_seconds = scheduleIntervalValue.value * scheduleIntervalUnit.value
+    } else if (scheduleForm.value.schedule_type === 'continuous') {
+      payload.schedule_type = 'interval'
+      payload.interval_seconds = 1
+    }
+    if (existingSchedule.value) {
+      await api.put(`/schedules/${existingSchedule.value.id}`, payload)
+    } else {
+      await api.post('/schedules', payload)
+    }
+    ElMessage.success('调度已保存')
+    showScheduleDialog.value = false
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    scheduleSaving.value = false
+  }
+}
+
+async function deleteSchedule() {
+  if (!existingSchedule.value) return
+  try {
+    await ElMessageBox.confirm('删除该调度配置？', '确认', { type: 'warning' })
+    await api.delete(`/schedules/${existingSchedule.value.id}`)
+    ElMessage.success('调度已删除')
+    showScheduleDialog.value = false
+    existingSchedule.value = null
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error('删除失败') }
 }
 
 onMounted(() => {
   loadPipelines()
-  loadSkills()
 })
 </script>
 
@@ -1083,7 +1410,6 @@ onMounted(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin: 0;
   }
   .op-meta {
     margin: 8px 0;
@@ -1091,6 +1417,12 @@ onMounted(() => {
     flex-wrap: wrap;
     gap: 4px;
     min-height: 26px;
+  }
+  .op-params {
+    margin: 4px 0 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
   }
   .op-actions {
     display: flex;
@@ -1100,9 +1432,16 @@ onMounted(() => {
     padding-top: 12px;
 
     .op-actions-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
       gap: 4px;
       align-items: center;
+
+      .el-button {
+        margin-left: 0;
+        padding: 5px 8px;
+        font-size: 12px;
+      }
     }
   }
 }
@@ -1114,12 +1453,68 @@ onMounted(() => {
 }
 
 .debug-left {
-  width: 380px;
+  width: 420px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   gap: 8px;
+}
+
+.pipeline-desc {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.6;
+  background: #f5f7fa;
+  border-radius: 6px;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pipeline-source {
+  display: flex;
+  gap: 4px;
+}
+
+.form-hint { font-size: 12px; color: #909399; margin-top: 4px; display: block; width: 100%; padding-left: 0; }
+.cron-times { display: flex; flex-direction: column; gap: 6px; }
+.cron-time-row { display: flex; align-items: center; gap: 6px; }
+.interval-row { display: flex; gap: 8px; align-items: center; }
+
+.schedule-dialog-form .el-radio-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.schedule-dialog-form .el-radio {
+  margin-right: 0;
+}
+
+.debug-code-collapse {
+  margin-top: 8px;
+  border-top: 1px solid #e4e7ed;
+
+  .collapse-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: #303133;
+  }
+
+  .debug-code-block {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    max-height: 400px;
+    overflow-y: auto;
+    margin: 0;
+  }
 }
 
 .debug-section-title {
@@ -1181,6 +1576,63 @@ onMounted(() => {
     color: #909399;
     padding-left: 2px;
   }
+  .param-default {
+    font-size: 12px;
+    color: #67c23a;
+    padding-left: 2px;
+    margin-top: 2px;
+  }
+}
+
+.fixed-params-list {
+  background: #f0f9eb;
+  border: 1px solid #e1f3d8;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.fixed-param-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 13px;
+  border-bottom: 1px dashed #e1f3d8;
+  &:last-child { border-bottom: none; }
+}
+.fixed-param-name {
+  color: #606266;
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+.fixed-param-value {
+  color: #67c23a;
+  font-family: 'Consolas', 'Monaco', monospace;
+  text-align: right;
+  word-break: break-all;
+}
+.fixed-param-empty {
+  font-size: 12px;
+  color: #909399;
+  text-align: center;
+  padding: 4px 0;
+}
+
+.debug-msg-executing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #909399;
+
+  .thinking-spin {
+    animation: rotate 1.2s linear infinite;
+  }
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .debug-msg-runresult {

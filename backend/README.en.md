@@ -25,7 +25,7 @@ Process data through conversation, accumulate data-processing Skills, form a dat
 - FastAPI + Uvicorn
 - SQLAlchemy 2.0 (async)
 - pandas / numpy
-- Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible (deep + fast dual-model architecture)
+- Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible (model auto-selection pick_model_async + multi-model degradation chain + CircuitBreaker)
 - SQLite (development) / PostgreSQL 14+ (production)
 - ChromaDB (knowledge base vector store)
 

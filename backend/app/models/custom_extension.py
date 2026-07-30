@@ -37,7 +37,6 @@ class LLMProvider(Base):
     api_base = Column(String(255))
     models = Column(JSON, default=list)
     default_model = Column(String(100))
-    fast_model = Column(String(100))
     api_key_encrypted = Column(Text)
     code = Column(Text)
     is_public = Column(Boolean, default=False)  # 内置/公共 Provider 所有用户可见；用户创建默认私有
@@ -57,8 +56,7 @@ class UserLLMConfig(Base):
     api_key_encrypted = Column(Text)
     api_base = Column(String(255))
     model = Column(String(100))
-    fast_model = Column(String(100))
     embedding_model = Column(String(100))
-    fallback_models = Column(JSON, default=list)  # [{provider, api_base, model, fast_model, api_key_encrypted}]
+    fallback_models = Column(JSON, default=list)  # [{provider, api_base, model, api_key_encrypted}]
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

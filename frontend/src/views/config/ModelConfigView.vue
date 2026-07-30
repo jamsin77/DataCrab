@@ -170,7 +170,6 @@ const apiBasePlaceholder = computed(() => getProviderApiBase(form.value.provider
 function formatCapabilities(row: any): string {
   const caps = []
   if (row.default_model) caps.push('深度')
-  if (row.fast_model) caps.push('快速')
   if (row.models && row.models.length > 0) caps.push('文本')
   return caps.join('/') || '-'
 }

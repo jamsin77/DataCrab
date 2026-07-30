@@ -30,6 +30,20 @@ from app.services.task_runner import execute_task
 router = APIRouter()
 
 
+def _validate_cron_and_next_run(cron_expression: str) -> datetime:
+    """验证 cron 表达式（支持 ; 分隔多个）并返回最近的下次执行时间"""
+    exprs = [e.strip() for e in cron_expression.split(";") if e.strip()]
+    if not exprs:
+        raise ValueError("Cron表达式为空")
+    next_times = []
+    for expr in exprs:
+        try:
+            next_times.append(croniter(expr, datetime.utcnow()).get_next(datetime))
+        except Exception:
+            raise ValueError(f"无效的Cron表达式: {expr}")
+    return min(next_times)
+
+
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
 async def create_schedule(
     request: ScheduleCreate,
@@ -52,17 +66,13 @@ async def create_schedule(
         if not request.cron_expression:
             raise HTTPException(status_code=400, detail="Cron调度需要提供cron_expression")
         try:
-            croniter(request.cron_expression)
-        except Exception:
-            raise HTTPException(status_code=400, detail="无效的Cron表达式")
-    
-    # 计算下次执行时间
-    next_run_at = None
-    if request.schedule_type == "cron":
-        cron = croniter(request.cron_expression, datetime.utcnow())
-        next_run_at = cron.get_next(datetime)
+            next_run_at = _validate_cron_and_next_run(request.cron_expression)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     elif request.schedule_type == "interval":
         next_run_at = datetime.utcnow() + timedelta(seconds=request.interval_seconds or 3600)
+    else:
+        next_run_at = None
     
     schedule = Schedule(
         name=request.name,
@@ -140,10 +150,9 @@ async def update_schedule(
     # 如果更新了Cron表达式，重新计算下次执行时间
     if "cron_expression" in update_data and schedule.schedule_type == "cron":
         try:
-            cron = croniter(update_data["cron_expression"], datetime.utcnow())
-            schedule.next_run_at = cron.get_next(datetime)
-        except Exception:
-            raise HTTPException(status_code=400, detail="无效的Cron表达式")
+            schedule.next_run_at = _validate_cron_and_next_run(update_data["cron_expression"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     
     for key, value in update_data.items():
         setattr(schedule, key, value)
@@ -200,8 +209,10 @@ async def resume_schedule(
     
     # 重新计算下次执行时间
     if schedule.schedule_type == "cron" and schedule.cron_expression:
-        cron = croniter(schedule.cron_expression, datetime.utcnow())
-        schedule.next_run_at = cron.get_next(datetime)
+        try:
+            schedule.next_run_at = _validate_cron_and_next_run(schedule.cron_expression)
+        except ValueError:
+            pass
     elif schedule.schedule_type == "interval" and schedule.interval_seconds:
         schedule.next_run_at = datetime.utcnow() + timedelta(seconds=schedule.interval_seconds)
     
@@ -245,6 +256,7 @@ async def trigger_schedule(
         task_params=request.task_params or schedule.task_params,
         user_id=current_user.id,
         timeout=schedule.timeout or 3600,
+        run_mode=schedule.run_mode or "normal",
     )
     
     return execution
@@ -287,9 +299,17 @@ async def validate_cron(
     request: CronValidateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """验证Cron表达式"""
+    """验证Cron表达式（支持 ; 分隔多个）"""
     try:
-        cron = croniter(request.cron_expression, datetime.utcnow())
+        exprs = [e.strip() for e in request.cron_expression.split(";") if e.strip()]
+        if not exprs:
+            return CronValidateResponse(valid=False, message="Cron表达式为空")
+        next_runs = []
+        for expr in exprs:
+            cron = croniter(expr, datetime.utcnow())
+            next_runs.append(cron.get_next(datetime))
+        # 返回最近一次的后续 5 次执行时间
+        cron = croniter(exprs[0], datetime.utcnow())
         next_runs = [cron.get_next(datetime) for _ in range(5)]
         return CronValidateResponse(valid=True, next_runs=next_runs)
     except Exception as e:

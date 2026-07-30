@@ -1,4 +1,4 @@
-# CLAUDE.md — DataCrab 项目 AI 协作指南
+# AGENTS.md — DataCrab 项目 AI 协作指南
 
 ## 项目概述
 
@@ -21,12 +21,12 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 |------|------|
 | `agent.py` | 单 Agent 服务（AgentService），非流式 /chat 端点使用 |
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime / Handoff） |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成 |
-| `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查 |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 4 工具（edit_script/run_script/read_script/grep_script）+ runtime 自动交接 Inspector |
+| `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report）；severity 校正 |
 | `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
-| `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、搜索饱和检测、工具结果缓存** |
+| `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、搜索饱和检测、工具结果缓存、上下文压缩（Compaction）** |
 | `tool_guidance.py` | **工具诚实能力表（注入 system prompt）** |
-| `llm.py` | LLM 管理器（多模型降级 + 瞬态重试 + finish_reason 透传） |
+| `llm.py` | LLM 管理器（模型自动选择 pick_model_async + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选） |
 | `chat.py`（endpoints） | 对话 API：流式响应、上下文压缩、统一路由、数据预览注入 |
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
@@ -89,11 +89,15 @@ cd backend && black app/ && isort app/
 用户请求 → chat.py/stream
     ↓
 DataProcessorAgent（统一入口）
-    ├── 处理数据 → handoff_to_inspector → DataInspectorAgent
+    ├── 处理数据 → runtime 自动交接 → DataInspectorAgent
     │                   ├── 检查通过 → 返回结果
     │                   └── 发现问题 → handoff_to_processor → 修复 → 再检查
     └── 不需要检查 → 直接返回结果
 ```
+
+**调试模式**：DataProcessor 暴露 4 个工具（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；`run_script` 执行成功后 runtime 自动交接 DataInspector（无需 LLM 主动调 handoff 工具）。
+
+**修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数；错误分级退出（环境/平台/数据问题直接终止，不消耗额度）。
 
 **收敛检测**：动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止并提示用户介入。
 
@@ -441,3 +445,114 @@ DataProcessorAgent（统一入口）
 | 删除沙箱 grep 函数 | sandbox_ns.py + skill_runner.py + prompt_docs.py + tool_guidance.py + datasource.py | 因无技能使用，全量删除（函数定义/注册/文档/端点） |
 
 **与前轮关系**：第十四轮补齐调试显示和错误分级；本轮补齐规则实现（39%→78% 有确定性检查）+ 修复安装链路（3 个阻断性 bug）+ 资产打包机制。规则仍无法确定性实现的（DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP 等）保持 LLM prompt 判断。
+
+### 第十六轮（上下文压缩 + Prefix Cache 稳定 + SSE 修复 + 图片压缩 + traceback 行号修正）
+
+**核心洞察**（对照 OpenCode）：第九轮 L2 续写解决「输出截断」，但长会话的另一面——上下文无限增长撑爆窗口——一直没有治理。对照 OpenCode 发现两个本质差距：①OpenCode 有 compaction（旧消息摘要 + 保留近期原文 + 标识符机械保护），DataCrab 只有静态压力告警没有实际压缩；②OpenCode 的 system prompt 字节稳定命中 provider prefix cache，DataCrab 把实时数据预览塞进 system prompt，每条消息都重算前缀缓存，input 成本高。本轮补齐上下文生命周期管理 + 缓存稳定性。
+
+**上下文压缩（Compaction，对齐 OpenCode）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `should_compact` + `compact_messages` | agent_utils.py | 上下文使用≥75% 触发：system 保留 + 旧消息 LLM 摘要 + 最近 2 轮原文 + 标识符机械抽取（不依赖 LLM）；LLM 不可用时兜底机械摘要 |
+| `extract_identifiers_from_messages` | agent_utils.py | 复用 `extract_identifiers(text)` 完整模式集逐条抽取 UUID/表名/数据源ID，压缩后 Agent 不忘已查过的表 |
+| Processor 主循环接入 | data_processor_agent.py | `run()` + `run_debug()` 每轮开头 `should_compact` 检查；debug 模式压缩前 yield 提示 |
+| Inspector 接入 | data_inspector_agent.py | 每轮开头压缩检查 |
+
+**Prefix Cache 稳定性**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 数据预览移出 system | chat.py | 实时数据预览从 system prompt → 一次性 user message（`{preview}\n\n---\n\n{user_msg}`）；system 字节稳定命中 GLM context cache，input 降 30%+ |
+| `build_datasource_context` 拆分 | chat.py | 返回 `(context, preview)` 元组；`_build_system_prompt` 删实时数据提示段 |
+| `has_preinjected_data` 修正 | chat.py | 从字符串包含判断 → `bool(data_preview)`，更可靠 |
+
+**Inspector 反幻觉内容抑制**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| 流式 content 缓冲 | data_inspector_agent.py | 不立即 yield content token，流式结束后决定：无工具支撑的数据声明→抑制本轮 content + 注入警告重试；有工具调用/最终结论→输出 |
+
+**SSE ping 修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `ensure_future` + `wait` 模式 | operator.py + pipeline.py + skill.py | `asyncio.wait_for(anext, timeout)` 超时会取消底层协程，对 async generator 会损坏状态；改为 `ensure_future` 创建任务 + `asyncio.wait` 不取消，超时发 ping 后继续等同一任务 |
+
+**其他改进**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| `execute_query` 签名清理 | connectors.py + datasource.py | 删除 8 个连接器 + BaseConnector 未使用的 `params` 参数 |
+| 图片压缩 | datasource.py + sandbox_ns.py | llm_vision 图片缩到最大 1024px + JPEG quality 85，省 60-70% token；PIL 不可用回退原图 |
+| query_table_data/execute_sql split 格式 | shared_tools.py | `to_dict(orient="records")` → `values.tolist()` + `"format":"split"`（无重复列名，更省 token） |
+| traceback 行号修正 | skill_runner.py | `_fix_traceback_lines`：子进程临时文件行号→原始脚本行号（减模板前缀 478 行）；run_skill_script + streaming 接入 |
+| 数据源表按更新时间排序 | datasource.py + DataSourceView.vue | `get_datasource_tree` 关联 TableMetadata.updated_at 降序（最新在前）；表项显示更新时间 |
+| `debug_max_exec_failures` 可配置 | data_processor_agent.py | 3→context 可配置；DEBUG_INSTRUCTIONS 用 `{max_exec_failures}` 占位符 |
+| 调试工具显示优化 | data_processor_agent.py | read 显示行号范围 / grep 显示关键词 / edit 显示 diff 代码块；删 modify_script 重复 diff；行数 cap 50→20；执行成功显式 ✅ |
+| 反幻觉警告措辞 | agent_utils.py | `should_warn_ungrounded_claim` 改为直接要求调检查工具（不解释不承认错误） |
+| CLAUDE.md → AGENTS.md | AGENTS.md + design.md + design.en.md | 标题 + 引用更新，对齐通用 agent 协作文件命名 |
+
+**与前轮关系**：第九轮 L2 续写治理「输出截断」（单轮输出过长）；本轮治理「上下文增长」（跨轮历史膨胀）——两者正交，共同覆盖长会话全生命周期。Prefix Cache 稳定是对第九轮静态/动态分区的延伸（system 字节稳定才能命中 provider 缓存）。SSE ping 修复解决 `wait_for` 取消 async generator 的隐性 bug（之前超时后 generator 可能损坏）。
+
+### 第十七轮（对齐 OpenCode 调试优化——工具精简 + runtime 自动交接 + 视觉模型 + 错误分类 LLM 推断 + 备用模型 + SSE 修复）
+
+**核心洞察**（对照 OpenCode）：第十~十六轮建立了行级补丁原语 + 修改尝试正法 + 上下文压缩，但调试工具仍暴露 7 个（edit_and_run/modify_and_run/modify_script/edit_script/run_script/read_script/grep_script），且依赖 LLM 主动调 handoff_to_inspector 工具交接检查。对照 OpenCode 的 5 工具模型（Grep/Read/Edit/Bash/Task），本轮精简调试工具到 4 个，交接改为 runtime 自动触发。同时简化流式方法——第九轮的 L2/L3/L4 截断保证契约（max_continues 续写 / tool_choice=required / frequency_penalty）复杂度高收益低，改为简单多模型降级链。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **调试工具精简至 4 个** | data_processor_agent.py | `run_debug` 只暴露 `edit_script`/`run_script`/`read_script`/`grep_script`（对齐 OpenCode Grep/Read/Edit/Bash）；`edit_and_run`/`modify_and_run`/`modify_script` 的 schema+处理器保留但不再暴露给调试 LLM |
+| **删 handoff_to_inspector 工具** | data_processor_agent.py | 调试模式不暴露 handoff 工具；`run_script` 执行成功后 runtime 自动交接 DataInspector（reason=FIX_COMPLETED/INSPECT_RESULT），从 written_tables/output_table 提取目标表 |
+| **删脚本摘要** | data_processor_agent.py | 删 `_script_summary`，逼 LLM 用 `read_script` 读真实代码（对齐 OpenCode 不预摘要） |
+| **action summary 精简** | data_processor_agent.py | 只显示工具名图标，不显示 diff/pattern/offset 详情（降低噪声） |
+| **DEBUG_INSTRUCTIONS 工作流** | data_processor_agent.py | 明确 `grep → read(offset,limit) → edit_script → run_script` |
+| **流式方法简化为降级链** | llm.py | `chat_stream_with_thinking`/`chat_stream_with_tools_and_thinking` 删 L2 续写（max_continues）/L3 强制推进（tool_choice=required）/L4 frequency_penalty；改为逐模型尝试 + CircuitBreaker 熔断 + 瞬态重试；finish_reason=length 直接返回不续写 |
+| **视觉模型支持** | llm.py + sandbox_ns.py + skill_runner.py | `_PROVIDER_VISION_MODELS`（glm→glm-4v-plus/qwen→qwen-vl-plus 等）；`llm_vision` 沙箱函数按 provider 选模型；图片压缩 1024px+JPEG85；失败加"平台限制"前缀 |
+| **错误分类 LLM 推断** | skill_runner.py | `_llm_classify_error`：关键词匹配返回 script_error 时用 LLM 重新分 4 类（环境/平台/数据/脚本）；源文件不存在→数据问题，目标文件不存在→脚本错误 |
+| **备用模型（降级）配置** | llm.py + ModelConfigView.vue | `_model_configs` 主模型+fallback_models；`_degradation_chain` 降级链；CircuitBreaker 连续 3 次失败熔断 60s；前端恢复备用模型管理 UI |
+| **Inspector 删强制交接** | data_inspector_agent.py | `_collect_severe_issues` 不再被 run() 调用（死代码）；交接完全由 LLM 通过 handoff_to_processor 工具决定 |
+| **Inspector severity 校正** | data_inspector_agent.py | `_correct_severity`：用工具原始 severity 覆盖 LLM 可能篡改的 severity |
+| **Inspector _load_data 扩容** | data_inspector_agent.py | page_size 5000→50000 |
+| **SSE handler 修复** | skill.py + operator.py + pipeline.py | done 事件转发（不再吞 result.content）；tool_result 转发（Inspector 工具结果可见）；platform_issue 事件前端处理 |
+| **read_script 从磁盘刷新** | data_processor_agent.py | 不用 context 旧版本，从磁盘读最新；offset/limit 适用于 script scope |
+| **seed 逻辑修复** | main.py | 用技能名而非文件夹名查重 |
+| **Excel write_table_data 增强** | connectors.py | 支持创建新文件 + append 策略 |
+
+**与前轮关系**：第十~十一轮行级补丁（edit_script/apply_partial_code）+ 第十三轮修改尝试正法（3 次执行/7 次修改）保留；本轮精简工具暴露面（7→4）+ 交接自动化（删 handoff 工具）。第九轮 L2/L3/L4 截断保证契约被简化为降级链（实测复杂度高收益低，多模型降级 + CircuitBreaker 已足够兜底）。第八轮的 `_stream_with_timeout`/written_tables/embedding 按 provider 选保留。
+
+### 第十八轮（模型自动选择——去 fast_model/default_model，按上下文推断 + 规则兜底）
+
+**核心洞察**：第四轮引入深度+快速双模型架构（fast_model/default_model），第十三轮删 fast_model 改始终用 deep model。但"始终用 deep model"浪费——简单场景（参数推断/对话）不需要 glm-5.2。本轮彻底去掉 fast_model/default_model 概念，改为 `pick_model_async` 按上下文让 LLM 选最合适且最经济的模型，简单场景规则兜底用 flash 模型不问 LLM。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **pick_model_async 模型自动选择** | llm.py | 构建可用模型列表（含能力描述）+ 任务场景 → 调 LLM 选最合适且最经济模型 → 结果缓存（100 条）；简单场景（参数推断/对话）规则兜底用 flash 模型不问 LLM |
+| **删 fast_model/default_model/classify_task** | llm.py | `fast_model` 属性/`default_model` 概念/`classify_task` 任务分类全删；seed providers 去掉 fast_model/default_model 字段 |
+| **chat 方法 model=None 自动推断** | llm.py | `chat`/`chat_with_messages`/`chat_stream_*` 所有方法 model=None 时调 `pick_model_async`；新增 `context` 参数透传任务场景 |
+| **context 参数全链路透传** | skill.py + operator.py + pipeline.py + datasource.py | NL 推断/技能修改/算子生成修改调试/流程生成/脚本 llm_chat 全加 context 参数 |
+| **Inspector system prompt 精简** | data_inspector_agent.py | 规则文件移出 system prompt；`run_all_checks` 预执行 + `format_report` 生成紧凑报告作为 user message 注入 |
+| **inspector_tools 规则全量实现** | inspector_tools.py | 31 条确定性检查（STD-ENUM/NUM/LOC/TIME + DQ-COM/UNI/VAL/CON/ETL + SEC-PII/BIZ/MASK/CLASS）；`_resolve_table_name` 模糊匹配 |
+
+**与前轮关系**：第四轮双模型架构 + 第十三轮"删 fast_model 始终用 deep model"被本轮 `pick_model_async` 替代——不再二选一（deep 或 fast），而是按上下文从可用模型列表中选最合适且最经济的。第十七轮的降级链 + CircuitBreaker 保留（模型选完后的执行层容错）。
+
+**已知遗留**（第十九轮已修复）：`data_processor_agent.py` 的 `_handle_get_llm_config` 引用已删除的 `llm_manager.fast_model` 属性（调用 get_llm_config 工具时会 AttributeError）；DB 模型/配置层仍保留 fast_model 列（值为空，运行时不影响）。→ 两项均已在第十九轮彻底清理。
+
+### 第十九轮（fast_model 残留彻底清理——修复 AttributeError + DB/配置/前端全链路清理）
+
+**核心洞察**：第十八轮 `pick_model_async` 删了 `llm_manager.fast_model` 属性，但 `_handle_get_llm_config` 仍引用它（调用 get_llm_config 工具即 AttributeError），且 DB schema/endpoint/前端散落 `fast_model` 残留读写。本轮把第十八轮没清干净的 `fast_model` 全链路清掉，`default_model` 保留（seed/registry 仍用作 Provider 推荐深度模型名，非遗留）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **_handle_get_llm_config 重写** | data_processor_agent.py | 删 `llm_manager.fast_model`（AttributeError 根因）；改返 `available_models`（带能力描述，来自 `_available_models_with_desc`）；providers 列表 `fast_model` → `default_model` |
+| **SAVE_LLM_ADAPTER 清理** | data_processor_agent.py | schema 删 `fast_model` 参数；`_handle_save_llm_adapter` 删 fast_model 读写（4 处） |
+| **llm.py 6 处清理** | llm.py | `init_user_llm_context`（fallback + cfg）/`_parse_fallback_models`/`load_providers_from_db`（seed + registry）/注释 全去 fast_model |
+| **DB model 删 2 个 Column** | models/custom_extension.py | `LLMProvider.fast_model` + `UserLLMConfig.fast_model` Column 定义删除；fallback_models 注释更新 |
+| **config.py endpoint 清理** | endpoints/config.py | `LLMConfigRequest`/`FallbackModelItem`/`LLMConfigResponse` schema 删 fast_model 字段；`get_llm_config`/`update_llm_config` 读写全删（8 处） |
+| **custom_extension.py 返回清理** | endpoints/custom_extension.py | providers 列表返回 `fast_model` → `default_model` |
+| **settings 保留兼容** | core/config.py | `LLM_FAST_MODEL: str = ""` 保留并标废弃注释——业务代码已不读，仅为兼容已有 .env 的 LLM_FAST_MODEL 变量（pydantic extra_forbidden 会崩） |
+| **.env.example 删 LLM_FAST_MODEL** | backend/.env.example | 删除 LLM_FAST_MODEL 示例行 |
+| **前端展示清理** | ModelConfigView.vue | `formatCapabilities` 删 `if (row.fast_model) caps.push('快速')` |
+
+**验证**：`app.main` 完整加载 184 路由；`LLMProvider`/`UserLLMConfig` 表列确认无 fast_model；`_handle_get_llm_config` 源码确认无 fast_model 引用；`llm_manager.fast_model` 属性确认不存在。
+
+**与前轮关系**：补齐第十八轮未完成的清理（第十八轮只删了 llm_manager 属性，DB/schema/endpoint/前端残留未清）。`default_model` 不在清理范围——seed providers 仍写入、registry 仍读取，作为 Provider 推荐深度模型名（非死字段）。settings.LLM_FAST_MODEL 保留是向后兼容妥协（删了会破坏已有 .env 部署），业务代码已完全不读。

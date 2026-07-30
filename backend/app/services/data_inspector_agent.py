@@ -26,6 +26,8 @@ from app.services.agent_utils import (
     get_context_pressure_level,
     build_pressure_warning,
     get_anti_hallucination_section,
+    should_compact,
+    compact_messages,
 )
 
 
@@ -316,6 +318,10 @@ class DataInspectorAgent(BaseAgent):
         yield {"type": "model", "content": await llm_manager.pick_model_async(inspect_msg or "数据检查")}
 
         for i in range(max_iterations):
+            # 上下文压缩（对齐 OpenCode compaction）
+            if should_compact(local_messages):
+                local_messages = await compact_messages(local_messages, llm_manager)
+
             _llm_model = None
             _llm_tool_choice = "auto"
             content = ""
@@ -331,31 +337,39 @@ class DataInspectorAgent(BaseAgent):
                     yield event
                 elif t == "content":
                     content += event["content"]
-                    yield event
+                    # 不立即 yield content，等流式结束后决定（反幻觉可能要抑制）
                 elif t == "tool_calls":
                     tool_calls = event["tool_calls"]
                 elif t == "finish":
                     finish_reason = event["finish_reason"]
 
+            # 流式结束：决定是否输出 content
             if not tool_calls:
-                # 反幻觉：无工具支撑的数据声明警告（P）
+                # 反幻觉：无工具支撑的数据声明警告
                 if not had_any_tool_calls:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
                     if warn and i < max_iterations - 1:
+                        # 抑制本轮 content（不 yield），注入警告让 LLM 重新调工具
                         local_messages.append({"role": "assistant", "content": content})
                         local_messages.append({"role": "user", "content": warn})
                         continue
 
-                # 卡死检测：空转检查（J）
+                # 卡死检测：空转检查
                 intervention = stuck_detector.record_idle()
                 if intervention and i < max_iterations - 1:
                     local_messages.append({"role": "assistant", "content": content})
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                # content 已在流式阶段逐 token 输出，不再重复 yield 全量
+                # 最终结论：输出 content
+                for chunk in content:
+                    yield {"type": "content", "content": chunk}
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
+
+            # 有工具调用：输出 content（LLM 在解释要做什么）
+            for chunk in content:
+                yield {"type": "content", "content": chunk}
 
             had_any_tool_calls = True
 

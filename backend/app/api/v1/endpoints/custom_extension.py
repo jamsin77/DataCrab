@@ -208,7 +208,7 @@ async def list_providers(
             "description": p.description or "",
             "api_base": p.api_base or "",
             "models": p.models or [],
-            "fast_model": p.fast_model or "",
+            "default_model": p.default_model or "",
             "is_public": bool(p.is_public),
             "is_owner": p.created_by == current_user.id,
             "can_edit": p.created_by == current_user.id or current_user.is_superuser,

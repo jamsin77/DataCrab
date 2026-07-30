@@ -103,6 +103,30 @@ def _classify_execution_error(error_msg: str) -> str:
     return "script_error"  # 默认按脚本问题处理
 
 
+import re as _re
+
+
+def _fix_traceback_lines(error_msg: str, preamble_lines: int) -> str:
+    """修正 traceback 中的行号：临时文件行号 → 原始脚本行号。
+
+    子进程临时文件 = 模板前缀（preamble_lines 行）+ 脚本内容 + 模板后缀。
+    traceback 中的 line N → 原始脚本 line (N - preamble_lines)。
+    """
+    if preamble_lines <= 0:
+        return error_msg
+
+    def _replace_line(match):
+        prefix = match.group(1)  # 'line '
+        num = int(match.group(2))
+        fixed = num - preamble_lines
+        if fixed > 0:
+            return f"{prefix}{fixed}"
+        return match.group(0)
+
+    # 匹配 traceback 中的 "line 123" 模式
+    return _re.sub(r'(line\s+)(\d+)', _replace_line, error_msg)
+
+
 SKILL_RUNNER_TEMPLATE = """
 import json
 import sys
@@ -728,6 +752,9 @@ def run_skill_script(
         error_type = None
         if proc.returncode != 0:
             error_msg = stderr.strip() or stdout.strip()[:500] or "脚本执行失败（无错误输出）"
+            # 修正 traceback 行号：子进程临时文件的行号偏移了模板前缀行数
+            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
             error_type = _classify_execution_error(error_msg)
         else:
             error_msg = None
@@ -1092,6 +1119,8 @@ def run_skill_script_streaming(
         error_type = None
         if proc.returncode != 0:
             error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
+            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
             error_type = _classify_execution_error(error_msg)
         else:
             error_msg = None
@@ -1172,3 +1201,431 @@ async def run_skill_script_streaming_async(
         yield item
 
     await task
+
+
+# ============================================================================
+# by_content 系列：接收脚本内容字符串（而非 skill_path），供 pipeline_executor 复用
+# 与 run_skill_script 的区别：
+#   1. 直接接收 script_content，不从 skill_path/scripts/main.py 读取
+#   2. 不自动注入 datasource/table 参数（调用方需在 parameters 中提供完整参数）
+#   3. cwd 默认 backend 目录
+# ============================================================================
+
+
+def run_skill_script_by_content(
+    script_content: str,
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    user_id: str = None,
+    timeout: int = None,
+    cwd: str = None,
+    entry_function: str = None,
+) -> Dict[str, Any]:
+    """在沙箱中执行脚本内容字符串（供 pipeline_executor 复用）。"""
+    timeout = timeout or settings.SKILL_RUNNER_TIMEOUT
+    parameters = parameters or {}
+
+    import ast
+    function_name = "main"
+    uses_argparse = False
+    try:
+        tree = ast.parse(script_content)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "argparse":
+                        uses_argparse = True
+                        break
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "argparse":
+                    uses_argparse = True
+        if not uses_argparse:
+            func_defs = [(node.name, node) for node in ast.iter_child_nodes(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")]
+            if func_defs:
+                def _param_count(func_node):
+                    return len(func_node.args.args) + len(func_node.args.kwonlyargs) + len(func_node.args.posonlyargs)
+                best = max(func_defs, key=lambda f: _param_count(f[1]))
+                if "main" in [f[0] for f in func_defs]:
+                    main_node = next(f[1] for f in func_defs if f[0] == "main")
+                    if _param_count(main_node) > 0:
+                        function_name = "main"
+                    else:
+                        function_name = best[0]
+                else:
+                    function_name = best[0]
+        if uses_argparse:
+            function_name = "main"
+    except SyntaxError:
+        pass
+
+    if entry_function:
+        function_name = entry_function
+        uses_argparse = False
+
+    script_content = _strip_main_block(script_content)
+
+    data_literal = repr(input_data) if input_data is not None else "None"
+    params_literal = repr(parameters)
+
+    backend_path = Path(__file__).resolve().parent.parent.parent
+
+    runner_script = SKILL_RUNNER_TEMPLATE.format(
+        injected_data=data_literal,
+        injected_params=params_literal,
+        function_name=function_name,
+        uses_argparse=uses_argparse,
+        user_id=repr(str(user_id) if user_id else None),
+    )
+    runner_script = runner_script.replace("# __SCRIPT_CONTENT__", script_content)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(runner_script)
+        temp_path = f.name
+
+    try:
+        start = time.perf_counter()
+        proc = subprocess.run(
+            [sys.executable, temp_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=cwd or str(backend_path),
+            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+
+        error_type = None
+        if proc.returncode != 0:
+            error_msg = stderr.strip() or stdout.strip()[:500] or "脚本执行失败（无错误输出）"
+            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
+            error_type = _classify_execution_error(error_msg)
+        else:
+            error_msg = None
+
+        if stderr.strip() and proc.returncode == 0:
+            stdout += "\n[stderr]\n" + stderr
+
+        result = None
+        for line in stdout.split("\n"):
+            if "__RESULT__" in line:
+                try:
+                    json_str = line.split("__RESULT__", 1)[1].strip()
+                    result = json.loads(json_str)
+                    result = _sanitize_nans(result)
+                    stdout = stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+
+        written_tables = None
+        for line in stdout.split("\n"):
+            if "__WRITTEN_TABLES__" in line:
+                try:
+                    json_str = line.split("__WRITTEN_TABLES__", 1)[1].strip()
+                    written_tables = json.loads(json_str)
+                    stdout = stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+
+        tool_call_log = None
+        for line in stdout.split("\n"):
+            if "__TOOL_CALL_LOG__" in line:
+                try:
+                    json_str = line.split("__TOOL_CALL_LOG__", 1)[1].strip()
+                    tool_call_log = json.loads(json_str)
+                    stdout = stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+
+        return {
+            "success": proc.returncode == 0,
+            "result": result,
+            "written_tables": written_tables,
+            "tool_calls": tool_call_log or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
+            "error": error_msg,
+            "error_type": error_type,
+            "stdout": stdout.strip(),
+            "execution_time_ms": round(elapsed_ms, 2),
+        }
+    except subprocess.TimeoutExpired as _te:
+        _timeout_stdout = ""
+        if _te.stdout:
+            _timeout_stdout = _te.stdout if isinstance(_te.stdout, str) else _te.stdout.decode("utf-8", "replace")
+        if _te.stderr:
+            _timeout_stderr = _te.stderr if isinstance(_te.stderr, str) else _te.stderr.decode("utf-8", "replace")
+            if _timeout_stderr.strip():
+                _timeout_stdout += "\n[stderr]\n" + _timeout_stderr
+        _timeout_tool_calls = None
+        for line in _timeout_stdout.split("\n"):
+            if "__TOOL_CALL_LOG__" in line:
+                try:
+                    json_str = line.split("__TOOL_CALL_LOG__", 1)[1].strip()
+                    _timeout_tool_calls = json.loads(json_str)
+                    _timeout_stdout = _timeout_stdout.replace(line, "")
+                except json.JSONDecodeError:
+                    pass
+                break
+        return {
+            "success": False,
+            "error": f"脚本执行超时（{timeout}秒）",
+            "stdout": _timeout_stdout.strip(),
+            "tool_calls": _timeout_tool_calls or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
+            "execution_time_ms": timeout * 1000,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "stdout": "",
+            "execution_time_ms": 0,
+        }
+    finally:
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+
+
+def run_skill_script_streaming_by_content(
+    script_content: str,
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    user_id: str = None,
+    timeout: int = None,
+    cwd: str = None,
+    entry_function: str = None,
+):
+    """流式执行脚本内容字符串，逐行 yield 进度行，最后 yield 完整结果 dict。
+
+    yield 格式：
+    - {"type": "progress", "message": "stdout 行内容"}
+    - {"type": "result", "result": {...}}
+    - {"type": "ping"}  保活
+    """
+    parameters = parameters or {}
+    timeout = timeout or settings.SKILL_RUNNER_TIMEOUT
+
+    import ast as _ast
+    function_name = "main"
+    uses_argparse = False
+    try:
+        tree = _ast.parse(script_content)
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Import):
+                for alias in node.names:
+                    if alias.name == "argparse":
+                        uses_argparse = True
+                        break
+            elif isinstance(node, _ast.ImportFrom):
+                if node.module == "argparse":
+                    uses_argparse = True
+        if not uses_argparse:
+            func_defs = [(n.name, n) for n in _ast.iter_child_nodes(tree) if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not n.name.startswith("_")]
+            if func_defs:
+                def _param_count(fn):
+                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                best = max(func_defs, key=lambda f: _param_count(f[1]))
+                if "main" in [f[0] for f in func_defs]:
+                    main_node = next(f[1] for f in func_defs if f[0] == "main")
+                    if _param_count(main_node) > 0:
+                        function_name = "main"
+                    else:
+                        function_name = best[0]
+                else:
+                    function_name = best[0]
+        if uses_argparse:
+            function_name = "main"
+    except SyntaxError:
+        pass
+
+    if entry_function:
+        function_name = entry_function
+        uses_argparse = False
+
+    script_content = _strip_main_block(script_content)
+
+    data_literal = repr(input_data) if input_data is not None else "None"
+    params_literal = repr(parameters)
+
+    backend_path = Path(__file__).resolve().parent.parent.parent
+
+    runner_script = SKILL_RUNNER_TEMPLATE.format(
+        injected_data=data_literal,
+        injected_params=params_literal,
+        function_name=function_name,
+        uses_argparse=uses_argparse,
+        user_id=repr(str(user_id) if user_id else None),
+    )
+    runner_script = runner_script.replace("# __SCRIPT_CONTENT__", script_content)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(runner_script)
+        temp_path = f.name
+
+    stdout_lines = []
+    result = None
+    written_tables = None
+    tool_call_log = None
+
+    try:
+        import subprocess as _sp
+        start = time.perf_counter()
+
+        proc = _sp.Popen(
+            [sys.executable, temp_path],
+            stdout=_sp.PIPE,
+            stderr=_sp.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd or str(backend_path),
+            env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
+        )
+
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.rstrip("\n\r")
+                if not line:
+                    continue
+                is_marker = False
+                for marker in _MARKER_PREFIXES:
+                    if marker in line:
+                        is_marker = True
+                        try:
+                            json_str = line.split(marker, 1)[1].strip()
+                            parsed = json.loads(json_str)
+                            if marker == "__RESULT__":
+                                result = _sanitize_nans(parsed)
+                            elif marker == "__WRITTEN_TABLES__":
+                                written_tables = parsed
+                            elif marker == "__TOOL_CALL_LOG__":
+                                tool_call_log = parsed
+                        except (json.JSONDecodeError, IndexError):
+                            pass
+                        break
+                if is_marker:
+                    continue
+                stdout_lines.append(line)
+                yield {"type": "progress", "message": line}
+        except Exception:
+            pass
+
+        remaining = timeout - (time.perf_counter() - start)
+        if remaining <= 0:
+            remaining = 1
+        try:
+            proc.wait(timeout=remaining)
+        except _sp.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except _sp.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+        stderr = proc.stderr.read() if proc.stderr else ""
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        error_type = None
+        if proc.returncode != 0:
+            error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
+            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
+            error_type = _classify_execution_error(error_msg)
+        else:
+            error_msg = None
+
+        if stderr.strip() and proc.returncode == 0:
+            stdout_lines.append("[stderr]")
+            stdout_lines.append(stderr.strip())
+
+        stdout_text = "\n".join(stdout_lines)
+
+        yield {"type": "result", "result": {
+            "success": proc.returncode == 0,
+            "result": result,
+            "written_tables": written_tables,
+            "tool_calls": tool_call_log or [],
+            "sandbox": {
+                "injected_functions": [
+                    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "log", "read_file", "write_file", "compute_map",
+                    "get_datasource_id_by_name", "resolve_column",
+                ],
+            },
+            "error": error_msg,
+            "error_type": error_type,
+            "stdout": stdout_text.strip(),
+            "execution_time_ms": round(elapsed_ms, 2),
+        }}
+
+    except Exception as e:
+        yield {"type": "result", "result": {
+            "success": False, "error": str(e), "stdout": "", "execution_time_ms": 0,
+        }}
+    finally:
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+
+
+async def run_skill_script_by_content_async(
+    script_content: str,
+    parameters: Dict[str, Any] = None,
+    input_data: Any = None,
+    user_id: str = None,
+    timeout: int = None,
+    cwd: str = None,
+    entry_function: str = None,
+) -> Dict[str, Any]:
+    """异步执行脚本内容字符串，委托给同步版本。"""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: run_skill_script_by_content(
+            script_content=script_content,
+            parameters=parameters,
+            input_data=input_data,
+            user_id=user_id,
+            timeout=timeout,
+            cwd=cwd,
+            entry_function=entry_function,
+        ),
+    )
+    if not result.get("success") and result.get("error_type") == "script_error":
+        _err = result.get("error", "")
+        if _err:
+            _llm_type = await _llm_classify_error(_err)
+            if _llm_type != "script_error":
+                result["error_type"] = _llm_type
+                logger.info(f"LLM 错误分类: script_error → {_llm_type}")
+    return result

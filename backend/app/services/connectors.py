@@ -82,7 +82,7 @@ class PostgreSQLConnector(BaseConnector):
         )
         return pd.DataFrame([dict(r) for r in rows])
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         if not self._connection:
             await self.connect()
@@ -257,7 +257,7 @@ class MySQLConnector(BaseConnector):
             cols = [desc[0] for desc in cur.description]
         return pd.DataFrame(rows, columns=cols)
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         if not self._connection:
             await self.connect()
@@ -378,7 +378,7 @@ class CSVConnector(BaseConnector):
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         return pd.DataFrame()
 
@@ -535,7 +535,7 @@ class ExcelConnector(BaseConnector):
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         return pd.DataFrame()
 
@@ -727,7 +727,7 @@ class OBSConnector(BaseConnector):
             logger.error(f"OBS读取数据失败: {e}")
             return pd.DataFrame()
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         return pd.DataFrame()
 
@@ -911,7 +911,7 @@ class HadoopHDFSConnector(BaseConnector):
             logger.error(f"Hadoop HDFS读取数据失败: {e}")
             return pd.DataFrame()
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         return pd.DataFrame()
 
@@ -1064,7 +1064,7 @@ class ChromaConnector(BaseConnector):
             rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         client = self._get_client()
         p = params or {}
@@ -1189,7 +1189,7 @@ class SQLiteConnector(BaseConnector):
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
         return pd.DataFrame([dict(r) for r in rows], columns=columns)
 
-    async def execute_query(self, query: str, params: Optional[Dict] = None) -> pd.DataFrame:
+    async def execute_query(self, query: str) -> pd.DataFrame:
         import pandas as pd
         if not self._connection:
             await self.connect()

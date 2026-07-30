@@ -75,11 +75,6 @@ def _build_system_prompt(datasource_context: str) -> str:
     return f"""{persona_block}## 数据源知识库
 {datasource_context}
 
-## 重要提示
-如果上面的上下文中包含了【实时数据查询结果】，说明已经为用户自动查询了真实数据。
-请基于这些真实数据直接告诉用户数据的内容，比如列出表中有哪些字段、前几行数据是什么。
-如果数据较多，请概括总结数据的特征（如总行数、列名、数据类型等）。
-
 {SANDBOX_TOOLS_DOC}
 
 {SAFETY_RULES_DOC}
@@ -135,11 +130,10 @@ async def build_datasource_context(
         lines.append("")
 
     # 当用户消息中提到了数据源名称时，自动查询实际数据
+    # 预览作为一次性 user message 注入（不进 system prompt），保持 system 字节稳定命中 prefix cache
     data_previews = await _query_datasource_previews(sources, user_message)
-    if data_previews:
-        lines.append(data_previews)
 
-    return "\n".join(lines)
+    return "\n".join(lines), data_previews
 
 
 async def _query_datasource_previews(sources, user_message: str) -> str:
@@ -450,11 +444,11 @@ async def send_message(
         history_messages.reverse()
 
         # 构建数据源知识库（含实时数据查询）
-        datasource_context = await build_datasource_context(
+        datasource_context, data_preview = await build_datasource_context(
             db, current_user.id, request.content
         )
 
-        # 构建 system prompt
+        # 构建 system prompt（不含实时数据预览，保持字节稳定命中 prefix cache）
         system_content = _build_system_prompt(datasource_context)
 
         # 组装 messages 列表
@@ -462,7 +456,9 @@ async def send_message(
 
         messages.extend(await _compress_history(history_messages, str(request.session_id)))
 
-        messages.append({"role": "user", "content": request.content})
+        # 实时数据预览作为一次性 user message 注入（不进 system，避免破坏 prefix cache）
+        user_content = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
+        messages.append({"role": "user", "content": user_content})
 
         logger.info(f"chat messages: system={len(system_content)}chars, history={len(history_messages)}, total={len(messages)}")
         for i, m in enumerate(messages):
@@ -596,9 +592,12 @@ async def stream_response(
             history_messages = list(history_result.scalars().all())
             history_messages.reverse()
 
-            datasource_context = await build_datasource_context(
+            datasource_context, data_preview = await build_datasource_context(
                 db, current_user.id, request.content
             )
+
+            # 实时数据预览作为一次性 user message 注入（不进 system，避免破坏 prefix cache）
+            _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
 
             # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
             await db.commit()
@@ -624,14 +623,14 @@ async def stream_response(
                 "persona": ASSISTANT_PERSONA,
                 "session_id": session_id,
                 "history": compressed_history,
-                "has_preinjected_data": "实时数据查询结果" in datasource_context,
+                "has_preinjected_data": bool(data_preview),
             }
 
             message = AgentMessage(
                 from_agent="user",
                 to_agent="data_processor",
                 reason=HandoffReason.DELEGATE,
-                payload={"user_message": request.content, "content": request.content},
+                payload={"user_message": _user_msg, "content": _user_msg},
                 context=context,
                 trace_id=trace_id,
             )

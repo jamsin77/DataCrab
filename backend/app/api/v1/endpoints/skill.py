@@ -1513,14 +1513,19 @@ async def debug_skill_chat(
         _inspector_summary = ""    # 缓冲 warning_confirmation 的 summary
         _inspector_content_sent = False  # 是否已转发过 DataInspector 的 content
         try:
+            _task = asyncio.ensure_future(runtime_gen.__anext__())
             while True:
-                try:
-                    event = await asyncio.wait_for(runtime_gen.__anext__(), timeout=20.0)
-                except asyncio.TimeoutError:
+                done, _pending = await asyncio.wait({_task}, timeout=20.0)
+                if _task not in done:
                     yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
                     continue
+                # 任务完成，取结果
+                try:
+                    event = _task.result()
                 except StopAsyncIteration:
                     break
+                # 创建下一个事件的任务
+                _task = asyncio.ensure_future(runtime_gen.__anext__())
 
                 t = event.get("type")
                 if t == "agent_switch":

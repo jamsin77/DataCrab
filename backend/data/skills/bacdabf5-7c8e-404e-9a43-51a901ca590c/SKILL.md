@@ -1,5 +1,5 @@
 ---
-name: split_table_export
+name: split-table-export
 description: 根据指定列或AI推断的分类规则，将数据表分割并保存为包含多个Sheet的Excel文件
 version: 1.0.0
 tags: 

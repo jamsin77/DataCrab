@@ -28,6 +28,7 @@ async def execute_task(
     task_params: Optional[Dict[str, Any]] = None,
     user_id: Optional[UUID] = None,
     timeout: int = 3600,
+    run_mode: str = "normal",
 ) -> None:
     """后台执行调度任务，更新 TaskExecution 与 Schedule 记录。
 
@@ -63,9 +64,14 @@ async def execute_task(
                     db, task_target_id, task_params or {}, user_id
                 )
             elif task_type == "pipeline":
-                success, result_data, error_msg, logs = await _run_pipeline(
-                    db, task_target_id, task_params or {}, user_id
-                )
+                if run_mode == "auto_fix":
+                    success, result_data, error_msg, logs = await _run_pipeline_auto_fix(
+                        db, task_target_id, task_params or {}, user_id
+                    )
+                else:
+                    success, result_data, error_msg, logs = await _run_pipeline(
+                        db, task_target_id, task_params or {}, user_id
+                    )
             else:
                 raise ValueError(f"不支持的任务类型: {task_type}")
         except Exception as e:
@@ -97,11 +103,12 @@ async def execute_task(
 
 
 def _reschedule_next_run(schedule: Schedule) -> None:
-    """根据调度类型重新计算下次执行时间"""
+    """根据调度类型重新计算下次执行时间（支持多个 cron 表达式，; 分隔）"""
     if schedule.schedule_type == "cron" and schedule.cron_expression:
         from croniter import croniter
-        cron = croniter(schedule.cron_expression, datetime.utcnow())
-        schedule.next_run_at = cron.get_next(datetime)
+        exprs = [e.strip() for e in schedule.cron_expression.split(";") if e.strip()]
+        next_times = [croniter(expr, datetime.utcnow()).get_next(datetime) for expr in exprs]
+        schedule.next_run_at = min(next_times) if next_times else None
     elif schedule.schedule_type == "interval" and schedule.interval_seconds:
         schedule.next_run_at = datetime.utcnow() + timedelta(
             seconds=schedule.interval_seconds
@@ -220,6 +227,101 @@ async def _run_pipeline(
         "outputs": execution.outputs,
     }
     return success, result_data, error_msg, logs
+
+
+async def _run_pipeline_auto_fix(
+    db, pipeline_id: UUID, params: Dict[str, Any], user_id: Optional[UUID]
+) -> Tuple[bool, Optional[Dict], Optional[str], Optional[str]]:
+    """自修复模式执行流程：走 DataProcessor + DataInspector AgentRuntime。
+
+    与调试页面 debug-chat 相同的流程：edit_script → run_script → 失败自动修复 → 成功 handoff Inspector。
+    """
+    from app.models.pipeline import Pipeline
+    from app.services.llm import llm_manager, init_user_llm_context
+    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
+    from app.services.data_processor_agent import DataProcessorAgent
+    from app.services.data_inspector_agent import DataInspectorAgent
+    from app.services import experience as _exp
+    import json as _json
+
+    result = await db.execute(
+        select(Pipeline).where(Pipeline.id == pipeline_id, Pipeline.is_active == True)
+    )
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        return False, None, "流程不存在", None
+
+    if user_id:
+        await init_user_llm_context(user_id)
+    await llm_manager.initialize()
+
+    if not agent_registry.get("data_processor"):
+        agent_registry.register(DataProcessorAgent())
+    if not agent_registry.get("data_inspector"):
+        agent_registry.register(DataInspectorAgent())
+
+    runtime = AgentRuntime(agent_registry, llm_manager)
+
+    _pipe_exp_dir = _exp.pipeline_experience_dir(pipeline_id)
+    _pipe_lessons = _exp.read_lessons(_pipe_exp_dir) or ""
+
+    context = {
+        "debug_mode": True,
+        "debug_type": "pipeline",
+        "db": db,
+        "user_id": user_id,
+        "history": [],
+        "debug_pipeline_id": pipeline_id,
+        "debug_folder": _pipe_exp_dir,
+        "debug_script_name": pipeline.entry_function or "main",
+        "debug_script_content": pipeline.main_code or "",
+        "debug_function_name": pipeline.entry_function or "main",
+        "debug_last_success_params": None,
+        "debug_lessons": _pipe_lessons,
+        "debug_user_context": {},
+        "debug_max_rounds": 7,
+        "debug_max_inspections": 7,
+    }
+
+    message = AgentMessage(
+        from_agent="user",
+        to_agent="data_processor",
+        reason=HandoffReason.DELEGATE,
+        payload={"user_message": "执行流程并检查结果"},
+        context=context,
+    )
+
+    logs_lines = []
+    final_success = False
+    final_content = ""
+
+    try:
+        async for event in runtime.run("data_processor", message, context):
+            t = event.get("type")
+            if t == "content":
+                logs_lines.append(event.get("content", ""))
+            elif t == "run_result":
+                r = event.get("result", {})
+                if r.get("success"):
+                    final_success = True
+            elif t == "done":
+                r = event.get("result", {})
+                final_content = r.get("content", "")
+                if r.get("success"):
+                    final_success = True
+            elif t == "give_up":
+                logs_lines.append(f"[give_up] {event.get('reason', '')}")
+            elif t == "fatal":
+                logs_lines.append(f"[fatal] {event.get('summary', '')}")
+    except Exception as e:
+        logger.error(f"auto_fix 执行异常 [{pipeline_id}]: {e}")
+        return False, None, f"自修复执行异常: {e}", "\n".join(logs_lines)
+
+    logs = "\n".join(logs_lines) or final_content or "自修复执行完成"
+    if final_success:
+        return True, {"mode": "auto_fix", "summary": final_content[:500]}, None, logs
+    else:
+        return False, {"mode": "auto_fix", "summary": final_content[:500]}, final_content[:500] or "自修复未能成功", logs
 
 
 # ===== 定时调度扫描器 =====
@@ -342,6 +444,7 @@ async def _trigger_scheduled(schedule_id: UUID, schedule_name: str):
         task_params = sched.task_params
         user_id = sched.created_by
         timeout = sched.timeout or 3600
+        run_mode = sched.run_mode or "normal"
         execution_id = execution.id
 
     # 后台执行（独立 db session）
@@ -353,6 +456,7 @@ async def _trigger_scheduled(schedule_id: UUID, schedule_name: str):
             task_params=task_params,
             user_id=user_id,
             timeout=timeout,
+            run_mode=run_mode,
         )
     )
     logger.info(f"定时触发: {schedule_name} -> execution {execution_id}")

@@ -163,6 +163,21 @@ async def delete_pipeline(
     return {"ok": True}
 
 
+def _read_last_success_params(skill_path_str: str):
+    """从 experience.json positive 读最近成功执行参数"""
+    try:
+        from app.services import experience as _exp
+        from pathlib import Path
+        _positive = _exp.read_positive(Path(skill_path_str))
+        for entry in reversed(_positive or []):
+            _p = entry.get("parameters") or {}
+            if _p:
+                return _p
+    except Exception:
+        pass
+    return None
+
+
 @router.post("/from-skill/{skill_id}", response_model=PipelineResponse, status_code=201)
 async def create_pipeline_from_skill(
     skill_id: UUID,
@@ -188,12 +203,17 @@ async def create_pipeline_from_skill(
     if not func_desc:
         func_desc = skill.description or ""
 
+    fixed_params = _read_last_success_params(skill.skill_path)
+    if not fixed_params:
+        raise HTTPException(status_code=400, detail="该技能尚未有成功执行记录，请先在调试页面成功执行一次后再转流程")
+
     try:
         built = await build_pipeline_from_skill(
             skill_path_str=skill.skill_path,
             skill_id=str(skill_id),
             skill_name=skill.name,
             skill_display_name=skill.display_name or skill.name,
+            fixed_parameters=fixed_params,
         )
     except Exception as e:
         logger.error(f"Pipeline 生成失败: {e}")
@@ -229,89 +249,96 @@ async def create_pipeline_from_skill_stream(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """SSE 流式生成流程，推送推理过程"""
+    """SSE 流式转流程，推送转换进度（无 LLM，毫秒级机械转换）。
+
+    转流程 = 把调试好的 skill 脚本原样转为 pipeline main_code，
+    不重新生成代码，保留调试成果。
+    """
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="Skill 不存在")
 
-    from app.services.llm import llm_manager
-    from app.services.pipeline_builder import (
-        build_pipeline_from_skill, PIPELINE_BUILDER_SYSTEM_PROMPT,
-    )
-    from app.services.skill_parser import read_skill_md, read_skill_script, list_skill_scripts
+    from app.services.skill_parser import read_skill_md
     from pathlib import Path
-    import asyncio
-
-    await init_user_llm_context(current_user.id)
-    await llm_manager.initialize()
-
-    skill_path = Path(skill.skill_path)
-    skill_md = read_skill_md(skill_path) or ""
-    scripts = {}
-    for script_info in list_skill_scripts(skill_path):
-        name = script_info["name"] if isinstance(script_info, dict) else script_info
-        content = script_info.get("content") if isinstance(script_info, dict) else read_skill_script(skill_path, script_info)
-        scripts[name] = content
-
-    # 从 SKILL.md 提取功能说明，作为流程备注
-    import re as _re
-    func_desc = ""
-    func_match = _re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, _re.DOTALL)
-    if func_match:
-        func_desc = func_match.group(1).strip()[:1000]
-    if not func_desc:
-        func_desc = skill.description or ""
-
-    scripts_text = ""
-    for name, content in scripts.items():
-        scripts_text += f"\n### scripts/{name}\n```python\n{content}\n```\n"
-
-    user_prompt = (
-        f"请根据以下 Skill 信息生成一个完整的 Python 流程主函数。\n\n"
-        f"## Skill 信息\n- 名称: {skill.name}\n- 显示名称: {skill.display_name or skill.name}\n\n"
-        f"## SKILL.md 内容\n{skill_md[:3000]}\n\n"
-        f"## 脚本内容\n{scripts_text[:8000]}\n\n"
-        f"请生成完整的 Python 主函数文件。"
-    )
-
-    messages = [
-        {"role": "system", "content": PIPELINE_BUILDER_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
 
     async def event_stream():
         import json as json_mod
         try:
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在分析 Skill 结构...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在读取调试好的脚本...'}, ensure_ascii=False)}\n\n"
 
-            full_content = ""
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.2, context="流程生成"):
-                event = {"type": chunk["type"], "content": chunk["content"]}
-                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if chunk["type"] == "content":
-                    full_content += chunk["content"]
+            fixed_params = _read_last_success_params(skill.skill_path)
+            if not fixed_params:
+                yield f"data: {json_mod.dumps({'type': 'error', 'message': '该技能尚未有成功执行记录，请先在调试页面成功执行一次后再转流程'}, ensure_ascii=False)}\n\n"
+                return
 
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在解析代码并创建流程...'}, ensure_ascii=False)}\n\n"
+            skill_path = Path(skill.skill_path)
+            skill_md = read_skill_md(skill_path) or ""
+            func_desc = ""
+            func_match = re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, re.DOTALL)
+            if func_match:
+                func_desc = func_match.group(1).strip()[:1000]
+            if not func_desc:
+                func_desc = skill.description or ""
+
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在根据参数生成流程名称和描述...'}, ensure_ascii=False)}\n\n"
+
+            display_name = ""
+            description = ""
+            try:
+                from app.services.llm import llm_manager, init_user_llm_context
+                await init_user_llm_context(current_user.id)
+                await llm_manager.initialize()
+
+                params_text = json_mod.dumps(fixed_params, ensure_ascii=False, indent=2)
+                prompt = (
+                    f"根据以下信息生成数据处理流程的显示名和描述。\n\n"
+                    f"技能名称：{skill.display_name or skill.name}\n"
+                    f"技能功能：{func_desc[:500]}\n"
+                    f"固化参数：\n{params_text}\n\n"
+                    f"请生成：\n"
+                    f"1. display_name：简洁的流程名（不超过20字），反映实际数据处理过程\n"
+                    f"2. description：流程描述（不超过100字），说明处理什么数据、怎么处理\n\n"
+                    f'只输出 JSON，格式：{{"display_name": "...", "description": "..."}}'
+                )
+
+                response = await llm_manager.chat_with_messages(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=300,
+                )
+
+                text = response.strip()
+                if "```json" in text:
+                    text = text[text.index("```json") + 7:text.rindex("```")].strip()
+                elif "```" in text:
+                    text = text[text.index("```") + 3:text.rindex("```")].strip()
+                result = json_mod.loads(text)
+                display_name = result.get("display_name", "")
+                description = result.get("description", "")
+            except Exception as e:
+                logger.warning(f"LLM 生成流程名称失败: {e}")
+
+            if not display_name:
+                display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
+            if not description:
+                description = func_desc
+
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在转换脚本并创建流程...'}, ensure_ascii=False)}\n\n"
 
             built = await build_pipeline_from_skill(
                 skill_path_str=skill.skill_path,
                 skill_id=str(skill_id),
                 skill_name=skill.name,
                 skill_display_name=skill.display_name or skill.name,
+                fixed_parameters=fixed_params,
             )
-            # 覆盖为流式获取的代码（更完整）
-            if full_content.strip():
-                from app.services.pipeline_builder import _extract_python_code
-                built["main_code"] = _extract_python_code(full_content)
-
-            display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
 
             pipeline = Pipeline(
                 id=uuid4(),
                 name=f"pl_{skill.name}",
                 display_name=display_name,
-                description=func_desc,
+                description=description,
                 main_code=built["main_code"],
                 entry_function=built.get("entry_function", "main"),
                 parameters=built.get("parameters", []),
@@ -324,7 +351,7 @@ async def create_pipeline_from_skill_stream(
             db.add(pipeline)
             await db.flush()
             await db.refresh(pipeline)
-            logger.info(f"流程已流式生成: {pipeline.display_name} ({pipeline.id})")
+            logger.info(f"流程已机械转换生成: {pipeline.display_name} ({pipeline.id})")
 
             yield f"data: {json_mod.dumps({'type': 'done', 'pipeline_name': display_name}, ensure_ascii=False)}\n\n"
 
@@ -417,6 +444,10 @@ async def debug_pipeline_chat(
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
 
+    from app.services import experience as _exp
+    _pipe_exp_dir = _exp.pipeline_experience_dir(pipeline_id)
+    _pipe_lessons = _exp.read_lessons(_pipe_exp_dir) or ""
+
     from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
     from app.services.data_processor_agent import DataProcessorAgent
     from app.services.data_inspector_agent import DataInspectorAgent
@@ -447,11 +478,12 @@ async def debug_pipeline_chat(
         "user_id": current_user.id,
         "history": history,
         "debug_pipeline_id": pipeline_id,
+        "debug_folder": _pipe_exp_dir,
         "debug_script_name": entry_function,
         "debug_script_content": main_code,
         "debug_function_name": entry_function,
         "debug_last_success_params": None,
-        "debug_lessons": "",
+        "debug_lessons": _pipe_lessons,
         "debug_user_context": ctx,
         "debug_max_rounds": 7,"debug_max_inspections": 7,
     }
@@ -475,14 +507,17 @@ async def debug_pipeline_chat(
         _inspector_summary = ""
         _inspector_content_sent = False
         try:
+            _task = asyncio.ensure_future(runtime_gen.__anext__())
             while True:
-                try:
-                    event = await asyncio.wait_for(runtime_gen.__anext__(), timeout=20.0)
-                except asyncio.TimeoutError:
+                done, _pending = await asyncio.wait({_task}, timeout=20.0)
+                if _task not in done:
                     yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
                     continue
+                try:
+                    event = _task.result()
                 except StopAsyncIteration:
                     break
+                _task = asyncio.ensure_future(runtime_gen.__anext__())
 
                 t = event.get("type")
                 if t == "agent_switch":
@@ -616,6 +651,43 @@ async def clone_pipeline(
     await db.flush()
     await db.refresh(clone)
     return _build_response(clone)
+
+
+@router.post("/import", response_model=PipelineResponse, status_code=201)
+async def import_pipeline(
+    req: PipelineCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导入流程 JSON（与导出格式一致），创建新流程。
+
+    前端读取 .json 文件后以 PipelineCreate 结构 POST 到此端点。
+    name 冲突时自动加 _imported 后缀。
+    """
+    name = (req.name or "imported_pipeline").strip()
+    existing = await db.execute(select(Pipeline).where(Pipeline.name == name, Pipeline.is_active == True))
+    if existing.scalar_one_or_none():
+        name = f"{name}_imported"
+
+    pipeline = Pipeline(
+        id=uuid4(),
+        name=name,
+        display_name=req.display_name or name,
+        description=req.description,
+        main_code=req.main_code or "",
+        entry_function=req.entry_function or "main",
+        parameters=req.parameters or [],
+        skill_calls=[c.model_dump() for c in (req.skill_calls or [])],
+        tags=req.tags or [],
+        category=req.category,
+        visibility=req.visibility or "private",
+        created_by=current_user.id,
+    )
+    db.add(pipeline)
+    await db.flush()
+    await db.refresh(pipeline)
+    logger.info(f"流程已导入: {pipeline.display_name} ({pipeline.id})")
+    return _build_response(pipeline)
 
 
 @router.post("/export-seed")

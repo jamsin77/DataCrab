@@ -203,7 +203,7 @@ def extract_image_info(
     source_datasource_name: str = "",
     source_table_name: str = "",
     target_datasource_name: str = "",
-    target_table_name: str = "credential_extracted_info",
+    target_table_name: str = "",
     image_column: str = "file_path",
     doc_type: str = "auto",
     if_table_exists: str = "replace",
@@ -226,8 +226,8 @@ def extract_image_info(
         source_table_name = kwargs["source_table"]
     if not target_datasource_name and kwargs.get("target_datasource"):
         target_datasource_name = kwargs["target_datasource"]
-    if not target_table_name or target_table_name == "credential_extracted_info" or target_table_name == "*":
-        if kwargs.get("target_table"):
+    if not target_table_name or target_table_name == "*":
+        if kwargs.get("target_table") and kwargs["target_table"] != "*":
             target_table_name = kwargs["target_table"]
 
     # 兜底默认值（防止 main() 未被调用时参数为空，* 表示自动生成）
@@ -237,8 +237,12 @@ def extract_image_info(
         source_table_name = "所有的图片"
     if not target_datasource_name or target_datasource_name == "*":
         target_datasource_name = "凭证检索库"
-    if not target_table_name or target_table_name == "credential_extracted_info" or target_table_name == "*":
-        target_table_name = "关键信息"
+    # 目标表名自动生成：根据处理时间生成唯一表名，避免与源表同名
+    if not target_table_name or target_table_name == "*":
+        target_table_name = "credential_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 安全检查：目标表名不能与源表名相同（即使源表名是通配符或自动值也要避免冲突）
+    if target_table_name == source_table_name:
+        target_table_name = "credential_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     if not image_column or image_column == "*":
         image_column = "file_path"
     """从凭证库读取图片文件列表，使用OCR提取关键信息，写入凭证检索库。
@@ -365,13 +369,8 @@ def extract_image_info(
         review_note = ""
 
         try:
-            # 使用llm_vision提取关键信息（llm_vision 第一个参数是图片路径，内部自动 base64 编码）
-            ocr_prompt = (
-                f"这是一张{doc_type_cn}的图片。请仔细识别并提取图片中所有可见的文字信息，"
-                f"包括但不限于：证件名称、证件号码、持有人/机构名称、有效期、发证机关、金额等关键字段。"
-                f"请以JSON格式返回提取的信息，不要有多余解释。"
-            )
-            ocr_result = llm_vision(file_path, ocr_prompt)
+            ocr_prompt = f"提取这张{doc_type_cn}图片中的所有文字信息，以JSON格式返回。"
+            ocr_result = llm_vision(file_path, ocr_prompt, max_tokens=1000)
             extracted_info = str(ocr_result).strip() if ocr_result else ""
 
             if extracted_info:
@@ -512,12 +511,12 @@ def main(**kwargs):
                 resolved[canonical] = kwargs[alias]
                 break
     
-    # 默认值（空字符串也视为缺失，使用默认值）
+    # 默认值（空字符串也视为缺失，使用默认值；* 表示自动生成）
     defaults = {
         'source_datasource_name': '凭证库',
         'source_table_name': '所有的图片',
         'target_datasource_name': '凭证检索库',
-        'target_table_name': '关键信息',
+        'target_table_name': 'credential_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S"),
         'image_column': 'file_path',
         'doc_type': 'auto',
         'if_table_exists': 'replace',
@@ -531,7 +530,11 @@ def main(**kwargs):
     for key, val in defaults.items():
         if key not in resolved or resolved[key] is None or resolved[key] == '' or resolved[key] == '*':
             resolved[key] = val
-    
+
+    # 安全检查：目标表名不能与源表名相同
+    if resolved.get('target_table_name') == resolved.get('source_table_name'):
+        resolved['target_table_name'] = 'credential_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S")
+
     return extract_image_info(**resolved)
 
 
