@@ -200,7 +200,8 @@ AI：我理解您需要按地区统计销售额，正在处理...
 AI：正在为您创建算子...
 
     算子名称：moving_average
-    参数：column（列名）、window（窗口大小，默认7）    已生成代码并测试通过，算子已注册。```
+    参数：column（列名）、window（窗口大小，默认7）    已生成代码并测试通过，算子已注册。
+```
 
 **场景3：创建Skill Pipeline**
 ```
@@ -210,9 +211,12 @@ AI：正在创建Pipeline...
     Pipeline 名称：data_analysis_flow
     步骤：数据清洗 → 异常值过滤 → 统计分析
     
-    Pipeline 已创建，可直接运行或保存为Skill。```
+    Pipeline 已创建，可直接运行或保存为Skill。
+```
 
-##### 界面布局（极简版）```
+##### 界面布局（极简版）
+
+```
 ┌─────────────────────────────────────────────────────────────┐
 │[新建会话]                                                   │
 ├─────────────────────────────────────────────────────────────┤
@@ -298,7 +302,9 @@ AI：正在创建Pipeline...
 └───────────────────────────────────────────────┘
 ```
 
-#### 2.2.2 连接器插件机制```python
+#### 2.2.2 连接器插件机制
+
+```python
 # 基础连接器接口class BaseConnector(ABC):
     @abstractmethod
     async def connect(self, config: dict) -> Connection:
@@ -332,7 +338,9 @@ AI：正在创建Pipeline...
 - CloudConnector (S3, OSS, Azure Blob)
 ```
 
-#### 2.2.3 数据源配置模型```python
+#### 2.2.3 数据源配置模型
+
+```python
 class DataSource(Base):
     __tablename__ = "data_sources"
     
@@ -361,7 +369,9 @@ class DataSource(Base):
     → 执行计划(Execution Plan)
 ```
 
-#### 2.3.2 大模型集成架构```python
+#### 2.3.2 大模型集成架构
+
+```python
 class LLMManager:
     """大模型管理器"""
     
@@ -554,7 +564,9 @@ class SkillLibrary:
         return skill.get_executor()
 ```
 
-#### 2.3.4 技能定义模型```python
+#### 2.3.4 技能定义模型
+
+```python
 class Skill(Base):
     __tablename__ = "skills"
     
@@ -1518,7 +1530,7 @@ Pipeline Builder 的核心任务是**生成一个完整的 Python 主函数**，
 
 ##### LLM Prompt 模板
 
-```python
+````python
 PIPELINE_BUILDER_PROMPT = """你是一个 Python 代码生成器，将 Skill 转换为可执行的 Python 主函数。
 
 ## 输入信息
@@ -1576,7 +1588,7 @@ if __name__ == "__main__":
 - 所有 Skill 脚本函数前加 `_skill_` 前缀
 - 处理边界情况（空表、列不存在等）
 - 函数签名和参数要有类型注解
-```
+````
 
 #### 2.6.5 执行引擎
 
@@ -3402,7 +3414,9 @@ CREATE TABLE data_sources (
 -- 此表不再使用，流程数据存储在 pipelines 表中（见下方"流程表"章节）
 ```
 
-#### 技能表（Skills）```sql
+#### 技能表（Skills）
+
+```sql
 -- 技能表（注意：实际实现已简化，inputs/outputs/parameters/executor_config/usage_examples 等字段存储在 SKILL.md 文件中，不在数据库）
 CREATE TABLE skills (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3484,6 +3498,8 @@ CREATE TABLE skill_versions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(skill_id, version)
 );
+
+```
 
 #### 流程表
 ```sql
@@ -3626,11 +3642,15 @@ POST   /api/v1/skills                    # 创建技能GET    /api/v1/skills    
 # 技能操作POST   /api/v1/skills/{id}/execute       # 执行单个技能POST   /api/v1/skills/{id}/test          # 测试技能执行GET    /api/v1/skills/{id}/versions      # 获取技能版本历史POST   /api/v1/skills/{id}/rollback      # 回退技能版本POST   /api/v1/skills/{id}/validate      # 验证技能定义
 # 技能发布GET    /api/v1/skills/categories         # 获取技能分类GET    /api/v1/skills/search             # 搜索技能POST   /api/v1/skills/recommend          # 推荐相关技能
 # 技能转换POST   /api/v1/skills/from-operator      # 从算子创建技能POST   /api/v1/skills/from-code          # 从代码创建技能POST   /api/v1/skills/from-nl            # 自然语言创建技能
-# 技能模板GET    /api/v1/skills/templates          # 获取技能模板列表POST   /api/v1/skills/templates/{id}/apply # 应用技能模板```
+# 技能模板GET    /api/v1/skills/templates          # 获取技能模板列表POST   /api/v1/skills/templates/{id}/apply # 应用技能模板
+
+```
 
 #### Skill 与 Pipeline API 详细说明
 
-##### 创建技能```json
+##### 创建技能
+
+```json
 POST /api/v1/skills
 Request:
 {
@@ -3684,7 +3704,9 @@ Response:
 }
 ```
 
-##### 自然语言创建技能```json
+##### 自然语言创建技能
+
+```json
 POST /api/v1/skills/from-nl
 Request:
 {
