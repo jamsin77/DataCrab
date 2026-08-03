@@ -5,8 +5,9 @@ import inspect
 import io
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
@@ -43,10 +44,13 @@ async def execute_task(
         if not execution:
             logger.error(f"任务执行记录不存在: {execution_id}")
             return
-
+        if execution.status == "running":
+            logger.warning(f"执行记录已在运行中，跳过重复执行: {execution_id}")
+            return
         execution.status = "running"
         execution.started_at = datetime.utcnow()
-        await db.flush()
+        execution.logs = "正在执行..."  # 占位日志，让前端详情能看到执行中状态
+        await db.commit()  # commit 而非 flush：让 API 轮询能读到"运行中"状态
 
         start_time = time.time()
         success = False
@@ -66,11 +70,13 @@ async def execute_task(
             elif task_type == "pipeline":
                 if run_mode == "auto_fix":
                     success, result_data, error_msg, logs = await _run_pipeline_auto_fix(
-                        db, task_target_id, task_params or {}, user_id
+                        db, task_target_id, task_params or {}, user_id,
+                        execution_id=execution_id, timeout=timeout,
                     )
                 else:
                     success, result_data, error_msg, logs = await _run_pipeline(
-                        db, task_target_id, task_params or {}, user_id
+                        db, task_target_id, task_params or {}, user_id,
+                        execution_id=execution_id,
                     )
             else:
                 raise ValueError(f"不支持的任务类型: {task_type}")
@@ -78,6 +84,15 @@ async def execute_task(
             error_msg = f"{type(e).__name__}: {e}"
             logs = traceback.format_exc()
             logger.error(f"调度任务执行异常 [{execution_id}]: {e}")
+            # 子任务崩溃可能留下未提交的脏事务，回滚后重新加载执行记录，
+            # 确保状态能正确写入 failed 而非永远卡在 pending
+            await db.rollback()
+            result = await db.execute(
+                select(TaskExecution).where(TaskExecution.id == execution_id)
+            )
+            execution = result.scalar_one_or_none()
+            if not execution:
+                return
 
         execution.status = "success" if success else "failed"
         execution.finished_at = datetime.utcnow()
@@ -102,13 +117,39 @@ async def execute_task(
         )
 
 
+def compute_next_cron_run(cron_expression: str, tz_name: str = "UTC") -> datetime:
+    """计算 cron 表达式下次执行时间（按指定时区解释），返回 UTC naive datetime。
+
+    cron 表达式按 ``tz_name`` 的本地墙钟时间解释，结果转换为 UTC 存储，
+    与扫描器 ``datetime.utcnow()`` 比较保持一致。支持 ``;`` 分隔多个表达式。
+    无效时区直接抛错（全球系统不做隐式回退）。
+    """
+    from croniter import croniter
+
+    exprs = [e.strip() for e in cron_expression.split(";") if e.strip()]
+    if not exprs:
+        raise ValueError("Cron表达式为空")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        raise ValueError(f"无效的时区: {tz_name}")
+    now_local = datetime.now(tz).replace(tzinfo=None)
+    next_times: list[datetime] = []
+    for expr in exprs:
+        try:
+            next_times.append(croniter(expr, now_local).get_next(datetime))
+        except Exception:
+            raise ValueError(f"无效的Cron表达式: {expr}")
+    next_local = min(next_times)
+    return next_local.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _reschedule_next_run(schedule: Schedule) -> None:
-    """根据调度类型重新计算下次执行时间（支持多个 cron 表达式，; 分隔）"""
+    """根据调度类型重新计算下次执行时间（cron 按时区解释，返回 UTC）"""
     if schedule.schedule_type == "cron" and schedule.cron_expression:
-        from croniter import croniter
-        exprs = [e.strip() for e in schedule.cron_expression.split(";") if e.strip()]
-        next_times = [croniter(expr, datetime.utcnow()).get_next(datetime) for expr in exprs]
-        schedule.next_run_at = min(next_times) if next_times else None
+        schedule.next_run_at = compute_next_cron_run(
+            schedule.cron_expression, schedule.timezone or "UTC"
+        )
     elif schedule.schedule_type == "interval" and schedule.interval_seconds:
         schedule.next_run_at = datetime.utcnow() + timedelta(
             seconds=schedule.interval_seconds
@@ -202,7 +243,8 @@ async def _run_operator(
 
 
 async def _run_pipeline(
-    db, pipeline_id: UUID, params: Dict[str, Any], user_id: Optional[UUID]
+    db, pipeline_id: UUID, params: Dict[str, Any], user_id: Optional[UUID],
+    execution_id: Optional[UUID] = None,
 ) -> Tuple[bool, Optional[Dict], Optional[str], Optional[str]]:
     """执行流程主函数"""
     from app.models.pipeline import Pipeline
@@ -216,7 +258,22 @@ async def _run_pipeline(
         return False, None, "流程不存在", None
 
     inputs = params.get("inputs", params)
-    execution = await execute_pipeline(pipeline, inputs, db, str(user_id) if user_id else None)
+
+    # 内置流程：实时进度回调，更新 TaskExecution.logs
+    progress_cb = None
+    if pipeline.is_builtin and execution_id:
+        from app.models.schedule import TaskExecution as TE
+        async def _progress(logs_text):
+            try:
+                ex = (await db.execute(select(TE).where(TE.id == execution_id))).scalar_one_or_none()
+                if ex:
+                    ex.logs = logs_text
+                    await db.commit()
+            except Exception:
+                pass
+        progress_cb = _progress
+
+    execution = await execute_pipeline(pipeline, inputs, db, str(user_id) if user_id else None, progress_callback=progress_cb)
 
     success = execution.status == "success"
     error_msg = execution.error_message if not success else None
@@ -229,93 +286,148 @@ async def _run_pipeline(
     return success, result_data, error_msg, logs
 
 
-async def _run_pipeline_auto_fix(
-    db, pipeline_id: UUID, params: Dict[str, Any], user_id: Optional[UUID]
-) -> Tuple[bool, Optional[Dict], Optional[str], Optional[str]]:
-    """自修复模式执行流程：走 DataProcessor + DataInspector AgentRuntime。
+async def prepare_pipeline_debug_runtime(
+    db, pipeline_id: UUID, user_id: Optional[UUID],
+    history: list = None, user_message: str = "执行流程并检查结果",
+    user_context: dict = None, last_success_params=None,
+):
+    """构建流程调试/自修复的 AgentRuntime 上下文（调试端点 + 调度自修复共享）。
 
-    与调试页面 debug-chat 相同的流程：edit_script → run_script → 失败自动修复 → 成功 handoff Inspector。
+    返回 (runtime, message, context)；流程不存在返回 (None, None, None)。
     """
     from app.models.pipeline import Pipeline
-    from app.services.llm import llm_manager, init_user_llm_context
-    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-    from app.services.data_processor_agent import DataProcessorAgent
-    from app.services.data_inspector_agent import DataInspectorAgent
+    from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message
     from app.services import experience as _exp
-    import json as _json
 
     result = await db.execute(
         select(Pipeline).where(Pipeline.id == pipeline_id, Pipeline.is_active == True)
     )
     pipeline = result.scalar_one_or_none()
     if not pipeline:
-        return False, None, "流程不存在", None
+        return None, None, None
 
     if user_id:
+        from app.services.llm import init_user_llm_context
         await init_user_llm_context(user_id)
+    from app.services.llm import llm_manager
     await llm_manager.initialize()
 
-    if not agent_registry.get("data_processor"):
-        agent_registry.register(DataProcessorAgent())
-    if not agent_registry.get("data_inspector"):
-        agent_registry.register(DataInspectorAgent())
-
-    runtime = AgentRuntime(agent_registry, llm_manager)
+    runtime = ensure_agent_runtime()
 
     _pipe_exp_dir = _exp.pipeline_experience_dir(pipeline_id)
     _pipe_lessons = _exp.read_lessons(_pipe_exp_dir) or ""
+    entry_function = pipeline.entry_function or "main"
 
-    context = {
-        "debug_mode": True,
-        "debug_type": "pipeline",
-        "db": db,
-        "user_id": user_id,
-        "history": [],
-        "debug_pipeline_id": pipeline_id,
-        "debug_folder": _pipe_exp_dir,
-        "debug_script_name": pipeline.entry_function or "main",
-        "debug_script_content": pipeline.main_code or "",
-        "debug_function_name": pipeline.entry_function or "main",
-        "debug_last_success_params": None,
-        "debug_lessons": _pipe_lessons,
-        "debug_user_context": {},
-        "debug_max_rounds": 7,
-        "debug_max_inspections": 7,
-    }
-
-    message = AgentMessage(
-        from_agent="user",
-        to_agent="data_processor",
-        reason=HandoffReason.DELEGATE,
-        payload={"user_message": "执行流程并检查结果"},
-        context=context,
+    context = build_debug_context(
+        db=db,
+        user_id=user_id,
+        target_type="pipeline",
+        history=history,
+        script_name=entry_function,
+        script_content=pipeline.main_code or "",
+        function_name=entry_function,
+        lessons=_pipe_lessons,
+        user_context=user_context,
+        last_success_params=last_success_params,
+        debug_pipeline_id=pipeline_id,
+        debug_folder=_pipe_exp_dir,
     )
 
+    message = build_debug_message(user_message, context)
+    return runtime, message, context
+
+
+async def _run_pipeline_auto_fix(
+    db, pipeline_id: UUID, params: Dict[str, Any], user_id: Optional[UUID],
+    execution_id: UUID = None, timeout: int = 600,
+) -> Tuple[bool, Optional[Dict], Optional[str], Optional[str]]:
+    """自修复模式执行流程：走 DataProcessor + DataInspector AgentRuntime。
+
+    与调试页面 debug-chat 相同的流程（共享 prepare_pipeline_debug_runtime），
+    区别在于：增量写入日志（前端可看进度）+ 超时保护 + 收集结果而非流式推送。
+    """
+    runtime, message, context = await prepare_pipeline_debug_runtime(
+        db, pipeline_id, user_id
+    )
+    if not runtime:
+        return False, None, "流程不存在", None
+
     logs_lines = []
+    _content_buf = []  # 累加 content token，避免一字一行
     final_success = False
     final_content = ""
+    _start = time.time()
+    _deadline = _start + timeout
+    _event_count = 0
+
+    async def _flush_logs():
+        """增量写入日志，让前端详情能看到执行进度。"""
+        if not execution_id:
+            return
+        try:
+            async with async_session() as _db2:
+                _r = await _db2.execute(
+                    select(TaskExecution).where(TaskExecution.id == execution_id)
+                )
+                _ex = _r.scalar_one_or_none()
+                if _ex:
+                    all_lines = list(logs_lines)
+                    if _content_buf:
+                        all_lines.append("".join(_content_buf))
+                    _ex.logs = "\n".join(all_lines)
+                    await _db2.commit()
+        except Exception:
+            pass
+
+    def _flush_content():
+        """把累加的 content token 作为一个整行写入 logs_lines。"""
+        if _content_buf:
+            logs_lines.append("".join(_content_buf))
+            _content_buf.clear()
 
     try:
         async for event in runtime.run("data_processor", message, context):
+            if time.time() > _deadline:
+                _flush_content()
+                logs_lines.append(f"[超时] 自修复执行超过 {timeout}s，终止")
+                break
             t = event.get("type")
             if t == "content":
-                logs_lines.append(event.get("content", ""))
+                _content_buf.append(event.get("content", ""))
+            else:
+                _flush_content()
+            if t == "round":
+                _round = event.get("round", 1)
+                _label = "执行尝试" if _round == 1 else "修改尝试"
+                logs_lines.append(f"─── 第 {_round} 次{_label} ───")
             elif t == "run_result":
                 r = event.get("result", {})
                 if r.get("success"):
+                    logs_lines.append("✅ 脚本执行成功")
                     final_success = True
+                else:
+                    logs_lines.append(f"❌ 脚本执行失败: {(r.get('error') or '')[:200]}")
             elif t == "done":
                 r = event.get("result", {})
                 final_content = r.get("content", "")
                 if r.get("success"):
                     final_success = True
             elif t == "give_up":
-                logs_lines.append(f"[give_up] {event.get('reason', '')}")
+                logs_lines.append(f"[放弃] {event.get('reason', '')}")
             elif t == "fatal":
-                logs_lines.append(f"[fatal] {event.get('summary', '')}")
+                logs_lines.append(f"[致命错误] {event.get('summary', '')}")
+            # 每 5 条事件增量写入一次日志（含 content 累加内容）
+            _event_count += 1
+            if _event_count % 5 == 0:
+                await _flush_logs()
     except Exception as e:
+        _flush_content()
         logger.error(f"auto_fix 执行异常 [{pipeline_id}]: {e}")
+        await _flush_logs()
         return False, None, f"自修复执行异常: {e}", "\n".join(logs_lines)
+
+    _flush_content()
+    await _flush_logs()
 
     logs = "\n".join(logs_lines) or final_content or "自修复执行完成"
     if final_success:
@@ -328,6 +440,7 @@ async def _run_pipeline_auto_fix(
 
 _scheduler_task: Optional[asyncio.Task] = None
 _stop_event: Optional[asyncio.Event] = None
+_running_tasks: set = set()  # 持有后台执行任务引用，防止 GC 回收（asyncio 文档要求）
 SCAN_INTERVAL = 30  # 扫描间隔（秒）
 
 
@@ -335,8 +448,121 @@ async def start_scheduler(scan_interval: int = SCAN_INTERVAL):
     """启动定时调度扫描器（由 main.py lifespan 调用）"""
     global _scheduler_task, _stop_event
     _stop_event = asyncio.Event()
+    await _recover_stuck_executions()
+    await _recover_orphaned_executions(threshold_seconds=0)
+    await _recompute_stale_next_runs()
     _scheduler_task = asyncio.create_task(_scheduler_loop(scan_interval))
     logger.info(f"定时调度扫描器已启动，扫描间隔 {scan_interval}s")
+
+
+async def _recover_stuck_executions():
+    """启动时将残留的 running 执行标记为失败。
+
+    进程重启会导致 asyncio.create_task 的后台任务丢失。running 执行 definite
+    已死，标记 failed；pending 执行留给 _recover_orphaned_executions 回收重试。
+    """
+    async with async_session() as db:
+        result = await db.execute(
+            select(TaskExecution).where(
+                TaskExecution.status == "running"
+            )
+        )
+        stuck = result.scalars().all()
+        for ex in stuck:
+            ex.status = "failed"
+            ex.error_message = "服务重启，任务中断"
+            ex.finished_at = datetime.utcnow()
+        if stuck:
+            await db.commit()
+            logger.warning(f"启动时恢复 {len(stuck)} 个中断的执行记录（标记为失败）")
+
+
+async def _recover_orphaned_executions(threshold_seconds: int = 60):
+    """回收被重启/崩溃遗留的 pending 执行（无 started_at 且创建超过阈值秒数）。
+
+    dev 模式 ``--reload`` 或进程崩溃会杀死 BackgroundTask / asyncio.create_task，
+    导致手动触发的执行永远卡在 pending。调度器每轮扫描时回收这些孤儿执行。
+    启动时 threshold_seconds=0 立即回收；扫描循环用 60s 与 BackgroundTask 共存。
+    """
+    threshold = datetime.utcnow() - timedelta(seconds=threshold_seconds)
+    async with async_session() as db:
+        result = await db.execute(
+            select(TaskExecution).where(
+                TaskExecution.status == "pending",
+                TaskExecution.started_at == None,
+                TaskExecution.created_at <= threshold,
+            )
+        )
+        orphans = result.scalars().all()
+        if not orphans:
+            return
+
+        sched_ids = {ex.schedule_id for ex in orphans if ex.schedule_id}
+        scheds: dict = {}
+        if sched_ids:
+            sched_result = await db.execute(
+                select(Schedule).where(Schedule.id.in_(sched_ids))
+            )
+            for s in sched_result.scalars().all():
+                scheds[s.id] = s
+
+        to_run = []
+        for ex in orphans:
+            sched = scheds.get(ex.schedule_id)
+            to_run.append((
+                ex.id,
+                ex.task_type,
+                ex.task_target_id,
+                sched.task_params if sched else None,
+                (sched.created_by if sched else None) or ex.triggered_by,
+                (sched.timeout or 3600) if sched else 3600,
+                (sched.run_mode or "normal") if sched else "normal",
+            ))
+
+    for exec_id, ttype, target, params, uid, timeout, run_mode in to_run:
+        task = asyncio.create_task(
+            execute_task(
+                execution_id=exec_id,
+                task_type=ttype,
+                task_target_id=target,
+                task_params=params,
+                user_id=uid,
+                timeout=timeout,
+                run_mode=run_mode,
+            )
+        )
+        _running_tasks.add(task)
+        task.add_done_callback(_running_tasks.discard)
+        logger.info(f"回收孤儿执行: {exec_id}")
+
+
+async def _recompute_stale_next_runs():
+    """启动时用时区感知逻辑重算所有 active cron 调度的 next_run_at。
+
+    修正历史版本用 datetime.utcnow() 误算 cron 下次执行时间导致的偏移
+    （用户按本地时间设的 9:42 被当 UTC，实际延迟 8 小时才触发）。
+    """
+    async with async_session() as db:
+        result = await db.execute(
+            select(Schedule).where(
+                Schedule.status == "active",
+                Schedule.schedule_type == "cron",
+                Schedule.cron_expression != None,
+            )
+        )
+        schedules = result.scalars().all()
+        fixed = 0
+        for sched in schedules:
+            try:
+                sched.next_run_at = compute_next_cron_run(
+                    sched.cron_expression, sched.timezone or "UTC"
+                )
+                fixed += 1
+            except Exception as e:
+                logger.warning(f"重算调度 {sched.name} next_run_at 失败: {e}")
+        if fixed:
+            await db.commit()
+            logger.info(f"启动时重算 {fixed} 个调度的下次执行时间（时区感知）")
 
 
 async def stop_scheduler():
@@ -361,6 +587,7 @@ async def _scheduler_loop(scan_interval: int):
     while _stop_event and not _stop_event.is_set():
         try:
             await _scan_and_trigger()
+            await _recover_orphaned_executions()
         except Exception as e:
             logger.error(f"调度扫描异常: {e}")
         try:
@@ -447,8 +674,8 @@ async def _trigger_scheduled(schedule_id: UUID, schedule_name: str):
         run_mode = sched.run_mode or "normal"
         execution_id = execution.id
 
-    # 后台执行（独立 db session）
-    asyncio.create_task(
+    # 后台执行（独立 db session）—— 必须持有引用，否则 task 会被 GC 回收导致永不执行
+    task = asyncio.create_task(
         execute_task(
             execution_id=execution_id,
             task_type=task_type,
@@ -459,4 +686,6 @@ async def _trigger_scheduled(schedule_id: UUID, schedule_name: str):
             run_mode=run_mode,
         )
     )
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
     logger.info(f"定时触发: {schedule_name} -> execution {execution_id}")

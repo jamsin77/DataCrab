@@ -126,3 +126,25 @@ class SkillParamDef(BaseModel):
     is_datasource: bool = False
     is_table: bool = False
     is_list: bool = False
+
+
+class SimilarSkillCheckRequest(BaseModel):
+    prompt: str = Field(..., description="用户的需求描述，用于检测是否有相似技能可复用")
+
+
+class SimilarSkillItem(BaseModel):
+    id: str
+    name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    similarity: float = Field(..., description="相似度 0~1")
+    can_use: bool = Field(..., description="当前用户是否有权限使用")
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+
+
+class SimilarSkillCheckResponse(BaseModel):
+    has_similar: bool
+    skills: List[SimilarSkillItem] = []

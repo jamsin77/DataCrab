@@ -1,5 +1,6 @@
 """元数据管理API端点"""
 
+import hashlib
 import json
 import math
 from datetime import datetime
@@ -194,28 +195,11 @@ async def update_metadata(
     return _serialize_meta(meta, None)
 
 
-@router.post("/{table_metadata_id}/ai-enrich")
-async def ai_enrich_business_metadata(
-    table_metadata_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """AI补充业务元数据"""
-    result = await db.execute(
-        select(TableMetadata).where(TableMetadata.id == table_metadata_id)
-    )
-    meta = result.scalar_one_or_none()
-    if not meta:
-        raise HTTPException(status_code=404, detail="元数据不存在")
-
-    # 加载 data_source
-    ds_result = await db.execute(
-        select(DataSource).where(DataSource.id == meta.data_source_id)
-    )
-    ds = ds_result.scalar_one_or_none()
-
+async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession) -> None:
+    """AI增强核心逻辑（不查 DataSource，不重复 initialize，不 flush）"""
     from app.services.llm import llm_manager
-    await llm_manager.initialize()
+    if not llm_manager._initialized:
+        await llm_manager.initialize()
 
     schema_str = json.dumps(meta.table_schema or [], ensure_ascii=False, default=str)
     stats_str = json.dumps(meta.column_stats or {}, ensure_ascii=False, default=str)
@@ -247,22 +231,17 @@ async def ai_enrich_business_metadata(
 
 只输出 JSON，不要任何解释。"""
 
-    try:
-        llm_result = await llm_manager.chat_with_messages(
-            [
-                {"role": "system", "content": "你是数据元数据分析专家。根据数据集的技术信息和样本数据，推断业务元数据。只输出JSON，不要任何解释。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-        )
-        logger.info(f"AI enrich LLM response length: {len(llm_result) if llm_result else 0}, preview: {(llm_result or '')[:200]}")
-    except Exception as e:
-        logger.error(f"AI enrich LLM call failed: {e}")
-        raise HTTPException(status_code=500, detail=f"AI补充失败: {e}")
+    llm_result = await llm_manager.chat_with_messages(
+        [
+            {"role": "system", "content": "你是数据元数据分析专家。根据数据集的技术信息和样本数据，推断业务元数据。只输出JSON，不要任何解释。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=2000,
+    )
 
     if not llm_result or not llm_result.strip():
-        raise HTTPException(status_code=500, detail="AI返回空内容，请检查LLM配置")
+        raise ValueError("AI返回空内容")
 
     llm_result = llm_result.strip()
     if llm_result.startswith("```"):
@@ -273,10 +252,7 @@ async def ai_enrich_business_metadata(
             lines = lines[:-1]
         llm_result = "\n".join(lines).strip()
 
-    try:
-        parsed = json.loads(llm_result)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail=f"AI输出解析失败: {llm_result[:200]}")
+    parsed = json.loads(llm_result)
 
     for key in ["business_name", "business_description", "business_tags", "business_purpose",
                  "source_system", "data_domain", "security_level"]:
@@ -285,9 +261,36 @@ async def ai_enrich_business_metadata(
 
     meta.ai_enriched = True
     meta.ai_enriched_at = datetime.utcnow()
+
+
+@router.post("/{table_metadata_id}/ai-enrich")
+async def ai_enrich_business_metadata(
+    table_metadata_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI补充业务元数据"""
+    result = await db.execute(
+        select(TableMetadata).where(TableMetadata.id == table_metadata_id)
+    )
+    meta = result.scalar_one_or_none()
+    if not meta:
+        raise HTTPException(status_code=404, detail="元数据不存在")
+
+    ds_result = await db.execute(
+        select(DataSource).where(DataSource.id == meta.data_source_id)
+    )
+    ds = ds_result.scalar_one_or_none()
+
+    try:
+        await _do_ai_enrich(meta, ds, db)
+        logger.info(f"AI enrich done: {meta.table_name}")
+    except Exception as e:
+        logger.error(f"AI enrich failed [{meta.table_name}]: {e}")
+        raise HTTPException(status_code=500, detail=f"AI补充失败: {e}")
+
     await db.flush()
     await db.refresh(meta)
-
     return _serialize_meta(meta, ds.name if ds else None)
 
 
@@ -387,6 +390,9 @@ async def sync_datasource_metadata(
                 "sample_data": json.loads(json.dumps(df_sample.fillna("").to_dict(orient="records"), default=str)) if df_sample is not None else [],
                 "column_stats": column_stats,
                 "last_synced_at": datetime.utcnow(),
+                "schema_hash": hashlib.sha256(
+                    json.dumps(table_schema_list, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:32],
             }
 
             try:

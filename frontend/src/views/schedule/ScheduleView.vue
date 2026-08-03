@@ -13,7 +13,10 @@
     <el-table :data="filteredSchedules" stripe style="width: 100%" v-loading="loading">
       <el-table-column label="名称" min-width="150">
         <template #default="{ row }">
-          <div>{{ row.name }}</div>
+          <div>
+            {{ row.name }}
+            <el-tag v-if="row.is_builtin" size="small" type="warning" effect="dark" style="margin-left: 4px">内置</el-tag>
+          </div>
           <div v-if="row.description" class="row-desc">{{ row.description }}</div>
         </template>
       </el-table-column>
@@ -28,9 +31,12 @@
           <el-tag v-else size="small" type="info">手动</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="调度配置" width="160">
+      <el-table-column label="调度配置" width="200">
         <template #default="{ row }">
-          <span v-if="row.schedule_type === 'cron'">{{ row.cron_expression }}</span>
+          <div v-if="row.schedule_type === 'cron'">
+            <div>{{ cronToHumanReadable(row.cron_expression) }}</div>
+            <div class="row-desc">{{ timezoneLabel(row.timezone) }}</div>
+          </div>
           <span v-else-if="row.schedule_type === 'interval' && row.interval_seconds === 1">持续运行</span>
           <span v-else-if="row.schedule_type === 'interval'">{{ formatInterval(row.interval_seconds) }}</span>
           <span v-else>-</span>
@@ -68,7 +74,7 @@
             <el-button v-else size="small" type="success" @click="resumeSchedule(row)">恢复</el-button>
             <el-button size="small" @click="viewExecutions(row)">历史</el-button>
             <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-            <el-button size="small" type="danger" plain @click="deleteSchedule(row)">删除</el-button>
+            <el-button v-if="!row.is_builtin" size="small" type="danger" plain @click="deleteSchedule(row)">删除</el-button>
           </div>
         </template>
       </el-table-column>
@@ -78,26 +84,27 @@
     <el-dialog v-model="showDialog" :title="editing ? '编辑调度' : '新建调度'" width="560px">
       <el-form label-width="100px" class="schedule-dialog-form">
         <el-form-item label="调度名称" required>
-          <el-input v-model="form.name" placeholder="如：每日数据清洗" />
+          <el-input v-model="form.name" placeholder="如：每日数据清洗" :disabled="isBuiltinSchedule" />
         </el-form-item>
         <el-form-item label="选择流程" required>
-          <el-select v-model="form.task_target_id" placeholder="选择流程" filterable style="width: 100%" @change="onPipelineChange">
+          <el-select v-model="form.task_target_id" placeholder="选择流程" filterable style="width: 100%" :disabled="isBuiltinSchedule" @change="onPipelineChange">
             <el-option v-for="p in pipelines" :key="p.id" :label="p.display_name || p.name" :value="p.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="运行模式">
-          <el-radio-group v-model="form.run_mode">
+          <el-radio-group v-model="form.run_mode" :disabled="isBuiltinSchedule">
             <el-radio value="normal">普通运行</el-radio>
             <el-radio value="auto_fix">自修复运行</el-radio>
           </el-radio-group>
-          <span class="form-hint">{{ form.run_mode === 'auto_fix' ? '执行失败时自动修复代码，走双智能体检查' : '直接执行流程脚本' }}</span>
+          <span class="form-hint">{{ isBuiltinSchedule ? '内置调度不允许修改运行模式' : (form.run_mode === 'auto_fix' ? '执行失败时自动修复代码，走双智能体检查' : '直接执行流程脚本') }}</span>
         </el-form-item>
         <el-form-item label="调度方式">
-          <el-radio-group v-model="form.schedule_type">
+          <el-radio-group v-model="form.schedule_type" :disabled="isBuiltinSchedule">
             <el-radio value="cron">定时</el-radio>
             <el-radio value="interval">周期</el-radio>
             <el-radio value="continuous">永久在线</el-radio>
           </el-radio-group>
+          <span v-if="isBuiltinSchedule" class="form-hint">内置调度不允许修改调度方式</span>
         </el-form-item>
 
         <!-- 定时：可视化选择 -->
@@ -115,11 +122,17 @@
               </el-button>
             </div>
           </el-form-item>
+          <el-form-item label="时区">
+            <el-select v-model="cronTimezone" filterable allow-create default-first-option placeholder="选择时区" style="width: 240px">
+              <el-option v-for="tz in commonTimezones" :key="tz" :label="timezoneLabel(tz)" :value="tz" />
+            </el-select>
+            <span class="form-hint">执行时间按此时区触发（已自动检测浏览器时区，可手动修改）</span>
+          </el-form-item>
           <el-form-item label="重复频率">
-            <el-select v-model="cronFrequency" style="width: 120px">
+            <el-select v-model="cronFrequency" style="width: 120px" :disabled="isBuiltinSchedule">
               <el-option label="每天" value="daily" />
-              <el-option label="每周" value="weekly" />
-              <el-option label="每月" value="monthly" />
+              <el-option v-if="!isBuiltinSchedule" label="每周" value="weekly" />
+              <el-option v-if="!isBuiltinSchedule" label="每月" value="monthly" />
             </el-select>
           </el-form-item>
           <el-form-item v-if="cronFrequency === 'weekly'" label="星期">
@@ -193,15 +206,28 @@
     </el-dialog>
 
     <!-- 执行详情 -->
-    <el-dialog v-model="showDetail" title="执行详情" width="700px">
+    <el-dialog v-model="showDetail" title="执行详情" width="700px" @close="stopDetailPolling">
+      <template #header>
+        <div class="history-header">
+          <span>执行详情</span>
+          <el-button size="small" text :loading="detailLoading" @click="refreshExecutionDetail">
+            <el-icon><Refresh /></el-icon> 刷新
+          </el-button>
+        </div>
+      </template>
       <el-descriptions :column="2" border v-if="executionDetail">
-        <el-descriptions-item label="状态">{{ executionDetail.status }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ execStatusLabel(executionDetail.status) }}</el-descriptions-item>
         <el-descriptions-item label="耗时">{{ executionDetail.duration || 0 }}s</el-descriptions-item>
         <el-descriptions-item label="开始">{{ formatTime(executionDetail.started_at) }}</el-descriptions-item>
         <el-descriptions-item label="结束">{{ formatTime(executionDetail.finished_at) }}</el-descriptions-item>
       </el-descriptions>
+      <div v-if="executionDetail?.result" class="detail-result">
+        <div class="detail-label">执行结果</div>
+        <pre class="result-pre">{{ formatResult(executionDetail.result) }}</pre>
+      </div>
       <div v-if="executionDetail?.error_message" class="detail-error">
-        <el-alert type="error" :closable="false" :title="executionDetail.error_message" />
+        <div class="detail-label">错误信息</div>
+        <pre class="error-pre">{{ executionDetail.error_message }}</pre>
       </div>
       <div v-if="executionDetail?.logs" class="detail-logs">
         <div class="detail-label">执行日志</div>
@@ -229,9 +255,11 @@ interface Schedule {
   task_target_id: string
   schedule_type: string
   cron_expression?: string
+  timezone?: string
   interval_seconds?: number
   run_mode: string
   status: string
+  is_builtin?: boolean
   next_run_at?: string
   last_run_status?: string
   last_run_at?: string
@@ -244,10 +272,14 @@ const saving = ref(false)
 const filterStatus = ref('')
 const showDialog = ref(false)
 const editing = ref(false)
+const isBuiltinSchedule = ref(false)
 const showHistory = ref(false)
 const showDetail = ref(false)
 const executions = ref<any[]>([])
 const executionDetail = ref<any>(null)
+const detailLoading = ref(false)
+const currentExecutionId = ref('')
+const detailPollTimer = ref<number | null>(null)
 const historyLoading = ref(false)
 const pollTimer = ref<number | null>(null)
 const currentScheduleId = ref('')
@@ -266,6 +298,64 @@ const cronTimes = ref<string[]>(['08:00'])
 const cronFrequency = ref('daily')
 const cronWeekdays = ref<number[]>([1])
 const cronMonthDay = ref(1)
+const detectedTz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC'
+const cronTimezone = ref(detectedTz)
+const commonTimezones = [
+  'UTC',
+  'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul', 'Asia/Singapore', 'Asia/Hong_Kong',
+  'Asia/Bangkok', 'Asia/Kolkata', 'Asia/Dubai', 'Asia/Tehran', 'Asia/Jerusalem',
+  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid', 'Europe/Rome',
+  'Europe/Moscow', 'Europe/Istanbul', 'Europe/Amsterdam', 'Europe/Stockholm',
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Anchorage', 'America/Toronto', 'America/Mexico_City', 'America/Sao_Paulo',
+  'America/Argentina/Buenos_Aires', 'America/Bogota',
+  'Australia/Sydney', 'Australia/Perth', 'Pacific/Auckland', 'Pacific/Honolulu',
+  'Africa/Cairo', 'Africa/Johannesburg', 'Africa/Lagos', 'Africa/Nairobi',
+]
+const TZ_LABELS: Record<string, string> = {
+  'UTC': 'UTC 协调世界时',
+  'Asia/Shanghai': '中国 北京',
+  'Asia/Hong_Kong': '中国 香港',
+  'Asia/Tokyo': '日本 东京',
+  'Asia/Seoul': '韩国 首尔',
+  'Asia/Singapore': '新加坡',
+  'Asia/Bangkok': '泰国 曼谷',
+  'Asia/Kolkata': '印度 加尔各答',
+  'Asia/Dubai': '阿联酋 迪拜',
+  'Asia/Tehran': '伊朗 德黑兰',
+  'Asia/Jerusalem': '以色列 耶路撒冷',
+  'Europe/London': '英国 伦敦',
+  'Europe/Paris': '法国 巴黎',
+  'Europe/Berlin': '德国 柏林',
+  'Europe/Madrid': '西班牙 马德里',
+  'Europe/Rome': '意大利 罗马',
+  'Europe/Moscow': '俄罗斯 莫斯科',
+  'Europe/Istanbul': '土耳其 伊斯坦布尔',
+  'Europe/Amsterdam': '荷兰 阿姆斯特丹',
+  'Europe/Stockholm': '瑞典 斯德哥尔摩',
+  'America/New_York': '美国 纽约',
+  'America/Chicago': '美国 芝加哥',
+  'America/Denver': '美国 丹佛',
+  'America/Los_Angeles': '美国 洛杉矶',
+  'America/Anchorage': '美国 安克雷奇',
+  'America/Toronto': '加拿大 多伦多',
+  'America/Mexico_City': '墨西哥 墨西哥城',
+  'America/Sao_Paulo': '巴西 圣保罗',
+  'America/Argentina/Buenos_Aires': '阿根廷 布宜诺斯艾利斯',
+  'America/Bogota': '哥伦比亚 波哥大',
+  'Australia/Sydney': '澳大利亚 悉尼',
+  'Australia/Perth': '澳大利亚 珀斯',
+  'Pacific/Auckland': '新西兰 奥克兰',
+  'Pacific/Honolulu': '美国 檀香山',
+  'Africa/Cairo': '埃及 开罗',
+  'Africa/Johannesburg': '南非 约翰内斯堡',
+  'Africa/Lagos': '尼日利亚 拉各斯',
+  'Africa/Nairobi': '肯尼亚 内罗毕',
+}
+function timezoneLabel(tz?: string): string {
+  if (!tz) return 'UTC'
+  return TZ_LABELS[tz] || tz
+}
 
 const cronHumanReadable = computed(() => {
   const times = cronTimes.value.filter(t => t).map(t => {
@@ -273,14 +363,15 @@ const cronHumanReadable = computed(() => {
     return `${h.padStart(2,'0')}:${m.padStart(2,'0')}`
   })
   if (!times.length) return ''
+  const tz = `（${timezoneLabel(cronTimezone.value)}）`
   const timeStr = times.join('、')
-  if (cronFrequency.value === 'daily') return `每天 ${timeStr}`
+  if (cronFrequency.value === 'daily') return `每天 ${timeStr}${tz}`
   if (cronFrequency.value === 'weekly') {
     const names = ['一','二','三','四','五','六','日']
     const days = cronWeekdays.value.map(d => '周' + names[d-1]).join('、')
-    return `每${days} ${timeStr}`
+    return `每${days} ${timeStr}${tz}`
   }
-  if (cronFrequency.value === 'monthly') return `每月${cronMonthDay.value}号 ${timeStr}`
+  if (cronFrequency.value === 'monthly') return `每月${cronMonthDay.value}号 ${timeStr}${tz}`
   return ''
 })
 
@@ -337,9 +428,40 @@ function formatInterval(seconds?: number) {
   return `每 ${seconds} 秒`
 }
 
+function cronToHumanReadable(expr?: string): string {
+  if (!expr) return '-'
+  const parts = expr.trim().split(';').map(p => p.trim()).filter(Boolean)
+  const groups: Record<string, string[]> = {}
+  const order: string[] = []
+  for (const p of parts) {
+    const f = p.split(/\s+/)
+    if (f.length !== 5) {
+      if (!groups['__raw__']) { groups['__raw__'] = []; order.push('__raw__') }
+      groups['__raw__'].push(p)
+      continue
+    }
+    const [m, h, dom, , dow] = f
+    const time = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`
+    let freq: string
+    if (dom !== '*') freq = `每月${parseInt(dom)}号`
+    else if (dow !== '*') {
+      const names = ['一', '二', '三', '四', '五', '六', '日']
+      freq = '每' + dow.split(',').map(Number).sort((a, b) => a - b).map((d: number) => '周' + names[d - 1]).join('、')
+    } else freq = '每天'
+    if (!groups[freq]) { groups[freq] = []; order.push(freq) }
+    groups[freq].push(time)
+  }
+  return order.map(freq => `${freq} ${groups[freq].join('、')}`).join('；')
+}
+
 function formatTime(t?: string) {
   if (!t) return '-'
-  try { return new Date(t).toLocaleString('zh-CN') } catch { return '-' }
+  try {
+    let s = t
+    // 后端时间为 naive UTC，JSON 无时区后缀，补 'Z' 按_utc 解析再转本地时区显示
+    if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s = s + 'Z'
+    return new Date(s).toLocaleString('zh-CN')
+  } catch { return '-' }
 }
 
 function execStatusColor(s: string) {
@@ -348,6 +470,14 @@ function execStatusColor(s: string) {
 
 function execStatusLabel(s: string) {
   return { success: '成功', failed: '失败', running: '执行中', pending: '等待中', timeout: '超时' }[s] || s
+}
+
+function formatResult(r: any): string {
+  if (!r) return ''
+  if (typeof r === 'string') return r
+  // auto_fix 模式：summary 是 Markdown 报告，直接展示保留换行
+  if (r.summary) return r.summary
+  try { return JSON.stringify(r, null, 2) } catch { return String(r) }
 }
 
 async function loadSchedules() {
@@ -366,11 +496,13 @@ async function loadPipelines() {
 
 function openCreateDialog() {
   editing.value = false
+  isBuiltinSchedule.value = false
   form.value = { id: '', name: '', task_target_id: '', schedule_type: 'cron', run_mode: 'normal' }
   cronTimes.value = ['08:00']
   cronFrequency.value = 'daily'
   cronWeekdays.value = [1]
   cronMonthDay.value = 1
+  cronTimezone.value = detectedTz
   intervalValue.value = 5
   intervalUnit.value = 60
   showDialog.value = true
@@ -384,8 +516,19 @@ watch(() => form.value.task_target_id, (newId) => {
   }
 })
 
+watch(() => form.value.run_mode, (mode) => {
+  if (editing.value) return
+  const suffix = '（自修复）'
+  if (mode === 'auto_fix' && !form.value.name.endsWith(suffix)) {
+    form.value.name += suffix
+  } else if (mode === 'normal' && form.value.name.endsWith(suffix)) {
+    form.value.name = form.value.name.slice(0, -suffix.length)
+  }
+})
+
 function openEditDialog(row: Schedule) {
   editing.value = true
+  isBuiltinSchedule.value = !!row.is_builtin
   form.value = {
     id: row.id,
     name: row.name,
@@ -394,6 +537,7 @@ function openEditDialog(row: Schedule) {
     run_mode: row.run_mode || 'normal',
   }
   if (row.cron_expression) parseCronExpression(row.cron_expression)
+  cronTimezone.value = row.timezone || detectedTz
   if (row.interval_seconds) {
     if (row.interval_seconds >= 86400 && row.interval_seconds % 86400 === 0) { intervalValue.value = row.interval_seconds / 86400; intervalUnit.value = 86400 }
     else if (row.interval_seconds >= 3600 && row.interval_seconds % 3600 === 0) { intervalValue.value = row.interval_seconds / 3600; intervalUnit.value = 3600 }
@@ -416,6 +560,7 @@ async function saveSchedule() {
     if (form.value.schedule_type === 'cron') {
       payload.schedule_type = 'cron'
       payload.cron_expression = buildCronExpression()
+      payload.timezone = cronTimezone.value
     } else if (form.value.schedule_type === 'interval') {
       payload.schedule_type = 'interval'
       payload.interval_seconds = intervalValue.value * intervalUnit.value
@@ -462,6 +607,7 @@ async function resumeSchedule(row: Schedule) {
 }
 
 async function deleteSchedule(row: Schedule) {
+  if (row.is_builtin) { ElMessage.warning('内置调度不可删除'); return }
   try {
     await ElMessageBox.confirm(`删除调度 "${row.name}"？`, '确认删除', { type: 'warning' })
     await api.delete(`/schedules/${row.id}`)
@@ -491,10 +637,8 @@ function startPolling() {
   pollTimer.value = window.setInterval(async () => {
     try {
       executions.value = await api.get(`/schedules/${currentScheduleId.value}/executions`, { params: { limit: 20 } }) as any
-      const hasActive = executions.value.some((e: any) => e.status === 'pending' || e.status === 'running')
-      if (!hasActive) stopPolling()
     } catch {}
-  }, 3000)
+  }, 2000)
 }
 
 function stopPolling() {
@@ -505,10 +649,37 @@ function stopPolling() {
 }
 
 async function viewExecutionDetail(row: any) {
+  currentExecutionId.value = row.id
+  await refreshExecutionDetail()
+  showDetail.value = true
+  startDetailPolling()
+}
+
+async function refreshExecutionDetail() {
+  if (!currentExecutionId.value) return
+  detailLoading.value = true
   try {
-    executionDetail.value = await api.get(`/schedules/executions/${row.id}`) as any
-    showDetail.value = true
+    executionDetail.value = await api.get(`/schedules/executions/${currentExecutionId.value}`) as any
   } catch { ElMessage.error('加载详情失败') }
+  finally { detailLoading.value = false }
+}
+
+function startDetailPolling() {
+  stopDetailPolling()
+  detailPollTimer.value = window.setInterval(async () => {
+    await refreshExecutionDetail()
+    // 执行完成后停止轮询
+    if (executionDetail.value && !['pending', 'running'].includes(executionDetail.value.status)) {
+      stopDetailPolling()
+    }
+  }, 5000)
+}
+
+function stopDetailPolling() {
+  if (detailPollTimer.value) {
+    clearInterval(detailPollTimer.value)
+    detailPollTimer.value = null
+  }
 }
 
 onMounted(() => {
@@ -518,6 +689,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling()
+  stopDetailPolling()
 })
 </script>
 
@@ -537,11 +709,22 @@ onUnmounted(() => {
 .interval-row { display: flex; gap: 8px; align-items: center; }
 .detail-error { margin-top: 12px; }
 .detail-logs { margin-top: 12px; }
+.detail-result { margin-top: 12px; }
 .detail-label { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
 .history-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .detail-logs pre {
   background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px;
-  font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap;
+  font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+.result-pre {
+  background: #f5f7fa; padding: 12px; border-radius: 6px;
+  font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  margin: 0;
+}
+.error-pre {
+  background: #fef0f0; color: #f56c6c; padding: 12px; border-radius: 6px;
+  font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  margin: 0;
 }
 .schedule-dialog-form .el-radio-group {
   display: inline-flex;

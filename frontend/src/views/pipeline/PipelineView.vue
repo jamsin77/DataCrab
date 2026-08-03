@@ -28,6 +28,7 @@
         </template>
         <p class="op-desc">{{ pl.description || '暂无描述' }}</p>
         <div class="op-meta">
+          <el-tag v-if="pl.is_builtin" size="small" type="warning" effect="dark">内置</el-tag>
           <el-tag v-if="pl.skill_calls?.length" size="small" type="info" effect="plain">
             调用 {{ pl.skill_calls.length }} 个 Skill
           </el-tag>
@@ -47,19 +48,22 @@
         </div>
         <div class="op-actions">
           <div class="op-actions-row">
-            <el-button size="small" type="primary" @click="viewCode(pl)">
+            <el-button v-if="!pl.is_builtin" size="small" type="primary" @click="viewCode(pl)">
               <el-icon><Document /></el-icon> 查看
             </el-button>
-            <el-button size="small" type="success" plain @click="openDebug(pl)">
+            <el-button v-if="!pl.is_builtin" size="small" type="success" plain @click="openDebug(pl)">
               <el-icon><VideoPlay /></el-icon> 调试
             </el-button>
-            <el-button size="small" @click="clonePipeline(pl)">
+            <el-button v-if="!pl.is_builtin" size="small" @click="clonePipeline(pl)">
               <el-icon><CopyDocument /></el-icon> 另存
             </el-button>
-            <el-button size="small" @click="downloadPipeline(pl)">
+            <el-button v-if="!pl.is_builtin" size="small" @click="downloadPipeline(pl)">
               <el-icon><Download /></el-icon> 导出
             </el-button>
-            <el-button size="small" type="danger" plain @click="deletePipeline(pl)">
+            <el-button v-if="pl.is_builtin" size="small" type="info" plain disabled>
+              <el-icon><Tools /></el-icon> 内置流程
+            </el-button>
+            <el-button v-if="!pl.is_builtin" size="small" type="danger" plain @click="deletePipeline(pl)">
               <el-icon><Delete /></el-icon> 删除
             </el-button>
           </div>
@@ -468,7 +472,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Search, VideoPlay, Document, CopyDocument,
   Delete, Download, CaretRight, ChatDotRound, Promotion, VideoPause, Refresh,
-  UploadFilled, Loading, Clock, Plus,
+  UploadFilled, Loading, Clock, Plus, Tools,
 } from '@element-plus/icons-vue'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -511,6 +515,7 @@ interface Pipeline {
   category?: string
   visibility?: string
   is_active: boolean
+  is_builtin?: boolean
   created_at: string
   updated_at?: string
 }
@@ -790,6 +795,7 @@ function downloadPipeline(pl: Pipeline) {
 }
 
 async function deletePipeline(pl: Pipeline) {
+  if (pl.is_builtin) { ElMessage.warning('内置流程不可删除'); return }
   try {
     await ElMessageBox.confirm(`确定删除 "${pl.display_name || pl.name}"？`, '确认删除', { type: 'warning' })
     await api.delete(`/pipelines/${pl.id}`)

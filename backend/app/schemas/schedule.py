@@ -14,7 +14,7 @@ class ScheduleCreate(BaseModel):
     task_params: Optional[dict] = None
     schedule_type: str = Field(..., pattern="^(cron|interval|manual)$")
     cron_expression: Optional[str] = None
-    timezone: str = "Asia/Shanghai"
+    timezone: str = "UTC"
     interval_seconds: Optional[int] = None
     event_config: Optional[dict] = None
     max_retries: int = 3
@@ -49,7 +49,7 @@ class ScheduleResponse(BaseModel):
     task_params: Optional[dict] = None
     schedule_type: str
     cron_expression: Optional[str] = None
-    timezone: str = "Asia/Shanghai"
+    timezone: str = "UTC"
     interval_seconds: Optional[int] = None
     event_config: Optional[dict] = None
     max_retries: int = 3
@@ -58,6 +58,7 @@ class ScheduleResponse(BaseModel):
     concurrent_runs: int = 1
     run_mode: str = "normal"
     status: Optional[str] = None
+    is_builtin: bool = False
     last_run_at: Optional[datetime] = None
     next_run_at: Optional[datetime] = None
     last_run_status: Optional[str] = None
@@ -107,6 +108,7 @@ class ManualTriggerRequest(BaseModel):
 
 class CronValidateRequest(BaseModel):
     cron_expression: str
+    timezone: Optional[str] = None
 
 
 class CronValidateResponse(BaseModel):

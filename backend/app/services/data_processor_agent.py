@@ -83,7 +83,8 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的 DataProcessor（数据处�
 - 重新执行后再次交接检查
 
 ## 交接规则
-- 数据处理完成后，使用 handoff_to_inspector 交接给 DataInspector
+- 数据处理（写入/修改/清洗/转换数据）完成后，使用 handoff_to_inspector 交接给 DataInspector
+- 查询、可视化、统计等只读操作不交接
 - 当用户请求是数据质量检查相关时，直接交接（delegate）给 DataInspector
 """
 

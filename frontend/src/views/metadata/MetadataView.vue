@@ -8,10 +8,6 @@
           <el-icon><Refresh /></el-icon>
         </el-button>
       </div>
-      <div class="ds-item" :class="{ active: !filterDataSource }" @click="selectDataSource('')">
-        <el-icon><Files /></el-icon>
-        <span>全部数据源</span>
-      </div>
       <el-tooltip
         v-for="ds in datasources"
         :key="ds.id"
@@ -168,7 +164,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { Search, CircleCheckFilled, Files, Connection, Refresh } from '@element-plus/icons-vue'
+import { Search, CircleCheckFilled, Connection, Refresh } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
 
@@ -191,6 +187,9 @@ async function loadDatasources() {
   dsLoading.value = true
   try {
     datasources.value = await api.get('/datasources')
+    if (datasources.value.length && !filterDataSource.value) {
+      selectDataSource(datasources.value[0].id)
+    }
   } catch {} finally {
     dsLoading.value = false
   }
@@ -314,7 +313,6 @@ function formatTime(t: string): string {
 
 onMounted(() => {
   loadDatasources()
-  loadMetadata()
   loadStats()
 })
 </script>

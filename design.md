@@ -4518,4 +4518,24 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 
 **与前轮的关系**：第四轮双模型架构 + 第十三轮"删 fast_model 始终用 deep model"被本轮 `pick_model_async` 替代——不再二选一（deep 或 fast），而是按上下文从可用模型列表中选最合适且最经济的。第十七轮的降级链 + CircuitBreaker 保留（模型选完后的执行层容错）。
 
-**已知遗留**：`data_processor_agent.py` 的 `_handle_get_llm_config` 仍引用已删除的 `llm_manager.fast_model` 属性（调用 get_llm_config 工具时会 AttributeError）；DB 模型/配置层仍保留 fast_model 列（值为空，运行时不影响）。
+**已知遗留**（第十九轮已修复）：`data_processor_agent.py` 的 `_handle_get_llm_config` 引用已删除的 `llm_manager.fast_model` 属性（调用 get_llm_config 工具时会 AttributeError）；DB 模型/配置层仍保留 fast_model 列（值为空，运行时不影响）。→ 两项均已在第十九轮彻底清理。
+
+### 11.30 第十九轮：fast_model 残留彻底清理——修复 AttributeError + DB/配置/前端全链路清理
+
+**核心洞察**：第十八轮 `pick_model_async` 删了 `llm_manager.fast_model` 属性，但 `_handle_get_llm_config` 仍引用它（调用 get_llm_config 工具即 AttributeError），且 DB schema/endpoint/前端散落 `fast_model` 残留读写。本轮把第十八轮没清干净的 `fast_model` 全链路清掉，`default_model` 保留（seed/registry 仍用作 Provider 推荐深度模型名，非遗留）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **_handle_get_llm_config 重写** | data_processor_agent.py | 删 `llm_manager.fast_model`（AttributeError 根因）；改返 `available_models`（带能力描述，来自 `_available_models_with_desc`）；providers 列表 `fast_model` → `default_model` |
+| **SAVE_LLM_ADAPTER 清理** | data_processor_agent.py | schema 删 `fast_model` 参数；`_handle_save_llm_adapter` 删 fast_model 读写（4 处） |
+| **llm.py 6 处清理** | llm.py | `init_user_llm_context`（fallback + cfg）/`_parse_fallback_models`/`load_providers_from_db`（seed + registry）/注释 全去 fast_model |
+| **DB model 删 2 个 Column** | models/custom_extension.py | `LLMProvider.fast_model` + `UserLLMConfig.fast_model` Column 定义删除；fallback_models 注释更新 |
+| **config.py endpoint 清理** | endpoints/config.py | `LLMConfigRequest`/`FallbackModelItem`/`LLMConfigResponse` schema 删 fast_model 字段；`get_llm_config`/`update_llm_config` 读写全删（8 处） |
+| **custom_extension.py 返回清理** | endpoints/custom_extension.py | providers 列表返回 `fast_model` → `default_model` |
+| **settings 保留兼容** | core/config.py | `LLM_FAST_MODEL: str = ""` 保留并标废弃注释——业务代码已不读，仅为兼容已有 .env 的 LLM_FAST_MODEL 变量（pydantic extra_forbidden 会崩） |
+| **.env.example 删 LLM_FAST_MODEL** | backend/.env.example | 删除 LLM_FAST_MODEL 示例行 |
+| **前端展示清理** | ModelConfigView.vue | `formatCapabilities` 删 `if (row.fast_model) caps.push('快速')` |
+
+**验证**：`app.main` 完整加载 184 路由；`LLMProvider`/`UserLLMConfig` 表列确认无 fast_model；`_handle_get_llm_config` 源码确认无 fast_model 引用；`llm_manager.fast_model` 属性确认不存在。
+
+**与前轮的关系**：补齐第十八轮未完成的清理（第十八轮只删了 llm_manager 属性，DB/schema/endpoint/前端残留未清）。`default_model` 不在清理范围——seed providers 仍写入、registry 仍读取，作为 Provider 推荐深度模型名（非死字段）。settings.LLM_FAST_MODEL 保留是向后兼容妥协（删了会破坏已有 .env 部署），业务代码已完全不读。

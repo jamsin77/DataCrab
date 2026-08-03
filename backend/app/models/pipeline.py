@@ -33,6 +33,7 @@ class Pipeline(Base):
     visibility = Column(String(20), default="private")
 
     is_active = Column(Boolean, default=True)
+    is_builtin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

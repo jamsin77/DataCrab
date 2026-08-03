@@ -37,17 +37,9 @@
           <el-icon><Timer /></el-icon>
           <template #title>调度</template>
         </el-menu-item>
-        <el-menu-item index="/knowledge">
-          <el-icon><Collection /></el-icon>
-          <template #title>知识库</template>
-        </el-menu-item>
-        <el-menu-item index="/metadata">
-          <el-icon><Files /></el-icon>
-          <template #title>元数据</template>
-        </el-menu-item>
         <el-menu-item index="/config">
-          <el-icon><Setting /></el-icon>
-          <template #title>系统配置</template>
+          <el-icon><Tools /></el-icon>
+          <template #title>配置</template>
         </el-menu-item>
       </el-menu>
       <div class="sidebar-footer">
@@ -94,6 +86,7 @@
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { ChatDotRound, Operation, MagicStick, Share, Timer, Tools, Fold, Expand } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -104,21 +97,26 @@ const currentRoute = computed(() => route.path)
 const pageTitle = computed(() => {
   const titles: Record<string, string> = {
     '/chat': '对话',
-    '/datasource': '数据源管理',
+    '/datasource': '数据源',
     '/metadata': '元数据',
-    '/knowledge': '知识库',
     '/skill': '技能',
-    '/operator': '算子管理',
-    '/pipeline': '流程管理',
-    '/schedule': '调度管理',
+    '/operator': '算子',
+    '/pipeline': '流程',
+    '/schedule': '调度',
     '/filelink': '文件链接',
-    '/config': '系统配置',
+    '/config': '配置',
   }
   if (route.path === '/config') {
     const tab = route.query.tab as string
-    if (tab === 'model') return '系统配置 - 模型设置'
-    if (tab === 'agent') return '系统配置 - 智能体设置'
-    if (tab === 'datasource') return '系统配置 - 数据源管理'
+    const tabLabels: Record<string, string> = {
+      agent: '性格设定管理',
+      datasource: '数据源管理',
+      model: '大模型管理',
+      standards: '数据规则管理',
+      metadata: '元数据管理',
+      permission: '权限管理',
+    }
+    if (tab && tabLabels[tab]) return `配置 - ${tabLabels[tab]}`
   }
   return titles[route.path] || 'DataCrab'
 })

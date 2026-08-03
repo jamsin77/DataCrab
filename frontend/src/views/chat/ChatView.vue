@@ -247,10 +247,10 @@ watch(
 watch(
   () => [chatStore.streamingContent, chatStore.streamingReasoning],
   () => {
-    // 推理过程自动展开（用最后一条 assistant 消息的 ID）
+    // 推理过程默认折叠
     const lastMsg = chatStore.messages[chatStore.messages.length - 1]
     if (lastMsg && lastMsg.role === 'assistant' && lastMsg.reasoning && reasoningExpanded.value[lastMsg.id] === undefined) {
-      reasoningExpanded.value[lastMsg.id] = true
+      reasoningExpanded.value[lastMsg.id] = false
     }
     // 流式更新使用即时滚动，避免 smooth 动画被高频 token 打断
     scrollToBottom(false)

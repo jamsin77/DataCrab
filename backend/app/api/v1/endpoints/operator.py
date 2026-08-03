@@ -29,6 +29,9 @@ from app.schemas.operator import (
     OperatorModifyRequest,
     OperatorCloneRequest,
     OperatorDebugChatRequest,
+    SimilarOperatorCheckRequest,
+    SimilarOperatorItem,
+    SimilarOperatorCheckResponse,
 )
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager, init_user_llm_context
@@ -550,6 +553,134 @@ if __name__ == "__main__":
 """ + SAFETY_RULES_DOC
 
 
+OPERATOR_SIMILARITY_THRESHOLD = 0.6
+
+
+async def _find_similar_operators_llm(prompt: str, operators: list, top_k: int = 5) -> list:
+    """用 LLM 语义匹配相似算子，返回 [(operator, similarity, reason), ...]"""
+    if not operators:
+        return []
+
+    op_list = "\n".join(
+        f"{i + 1}. {o.name}: {o.description or '(无描述)'}"
+        for i, o in enumerate(operators)
+    )
+
+    system = "你是算子匹配助手。判断哪些现有算子与用户需求相似、可复用。只返回 JSON。"
+    user_msg = f"""用户需求：{prompt}
+
+现有算子：
+{op_list}
+
+返回 JSON 数组，只包含相似度>=0.6的算子：
+[{{"index": 1, "similarity": 0.8, "reason": "功能描述"}}]
+
+index 是上面列表的序号(从1开始)。无相似算子返回 []。"""
+
+    try:
+        resp = await llm_manager.chat_with_messages(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.1,
+            context="operator_match",
+        )
+        resp_text = resp if isinstance(resp, str) else resp.get("content", "")
+        import re as _re
+        match = _re.search(r'\[.*\]', resp_text, _re.DOTALL)
+        if not match:
+            return []
+        matched = json.loads(match.group())
+        result = []
+        for item in matched:
+            idx = item.get("index", 0) - 1
+            if 0 <= idx < len(operators):
+                score = min(max(float(item.get("similarity", 0)), 0.0), 1.0)
+                if score >= OPERATOR_SIMILARITY_THRESHOLD:
+                    result.append((operators[idx], score, item.get("reason", "")))
+        return result[:top_k]
+    except Exception as e:
+        logger.warning(f"LLM 算子匹配失败，回退关键词匹配: {e}")
+        return _keyword_match_operators(prompt, operators, top_k)
+
+
+def _keyword_match_operators(prompt: str, operators: list, top_k: int = 5) -> list:
+    """关键词匹配兜底：name/description/tags 加权"""
+    prompt_lower = prompt.lower()
+    scored = []
+    for o in operators:
+        score = 0.0
+        if o.name and o.name.lower() in prompt_lower:
+            score += 0.5
+        desc = (o.description or "").lower()
+        for word in prompt_lower.split():
+            if len(word) > 1 and word in desc:
+                score += 0.15
+        tags = o.tags or []
+        for tag in tags:
+            if tag.lower() in prompt_lower:
+                score += 0.2
+        if score >= OPERATOR_SIMILARITY_THRESHOLD:
+            scored.append((o, min(score, 1.0), "关键词匹配"))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+@router.post("/check-similar", response_model=SimilarOperatorCheckResponse)
+async def check_similar_operators(
+    request: SimilarOperatorCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """检测是否有相似算子可复用"""
+    from app.services.permission_service import get_accessible_resource_ids
+
+    result_all = await db.execute(select(Operator))
+    all_operators = result_all.scalars().all()
+    if not all_operators:
+        return SimilarOperatorCheckResponse(has_similar=False, operators=[])
+
+    await init_user_llm_context(current_user.id)
+    matched = await _find_similar_operators_llm(request.prompt, all_operators, top_k=5)
+    if not matched:
+        return SimilarOperatorCheckResponse(has_similar=False, operators=[])
+
+    shared_ids = await get_accessible_resource_ids(db, current_user.id, "operator")
+
+    owner_cache: dict = {}
+    items = []
+    for op, score, reason in matched:
+        can_use = (
+            op.author == current_user.id
+            or op.visibility == "public"
+            or op.id in shared_ids
+        )
+        owner_name = None
+        owner_email = None
+        if not can_use and op.author:
+            if op.author not in owner_cache:
+                user_result = await db.execute(select(User).where(User.id == op.author))
+                owner_cache[op.author] = user_result.scalar_one_or_none()
+            owner = owner_cache[op.author]
+            if owner:
+                owner_name = owner.display_name or owner.username
+                owner_email = owner.email
+        items.append(SimilarOperatorItem(
+            id=str(op.id),
+            name=op.name,
+            display_name=op.display_name,
+            description=op.description,
+            category=op.category,
+            tags=op.tags,
+            similarity=score,
+            can_use=can_use,
+            owner_name=owner_name,
+            owner_email=owner_email,
+        ))
+    return SimilarOperatorCheckResponse(has_similar=len(items) > 0, operators=items)
+
+
 @router.post("/generate", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
 async def generate_operator(
     request: OperatorGenerateRequest,
@@ -1012,7 +1143,6 @@ async def debug_operator_chat(
 
     script_content = operator.script_content or ""
     func_name = operator.function_name or ""
-    display_name = operator.display_name or operator.name
 
     ctx = request.context or {}
     op_lessons = experience.read_lessons(experience.operator_experience_dir(operator_id)) or ""
@@ -1028,17 +1158,6 @@ async def debug_operator_chat(
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
 
-    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-    from app.services.data_processor_agent import DataProcessorAgent
-    from app.services.data_inspector_agent import DataInspectorAgent
-
-    if not agent_registry.get("data_processor"):
-        agent_registry.register(DataProcessorAgent())
-    if not agent_registry.get("data_inspector"):
-        agent_registry.register(DataInspectorAgent())
-
-    runtime = AgentRuntime(agent_registry, llm_manager)
-
     history = []
     for h in (request.history or [])[-10:]:
         history.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
@@ -1053,93 +1172,28 @@ async def debug_operator_chat(
         if last_error:
             user_msg += f"\n上次错误: {last_error[:500]}"
 
-    context = {
-        "debug_mode": True,
-        "debug_type": "operator",
-        "db": db,
-        "user_id": current_user.id,
-        "history": history,
-        "debug_operator_id": operator_id,
-        "debug_script_name": func_name or "main",
-        "debug_script_content": script_content,
-        "debug_function_name": func_name,
-        "debug_last_success_params": None,
-        "debug_lessons": op_lessons,
-        "debug_user_context": ctx,
-        "debug_max_rounds": 7,"debug_max_inspections": 7,
-    }
+    from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message, stream_agent_events_sse
+    runtime = ensure_agent_runtime()
 
-    message = AgentMessage(
-        from_agent="user",
-        to_agent="data_processor",
-        reason=HandoffReason.DELEGATE,
-        payload={"user_message": user_msg},
-        context=context,
+    context = build_debug_context(
+        db=db,
+        user_id=current_user.id,
+        target_type="operator",
+        history=history,
+        script_name=func_name or "main",
+        script_content=script_content,
+        function_name=func_name,
+        lessons=op_lessons,
+        user_context=ctx,
+        debug_operator_id=operator_id,
     )
+    message = build_debug_message(user_msg, context)
 
-    import json as json_mod
-
-    async def generate():
-        import asyncio
-        from app.services.llm import init_user_llm_context
-        await init_user_llm_context(current_user.id)
-
-        runtime_gen = runtime.run("data_processor", message, context)
-
-        _inspector_active = False
-        _inspector_summary = ""
-        _inspector_content_sent = False
-        try:
-            _task = asyncio.ensure_future(runtime_gen.__anext__())
-            while True:
-                done, _pending = await asyncio.wait({_task}, timeout=20.0)
-                if _task not in done:
-                    yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                    continue
-                try:
-                    event = _task.result()
-                except StopAsyncIteration:
-                    break
-                _task = asyncio.ensure_future(runtime_gen.__anext__())
-
-                t = event.get("type")
-                if t == "agent_switch":
-                    agent = event.get("agent")
-                    _inspector_active = (agent == "data_inspector")
-                    if agent == "data_inspector":
-                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
-                    elif agent == "data_processor":
-                        _retry_round = context.get("debug_inspection_round", 0) + 1
-                        evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
-                    else:
-                        evt = None
-                    if evt:
-                        yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
-                elif t == "done":
-                    if _inspector_active and _inspector_summary and not _inspector_content_sent:
-                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
-                    _inspector_active = False
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                elif _inspector_active and t == "warning_confirmation":
-                    _inspector_summary = event.get("summary", "")
-                elif _inspector_active and t == "content":
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                    _inspector_content_sent = True
-                elif _inspector_active and t == "fatal":
-                    _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
-                elif _inspector_active and t == "tool_result":
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                else:
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-
-            yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-        except asyncio.CancelledError:
-            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.error(f"算子调试对话失败: {e}")
-            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    return StreamingResponse(
+        stream_agent_events_sse(runtime, message, context, user_id=current_user.id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 def _sanitize_op(obj):

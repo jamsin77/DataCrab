@@ -25,9 +25,6 @@ from app.schemas.chat import (
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    NLDataProcessRequest,
-    NLDataProcessResponse,
-    NLStreamEvent,
 )
 from app.api.deps import get_current_user
 from app.services.llm import llm_manager
@@ -36,20 +33,6 @@ from app.services.agent_utils import estimate_tokens, build_identifier_hint
 from app.services.tool_guidance import get_tool_guidance
 
 router = APIRouter()
-
-# 延迟导入：只在需要时才加载重型模块
-_nl_service = None
-_skill_library = None
-
-
-def _get_nl_service():
-    global _nl_service, _skill_library
-    if _nl_service is None:
-        from app.services.nl_service import NLService
-        from app.services.skill_library import SkillLibrary
-        _skill_library = SkillLibrary()
-        _nl_service = NLService(llm_manager, _skill_library)
-    return _nl_service
 
 # 加载助理人格文件
 _persona_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -413,22 +396,12 @@ async def send_message(
     await db.flush()
 
     try:
-        # 初始化技能库
-        nl_svc = _get_nl_service()
-        await nl_svc.skill_library.initialize()
-
         # 设置当前用户的 LLM 配置（API Key 按用户隔离）
         from app.services.llm import init_user_llm_context
         await init_user_llm_context(current_user.id)
 
         # 初始化LLM
         await llm_manager.initialize()
-
-        # 调用NL处理服务进行意图识别和技能匹配
-        nl_result = await _get_nl_service().process(
-            text=request.content,
-            context={"user_id": str(current_user.id)}
-        )
 
         # 获取历史消息（最近20条，不包括当前刚保存的）
         history_result = await db.execute(
@@ -603,16 +576,9 @@ async def stream_response(
             await db.commit()
 
             # 统一路由：始终从 data_processor 开始，Agent 自主决定是否 handoff（O）
-            from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-            from app.services.data_processor_agent import DataProcessorAgent
-            from app.services.data_inspector_agent import DataInspectorAgent
+            from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason
 
-            if not agent_registry.get("data_processor"):
-                agent_registry.register(DataProcessorAgent())
-            if not agent_registry.get("data_inspector"):
-                agent_registry.register(DataInspectorAgent())
-
-            runtime = AgentRuntime(agent_registry, llm_manager)
+            runtime = ensure_agent_runtime()
 
             trace_id = str(uuid4())
             compressed_history = await _compress_history(history_messages, session_id)
@@ -636,10 +602,26 @@ async def stream_response(
             )
 
             full_response = ""
-            async for event in runtime.run("data_processor", message, context):
+            agen = runtime.run("data_processor", message, context).__aiter__()
+            while True:
                 if cancel_event.is_set():
                     yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
                     return
+
+                # SSE 保活：20 秒无事件则发 ping，防止 network error
+                fut = asyncio.ensure_future(agen.__anext__())
+                done, pending = await asyncio.wait({fut}, timeout=20)
+                if not done:
+                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                    done, pending = await asyncio.wait({fut}, timeout=120)
+                    if not done:
+                        fut.cancel()
+                        yield f"data: {json.dumps({'type': 'error', 'content': '等待 Agent 响应超时'}, ensure_ascii=False)}\n\n"
+                        return
+                try:
+                    event = fut.result()
+                except StopAsyncIteration:
+                    break
 
                 if event.get("type") == "agent_switch":
                     yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'reason': event['reason']}, ensure_ascii=False)}\n\n"
@@ -670,8 +652,10 @@ async def stream_response(
         except asyncio.CancelledError:
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            logger.error(f"流式响应失败: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+            import traceback as _tb
+            err_detail = f"{e}\n\n{ _tb.format_exc()}"
+            logger.error(f"流式响应失败: {err_detail}")
+            yield f"data: {json.dumps({'type': 'error', 'content': err_detail}, ensure_ascii=False)}\n\n"
         finally:
             _active_stream_events.pop(session_id, None)
 
@@ -695,168 +679,3 @@ async def stop_generation(session_id: str = Query(..., description="要停止的
 
 
 # ===== 自然语言数据处理 =====
-
-@router.post("/process-data", response_model=NLDataProcessResponse)
-async def process_data_with_natural_language(
-    request: NLDataProcessRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """使用自然语言处理数据"""
-    try:
-        import pandas as pd
-        from app.services.nl_data_processor import nl_processor
-        from app.services.skill_library import skill_library
-
-        # 初始化技能库
-        await skill_library.initialize()
-
-        # 获取输入数据
-        if request.data:
-            input_df = pd.DataFrame(request.data)
-        elif request.file_id:
-            # 从文件加载数据
-            result = await db.execute(
-                select(FileLink).where(FileLink.id == request.file_id)
-            )
-            file_link = result.scalar_one_or_none()
-            if not file_link:
-                raise HTTPException(status_code=404, detail="文件不存在")
-
-            # 根据文件类型加载
-            file_path = file_link.file_path
-            if file_path.endswith('.csv'):
-                input_df = pd.read_csv(file_path)
-            elif file_path.endswith('.xlsx') or file_path.endswith('.xls'):
-                input_df = pd.read_excel(file_path)
-            elif file_path.endswith('.json'):
-                input_df = pd.read_json(file_path)
-            else:
-                raise HTTPException(status_code=400, detail="不支持的文件格式")
-        else:
-            raise HTTPException(status_code=400, detail="请提供数据或文件ID")
-
-        # 构建处理请求
-        from app.services.nl_data_processor import DataProcessingRequest
-        process_request = DataProcessingRequest(
-            natural_language=request.natural_language,
-            input_data=input_df,
-            session_id=str(request.session_id or uuid4()),
-            context={"user_id": str(current_user.id)}
-        )
-
-        # 处理
-        result = await nl_processor.process(process_request)
-
-        # 转换输出数据为JSON格式
-        output_json = None
-        if result.output_data is not None:
-            output_json = result.output_data.to_dict(orient="records")
-
-        return NLDataProcessResponse(
-            success=result.success,
-            output_data=output_json,
-            pipeline_name=result.pipeline_name,
-            steps=result.steps,
-            explanation=result.explanation,
-            execution_time=result.execution_time,
-            error=result.error,
-            logs=result.logs
-        )
-
-    except Exception as e:
-        logger.error(f"自然语言数据处理失败: {e}")
-        return NLDataProcessResponse(
-            success=False,
-            error=str(e),
-            logs=[f"处理失败: {e}"]
-        )
-
-
-@router.post("/process-data-stream")
-async def process_data_streaming(
-    request: NLDataProcessRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """流式处理数据"""
-    async def generate():
-        try:
-            import pandas as pd
-            from app.services.nl_data_processor import nl_processor, DataProcessingRequest
-            from app.services.skill_library import skill_library
-
-            # 设置当前用户的 LLM 配置（API Key 按用户隔离）
-            from app.services.llm import init_user_llm_context
-            await init_user_llm_context(current_user.id)
-
-            # 初始化技能库
-            await skill_library.initialize()
-
-            # 获取输入数据
-            if request.data:
-                input_df = pd.DataFrame(request.data)
-            elif request.file_id:
-                result = await db.execute(
-                    select(FileLink).where(FileLink.id == request.file_id)
-                )
-                file_link = result.scalar_one_or_none()
-                if not file_link:
-                    yield f"data: {json.dumps({'type': 'error', 'message': '文件不存在'}, ensure_ascii=False)}\n\n"
-                    return
-                file_path = file_link.file_path
-                if file_path.endswith('.csv'):
-                    input_df = pd.read_csv(file_path)
-                elif file_path.endswith('.xlsx'):
-                    input_df = pd.read_excel(file_path)
-                else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': '不支持的文件格式'}, ensure_ascii=False)}\n\n"
-                    return
-            else:
-                yield f"data: {json.dumps({'type': 'error', 'message': '请提供数据或文件ID'}, ensure_ascii=False)}\n\n"
-                return
-
-            # 构建处理请求
-            process_request = DataProcessingRequest(
-                natural_language=request.natural_language,
-                input_data=input_df,
-                session_id=str(request.session_id or uuid4()),
-                context={"user_id": str(current_user.id)}
-            )
-
-            # 流式处理
-            for event in await nl_processor.process_streaming(process_request):
-                # 转换DataFrame为JSON
-                if "preview" in event and event["preview"] is not None:
-                    preview = event["preview"]
-                    if "data" in preview and isinstance(preview["data"], list):
-                        pass  # 已经是JSON格式
-
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            logger.error(f"流式处理失败: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
-
-
-@router.get("/skills")
-async def list_available_skills():
-    """列出可用技能"""
-    from app.services.skill_library import skill_library
-    await skill_library.initialize()
-    skills = skill_library.list_skills()
-    return {
-        "skills": [
-            {
-                "id": s.get("id"),
-                "name": s.get("name"),
-                "display_name": s.get("display_name"),
-                "description": s.get("description"),
-                "category": s.get("category"),
-                "tags": s.get("tags", [])
-            }
-            for s in skills
-        ]
-    }

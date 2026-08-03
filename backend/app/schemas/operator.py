@@ -90,3 +90,25 @@ class OperatorDebugChatRequest(BaseModel):
     message: str = Field(..., description="用户调试消息")
     history: Optional[List[Dict[str, str]]] = Field(default=[], description="对话历史")
     context: Optional[Dict[str, Any]] = Field(default={}, description="调试上下文")
+
+
+class SimilarOperatorCheckRequest(BaseModel):
+    prompt: str = Field(..., description="用户的需求描述，用于检测是否有相似算子可复用")
+
+
+class SimilarOperatorItem(BaseModel):
+    id: str
+    name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    similarity: float = Field(..., description="相似度 0~1")
+    can_use: bool = Field(..., description="当前用户是否有权限使用")
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+
+
+class SimilarOperatorCheckResponse(BaseModel):
+    has_similar: bool
+    operators: List[SimilarOperatorItem] = []

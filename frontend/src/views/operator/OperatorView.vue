@@ -323,9 +323,41 @@
         >
           <el-icon><VideoPause /></el-icon> 停止
         </el-button>
-        <el-button type="primary" @click="handleGenerate" :loading="generating" :disabled="generating">
-          {{ generating ? 'AI 生成中...' : '开始生成' }}
+        <el-button type="primary" @click="handleGenerate" :loading="generating || checkingSimilar" :disabled="generating || checkingSimilar">
+          {{ generating ? 'AI 生成中...' : (checkingSimilar ? '检测相似算子...' : '开始生成') }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== 相似算子检测对话框 ==================== -->
+    <el-dialog v-model="showSimilarDialog" title="发现相似算子" width="600px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
+        <template #title>以下算子可能与您的需求相似，建议优先复用：</template>
+      </el-alert>
+
+      <div v-for="op in similarOperators" :key="op.id" class="similar-op-item">
+        <div class="similar-op-header">
+          <span class="similar-op-name">{{ op.display_name || op.name }}</span>
+          <el-tag v-if="op.category" size="small">{{ op.category }}</el-tag>
+          <span class="similar-op-score">相似度 {{ (op.similarity * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="similar-op-desc">{{ op.description || '(无描述)' }}</div>
+
+        <div v-if="op.can_use" class="similar-op-actions">
+          <el-button type="primary" size="small" @click="openExistingOperator(op)">查看此算子</el-button>
+        </div>
+        <div v-else class="similar-op-contact">
+          <el-alert type="info" :closable="false">
+            <template #title>
+              您无权限使用此算子，请联系创建者：{{ op.owner_name }}（{{ op.owner_email }}）
+            </template>
+          </el-alert>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showSimilarDialog = false">取消</el-button>
+        <el-button type="primary" @click="proceedToGenerate">仍然创建新算子</el-button>
       </template>
     </el-dialog>
 
@@ -820,6 +852,10 @@ const generating = ref(false)
 const genMessages = ref<any[]>([])
 let generateAbortController: AbortController | null = null
 
+const showSimilarDialog = ref(false)
+const similarOperators = ref<any[]>([])
+const checkingSimilar = ref(false)
+
 const showModifyDialog = ref(false)
 const modifyTarget = ref<any>(null)
 const modifyInstruction = ref('')
@@ -843,9 +879,26 @@ async function handleGenerate() {
     ElMessage.warning('请输入需求描述')
     return
   }
+  const userText = generatePrompt.value.trim()
+  checkingSimilar.value = true
+  try {
+    const resp = await api.post('/operators/check-similar', { prompt: userText })
+    if (resp.has_similar && resp.operators.length > 0) {
+      similarOperators.value = resp.operators
+      showSimilarDialog.value = true
+      return
+    }
+  } catch {
+    // 检测失败不阻断，继续生成
+  } finally {
+    checkingSimilar.value = false
+  }
+  await doGenerate(userText)
+}
+
+async function doGenerate(userText: string) {
   generating.value = true
   genMessages.value = []
-  const userText = generatePrompt.value.trim()
   genMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
   genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   generateAbortController = new AbortController()
@@ -925,6 +978,21 @@ async function handleGenerate() {
     generating.value = false
     generateAbortController = null
   }
+}
+
+async function openExistingOperator(op: any) {
+  showSimilarDialog.value = false
+  showGenerateDialog.value = false
+  await loadOperators()
+  const found = operators.value.find((o: any) => o.id === op.id)
+  if (found) {
+    openDebug(found)
+  }
+}
+
+async function proceedToGenerate() {
+  showSimilarDialog.value = false
+  await doGenerate(generatePrompt.value.trim())
 }
 
 function stopGenerate() {
@@ -2075,5 +2143,35 @@ onMounted(() => {
   a { color: #409eff; }
   hr { border: none; border-top: 1px solid #e4e7ed; margin: 20px 0; }
   strong { font-weight: 600; color: #1d1d1f; }
+}
+
+.similar-op-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
+  &:last-child { border-bottom: none; }
+}
+.similar-op-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.similar-op-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.similar-op-score {
+  margin-left: auto;
+  color: #e6a23c;
+  font-size: 13px;
+}
+.similar-op-desc {
+  color: #606266;
+  font-size: 13px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.similar-op-contact {
+  margin-top: 4px;
 }
 </style>

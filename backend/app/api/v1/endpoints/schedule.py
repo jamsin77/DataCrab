@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from croniter import croniter
+from zoneinfo import ZoneInfo
 
 from app.core.database import get_db
 from app.models.schedule import Schedule, TaskExecution
@@ -25,23 +26,14 @@ from app.schemas.schedule import (
     CronValidateResponse,
 )
 from app.api.deps import get_current_user
-from app.services.task_runner import execute_task
+from app.services.task_runner import execute_task, compute_next_cron_run
 
 router = APIRouter()
 
 
-def _validate_cron_and_next_run(cron_expression: str) -> datetime:
-    """验证 cron 表达式（支持 ; 分隔多个）并返回最近的下次执行时间"""
-    exprs = [e.strip() for e in cron_expression.split(";") if e.strip()]
-    if not exprs:
-        raise ValueError("Cron表达式为空")
-    next_times = []
-    for expr in exprs:
-        try:
-            next_times.append(croniter(expr, datetime.utcnow()).get_next(datetime))
-        except Exception:
-            raise ValueError(f"无效的Cron表达式: {expr}")
-    return min(next_times)
+def _validate_cron_and_next_run(cron_expression: str, tz_name: str = "UTC") -> datetime:
+    """验证 cron 表达式（支持 ; 分隔多个）并返回最近的下次执行时间（UTC，按指定时区解释）"""
+    return compute_next_cron_run(cron_expression, tz_name)
 
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
@@ -66,7 +58,7 @@ async def create_schedule(
         if not request.cron_expression:
             raise HTTPException(status_code=400, detail="Cron调度需要提供cron_expression")
         try:
-            next_run_at = _validate_cron_and_next_run(request.cron_expression)
+            next_run_at = _validate_cron_and_next_run(request.cron_expression, request.timezone)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     elif request.schedule_type == "interval":
@@ -89,6 +81,7 @@ async def create_schedule(
         retry_interval=request.retry_interval,
         timeout=request.timeout,
         concurrent_runs=request.concurrent_runs,
+        run_mode=request.run_mode,
         next_run_at=next_run_at,
         created_by=current_user.id,
     )
@@ -146,11 +139,27 @@ async def update_schedule(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+
+    # 内置调度保护：锁定 name/schedule_type/task_type/task_target_id，cron 最低每天一次
+    if getattr(schedule, "is_builtin", False):
+        for locked in ("name", "schedule_type", "task_type", "task_target_id"):
+            update_data.pop(locked, None)
+        if "cron_expression" in update_data:
+            _expr = update_data["cron_expression"].strip()
+            _parts = _expr.split()
+            if len(_parts) == 5:
+                _min, _hour, _dom, _mon, _dow = _parts
+                _freq = (_min != "0" or _hour != "0" or _dom != "*" or _mon != "*" or _dow != "*")
+                if _freq:
+                    raise HTTPException(status_code=400, detail="内置调度不支持高于每天的频率，请使用每天或更低频率（如每周、每月）")
     
     # 如果更新了Cron表达式，重新计算下次执行时间
     if "cron_expression" in update_data and schedule.schedule_type == "cron":
         try:
-            schedule.next_run_at = _validate_cron_and_next_run(update_data["cron_expression"])
+            schedule.next_run_at = _validate_cron_and_next_run(
+                update_data["cron_expression"],
+                update_data.get("timezone") or schedule.timezone or "UTC",
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     
@@ -174,6 +183,8 @@ async def delete_schedule(
     schedule = result.scalar_one_or_none()
     if not schedule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+    if getattr(schedule, "is_builtin", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="内置调度不可删除")
     await db.delete(schedule)
 
 
@@ -210,7 +221,7 @@ async def resume_schedule(
     # 重新计算下次执行时间
     if schedule.schedule_type == "cron" and schedule.cron_expression:
         try:
-            schedule.next_run_at = _validate_cron_and_next_run(schedule.cron_expression)
+            schedule.next_run_at = _validate_cron_and_next_run(schedule.cron_expression, schedule.timezone or "UTC")
         except ValueError:
             pass
     elif schedule.schedule_type == "interval" and schedule.interval_seconds:
@@ -247,7 +258,10 @@ async def trigger_schedule(
     db.add(execution)
     await db.flush()
     await db.refresh(execution)
-    
+    # 显式提交：BackgroundTasks 在 get_db 依赖 commit 之前运行，
+    # 不提交则 execute_task 的独立 session 查不到执行记录，永远卡 pending
+    await db.commit()
+
     background_tasks.add_task(
         execute_task,
         execution_id=execution.id,
@@ -299,17 +313,20 @@ async def validate_cron(
     request: CronValidateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """验证Cron表达式（支持 ; 分隔多个）"""
+    """验证Cron表达式（支持 ; 分隔多个），返回指定时区后续 5 次本地执行时间"""
     try:
+        tz_name = request.timezone or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            return CronValidateResponse(valid=False, message=f"无效的时区: {tz_name}")
         exprs = [e.strip() for e in request.cron_expression.split(";") if e.strip()]
         if not exprs:
             return CronValidateResponse(valid=False, message="Cron表达式为空")
-        next_runs = []
+        now_local = datetime.now(tz).replace(tzinfo=None)
         for expr in exprs:
-            cron = croniter(expr, datetime.utcnow())
-            next_runs.append(cron.get_next(datetime))
-        # 返回最近一次的后续 5 次执行时间
-        cron = croniter(exprs[0], datetime.utcnow())
+            croniter(expr, now_local)
+        cron = croniter(exprs[0], now_local)
         next_runs = [cron.get_next(datetime) for _ in range(5)]
         return CronValidateResponse(valid=True, next_runs=next_runs)
     except Exception as e:

@@ -78,6 +78,7 @@ class TableMetadata(Base):
     # AI 补充
     ai_enriched = Column(Boolean, default=False)
     ai_enriched_at = Column(DateTime)
+    schema_hash = Column(String(64))  # 表结构的哈希值，schema 未变则跳过 AI 增强
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

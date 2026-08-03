@@ -151,10 +151,13 @@
             v-model="generatePrompt"
             type="textarea"
             :rows="5"
-            placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条（↑↓ 切换历史输入）"
+            placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条"
             :disabled="generating"
             @keydown="onGenHistoryKey"
           />
+          <div class="history-tip" v-if="genHistory.length && !generating">
+            ↑↓ 切换历史输入（共 {{ genHistory.length }} 条）
+          </div>
         </el-form-item>
       </el-form>
 
@@ -186,9 +189,41 @@
         <el-button v-if="generating" type="danger" @click="stopGenerate">
           <el-icon><VideoPause /></el-icon> 停止
         </el-button>
-        <el-button type="primary" @click="handleGenerate" :loading="generating" :disabled="generating">
-          {{ generating ? 'AI 生成中...' : '开始生成' }}
+        <el-button type="primary" @click="handleGenerate" :loading="generating || checkingSimilar" :disabled="generating || checkingSimilar">
+          {{ generating ? 'AI 生成中...' : (checkingSimilar ? '检测相似技能...' : '开始生成') }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== 相似技能检测对话框 ==================== -->
+    <el-dialog v-model="showSimilarDialog" title="发现相似技能" width="600px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
+        <template #title>以下技能可能与您的需求相似，建议优先复用：</template>
+      </el-alert>
+
+      <div v-for="skill in similarSkills" :key="skill.id" class="similar-skill-item">
+        <div class="similar-skill-header">
+          <span class="similar-skill-name">{{ skill.display_name || skill.name }}</span>
+          <el-tag v-if="skill.category" size="small">{{ skill.category }}</el-tag>
+          <span class="similar-skill-score">相似度 {{ (skill.similarity * 100).toFixed(0) }}%</span>
+        </div>
+        <div class="similar-skill-desc">{{ skill.description || '(无描述)' }}</div>
+
+        <div v-if="skill.can_use" class="similar-skill-actions">
+          <el-button type="primary" size="small" @click="openExistingSkill(skill)">查看此技能</el-button>
+        </div>
+        <div v-else class="similar-skill-contact">
+          <el-alert type="info" :closable="false">
+            <template #title>
+              您无权限使用此技能，请联系创建者：{{ skill.owner_name }}（{{ skill.owner_email }}）
+            </template>
+          </el-alert>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="showSimilarDialog = false">取消</el-button>
+        <el-button type="primary" @click="proceedToGenerate">仍然创建新技能</el-button>
       </template>
     </el-dialog>
 
@@ -1023,6 +1058,11 @@ let generateAbortController: AbortController | null = null
 const genMessages = ref<any[]>([])
 const genMsgListRef = ref<HTMLElement | null>(null)
 
+// ==================== 相似技能检测 ====================
+const showSimilarDialog = ref(false)
+const similarSkills = ref<any[]>([])
+const checkingSimilar = ref(false)
+
 function onGenerateDialogClosed() {
   generatePrompt.value = ''
   genMessages.value = []
@@ -1045,9 +1085,26 @@ async function handleGenerate() {
     ElMessage.warning('请输入需求描述')
     return
   }
+  const userText = generatePrompt.value.trim()
+  checkingSimilar.value = true
+  try {
+    const resp = await api.post('/skills/check-similar', { prompt: userText })
+    if (resp.has_similar && resp.skills.length > 0) {
+      similarSkills.value = resp.skills
+      showSimilarDialog.value = true
+      return
+    }
+  } catch {
+    // 检测失败不阻断，继续生成
+  } finally {
+    checkingSimilar.value = false
+  }
+  await doGenerate(userText)
+}
+
+async function doGenerate(userText: string) {
   generating.value = true
   generateAbortController = new AbortController()
-  const userText = generatePrompt.value.trim()
   pushHistory(genHistory, genHistoryIdx, userText, 'generate')
   genMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
   genMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
@@ -1133,6 +1190,25 @@ async function handleGenerate() {
     generating.value = false
     generateAbortController = null
   }
+}
+
+async function openExistingSkill(skill: any) {
+  showSimilarDialog.value = false
+  showGenerateDialog.value = false
+  await loadSkills()
+  const found = skills.value.find((s: any) => s.id === skill.id)
+  if (found) {
+    detailSkill.value = found
+    mdEditContent.value = found.skill_md || ''
+    modifyInstruction.value = ''
+    detailTab.value = 'md'
+    detailDrawer.value = true
+  }
+}
+
+async function proceedToGenerate() {
+  showSimilarDialog.value = false
+  await doGenerate(generatePrompt.value.trim())
 }
 
 // ==================== 技能详情/修改 ====================
@@ -2655,6 +2731,11 @@ onMounted(() => {
 </script>
 
 <style lang="scss" scoped>
+.history-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
+}
 .skill-page {
   padding: 20px;
   height: 100%;
@@ -3750,5 +3831,35 @@ onMounted(() => {
 .gen-log-label {
   font-weight: 600;
   margin-right: 6px;
+}
+
+.similar-skill-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f0f0;
+  &:last-child { border-bottom: none; }
+}
+.similar-skill-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.similar-skill-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.similar-skill-score {
+  margin-left: auto;
+  color: #e6a23c;
+  font-size: 13px;
+}
+.similar-skill-desc {
+  color: #606266;
+  font-size: 13px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.similar-skill-contact {
+  margin-top: 4px;
 }
 </style>

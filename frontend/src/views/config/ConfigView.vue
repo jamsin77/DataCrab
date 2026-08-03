@@ -13,6 +13,9 @@
       <el-tab-pane label="数据规则管理" name="standards">
         <DataStandardsConfig />
       </el-tab-pane>
+      <el-tab-pane label="元数据管理" name="metadata">
+        <MetadataView />
+      </el-tab-pane>
       <el-tab-pane label="权限管理" name="permission">
         <PermissionView />
       </el-tab-pane>
@@ -27,6 +30,7 @@ import AgentConfigView from './AgentConfigView.vue'
 import ModelConfigView from './ModelConfigView.vue'
 import DataStandardsConfig from './DataStandardsConfig.vue'
 import PermissionView from './PermissionView.vue'
+import MetadataView from '@/views/metadata/MetadataView.vue'
 import DataSourceView from '@/views/datasource/DataSourceView.vue'
 
 const route = useRoute()
@@ -35,7 +39,7 @@ const activeTab = ref('agent')
 
 onMounted(() => {
   const tab = (route.query.tab as string) || 'agent'
-  if (['datasource', 'agent', 'model', 'standards', 'permission'].includes(tab)) {
+  if (['datasource', 'agent', 'model', 'standards', 'metadata', 'permission'].includes(tab)) {
     activeTab.value = tab
   }
 })

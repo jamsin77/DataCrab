@@ -54,6 +54,7 @@ class PipelineResponse(BaseModel):
     category: Optional[str] = None
     visibility: Optional[str] = None
     is_active: bool = True
+    is_builtin: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
 

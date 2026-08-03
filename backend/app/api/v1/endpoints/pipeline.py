@@ -49,6 +49,7 @@ def _build_response(p: Pipeline) -> PipelineResponse:
         category=p.category,
         visibility=p.visibility,
         is_active=p.is_active,
+        is_builtin=getattr(p, "is_builtin", False) or False,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -158,6 +159,8 @@ async def delete_pipeline(
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="流程不存在")
+    if getattr(p, "is_builtin", False):
+        raise HTTPException(status_code=403, detail="内置流程不可删除")
     p.is_active = False
     await db.flush()
     return {"ok": True}
@@ -426,38 +429,9 @@ async def debug_pipeline_chat(
     current_user: User = Depends(get_current_user),
 ):
     """流程 AI 调试助手（多智能体架构：DataProcessor + DataInspector）"""
-    result = await db.execute(
-        select(Pipeline).where(Pipeline.id == pipeline_id, Pipeline.is_active == True)
-    )
-    p = result.scalar_one_or_none()
-    if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
-
-    await init_user_llm_context(current_user.id)
-    await llm_manager.initialize()
-
-    main_code = p.main_code or ""
-    entry_function = p.entry_function or "main"
-    display_name = p.display_name or p.name
-
     ctx = req.context or {}
     last_result = ctx.get("last_result", "")
     last_error = ctx.get("last_error", "")
-
-    from app.services import experience as _exp
-    _pipe_exp_dir = _exp.pipeline_experience_dir(pipeline_id)
-    _pipe_lessons = _exp.read_lessons(_pipe_exp_dir) or ""
-
-    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-    from app.services.data_processor_agent import DataProcessorAgent
-    from app.services.data_inspector_agent import DataInspectorAgent
-
-    if not agent_registry.get("data_processor"):
-        agent_registry.register(DataProcessorAgent())
-    if not agent_registry.get("data_inspector"):
-        agent_registry.register(DataInspectorAgent())
-
-    runtime = AgentRuntime(agent_registry, llm_manager)
 
     history = []
     for h in (req.history or [])[-10:]:
@@ -471,92 +445,20 @@ async def debug_pipeline_chat(
         if last_error:
             user_msg += f"\n上次错误: {last_error[:500]}"
 
-    context = {
-        "debug_mode": True,
-        "debug_type": "pipeline",
-        "db": db,
-        "user_id": current_user.id,
-        "history": history,
-        "debug_pipeline_id": pipeline_id,
-        "debug_folder": _pipe_exp_dir,
-        "debug_script_name": entry_function,
-        "debug_script_content": main_code,
-        "debug_function_name": entry_function,
-        "debug_last_success_params": None,
-        "debug_lessons": _pipe_lessons,
-        "debug_user_context": ctx,
-        "debug_max_rounds": 7,"debug_max_inspections": 7,
-    }
-
-    message = AgentMessage(
-        from_agent="user",
-        to_agent="data_processor",
-        reason=HandoffReason.DELEGATE,
-        payload={"user_message": user_msg},
-        context=context,
+    from app.services.task_runner import prepare_pipeline_debug_runtime
+    from app.services.multi_agent import stream_agent_events_sse
+    runtime, message, context = await prepare_pipeline_debug_runtime(
+        db, pipeline_id, current_user.id,
+        history=history, user_message=user_msg, user_context=ctx,
     )
+    if not runtime:
+        raise HTTPException(status_code=404, detail="流程不存在")
 
-    async def generate():
-        import asyncio
-        from app.services.llm import init_user_llm_context
-        await init_user_llm_context(current_user.id)
-
-        runtime_gen = runtime.run("data_processor", message, context)
-
-        _inspector_active = False
-        _inspector_summary = ""
-        _inspector_content_sent = False
-        try:
-            _task = asyncio.ensure_future(runtime_gen.__anext__())
-            while True:
-                done, _pending = await asyncio.wait({_task}, timeout=20.0)
-                if _task not in done:
-                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                    continue
-                try:
-                    event = _task.result()
-                except StopAsyncIteration:
-                    break
-                _task = asyncio.ensure_future(runtime_gen.__anext__())
-
-                t = event.get("type")
-                if t == "agent_switch":
-                    agent = event.get("agent")
-                    _inspector_active = (agent == "data_inspector")
-                    if agent == "data_inspector":
-                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
-                    elif agent == "data_processor":
-                        _retry_round = context.get("debug_inspection_round", 0) + 1
-                        evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
-                    else:
-                        evt = None
-                    if evt:
-                        yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
-                elif t == "done":
-                    if _inspector_active and _inspector_summary and not _inspector_content_sent:
-                        yield f"data: {json.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
-                    _inspector_active = False
-                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                elif _inspector_active and t == "warning_confirmation":
-                    _inspector_summary = event.get("summary", "")
-                elif _inspector_active and t == "content":
-                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                    _inspector_content_sent = True
-                elif _inspector_active and t == "fatal":
-                    _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
-                elif _inspector_active and t == "tool_result":
-                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                else:
-                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-        except asyncio.CancelledError:
-            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.error(f"流程调试对话失败: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+    return StreamingResponse(
+        stream_agent_events_sse(runtime, message, context, user_id=current_user.id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.get("/{pipeline_id}/executions", response_model=list[PipelineExecutionResponse])

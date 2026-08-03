@@ -22,8 +22,11 @@ export interface ChatMessage {
 }
 
 export interface StreamEvent {
-  type: 'reasoning' | 'thinking' | 'content' | 'model' | 'done' | 'error' | 'cancelled'
+  type: 'reasoning' | 'thinking' | 'content' | 'model' | 'done' | 'error' | 'cancelled' | 'ping' | 'agent_switch' | 'tool_result' | 'round' | 'clear_thinking' | [key: string]
   content?: string
+  agent?: string
+  reason?: string
+  message?: string
 }
 
 export const chatApi = {

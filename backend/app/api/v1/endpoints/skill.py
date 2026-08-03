@@ -36,6 +36,9 @@ from app.schemas.skill import (
     SkillModifyRequest,
     SkillDebugChatRequest,
     SkillParamDef,
+    SimilarSkillCheckRequest,
+    SimilarSkillItem,
+    SimilarSkillCheckResponse,
 )
 from app.services.skill_parser import (
     parse_skill_md,
@@ -684,11 +687,8 @@ async def run_skill_stream(
                         try:
                             from app.services.data_inspector_agent import DataInspectorAgent
                             from app.services.data_processor_agent import DataProcessorAgent
-                            from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
-                            if not agent_registry.get("data_inspector"):
-                                agent_registry.register(DataInspectorAgent())
-                            if not agent_registry.get("data_processor"):
-                                agent_registry.register(DataProcessorAgent())
+                            from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, agent_registry
+                            ensure_agent_runtime()
                             _inspector = agent_registry.get("data_inspector")
                             _processor = agent_registry.get("data_processor")
                             _inspect_ctx = {
@@ -784,10 +784,8 @@ async def run_skill_stream(
                     _err_msg = str(exec_result.get("error", ""))[:500]
                     yield f"data: {json_mod.dumps({'type': 'fixing', 'message': '执行失败，正在自动修复脚本...'}, ensure_ascii=False)}\n\n"
                     try:
-                        from app.services.data_processor_agent import DataProcessorAgent
-                        from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
-                        if not agent_registry.get("data_processor"):
-                            agent_registry.register(DataProcessorAgent())
+                        from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, agent_registry
+                        ensure_agent_runtime()
                         _processor = agent_registry.get("data_processor")
                         _skill_md_path = folder / "SKILL.md"
                         _skill_md = _skill_md_path.read_text(encoding="utf-8") if _skill_md_path.exists() else ""
@@ -1222,11 +1220,8 @@ async def run_skill_nl_stream(
                         try:
                             from app.services.data_inspector_agent import DataInspectorAgent
                             from app.services.data_processor_agent import DataProcessorAgent
-                            from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
-                            if not agent_registry.get("data_inspector"):
-                                agent_registry.register(DataInspectorAgent())
-                            if not agent_registry.get("data_processor"):
-                                agent_registry.register(DataProcessorAgent())
+                            from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, agent_registry
+                            ensure_agent_runtime()
                             _inspector = agent_registry.get("data_inspector")
                             _processor = agent_registry.get("data_processor")
                             _inspect_ctx = {
@@ -1325,10 +1320,8 @@ async def run_skill_nl_stream(
                     _err_msg = str(exec_result.get("error", ""))[:500]
                     yield f"data: {json_mod.dumps({'type': 'fixing', 'message': '执行失败，正在自动修复脚本...'}, ensure_ascii=False)}\n\n"
                     try:
-                        from app.services.data_processor_agent import DataProcessorAgent
-                        from app.services.multi_agent import AgentMessage, HandoffReason, agent_registry
-                        if not agent_registry.get("data_processor"):
-                            agent_registry.register(DataProcessorAgent())
+                        from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, agent_registry
+                        ensure_agent_runtime()
                         _processor = agent_registry.get("data_processor")
                         _skill_md_path = folder / "SKILL.md"
                         _skill_md = _skill_md_path.read_text(encoding="utf-8") if _skill_md_path.exists() else ""
@@ -1444,17 +1437,8 @@ async def debug_skill_chat(
 
     lessons = read_lessons(folder) or ""
 
-    # 构建多智能体上下文
-    from app.services.multi_agent import AgentRuntime, AgentMessage, HandoffReason, agent_registry
-    from app.services.data_processor_agent import DataProcessorAgent
-    from app.services.data_inspector_agent import DataInspectorAgent
-
-    if not agent_registry.get("data_processor"):
-        agent_registry.register(DataProcessorAgent())
-    if not agent_registry.get("data_inspector"):
-        agent_registry.register(DataInspectorAgent())
-
-    runtime = AgentRuntime(agent_registry, llm_manager)
+    from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message, stream_agent_events_sse
+    runtime = ensure_agent_runtime()
 
     # 智能选择历史：首条 + 末尾3条 + 中间用户消息优先
     _raw_history = request.history
@@ -1468,25 +1452,25 @@ async def debug_skill_chat(
             _selected.extend(_raw_history[-3:])  # 末尾3条
     history = [{"role": m.get("role", "user"), "content": m.get("content", "")[:500]} for m in _selected]
 
-    context = {
-        "debug_mode": True,
-        "db": db,
-        "user_id": current_user.id,
-        "history": history,
-        "debug_folder": folder,
-        "debug_script_name": request.script_name,
-        "debug_script_content": script_content,
-        "debug_skill_md": skill_md_excerpt,
-        "debug_skill_md_full": skill_md,
-        "debug_params_section": params_section,
-        "debug_last_success_params": last_success_params,
-        "debug_lessons": lessons,
-        "debug_datasource_id": request.datasource_id,
-        "debug_datasource_name": ds_name,
-        "debug_table_name": request.table_name,
-        "debug_user_context": request.context or {},
-        "debug_max_rounds": 7,"debug_max_inspections": 7,
-    }
+    context = build_debug_context(
+        db=db,
+        user_id=current_user.id,
+        target_type="skill",
+        history=history,
+        script_name=request.script_name,
+        script_content=script_content,
+        function_name=None,
+        lessons=lessons,
+        user_context=request.context,
+        last_success_params=last_success_params,
+        debug_folder=folder,
+        debug_skill_md=skill_md_excerpt,
+        debug_skill_md_full=skill_md,
+        debug_params_section=params_section,
+        debug_datasource_id=request.datasource_id,
+        debug_datasource_name=ds_name,
+        debug_table_name=request.table_name,
+    )
 
     # 加载历史调试记忆（Agent 长期记忆，跨会话保留）
     from app.services import experience as _exp
@@ -1494,80 +1478,10 @@ async def debug_skill_chat(
     if _prev_history:
         context["debug_session_log"] = f"[之前调试记录]\n{_prev_history}"
 
-    message = AgentMessage(
-        from_agent="user",
-        to_agent="data_processor",
-        reason=HandoffReason.DELEGATE,
-        payload={"user_message": request.message},
-        context=context,
-    )
-
-    async def generate():
-        import asyncio
-        from app.services.llm import init_user_llm_context
-        await init_user_llm_context(current_user.id)
-
-        runtime_gen = runtime.run("data_processor", message, context)
-
-        _inspector_active = False  # 跟踪当前是否在 DataInspector 阶段
-        _inspector_summary = ""    # 缓冲 warning_confirmation 的 summary
-        _inspector_content_sent = False  # 是否已转发过 DataInspector 的 content
-        try:
-            _task = asyncio.ensure_future(runtime_gen.__anext__())
-            while True:
-                done, _pending = await asyncio.wait({_task}, timeout=20.0)
-                if _task not in done:
-                    yield f"data: {json_mod.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                    continue
-                # 任务完成，取结果
-                try:
-                    event = _task.result()
-                except StopAsyncIteration:
-                    break
-                # 创建下一个事件的任务
-                _task = asyncio.ensure_future(runtime_gen.__anext__())
-
-                t = event.get("type")
-                if t == "agent_switch":
-                    agent = event.get("agent")
-                    _inspector_active = (agent == "data_inspector")
-                    if agent == "data_inspector":
-                        evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
-                    elif agent == "data_processor":
-                        _retry_round = context.get("debug_inspection_round", 0) + 1
-                        evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
-                    else:
-                        evt = None
-                    if evt:
-                        yield f"data: {json_mod.dumps(evt, ensure_ascii=False)}\n\n"
-                elif t == "done":
-                    # 如果 DataInspector 结束时还没有转发过 content，用缓冲的 summary 兜底
-                    if _inspector_active and _inspector_summary and not _inspector_content_sent:
-                        yield f"data: {json_mod.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
-                    _inspector_active = False
-                    # 转发 done 事件（含 result.content，不能吞）
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                elif _inspector_active and t == "warning_confirmation":
-                    _inspector_summary = event.get("summary", "")
-                elif _inspector_active and t == "content":
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                    _inspector_content_sent = True
-                elif _inspector_active and t == "fatal":
-                    _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
-                elif _inspector_active and t == "tool_result":
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-                else:
-                    yield f"data: {json_mod.dumps(event, ensure_ascii=False, default=str)}\n\n"
-
-            yield f"data: {json_mod.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-        except asyncio.CancelledError:
-            yield f"data: {json_mod.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.error(f"调试对话失败: {e}")
-            yield f"data: {json_mod.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+    message = build_debug_message(request.message, context)
 
     return StreamingResponse(
-        generate(),
+        stream_agent_events_sse(runtime, message, context, user_id=current_user.id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -1691,6 +1605,137 @@ async def _collect_all_lessons(db: AsyncSession, user_id) -> str:
     """收集用户所有算子+技能的经验总结，用于注入新技能/算子生成（统一经验库）"""
     from app.services import experience
     return await experience.collect_all_lessons(db, user_id)
+
+
+SIMILARITY_THRESHOLD = 0.6
+
+
+async def _find_similar_skills_llm(prompt: str, skills: list, top_k: int = 5) -> list:
+    """用 LLM 语义匹配相似技能，返回 [(skill, similarity, reason), ...]"""
+    from app.services.llm import llm_manager
+
+    if not skills:
+        return []
+
+    skill_list = "\n".join(
+        f"{i + 1}. {s.name}: {s.description or '(无描述)'}"
+        for i, s in enumerate(skills)
+    )
+
+    system = "你是技能匹配助手。判断哪些现有技能与用户需求相似、可复用。只返回 JSON。"
+    user_msg = f"""用户需求：{prompt}
+
+现有技能：
+{skill_list}
+
+返回 JSON 数组，只包含相似度>=0.6的技能：
+[{{"index": 1, "similarity": 0.8, "reason": "功能描述"}}]
+
+index 是上面列表的序号(从1开始)。无相似技能返回 []。"""
+
+    try:
+        resp = await llm_manager.chat_with_messages(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.1,
+            context="skill_match",
+        )
+        resp_text = resp if isinstance(resp, str) else resp.get("content", "")
+        import json as _json
+        match = re.search(r'\[.*\]', resp_text, re.DOTALL)
+        if not match:
+            return []
+        matched = _json.loads(match.group())
+        result = []
+        for item in matched:
+            idx = item.get("index", 0) - 1
+            if 0 <= idx < len(skills):
+                score = min(max(float(item.get("similarity", 0)), 0.0), 1.0)
+                if score >= SIMILARITY_THRESHOLD:
+                    result.append((skills[idx], score, item.get("reason", "")))
+        return result[:top_k]
+    except Exception as e:
+        logger.warning(f"LLM 技能匹配失败，回退关键词匹配: {e}")
+        return _keyword_match_skills(prompt, skills, top_k)
+
+
+def _keyword_match_skills(prompt: str, skills: list, top_k: int = 5) -> list:
+    """关键词匹配兜底：name/description/tags 加权"""
+    prompt_lower = prompt.lower()
+    scored = []
+    for s in skills:
+        score = 0.0
+        if s.name and s.name.lower() in prompt_lower:
+            score += 0.5
+        desc = (s.description or "").lower()
+        for word in prompt_lower.split():
+            if len(word) > 1 and word in desc:
+                score += 0.15
+        tags = s.tags or []
+        for tag in tags:
+            if tag.lower() in prompt_lower:
+                score += 0.2
+        if score >= SIMILARITY_THRESHOLD:
+            scored.append((s, min(score, 1.0), "关键词匹配"))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+@router.post("/check-similar", response_model=SimilarSkillCheckResponse)
+async def check_similar_skills(
+    request: SimilarSkillCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """检测是否有相似技能可复用"""
+    from app.services.permission_service import get_accessible_resource_ids
+    from app.services.llm import init_user_llm_context
+
+    result_all = await db.execute(select(Skill))
+    all_skills = result_all.scalars().all()
+    if not all_skills:
+        return SimilarSkillCheckResponse(has_similar=False, skills=[])
+
+    await init_user_llm_context(current_user.id)
+    matched = await _find_similar_skills_llm(request.prompt, all_skills, top_k=5)
+    if not matched:
+        return SimilarSkillCheckResponse(has_similar=False, skills=[])
+
+    shared_ids = await get_accessible_resource_ids(db, current_user.id, "skill")
+
+    owner_cache: dict = {}
+    items = []
+    for skill, score, reason in matched:
+        can_use = (
+            skill.author == current_user.id
+            or skill.visibility == "public"
+            or skill.id in shared_ids
+        )
+        owner_name = None
+        owner_email = None
+        if not can_use and skill.author:
+            if skill.author not in owner_cache:
+                user_result = await db.execute(select(User).where(User.id == skill.author))
+                owner_cache[skill.author] = user_result.scalar_one_or_none()
+            owner = owner_cache[skill.author]
+            if owner:
+                owner_name = owner.display_name or owner.username
+                owner_email = owner.email
+        items.append(SimilarSkillItem(
+            id=str(skill.id),
+            name=skill.name,
+            display_name=skill.display_name,
+            description=skill.description,
+            category=skill.category,
+            tags=skill.tags,
+            similarity=score,
+            can_use=can_use,
+            owner_name=owner_name,
+            owner_email=owner_email,
+        ))
+    return SimilarSkillCheckResponse(has_similar=len(items) > 0, skills=items)
 
 
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)

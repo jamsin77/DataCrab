@@ -4415,4 +4415,24 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 
 **Relationship to prior rounds**: Round 4's dual-model architecture + Round 13's "remove fast_model, always deep" are replaced by `pick_model_async` — no longer a binary choice (deep or fast), but selecting the most suitable and economical from the available-model list by context. Round 17's degradation chain + CircuitBreaker retained (execution-layer fault tolerance after model selection).
 
-**Known leftovers**: `data_processor_agent.py`'s `_handle_get_llm_config` still references the deleted `llm_manager.fast_model` property (AttributeError when calling the get_llm_config tool); DB model/config layers still retain the fast_model column (empty value, no runtime impact).
+**Known leftovers** (fixed in Round 19): `data_processor_agent.py`'s `_handle_get_llm_config` referenced the deleted `llm_manager.fast_model` property (AttributeError when calling the get_llm_config tool); DB model/config layers still retained the fast_model column (empty value, no runtime impact). → Both items were fully cleaned up in Round 19.
+
+### 11.30 Round 19 — fast_model Residual Cleanup: Fix AttributeError + DB/Config/Frontend Full-Chain Cleanup
+
+**Core insight**: Round 18's `pick_model_async` deleted the `llm_manager.fast_model` property, but `_handle_get_llm_config` still referenced it (AttributeError when calling the get_llm_config tool), and DB schema/endpoint/frontend had scattered `fast_model` residual reads/writes. This round cleans up the `fast_model` residuals that Round 18 left behind across the full chain; `default_model` is retained (seed/registry still use it as the Provider-recommended deep-model name, not a leftover).
+
+| Improvement | File | Description |
+|------|------|------|
+| **_handle_get_llm_config rewritten** | data_processor_agent.py | Deleted `llm_manager.fast_model` (AttributeError root cause); now returns `available_models` (with capability descriptions, from `_available_models_with_desc`); providers list `fast_model` → `default_model` |
+| **SAVE_LLM_ADAPTER cleanup** | data_processor_agent.py | schema drops `fast_model` parameter; `_handle_save_llm_adapter` removes fast_model reads/writes (4 places) |
+| **llm.py 6-place cleanup** | llm.py | `init_user_llm_context` (fallback + cfg) / `_parse_fallback_models` / `load_providers_from_db` (seed + registry) / comments all drop fast_model |
+| **DB model drops 2 Columns** | models/custom_extension.py | `LLMProvider.fast_model` + `UserLLMConfig.fast_model` Column definitions deleted; fallback_models comment updated |
+| **config.py endpoint cleanup** | endpoints/config.py | `LLMConfigRequest`/`FallbackModelItem`/`LLMConfigResponse` schemas drop fast_model field; `get_llm_config`/`update_llm_config` reads/writes all deleted (8 places) |
+| **custom_extension.py return cleanup** | endpoints/custom_extension.py | providers list returns `fast_model` → `default_model` |
+| **settings retained for compat** | core/config.py | `LLM_FAST_MODEL: str = ""` retained with deprecation comment — business code no longer reads it; kept only for compat with existing .env LLM_FAST_MODEL vars (pydantic extra_forbidden would crash) |
+| **.env.example drops LLM_FAST_MODEL** | backend/.env.example | Removed LLM_FAST_MODEL example line |
+| **Frontend display cleanup** | ModelConfigView.vue | `formatCapabilities` drops `if (row.fast_model) caps.push('快速')` |
+
+**Verification**: `app.main` fully loads 184 routes; `LLMProvider`/`UserLLMConfig` table columns confirmed no fast_model; `_handle_get_llm_config` source confirmed no fast_model reference; `llm_manager.fast_model` property confirmed absent.
+
+**Relationship to prior rounds**: Completes the cleanup Round 18 left unfinished (Round 18 only deleted the llm_manager property; DB/schema/endpoint/frontend residuals were not cleaned). `default_model` is not in scope — seed providers still write it, registry still reads it, as the Provider-recommended deep-model name (not a dead field). settings.LLM_FAST_MODEL retention is a backward-compat compromise (deleting it would break existing .env deployments); business code no longer reads it.

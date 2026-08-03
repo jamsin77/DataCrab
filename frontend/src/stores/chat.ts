@@ -131,7 +131,9 @@ export const useChatStore = defineStore('chat', () => {
             msg.content += '\n\n*[已停止生成]*'
           }
         } else {
-          msg.content = (msg.content || '') + `\n\n❌ 请求出错: ${e.message}`
+          const errDetail = e.message || String(e)
+          const errStack = e.stack ? `\n\n堆栈:\n${e.stack.split('\n').slice(0, 5).join('\n')}` : ''
+          msg.content = (msg.content || '') + `\n\n❌ 请求出错: ${errDetail}${errStack}`
         }
       }
     } finally {

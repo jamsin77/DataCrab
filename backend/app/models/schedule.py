@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Integer, DateTime, Text, ForeignKey
+from sqlalchemy import Column, String, Integer, DateTime, Text, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSON
 from sqlalchemy.orm import relationship
 
@@ -28,7 +28,7 @@ class Schedule(Base):
 
     # Cron配置
     cron_expression = Column(String(100))
-    timezone = Column(String(50), default="Asia/Shanghai")
+    timezone = Column(String(50), default="UTC")
     
     # 间隔配置（秒）
     interval_seconds = Column(Integer)
@@ -45,6 +45,7 @@ class Schedule(Base):
 
     # 状态
     status = Column(String(20), index=True, default="active")  # active, paused, stopped
+    is_builtin = Column(Boolean, default=False, nullable=False)
     last_run_at = Column(DateTime)
     next_run_at = Column(DateTime)
     last_run_status = Column(String(20))  # success, failed, running

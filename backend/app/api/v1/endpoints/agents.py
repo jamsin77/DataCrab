@@ -27,23 +27,16 @@ _runtime: Optional[AgentRuntime] = None
 
 def _get_runtime(db, user_id) -> AgentRuntime:
     global _runtime
-    from app.services.llm import llm_manager
     if _runtime is None:
-        _register_default_agents()
-        _runtime = AgentRuntime(agent_registry, llm_manager)
+        from app.services.multi_agent import ensure_agent_runtime
+        _runtime = ensure_agent_runtime()
     return _runtime
-
-
-def _register_default_agents():
-    if not agent_registry.get("data_processor"):
-        agent_registry.register(DataProcessorAgent())
-    if not agent_registry.get("data_inspector"):
-        agent_registry.register(DataInspectorAgent())
 
 
 @router.get("", response_model=list[AgentInfo])
 async def list_agents():
-    _register_default_agents()
+    from app.services.multi_agent import ensure_agent_runtime
+    ensure_agent_runtime()
     return agent_registry.list_agents()
 
 

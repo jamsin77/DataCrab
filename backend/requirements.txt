@@ -21,3 +21,4 @@ openai>=1.0
 pyyaml>=6.0
 croniter>=2.0.0
 cryptography>=41.0
+tzdata>=2024.1

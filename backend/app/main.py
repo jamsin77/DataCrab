@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_skills)
         await conn.run_sync(_migrate_custom_extensions)
+        await conn.run_sync(_migrate_builtin_flags)
     logger.info("数据库表已创建")
     await _seed_skills_and_pipelines()
     await _load_custom_extensions()
@@ -128,6 +129,27 @@ def _migrate_custom_extensions(connection):
             logger.warning(f"{table}表迁移跳过: {e}")
 
 
+def _migrate_builtin_flags(connection):
+    from sqlalchemy import text
+    for table in ("pipelines", "schedules"):
+        try:
+            result = connection.execute(text(f"PRAGMA table_info({table})"))
+            columns = {row[1] for row in result.fetchall()}
+            if "is_builtin" not in columns:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN is_builtin BOOLEAN DEFAULT 0"))
+                logger.info(f"{table}表已添加 is_builtin 列")
+        except Exception as e:
+            logger.warning(f"{table}表迁移跳过: {e}")
+    try:
+        result = connection.execute(text("PRAGMA table_info(table_metadata)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "schema_hash" not in columns:
+            connection.execute(text("ALTER TABLE table_metadata ADD COLUMN schema_hash VARCHAR(64)"))
+            logger.info("table_metadata表已添加 schema_hash 列")
+    except Exception as e:
+        logger.warning(f"table_metadata表迁移跳过: {e}")
+
+
 async def _seed_skills_and_pipelines():
     """首次启动时自动 seed 技能（从文件夹扫描）、流程和算子（从 seed JSON）"""
     from pathlib import Path
@@ -218,6 +240,59 @@ async def _seed_skills_and_pipelines():
                     )
                     db.add(operator)
                 logger.info(f"Seed 算子: {len(operators)} 个")
+
+        # 4. Seed 内置流程和调度（按 is_builtin 查重，用户删除后不复活）
+        from app.models.schedule import Schedule
+
+        builtin_pipe = (await db.execute(
+            sa_select(Pipeline).where(Pipeline.is_builtin == True)
+        )).scalar_one_or_none()
+        if not builtin_pipe:
+            builtin_pipe = Pipeline(
+                name="metadata-sync-enrich",
+                display_name="元数据同步与AI增强",
+                description="自动同步所有有权限数据源的元数据并进行AI业务增强",
+                main_code="metadata_sync_enrich",
+                entry_function="main",
+                parameters=[],
+                skill_calls=[],
+                tags=["system", "builtin"],
+                category="system",
+                visibility="public",
+                is_active=True,
+                is_builtin=True,
+            )
+            db.add(builtin_pipe)
+            await db.flush()
+            logger.info("Seed 内置流程: 元数据同步与AI增强")
+
+        builtin_sched = (await db.execute(
+            sa_select(Schedule).where(Schedule.is_builtin == True)
+        )).scalar_one_or_none()
+        if not builtin_sched:
+            cron_expr = "0 0 * * *"
+            next_run = None
+            try:
+                from croniter import croniter
+                from datetime import datetime as _dt
+                next_run = croniter(cron_expr, _dt.utcnow()).get_next(_dt)
+            except Exception:
+                pass
+            builtin_sched = Schedule(
+                name="metadata-daily-sync",
+                description="每天0点同步元数据并AI增强（内置，不可删除）",
+                task_type="pipeline",
+                task_target_id=builtin_pipe.id,
+                schedule_type="cron",
+                cron_expression=cron_expr,
+                timezone="Asia/Shanghai",
+                status="active",
+                is_builtin=True,
+                run_mode="normal",
+                next_run_at=next_run,
+            )
+            db.add(builtin_sched)
+            logger.info("Seed 内置调度: 元数据每日同步")
 
         await db.commit()
 
