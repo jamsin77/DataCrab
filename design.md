@@ -2710,9 +2710,9 @@ done 事件
 | 算子 | "operator" | 数据库（Operator.script_content） | exec() 沙箱 | ✅ DB 更新 | ✅ exec() + _build_operator_namespace |
 | 流程 | "pipeline" | 数据库（Pipeline.main_code） | 不支持直接执行 | ✅ DB 更新 | ❌ 返回"请使用流程执行功能" |
 
-### 2.9 调度系统模块
+### 2.8 调度系统模块
 
-#### 2.9.1 调度架构
+#### 2.8.1 调度架构
 
 调度系统由 `schedule.py`（API 端点）+ `task_runner.py`（后台执行 + 定时扫描）组成：
 
@@ -2746,7 +2746,7 @@ done 事件
 
 > **实现说明**：手动触发（`POST /schedules/{id}/trigger`）通过 FastAPI `BackgroundTasks` 调用 `execute_task`；定时扫描由 `_scheduler_loop` 在应用启动时 `asyncio.create_task` 创建，30 秒间隔扫描到期的 active 调度。`sandbox_ns.py` 提供算子沙箱命名空间（`build_operator_namespace`），供 `task_runner` 和 `operator.py` 共用。
 
-#### 2.9.2 调度配置模型
+#### 2.8.2 调度配置模型
 ```python
 class Schedule(Base):
     __tablename__ = "schedules"
@@ -2792,7 +2792,7 @@ class Schedule(Base):
     executions = relationship("TaskExecution", back_populates="schedule", lazy="selectin")
 ```
 
-#### 2.9.3 任务执行模型
+#### 2.8.3 任务执行模型
 ```python
 class TaskExecution(Base):
     __tablename__ = "task_executions"
@@ -2834,16 +2834,16 @@ class TaskExecution(Base):
     # 关系
     schedule = relationship("Schedule", back_populates="executions")
 ```
-### 2.10 元数据管理模块
+### 2.9 元数据管理模块
 
-#### 2.10.1 设计目标
+#### 2.9.1 设计目标
 
 对平台中所有数据集（数据源中的表/文件）建立统一的元数据中心，分为**技术元数据**和**业务元数据**两大类，支持：
 - 技术元数据在配置数据源时一键自动同步
 - 业务元数据通过大模型分析数据样本自动补充，也支持人工编辑
 - 元数据全生命周期管理：采集 → 存储 → 补充 → 查询 → 血缘追踪
 
-#### 2.10.2 元数据架构
+#### 2.9.2 元数据架构
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -2867,7 +2867,7 @@ class TaskExecution(Base):
 └──────────────────┴──────────────────┴───────────────────────────┘
 ```
 
-#### 2.10.3 元数据数据模型
+#### 2.9.3 元数据数据模型
 
 ```python
 class TableMetadata(Base):
@@ -2937,7 +2937,7 @@ class TableMetadata(Base):
     data_source = relationship("DataSource", back_populates="table_metadata")
 ```
 
-#### 2.10.4 技术元数据自动同步
+#### 2.9.4 技术元数据自动同步
 
 在数据源创建/编辑时，用户可选择"同步技术元数据"，系统通过 Connector 自动提取所有表的技术元数据。
 
@@ -3039,7 +3039,7 @@ async def sync_technical_metadata(datasource: DataSource, db: AsyncSession):
 - 数据源编辑时：用户手动触发"重新同步"
 - 定时任务：可选配置定时同步（如每天凌晨）
 
-#### 2.10.5 业务元数据 AI 补充
+#### 2.9.5 业务元数据 AI 补充
 
 通过大模型分析样本数据和已有技术元数据，自动生成业务元数据建议。
 
@@ -3096,7 +3096,7 @@ async def enrich_business_metadata(meta: TableMetadata, db: AsyncSession):
     await db.flush()
 ```
 
-#### 2.10.6 API 设计
+#### 2.9.6 API 设计
 
 ```
 # 技术元数据同步
@@ -3118,7 +3118,7 @@ GET    /api/v1/metadata/search?q=文物&tag=文化遗产      # 按名称/描述
 GET    /api/v1/metadata/stats                          # 元数据统计概览
 ```
 
-#### 2.10.7 前端页面设计
+#### 2.9.7 前端页面设计
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -3158,7 +3158,7 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 2.10.8 元数据在平台中的应用
+#### 2.9.8 元数据在平台中的应用
 
 | 应用场景 | 说明 |
 |---------|------|
@@ -3169,7 +3169,7 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 | **数据质量监控** | 基于质量规则自动检测数据质量问题，计算质量评分 |
 | **数据安全** | 按安全等级控制数据访问权限 |
 
-#### 2.10.9 与数据源模块的集成
+#### 2.9.9 与数据源模块的集成
 
 数据源创建/编辑流程中增加"同步技术元数据"选项：
 
@@ -3188,9 +3188,9 @@ GET    /api/v1/metadata/stats                          # 元数据统计概览
 
 数据源编辑流程中增加"重新同步"按钮，点击后重新提取技术元数据（保留已有业务元数据不覆盖）。
 
-### 2.11 权限管理模块
+### 2.10 权限管理模块
 
-#### 2.11.1 RBAC权限模型
+#### 2.10.1 RBAC权限模型
 ```python
 class User(Base):
     __tablename__ = "users"
@@ -3238,7 +3238,7 @@ class Permission(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 ```
 
-#### 2.11.2 权限检查逻辑
+#### 2.10.2 权限检查逻辑
 ```python
 class PermissionChecker:
     """权限检查器"""
@@ -3272,7 +3272,7 @@ class PermissionChecker:
         return False
 ```
 
-### 2.14 数据标准 / 质量 / 安全规则库
+### 2.11 数据标准 / 质量 / 安全规则库
 
 三份 Markdown 规则库，作为 DataInspector 的检查依据，可在系统设置页查看编辑。
 

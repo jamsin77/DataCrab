@@ -2725,9 +2725,9 @@ Frontend adds event handling: `inspecting` (🔍 DataInspector inspecting), `ret
 | Operator | "operator" | DB (Operator.script_content) | exec() sandbox | ✅ DB update | ✅ exec() + _build_operator_namespace |
 | Pipeline | "pipeline" | DB (Pipeline.main_code) | direct execution not supported | ✅ DB update | ❌ returns "please use the pipeline execution feature" |
 
-### 2.9 Scheduling System Module
+### 2.8 Scheduling System Module
 
-#### 2.9.1 Scheduling Architecture
+#### 2.8.1 Scheduling Architecture
 
 The scheduling system consists of `schedule.py` (API endpoints) + `task_runner.py` (background execution + scheduled scan):
 
@@ -2761,7 +2761,7 @@ The scheduling system consists of `schedule.py` (API endpoints) + `task_runner.p
 
 > **Implementation**: Manual trigger (`POST /schedules/{id}/trigger`) calls `execute_task` via FastAPI `BackgroundTasks`; scheduled scanning is performed by `_scheduler_loop` started with `asyncio.create_task` at app startup, scanning due active schedules every 30 seconds. `sandbox_ns.py` provides the operator sandbox namespace (`build_operator_namespace`), shared by `task_runner` and `operator.py`.
 
-#### 2.9.2 Schedule Configuration Model
+#### 2.8.2 Schedule Configuration Model
 ```python
 class Schedule(Base):
     __tablename__ = "schedules"
@@ -2807,7 +2807,7 @@ class Schedule(Base):
     executions = relationship("TaskExecution", back_populates="schedule", lazy="selectin")
 ```
 
-#### 2.9.3 Task Execution Model
+#### 2.8.3 Task Execution Model
 ```python
 class TaskExecution(Base):
     __tablename__ = "task_executions"
@@ -2850,16 +2850,16 @@ class TaskExecution(Base):
     schedule = relationship("Schedule", back_populates="executions")
 ```
 
-### 2.10 Metadata Management Module
+### 2.9 Metadata Management Module
 
-#### 2.10.1 Design Goals
+#### 2.9.1 Design Goals
 
 Establish a unified metadata center for all datasets (tables/files in data sources) on the platform, divided into **technical metadata** and **business metadata**, supporting:
 - One-click auto-sync of technical metadata when configuring a data source
 - Business metadata auto-enriched via LLM analysis of data samples; also supports manual editing
 - Full-lifecycle metadata management: collection → storage → enrichment → query → lineage tracking
 
-#### 2.10.2 Metadata Architecture
+#### 2.9.2 Metadata Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -2882,7 +2882,7 @@ Establish a unified metadata center for all datasets (tables/files in data sourc
 └──────────────────┴──────────────────┴───────────────────────────┘
 ```
 
-#### 2.10.3 Metadata Data Model
+#### 2.9.3 Metadata Data Model
 
 ```python
 class TableMetadata(Base):
@@ -2952,7 +2952,7 @@ class TableMetadata(Base):
     data_source = relationship("DataSource", back_populates="table_metadata")
 ```
 
-#### 2.10.4 Technical Metadata Auto-Sync
+#### 2.9.4 Technical Metadata Auto-Sync
 
 When creating/editing a data source, users can choose "Sync technical metadata"; the system auto-extracts technical metadata for all tables via the Connector.
 
@@ -3054,7 +3054,7 @@ async def sync_technical_metadata(datasource: DataSource, db: AsyncSession):
 - On data source edit: user manually triggers "Re-sync"
 - Scheduled task: optionally configure scheduled sync (e.g., daily at midnight)
 
-#### 2.10.5 Business Metadata AI Enrichment
+#### 2.9.5 Business Metadata AI Enrichment
 
 Auto-generate business metadata suggestions via the LLM analyzing sample data and existing technical metadata.
 
@@ -3111,7 +3111,7 @@ Output JSON only, no explanation."""
     await db.flush()
 ```
 
-#### 2.10.6 API Design
+#### 2.9.6 API Design
 
 ```
 # Technical metadata sync
@@ -3133,7 +3133,7 @@ GET    /api/v1/metadata/search?q=relics&tag=heritage   # search by name/descript
 GET    /api/v1/metadata/stats                          # metadata statistical overview
 ```
 
-#### 2.10.7 Frontend Page Design
+#### 2.9.7 Frontend Page Design
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -3170,7 +3170,7 @@ GET    /api/v1/metadata/stats                          # metadata statistical ov
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 2.10.8 Metadata Applications in the Platform
+#### 2.9.8 Metadata Applications in the Platform
 
 | Scenario | Description |
 |---------|------|
@@ -3181,7 +3181,7 @@ GET    /api/v1/metadata/stats                          # metadata statistical ov
 | **Data quality monitoring** | Auto-detects data quality issues based on quality rules; computes quality scores |
 | **Data security** | Controls data access permissions by security level |
 
-#### 2.10.9 Integration with the Data Source Module
+#### 2.9.9 Integration with the Data Source Module
 
 Add a "Sync technical metadata" option in the data source create/edit flow:
 
@@ -3200,9 +3200,9 @@ Data source creation flow:
 
 Add a "Re-sync" button in the data source edit flow; clicking it re-extracts technical metadata (preserving existing business metadata).
 
-### 2.11 Permission Management Module
+### 2.10 Permission Management Module
 
-#### 2.11.1 RBAC Permission Model
+#### 2.10.1 RBAC Permission Model
 ```python
 class User(Base):
     __tablename__ = "users"
@@ -3251,7 +3251,7 @@ class Permission(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 ```
 
-#### 2.11.2 Permission Check Logic
+#### 2.10.2 Permission Check Logic
 ```python
 class PermissionChecker:
     """Permission checker"""
@@ -3287,7 +3287,7 @@ class PermissionChecker:
         return False
 ```
 
-### 2.14 Data Standards / Quality / Security Rule Libraries
+### 2.11 Data Standards / Quality / Security Rule Libraries
 
 Three Markdown rule libraries serve as DataInspector's inspection basis, viewable/editable on the system settings page.
 
