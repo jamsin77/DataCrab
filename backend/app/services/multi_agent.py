@@ -334,6 +334,8 @@ async def stream_agent_events_sse(
             elif _inspector_active and t == "tool_result":
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
             else:
+                if t in ("executing", "progress", "run_result", "inspecting", "inspection_result"):
+                    logger.info(f"[SSE] 转发 type={t}")
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

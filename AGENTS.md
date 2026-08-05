@@ -37,6 +37,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
 | `connectors.py` | 数据源连接器（8 种：PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
+| `video_utils.py` | **视频处理工具：`probe_video`（元数据提取，ffprobe 优先回退 opencv）+ `extract_keyframes`（关键帧抽取，ffmpeg 场景检测优先回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85** |
 | `soul.md` | 助手人格与安全红线定义（原 personal.md，rename 对齐「灵魂」语义） |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
@@ -556,3 +557,46 @@ DataProcessorAgent（统一入口）
 **验证**：`app.main` 完整加载 184 路由；`LLMProvider`/`UserLLMConfig` 表列确认无 fast_model；`_handle_get_llm_config` 源码确认无 fast_model 引用；`llm_manager.fast_model` 属性确认不存在。
 
 **与前轮关系**：补齐第十八轮未完成的清理（第十八轮只删了 llm_manager 属性，DB/schema/endpoint/前端残留未清）。`default_model` 不在清理范围——seed providers 仍写入、registry 仍读取，作为 Provider 推荐深度模型名（非死字段）。settings.LLM_FAST_MODEL 保留是向后兼容妥协（删了会破坏已有 .env 部署），业务代码已完全不读。
+
+### 第二十轮（视频处理能力——关键帧抽取 + 元数据提取）
+
+**核心需求**：用户要求"把一段视频的关键画面和信息提取出来"。对齐现有 `llm_vision` 图片处理链路，新增视频处理能力——提取视频元数据 + 抽取关键帧为图片（可传给 `llm_vision` 做内容理解）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **video_utils.py 共享模块** | video_utils.py（新增） | `probe_video`（ffprobe 优先，回退 opencv）+ `extract_keyframes`（ffmpeg 场景检测优先，回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85 |
+| **internal/video/info 端点** | datasource.py | 视频元数据提取端点（路径校验 + probe_video）；技能沙箱子进程通过 HTTP 调用 |
+| **internal/video/keyframes 端点** | datasource.py | 视频关键帧抽取端点（路径校验 + extract_keyframes + output_dir 授权校验） |
+| **read_file 视频格式 fail-fast** | datasource.py + sandbox_ns.py | 视频格式（mp4/avi/mov/mkv 等 12 种）→ 400 错误提示用 extract_video_info / extract_keyframes |
+| **extract_video_info 沙箱函数** | skill_runner.py + sandbox_ns.py | 技能沙箱（HTTP 调端点）+ 算子沙箱（直接实现）；返回 duration/width/height/fps/codec/bit_rate/size/total_frames/audio |
+| **extract_keyframes 沙箱函数** | skill_runner.py + sandbox_ns.py | 技能沙箱（HTTP 调端点）+ 算子沙箱（直接实现）；返回 [{frame, timestamp, image_path}]，帧图片可直接传 llm_vision |
+| **builtins 注入** | skill_runner.py | `_builtins.extract_video_info` / `_builtins.extract_keyframes` + `_wrap_tool_log` + `_INJECTED_FUNCTIONS` + 7 处沙箱白名单 |
+| **文档更新** | prompt_docs.py | SANDBOX_TOOLS_DOC 加两个函数完整签名 + 典型流程示例；PLATFORM_CONVENTIONS_DOC 加视频处理场景 |
+| **能力表更新** | tool_guidance.py | available_functions 加 extract_video_info / extract_keyframes |
+| **依赖** | requirements.txt | 加 opencv-python-headless + pillow |
+| **安装说明** | INSTALL.md + INSTALL.en.md | ffmpeg 可选依赖说明（未装时回退 opencv） |
+
+**与前轮关系**：对齐 `llm_vision`（图片处理）的三层架构（共享工具 → datasource 端点 + sandbox_ns 直接实现 → skill_runner HTTP 调用）。视频处理不需要调 LLM，关键帧抽出后传给 `llm_vision` 做内容理解——`extract_keyframes` + `llm_vision` 组合实现"视频关键画面和信息提取"完整链路。
+
+### 第二十一轮（模型选择简化 + 端点精简 + 对话导出 + 流式错误恢复 + 数据更新时间追踪 + StuckDetector 增强）
+
+**核心洞察**：第十八轮 `pick_model_async`（LLM 选模型）复杂度高、额外消耗一次 LLM 调用，且简单场景（参数推断/对话）不需要问 LLM。第十~十六轮在 data_processor_agent 中堆叠了 `_analyze_error`/`_compress_tool_result`/上下文压缩等多层机制，实际调试中收益低于复杂度成本。同时 skill.py 的 `run_skill_stream`/`run_skill_nl_stream` 流式端点与非流式端点功能重叠。本轮做减法：简化模型选择、删除冗余端点、删除低收益机制，同时补齐对话导出和流式错误恢复两个用户可感知改进。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **模型选择简化** | llm.py + config.py | 删除 `pick_model_async`/`pick_model`（第十八轮 LLM 模型自动选择）；替换为 `_default`（配置的深度模型）+ `_flash`（名称含 flash 的模型，找不到回退默认）属性；所有 chat 方法用 `self._default`；config.py 注释更新 |
+| **skill.py 流式端点精简** | skill.py | 删除 `run_skill_stream` + `run_skill_nl_stream` 两个流式端点（-624 行），功能由非流式端点覆盖 |
+| **data_processor_agent 精简** | data_processor_agent.py | 删除 `_analyze_error`（错误分析，被 skill_runner 的 `_llm_classify_error` 覆盖）+ `_save_session_log`（会话日志）+ `_compress_tool_result`（工具结果压缩）；删除调试循环中的上下文压缩（`should_compact` 检查）；模型选择统一为 `llm_manager._default` |
+| **StuckDetector 增强** | agent_utils.py | 新增"只调查不修改"检测（连续 5 轮只 read/grep 不 edit/run → 提示立即修改）+ 总轮次上限（30 轮 → 提示结束）；INVESTIGATION_TOOLS/FIX_TOOLS 工具分类 |
+| **流式错误恢复** | chat.py | `full_response` 初始化提前到 try 之前；流式响应出错时保存已收到的部分内容 + 错误信息到 DB，避免前端刷新后回复消失 |
+| **对话导出** | ChatView.vue + chat.ts | 导出对话为 Markdown 文件（含推理过程折叠、模型、时间）；侧边栏下拉 + 顶部工具栏双入口 |
+| **执行进度显示** | ChatView.vue + chat store | 处理 progress/executing/tool_result/agent_switch/inspecting/retry/round 事件 → executingMsg；前端显示旋转图标 + 进度文字 |
+| **时间格式升级** | ChatView.vue | 消息时间从仅时分秒 → 完整年月日时分秒 |
+| **SSE 日志** | multi_agent.py + main.py | 转发 executing/progress/run_result 等事件时记 `[SSE]` 日志；main.py 加 `debug_sse.log`（1MB 轮转）便于排查 SSE 丢事件 |
+| **seed 技能去重修复** | main.py | 用 skill_path 文件夹名去重（之前用 name，SKILL.md 无 front matter 时 name 为空导致重复创建）；跳过无 front matter 的 SKILL.md |
+| **data_updated_at 追踪** | datasource.py + metadata.py + connectors.py + models/datasource.py + main.py | TableMetadata 新增 `data_updated_at` 列（数据源端真实更新时间，区别于元数据记录的 updated_at）；connectors `_mtime_to_utc` 辅助；metadata 同步时写入；main.py 自动迁移加列 |
+| **llm.py 注释清理** | llm.py | 第 21 行 `pick_model` 引用 → `_default/_flash` |
+
+**验证**：`app.main` 完整加载 183 路由（删除 2 个流式端点后 -1）；134 测试全通过（修复 `test_read_script_platform_scope` 硬编码行号 → 全文搜索）；无 `pick_model`/`run_skill_stream`/`run_skill_nl_stream` 残留引用（仅 llm.py 注释已清理）。
+
+**与前轮关系**：第十八轮 `pick_model_async` 被本轮 `_default/_flash` 替代——不再问 LLM 选模型（省一次调用），简单场景直接用配置模型。第十三轮删除的"只调查不修改"检测器以更温和形式回归（StuckDetector 内，5 轮阈值 + 仅提示不 give_up + 30 轮总上限兜底）。第八轮 `_compress_tool_result` + 第十六轮调试循环上下文压缩被删除（复杂度高、调试场景消息量有限收益低；主对话 chat.py 的 `_compress_history` 保留不动）。第二十轮视频处理不受影响。

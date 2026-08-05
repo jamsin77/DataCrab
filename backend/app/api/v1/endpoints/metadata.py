@@ -390,6 +390,7 @@ async def sync_datasource_metadata(
                 "sample_data": json.loads(json.dumps(df_sample.fillna("").to_dict(orient="records"), default=str)) if df_sample is not None else [],
                 "column_stats": column_stats,
                 "last_synced_at": datetime.utcnow(),
+                "data_updated_at": table_info.get("data_updated_at"),
                 "schema_hash": hashlib.sha256(
                     json.dumps(table_schema_list, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest()[:32],

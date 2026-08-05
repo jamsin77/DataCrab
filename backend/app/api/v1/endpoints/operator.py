@@ -584,7 +584,6 @@ index 是上面列表的序号(从1开始)。无相似算子返回 []。"""
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.1,
-            context="operator_match",
         )
         resp_text = resp if isinstance(resp, str) else resp.get("content", "")
         import re as _re
@@ -904,7 +903,7 @@ async def generate_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': 'AI 正在推理和生成算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, context="算子生成"):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
@@ -1029,7 +1028,7 @@ async def modify_operator_stream(
         try:
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': 'AI 正在推理和修改算子代码...'}, ensure_ascii=False)}\n\n"
 
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3, context="算子修改"):
+            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":

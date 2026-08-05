@@ -18,7 +18,7 @@ from loguru import logger
 _TRANSIENT_ERRORS = None
 
 # 当前请求用户的 LLM 配置覆盖（contextvars，请求级隔离，线程/协程安全）
-# 设置后 LLMManager 的 _model_configs/pick_model 优先使用用户配置（含其私有 API Key）
+# 设置后 LLMManager 的 _model_configs/_default/_flash 优先使用用户配置（含其私有 API Key）
 _user_llm_config: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "_user_llm_config", default=None
 )
@@ -121,20 +121,40 @@ async def _stream_with_timeout(stream, first_timeout: float = 120.0, chunk_timeo
     首 chunk 用更长超时（思维模型推理阶段可能 60-90s 才出第一个 token），
     后续 chunk 用较短超时（流式建立后 token 应持续到达）。
     超时时抛出 asyncio.TimeoutError，让调用方捕获并降级重试，而非静默结束。
+
+    注意：用 ensure_future + asyncio.wait 替代 wait_for，
+    避免 wait_for 取消 __anext__() 导致 SDK async stream 进入坏状态（永久挂起）。
+    对齐第八轮 SSE handler 修复的同一模式。
     """
     import asyncio as _aio
     is_first = True
     while True:
         t = first_timeout if is_first else chunk_timeout
-        try:
-            chunk = await _aio.wait_for(stream.__anext__(), timeout=t)
-        except StopAsyncIteration:
-            return
-        except _aio.TimeoutError:
+        task = _aio.ensure_future(stream.__anext__())
+        done, _pending = await _aio.wait({task}, timeout=t)
+        if task in done:
+            try:
+                chunk = task.result()
+            except StopAsyncIteration:
+                return
+            is_first = False
+            yield chunk
+        else:
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+            close = getattr(stream, "close", None)
+            if close:
+                try:
+                    r = close()
+                    if hasattr(r, "__await__"):
+                        await r
+                except Exception:
+                    pass
             logger.warning(f"LLM 流式响应超时（{'首个' if is_first else '后续'}chunk {t}s 无数据），将降级重试")
-            raise
-        is_first = False
-        yield chunk
+            raise _aio.TimeoutError(f"流式响应超时（{t}s 无数据）")
 
 
 # Provider 注册表：内存缓存，启动时从 DB 加载
@@ -391,172 +411,27 @@ class LLMManager:
             return [cfg["model"]]
         return [self.model] if self.model else []
 
-    def _available_models_with_desc(self) -> List[tuple]:
-        """返回 (model_value, description) 列表，description 包含能力提示"""
+    @property
+    def _default(self) -> str:
+        """默认深度模型"""
         cfg = get_user_llm_config()
-        provider = cfg.get("provider") if cfg else self.provider
-        info = _provider_registry.get(provider)
-        result = []
-        if info and info.get("models"):
-            for m in info["models"]:
-                val = m.get("value", "")
-                label = m.get("label", val)
-                if not val:
-                    continue
-                # 根据模型名推断能力描述
-                desc = label
-                name_lower = val.lower()
-                if "flash" in name_lower:
-                    desc += "（轻量快速，适合简单任务）"
-                elif "v" in name_lower and ("plus" in name_lower or "flash" in name_lower):
-                    desc += "（视觉模型，图片识别）"
-                elif "5.2" in val or "max" in name_lower or "plus" in name_lower:
-                    desc += "（最强，复杂推理）"
-                else:
-                    desc += "（通用）"
-                result.append((val, desc))
-        if not result:
-            m = self._first_model()
-            result.append((m, "通用"))
-        return result
+        if cfg and cfg.get("model"):
+            return cfg["model"]
+        return self.model or "gpt-3.5-turbo"
 
-    def _first_model(self) -> str:
-        """取第一个可用模型（兜底）"""
-        models = self._available_models()
-        return models[0] if models else self.model or "gpt-3.5-turbo"
+    @property
+    def _flash(self) -> str:
+        """快速模型（名称含 flash，找不到则回退默认模型）"""
+        for m in self._available_models():
+            if "flash" in m.lower():
+                return m
+        return self._default
 
     def _eff_vision_model(self, provider: str = "") -> str:
         """根据 provider 选择视觉模型（空字符串=不支持）"""
         cfg = get_user_llm_config()
         p = provider or (cfg.get("provider") if cfg else self.provider)
         return _PROVIDER_VISION_MODELS.get(p, "")
-
-    _model_cache: Dict[str, str] = {}
-
-    _SIMPLE_CONTEXTS = {"参数推断", "对话"}
-
-    def _find_flash_model(self) -> str:
-        """从可用模型列表中找一个轻量模型（名称含 flash）"""
-        for m in self._available_models():
-            if "flash" in m.lower():
-                return m
-        return ""
-
-    async def pick_model_async(self, message: str, history: List[Dict] = None, context: str = "") -> str:
-        """根据任务上下文自动推断选择最合适且最经济的模型。
-
-        Args:
-            message: 用户消息
-            context: 任务场景描述（如"参数推断"、"代码生成"、"调试修复"、"对话"）
-        """
-        if not message and not context:
-            return self._first_model()
-
-        # 简单场景（参数推断/对话）直接用轻量模型，不问 LLM
-        if context in self._SIMPLE_CONTEXTS:
-            flash = self._find_flash_model()
-            if flash:
-                return flash
-
-        cache_key = (context or "") + "|" + (message[:200] if message else "")
-        if cache_key in self._model_cache:
-            return self._model_cache[cache_key]
-
-        models = self._available_models()
-        if len(models) <= 1:
-            return models[0] if models else self._first_model()
-
-        # 构建模型列表（含能力描述）
-        model_descs = self._available_models_with_desc()
-        model_list = "\n".join(f"- {val}：{desc}" for val, desc in model_descs)
-        vision = self._eff_vision_model()
-        embedding = self._eff_embedding_model()
-        if vision and vision not in models:
-            model_list += f"\n- {vision}：图片识别/OCR专用"
-        if embedding and embedding not in models:
-            model_list += f"\n- {embedding}：向量化专用"
-
-        ctx_desc = ""
-        if context:
-            _ctx_map = {
-                "参数推断": "简单任务：根据用户指令拼装参数，不需要复杂推理",
-                "技能脚本调用": "技能脚本中的 LLM 调用，根据脚本逻辑判断",
-                "技能修改": "复杂任务：修改技能规范和脚本，需要强推理",
-                "算子生成": "复杂任务：生成代码，需要强推理",
-                "算子修改": "复杂任务：修改代码，需要强推理",
-                "算子调试": "复杂任务：调试修复代码，需要强推理",
-                "流程生成": "复杂任务：生成流程代码，需要强推理",
-                "调试修复": "复杂任务：调试修复代码，需要强推理",
-                "对话": "简单任务：日常对话，不需要复杂推理",
-            }
-            ctx_desc = f"\n任务场景：{context}（{_ctx_map.get(context, context)}）"
-        try:
-            prompt = (
-                f"以下是当前可用的模型列表：\n{model_list}\n"
-                f"{ctx_desc}"
-                f"\n用户消息：{message[:500] if message else '(无)'}\n\n"
-                f"请选择最合适且最经济的模型。原则：能用轻量模型完成的不用重量模型，"
-                f"图片任务必须选视觉模型，向量化必须选嵌入模型。"
-                f"只返回模型名称，不要其他内容。"
-            )
-            resp = await self.chat(prompt, model=models[0], temperature=0.0, max_tokens=50)
-            chosen = resp.strip().strip('"').strip("'")
-            all_models = set(models)
-            if vision:
-                all_models.add(vision)
-            if embedding:
-                all_models.add(embedding)
-            if chosen in all_models:
-                self._model_cache[cache_key] = chosen
-                if len(self._model_cache) > 100:
-                    self._model_cache.pop(next(iter(self._model_cache)))
-                return chosen
-            return self._fallback_model(message)
-        except Exception as e:
-            logger.warning(f"模型推断失败，回退: {e}")
-            return self._fallback_model(message)
-
-    def _fallback_model(self, message: str) -> str:
-        """兜底模型选择：检查是否涉及图片/向量，否则用第一个可用模型"""
-        if message:
-            msg_lower = message.lower()
-            _vision_kw = {"图片", "识别", "ocr", "OCR", "身份证", "营业执照", "证件", "截图", "image", "photo"}
-            _embedding_kw = {"向量化", "向量", "embedding", "语义搜索", "相似度", "vector"}
-            for kw in _vision_kw:
-                if kw in msg_lower or kw in message:
-                    v = self._eff_vision_model()
-                    if v:
-                        return v
-            for kw in _embedding_kw:
-                if kw in msg_lower or kw in message:
-                    e = self._eff_embedding_model()
-                    if e:
-                        return e
-        return self._first_model()
-
-    def pick_model(self, message: str, history: List[Dict] = None) -> str:
-        """同步模型选择（兜底，用关键词）。异步场景用 pick_model_async。"""
-        return self._fallback_model(message or "")
-
-    def _resolve_model(self, model: Optional[str]) -> str:
-        """解析模型：指定则用指定，断路器熔断则降级。"""
-        target = model or self._first_model()
-        if _circuit.is_available(target):
-            return target
-        models = self._available_models()
-        for m in models:
-            if m != target and _circuit.is_available(m):
-                logger.warning(f"断路器降级: {target} 不可用，切换到 {m}")
-                return m
-        return target
-
-    def _degradation_chain(self, target: str) -> List[str]:
-        """构建降级链：目标模型 → 其他可用模型，去重。"""
-        chain = [target]
-        for m in self._available_models():
-            if m != target and m not in chain:
-                chain.append(m)
-        return chain
 
     # ---------- 客户端管理 ----------
     def _client_for(self, cfg: Dict[str, str]):
@@ -687,14 +562,13 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        context: str = "",
     ) -> str:
-        """与大模型对话。model=None 时自动推断。"""
+        """与大模型对话。"""
         if not self._initialized:
             await self.initialize()
 
         if model is None:
-            model = await self.pick_model_async(prompt, context=context)
+            model = self._default
 
         last_err = None
         for cfg in self._model_configs():
@@ -721,19 +595,13 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        context: str = "",
     ) -> str:
-        """多轮对话，支持 system/user/assistant 消息列表。model=None 时自动推断。"""
+        """多轮对话，支持 system/user/assistant 消息列表。"""
         if not self._initialized:
             await self.initialize()
 
         if model is None:
-            _last_user = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    _last_user = m.get("content", "")[:500]
-                    break
-            model = await self.pick_model_async(_last_user, context=context)
+            model = self._default
 
         last_err = None
         for cfg in self._model_configs():
@@ -845,19 +713,13 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        context: str = "",
     ) -> AsyncGenerator[str, None]:
-        """多轮流式对话。model=None 时自动推断。"""
+        """多轮流式对话。"""
         if not self._initialized:
             await self.initialize()
 
         if model is None:
-            _last_user = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    _last_user = m.get("content", "")[:500]
-                    break
-            model = await self.pick_model_async(_last_user, context=context)
+            model = self._default
 
         last_err = None
         for cfg in self._model_configs():
@@ -891,48 +753,29 @@ class LLMManager:
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.7,
-        context: str = "",
     ) -> AsyncGenerator[Dict[str, str], None]:
-        """流式对话（含推理过程）。model=None 时自动推断。"""
+        """流式对话（含推理过程）。"""
         if not self._initialized:
             await self.initialize()
 
-        if model is None:
-            _last_user = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    _last_user = m.get("content", "")[:500]
-                    break
-            model = await self.pick_model_async(_last_user, context=context)
+        target_model = model or self._default
+        last_err = None
 
-        target_model = self._resolve_model(model)
-        chain = self._degradation_chain(target_model)
-        tried_models: List[str] = []
-
-        for attempt_model in chain:
-            if attempt_model in tried_models:
+        for cfg in self._model_configs():
+            actual_model = model or cfg["model"]
+            if not _circuit.is_available(actual_model):
                 continue
-            if not _circuit.is_available(attempt_model):
-                continue
-            tried_models.append(attempt_model)
-
-            cfg = self._model_configs()[0]
             try:
-                logger.info(f"LLM chat_stream_with_thinking: model={attempt_model}")
-                create_kwargs = dict(
-                    model=attempt_model,
-                    messages=messages,
-                    temperature=temperature,
-                    stream=True,
-                )
-                stream = await self._acreate(cfg, **create_kwargs)
+                logger.info(f"LLM chat_stream_with_thinking: provider={cfg['provider']}, model={actual_model}")
+                stream = await self._acreate(cfg, model=actual_model, messages=messages, temperature=temperature, stream=True)
             except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
+                _circuit.record_failure(actual_model)
+                last_err = e
+                logger.warning(f"模型 {actual_model} 连接失败: {e}，尝试备用 Provider")
                 continue
 
             try:
-                yield {"type": "model", "content": attempt_model}
+                yield {"type": "model", "content": actual_model}
                 async for chunk in _stream_with_timeout(stream):
                     if not chunk.choices:
                         continue
@@ -943,14 +786,15 @@ class LLMManager:
                     if delta.content:
                         yield {"type": "content", "content": delta.content}
 
-                _circuit.record_success(attempt_model)
+                _circuit.record_success(actual_model)
                 return
             except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                _circuit.record_failure(actual_model)
+                last_err = e
+                logger.warning(f"模型 {actual_model} 流式中断: {e}，尝试备用 Provider")
                 continue
 
-        raise RuntimeError(f"所有模型均不可用: {tried_models}")
+        raise last_err or RuntimeError(f"所有模型均不可用")
 
     async def chat_stream_with_tools(
         self,
@@ -1016,36 +860,31 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        target_model = self._resolve_model(model)
-        chain = self._degradation_chain(target_model)
-        tried_models: List[str] = []
+        last_err = None
 
-        for attempt_model in chain:
-            if attempt_model in tried_models:
+        for cfg in self._model_configs():
+            actual_model = model or cfg["model"]
+            if not _circuit.is_available(actual_model):
                 continue
-            if not _circuit.is_available(attempt_model):
-                continue
-            tried_models.append(attempt_model)
-
-            cfg = self._model_configs()[0]
             try:
-                logger.info(f"LLM stream+tools: model={attempt_model}, tools={[t['function']['name'] for t in tools]}")
-                create_kwargs = dict(
-                    model=attempt_model,
+                logger.info(f"LLM stream+tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
+                stream = await self._acreate(
+                    cfg,
+                    model=actual_model,
                     messages=messages,
                     tools=tools,
                     tool_choice=tool_choice,
                     temperature=temperature,
                     stream=True,
                 )
-                stream = await self._acreate(cfg, **create_kwargs)
             except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 连接失败: {e}，尝试降级")
+                _circuit.record_failure(actual_model)
+                last_err = e
+                logger.warning(f"模型 {actual_model} 连接失败: {e}，尝试备用 Provider")
                 continue
 
             try:
-                yield {"type": "model", "content": attempt_model}
+                yield {"type": "model", "content": actual_model}
 
                 accumulated_tc: Dict[int, Dict] = {}
                 finish_reason = None
@@ -1082,7 +921,7 @@ class LLMManager:
                     if choice.finish_reason:
                         finish_reason = choice.finish_reason
 
-                _circuit.record_success(attempt_model)
+                _circuit.record_success(actual_model)
 
                 tc_list = [accumulated_tc[i] for i in sorted(accumulated_tc.keys())]
                 if tc_list:
@@ -1092,11 +931,12 @@ class LLMManager:
                 return
 
             except Exception as e:
-                _circuit.record_failure(attempt_model)
-                logger.warning(f"模型 {attempt_model} 流式中断: {e}，尝试降级")
+                _circuit.record_failure(actual_model)
+                last_err = e
+                logger.warning(f"模型 {actual_model} 流式中断: {e}，尝试备用 Provider")
                 continue
 
-        raise RuntimeError(f"所有模型均不可用: {tried_models}")
+        raise last_err or RuntimeError("所有模型均不可用")
 
     # ---------- 嵌入 ----------
     def _eff_embedding_model(self, provider: str = "") -> str:

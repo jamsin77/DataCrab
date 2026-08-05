@@ -19,6 +19,7 @@ export interface ChatMessage {
   table_data: any | null
   charts: any[] | null
   created_at: string
+  executingMsg?: string
 }
 
 export interface StreamEvent {

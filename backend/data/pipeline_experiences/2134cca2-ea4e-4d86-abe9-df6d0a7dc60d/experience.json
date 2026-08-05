@@ -1,0 +1,26 @@
+{
+  "negative": [
+    {
+      "timestamp": "2026-08-04T16:01:04.624203",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "name '_timed_out' is not defined",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 脚本已读取完毕。这是一个凭证图片OCR信息提取流程，主要步骤：\n1. 从\"凭证库\"读取图片文件列表\n2. 从文件名提取拼音前缀→翻译为中文凭证类型\n3. 用 `llm_vision` 对每张图片做OCR\n4. PII脱敏 + 数据质量验证\n5. 写入\"凭证检索库\"\n\n现在直接执行："
+    },
+    {
+      "timestamp": "2026-08-04T16:01:56.702640",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "name '_timed_out' is not defined",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 脚本已读取完毕，我来分析一下关键逻辑然后执行：\n\n1. `_pipeline_entry` (L700-701) 调用 `main()`，参数中 `source_table_name='*'` 会被默认为 `'所有的图片'`，`target_table_name='*'` 会自动生成时间戳表名\n2. `image_column` 设为 `'所有图片'`，但代码中 OCR 部分直接硬编码使用 `fi"
+    }
+  ],
+  "positive": [],
+  "lessons": ""
+}

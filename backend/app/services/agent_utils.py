@@ -93,16 +93,27 @@ def truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS
 class StuckDetector:
     """检测 Agent 原地打转。
 
-    借鉴 DeepAnalyze 的 StuckDetector，识别两种模式：
+    借鉴 DeepAnalyze 的 StuckDetector，识别三种模式：
     - 重复调用：连续 N 轮调用相同工具 + 相同参数
     - 空转：连续 N 轮有输出但没有工具调用
+    - 只调查不修改：连续 N 轮只调调查工具（read/grep）不调修改工具（edit/run）
+    另有总轮次上限兜底，防止无限循环。
     """
 
-    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3):
+    # 调查类工具（只读不改）
+    INVESTIGATION_TOOLS = {"read_script", "grep_script", "get_table_schema", "query_table_data", "list_user_datasources", "list_tables"}
+    # 修改类工具（改脚本或执行脚本）
+    FIX_TOOLS = {"edit_script", "run_script", "modify_script", "modify_and_run", "edit_and_run"}
+
+    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3, investigate_threshold: int = 5, max_total_rounds: int = 30):
         self.repeat_threshold = repeat_threshold
         self.idle_threshold = idle_threshold
+        self.investigate_threshold = investigate_threshold
+        self.max_total_rounds = max_total_rounds
         self._call_history: List[str] = []
         self._idle_count: int = 0
+        self._investigate_count: int = 0
+        self._total_rounds: int = 0
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> Optional[str]:
         """记录一次工具调用，返回干预提示（如果检测到卡死）或 None。"""
@@ -110,6 +121,15 @@ class StuckDetector:
         signature = hashlib.md5(f"{tool_name}:{args_str}".encode()).hexdigest()
         self._call_history.append(signature)
         self._idle_count = 0
+        self._total_rounds += 1
+
+        # 检测总轮次上限
+        if self._total_rounds >= self.max_total_rounds:
+            self._total_rounds = 0
+            return (
+                f"已达到总轮次上限（{self.max_total_rounds} 轮），无法继续修复。"
+                "如果这是可修复的问题，请总结已调查的信息，给出修复建议后结束。"
+            )
 
         # 检测重复调用
         if len(self._call_history) >= self.repeat_threshold:
@@ -120,6 +140,21 @@ class StuckDetector:
                     "你刚才已连续重复调用相同的工具和参数，但没有取得进展。"
                     "请尝试不同策略：换一个工具、调整参数、或重新分析问题。"
                 )
+
+        # 检测只调查不修改
+        if tool_name in self.INVESTIGATION_TOOLS:
+            self._investigate_count += 1
+        elif tool_name in self.FIX_TOOLS:
+            self._investigate_count = 0
+
+        if self._investigate_count >= self.investigate_threshold:
+            self._investigate_count = 0
+            return (
+                f"已连续 {self.investigate_threshold} 轮只调查（read/grep）未修改脚本。"
+                "请立即调用 edit_script 修改脚本，或调用 run_script 执行验证，"
+                "或如果确认无法修复则总结原因后结束。"
+            )
+
         return None
 
     def record_idle(self) -> Optional[str]:
@@ -136,6 +171,8 @@ class StuckDetector:
     def reset(self):
         self._call_history.clear()
         self._idle_count = 0
+        self._investigate_count = 0
+        self._total_rounds = 0
 
 
 

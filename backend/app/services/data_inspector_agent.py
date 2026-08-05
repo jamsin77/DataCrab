@@ -315,22 +315,20 @@ class DataInspectorAgent(BaseAgent):
         had_any_tool_calls = False
         pressure_warned = False
 
-        yield {"type": "model", "content": await llm_manager.pick_model_async(inspect_msg or "数据检查")}
+        yield {"type": "model", "content": llm_manager._flash}
 
         for i in range(max_iterations):
             # 上下文压缩（对齐 OpenCode compaction）
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            _llm_model = None
-            _llm_tool_choice = "auto"
             content = ""
             tool_calls = []
             finish_reason = None
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=self.tools, temperature=0.3,
-                model=_llm_model, tool_choice=_llm_tool_choice,
+                model=llm_manager._flash, tool_choice="auto",
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -364,7 +362,7 @@ class DataInspectorAgent(BaseAgent):
                 # 最终结论：输出 content
                 for chunk in content:
                     yield {"type": "content", "content": chunk}
-                yield {"type": "done", "result": {"agent": self.name, "content": content}}
+                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
                 return
 
             # 有工具调用：输出 content（LLM 在解释要做什么）
@@ -406,12 +404,12 @@ class DataInspectorAgent(BaseAgent):
                             fatal_issues = [i for i in issues if i.get("severity") == "fatal"]
                             yield {"type": "fatal", "issues": fatal_issues, "summary": summary}
                             # content 已在流式阶段逐 token 输出，不再重复 yield
-                            yield {"type": "done", "result": {"agent": self.name, "content": "发现致命问题（违反法律法规），已停止处理"}}
+                            yield {"type": "done", "result": {"agent": self.name, "content": "发现致命问题（违反法律法规），已停止处理", "success": False}}
                             return
                         elif not has_auto_fix:
                             yield {"type": "warning_confirmation", "issues": issues, "summary": summary}
                             # content 已在流式阶段逐 token 输出，不再重复 yield
-                            yield {"type": "done", "result": {"agent": self.name, "content": "仅发现警告问题，等待用户确认是否修复"}}
+                            yield {"type": "done", "result": {"agent": self.name, "content": "仅发现警告问题，等待用户确认是否修复", "success": True}}
                             return
                         else:
                             # error/critical → 自动修复
@@ -436,7 +434,7 @@ class DataInspectorAgent(BaseAgent):
                     logger.info(f"DataInspector 上下文压力告警: level={level}, ratio={ratio:.1%}")
 
         yield {"type": "content", "content": "检查超时，请稍后重试。"}
-        yield {"type": "done", "result": {"agent": self.name, "content": "检查超时"}}
+        yield {"type": "done", "result": {"agent": self.name, "content": "检查超时", "success": False}}
 
     async def _execute_tool_calls_parallel(self, tool_calls: list, db, context: Dict) -> list:
         async def _safe_execute(tc):

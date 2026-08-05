@@ -20,7 +20,8 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                <el-dropdown-item command="delete">删除</el-dropdown-item>
+                <el-dropdown-item command="export">导出对话</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -39,15 +40,26 @@
         <!-- 顶部工具栏 -->
         <div class="chat-toolbar">
           <span class="chat-toolbar-title">{{ currentSessionTitle || '新会话' }}</span>
-          <el-button
-            class="clear-history-btn"
-            size="small"
-            :icon="Delete"
-            :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
-            @click="handleClearMessages"
-          >
-            清空记录
-          </el-button>
+          <div class="chat-toolbar-actions">
+            <el-button
+              class="export-btn"
+              size="small"
+              :icon="Download"
+              :disabled="chatStore.messages.length === 0"
+              @click="handleExportCurrent"
+            >
+              导出对话
+            </el-button>
+            <el-button
+              class="clear-history-btn"
+              size="small"
+              :icon="Delete"
+              :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
+              @click="handleClearMessages"
+            >
+              清空记录
+            </el-button>
+          </div>
         </div>
         <!-- 消息流 -->
         <div class="message-list" ref="messageListRef">
@@ -78,8 +90,13 @@
               
               <!-- 主要内容 -->
               <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
-              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming" class="typing-indicator">
+              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && !msg.executingMsg" class="typing-indicator">
                 <span></span><span></span><span></span>
+              </div>
+              <!-- 执行进度 -->
+              <div v-if="msg.role === 'assistant' && msg.executingMsg" class="executing-indicator">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>{{ msg.executingMsg }}</span>
               </div>
               <div v-if="msg.role === 'user'" class="user-text">{{ msg.content }}</div>
               
@@ -137,7 +154,7 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import api from '@/api/index'
 
@@ -173,7 +190,11 @@ function renderMarkdown(content: string): string {
 function formatMsgTime(ts: string): string {
   try {
     const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z')
-    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    return d.toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    })
   } catch { return '' }
 }
 
@@ -221,16 +242,20 @@ async function loadAgentConfig() {
 }
 
 onMounted(async () => {
-  await Promise.all([
-    chatStore.fetchSessions(),
-    loadAgentConfig()
-  ])
-  
-  // 如果有会话，自动选中第一个并滚动到底部
-  if (chatStore.sessions.length > 0 && !chatStore.currentSessionId) {
-    await chatStore.switchSession(chatStore.sessions[0].id)
+  try {
+    await Promise.all([
+      chatStore.fetchSessions(),
+      loadAgentConfig()
+    ])
+
+    // 如果有会话，自动选中第一个并滚动到底部
+    if (chatStore.sessions.length > 0 && !chatStore.currentSessionId) {
+      await chatStore.switchSession(chatStore.sessions[0].id)
+    }
+  } catch {
+    // 后端可能正在 reload（开发模式改代码触发 uvicorn 重启），静默处理
   }
-  
+
   // 初始化时滚动到底部
   scrollToBottom(false)
 })
@@ -337,7 +362,87 @@ async function handleSessionCommand(command: string, sessionId: string) {
       await chatApi.updateSession(sessionId, value)
       await chatStore.fetchSessions()
     }
+  } else if (command === 'export') {
+    await exportSession(sessionId)
   }
+}
+
+function formatExportTime(ts: string): string {
+  try {
+    const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z')
+    return d.toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    })
+  } catch { return ts }
+}
+
+async function exportSession(sessionId: string) {
+  const { chatApi } = await import('@/api/chat')
+  let msgs: any[]
+  if (sessionId === chatStore.currentSessionId) {
+    msgs = chatStore.messages
+  } else {
+    msgs = await chatApi.listMessages(sessionId)
+  }
+  if (!msgs || msgs.length === 0) {
+    ElMessage.warning('该会话没有消息可导出')
+    return
+  }
+
+  const session = chatStore.sessions.find((s) => s.id === sessionId)
+  const sessionTitle = session?.title || '新会话'
+
+  const lines: string[] = []
+  lines.push(`# ${sessionTitle}`)
+  lines.push('')
+  lines.push(`> 导出时间：${formatExportTime(new Date().toISOString())}`)
+  lines.push(`> 消息数：${msgs.length}`)
+  lines.push('')
+  lines.push('---')
+  lines.push('')
+
+  for (const msg of msgs) {
+    const role = msg.role === 'user' ? '用户' : '助手'
+    const time = formatExportTime(msg.created_at)
+    lines.push(`## ${role}  ${time}`)
+    lines.push('')
+    if (msg.model) {
+      lines.push(`*模型：${msg.model}*`)
+      lines.push('')
+    }
+    if (msg.reasoning) {
+      lines.push('<details><summary>推理过程</summary>')
+      lines.push('')
+      lines.push(msg.reasoning)
+      lines.push('')
+      lines.push('</details>')
+      lines.push('')
+    }
+    lines.push(msg.content || '')
+    lines.push('')
+    lines.push('---')
+    lines.push('')
+  }
+
+  const content = lines.join('\n')
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const safeTitle = sessionTitle.replace(/[\\/:*?"<>|]/g, '_')
+  a.download = `${safeTitle}_${new Date().toISOString().slice(0, 10)}.md`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success(`已导出 ${msgs.length} 条对话`)
+}
+
+async function handleExportCurrent() {
+  if (!chatStore.currentSessionId) return
+  await exportSession(chatStore.currentSessionId)
 }
 </script>
 
@@ -419,7 +524,15 @@ async function handleSessionCommand(command: string, sessionId: string) {
     white-space: nowrap;
   }
 
-  .clear-history-btn {
+  .chat-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .clear-history-btn,
+  .export-btn {
     flex-shrink: 0;
   }
 }
@@ -606,6 +719,22 @@ async function handleSessionCommand(command: string, sessionId: string) {
 
     &:nth-child(2) { animation-delay: 0.2s; }
     &:nth-child(3) { animation-delay: 0.4s; }
+  }
+}
+
+.executing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin: 4px 0;
+  background: #f0f9ff;
+  border-radius: 6px;
+  color: #409eff;
+  font-size: 13px;
+
+  .is-loading {
+    animation: rotating 1.5s linear infinite;
   }
 }
 

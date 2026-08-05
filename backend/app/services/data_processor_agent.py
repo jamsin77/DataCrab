@@ -358,6 +358,7 @@ DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这�
 ## 必须遵守
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
 - 下方「内置工具函数」文档列出了所有可用函数和签名，修改脚本前先看
+- **超时不是 bug**：如果错误信息包含"脚本执行超时"，说明脚本运行时间过长（非逻辑错误）。修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发处理），不是找逻辑 bug。如果无法在脚本层面优化，直接报告"超时，需要用户减少数据量或优化性能"
 """
 
 # 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
@@ -378,54 +379,6 @@ _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
 DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL] + EXTENSION_TOOLS
 
 
-def _analyze_error(error_msg: str) -> str:
-    """分析错误信息，返回修复提示"""
-    if not error_msg:
-        return ""
-    hints = []
-    if "ModuleNotFoundError" in error_msg or "ImportError" in error_msg:
-        import re as _re
-        m = _re.search(r"No module named '(\S+)'", error_msg)
-        mod = m.group(1) if m else "该模块"
-        hints.append(f"缺少依赖模块 {mod}，请检查 import 语句或使用替代方案")
-    elif "KeyError" in error_msg:
-        import re as _re
-        m = _re.search(r"KeyError: (.+)", error_msg)
-        key = m.group(1).strip() if m else ""
-        hints.append(f"字典键 {key} 不存在，请检查键名拼写或数据中是否包含该键")
-    elif "TypeError" in error_msg and "argument" in error_msg:
-        hints.append("参数类型/数量不匹配，请检查函数签名和传参")
-    elif "TypeError" in error_msg:
-        hints.append("类型不匹配，请检查变量类型是否正确")
-    elif "IndexError" in error_msg:
-        hints.append("索引越界，请检查列表/数组长度")
-    elif "ValueError" in error_msg:
-        hints.append("值不合法，请检查参数值范围")
-    elif "AttributeError" in error_msg:
-        import re as _re
-        m = _re.search(r"has no attribute '(\w+)'", error_msg)
-        attr = m.group(1) if m else "该属性"
-        hints.append(f"对象没有属性/方法 '{attr}'，请检查对象类型")
-    elif "SyntaxError" in error_msg:
-        hints.append("语法错误，请检查代码格式（括号、缩进、冒号等）")
-    elif "NameError" in error_msg:
-        import re as _re
-        m = _re.search(r"name '(\w+)' is not defined", error_msg)
-        name = m.group(1) if m else "变量"
-        hints.append(f"变量 '{name}' 未定义，请检查拼写或是否需要 import")
-    elif "FileNotFoundError" in error_msg or "路径不存在" in error_msg:
-        hints.append("文件/路径不存在，请检查路径是否正确")
-    elif "连接" in error_msg or "Connection" in error_msg or "connect" in error_msg.lower():
-        hints.append("数据库连接失败，请检查数据源配置和连接参数")
-    elif "权限" in error_msg or "Permission" in error_msg:
-        hints.append("权限不足，请检查用户权限")
-    elif "表已存在" in error_msg or "already exists" in error_msg:
-        hints.append("表已存在，请使用 if_table_exists 参数处理（如 truncate/drop/append）")
-    elif "列" in error_msg and "不匹配" in error_msg:
-        hints.append("列不匹配，请检查 column_mapping 配置和目标表结构")
-    if hints:
-        return hints[0]
-    return ""
 
 
 def _compute_diff_summary(old_code: str, new_code: str) -> list:
@@ -514,10 +467,7 @@ class DataProcessorAgent(BaseAgent):
         pressure_warned = False
         has_preinjected_data = context.get("has_preinjected_data", False)
 
-        # 模型选择 + 降级链（与调试模式一致）
-        chosen_model = await llm_manager.pick_model_async(user_msg, context.get("history", []))
         from app.services.llm import _circuit
-        degradation_chain = llm_manager._degradation_chain(chosen_model)
 
         for i in range(max_iterations):
             logger.info(f"[run] 第{i+1}轮开始, budget={max_iterations}")
@@ -527,28 +477,16 @@ class DataProcessorAgent(BaseAgent):
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            # 降级链：逐个尝试可用模型
-            response = None
-            for attempt_model in degradation_chain:
-                if not _circuit.is_available(attempt_model):
-                    continue
-                try:
-                    response = await llm_manager.chat_with_tools(
-                        messages=local_messages, tools=self.tools, model=attempt_model,
-                        temperature=0.3
-                    )
-                    _circuit.record_success(attempt_model)
-                    if i == 0:
-                        yield {"type": "model", "content": attempt_model}
-                    break
-                except Exception as e:
-                    _circuit.record_failure(attempt_model)
-                    logger.warning(f"模型 {attempt_model} 调用失败: {e}，尝试降级")
-                    continue
+            response = await llm_manager.chat_with_tools(
+                messages=local_messages, tools=self.tools, model=llm_manager._default,
+                temperature=0.3
+            )
             if response is None:
                 yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
-                yield {"type": "done", "result": {"error": "all models unavailable"}}
+                yield {"type": "done", "result": {"agent": self.name, "content": "模型不可用"}}
                 return
+            if i == 0:
+                yield {"type": "model", "content": llm_manager._default}
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
 
@@ -603,7 +541,10 @@ class DataProcessorAgent(BaseAgent):
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            results = await self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
+            # 实时 yield progress（技能脚本 stdout 逐行），不再等 gather 结束后批量 yield
+            async for _prog_evt in self._execute_tools_with_progress(tool_calls, db, user_id, context):
+                yield _prog_evt
+            results = context.pop("_last_tool_results", [])
             for r in results:
                 local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
                 yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
@@ -670,6 +611,56 @@ class DataProcessorAgent(BaseAgent):
 
         results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
         return list(results)
+
+    async def _execute_tools_with_progress(self, tool_calls: list, db, user_id, context: Dict):
+        """执行工具调用，期间实时 yield progress 事件（技能脚本 stdout 逐行）。
+        
+        用 asyncio.Queue 把 run_script 子进程的 stdout 进度实时推送给前端，
+        而不是等 gather 结束后批量 yield（旧模式进度要等几十秒才显示）。
+        
+        最终结果存入 context["_last_tool_results"]，调用方从中取。
+        """
+        progress_queue = asyncio.Queue()
+        context["_progress_queue"] = progress_queue
+
+        # 启动工具执行任务
+        exec_task = asyncio.ensure_future(
+            self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
+        )
+
+        # 同时监控 queue 和 task：queue 有数据就 yield，task 完成就拿结果
+        while not exec_task.done():
+            done, _pending = await asyncio.wait(
+                {exec_task, asyncio.ensure_future(progress_queue.get())},
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=2.0,
+            )
+            for d in done:
+                if d is exec_task:
+                    continue
+                # queue.get() 完成 → 有 progress
+                try:
+                    prog_msg = d.result()
+                    if prog_msg:
+                        yield {"type": "progress", "message": prog_msg}
+                except Exception:
+                    pass
+
+        # task 已完成，drain 队列里剩余的 progress
+        while not progress_queue.empty():
+            try:
+                prog_msg = progress_queue.get_nowait()
+                if prog_msg:
+                    yield {"type": "progress", "message": prog_msg}
+            except asyncio.QueueEmpty:
+                break
+
+        context.pop("_progress_queue", None)
+        # 清空已 yield 的 progress（避免后续重复 yield）
+        context.pop("_execution_progress", None)
+
+        results = exec_task.result()
+        context["_last_tool_results"] = results
 
     @staticmethod
     def _script_summary(script: str, script_name: str = "main.py") -> str:
@@ -762,73 +753,6 @@ class DataProcessorAgent(BaseAgent):
         if not missing:
             return ""
         return f"SKILL.md 规范要求必选参数 {required}，当前缺失：{missing}。请补齐后运行。"
-
-    @staticmethod
-    def _save_session_log(local_messages: list, context: dict, inspection_round: int):
-        """从 local_messages 提取调试历史，保存到 context 供 DataInspector 回交后参考。"""
-        _session_entries = []
-        _round_num = 0
-        for _msg in local_messages:
-            if _msg["role"] == "assistant" and _msg.get("tool_calls"):
-                _round_num += 1
-                _names = [tc["function"]["name"] for tc in _msg["tool_calls"]]
-                _summary = (_msg.get("content") or "")[:200]
-                _session_entries.append(f"第{_round_num}轮: 调用 {' '.join(_names)}")
-                if _summary.strip():
-                    _session_entries.append(f"  说明: {_summary}")
-            elif _msg["role"] == "tool":
-                try:
-                    _td = json.loads(_msg["content"])
-                    if isinstance(_td, dict):
-                        if not _td.get("success"):
-                            _e = str(_td.get("error") or _td.get("message") or "")[:200]
-                            _session_entries.append(f"  结果: 失败 — {_e}")
-                        elif _td.get("modify") and _td.get("result"):
-                            _diff = _td.get("diff_summary") or []
-                            _diff_str = ", ".join(_diff[:5]) if _diff else "未知"
-                            _inner = _td.get("result", {})
-                            _ok = _inner.get("success", True) if isinstance(_inner, dict) else True
-                            _session_entries.append(f"  修改: {_diff_str}")
-                            _session_entries.append(f"  执行: {'成功' if _ok else '失败'}")
-                        elif _td.get("modify"):
-                            _session_entries.append(f"  结果: 脚本修改成功")
-                        elif _td.get("result") is not None:
-                            _session_entries.append(f"  结果: 执行成功")
-                except Exception:
-                    pass
-        _new_log = "\n".join(_session_entries[-20:])
-        _prev_log = context.get("debug_session_log", "")
-        context["debug_session_log"] = (_prev_log + f"\n[第{inspection_round+1}轮调试]\n" + _new_log)[-2000:]
-
-    @staticmethod
-    def _compress_tool_result(content: str) -> str:
-        """智能压缩工具结果：失败保留错误全量，成功保留摘要+前3行数据。"""
-        try:
-            data = json.loads(content)
-            if not isinstance(data, dict):
-                return content[:3000]
-            is_fail = not data.get("success") or data.get("error")
-            # stdout: 失败保留首300+尾1000，成功保留首300+尾300
-            stdout = str(data.get("stdout", ""))
-            if is_fail and len(stdout) > 1300:
-                data["stdout"] = stdout[:300] + "\n... [省略中间部分] ...\n" + stdout[-1000:]
-            elif not is_fail and len(stdout) > 600:
-                data["stdout"] = stdout[:300] + "\n... [省略中间部分] ...\n" + stdout[-300:]
-            # result: 保留标量字段，截断大数组
-            result = data.get("result")
-            if isinstance(result, dict):
-                for k, v in list(result.items()):
-                    if isinstance(v, list) and len(v) > 3:
-                        result[k] = v[:3] + [f"... (共 {len(v)} 项)"]
-                    elif isinstance(v, str) and len(v) > 300:
-                        result[k] = v[:300] + "..."
-                    elif isinstance(v, dict) and len(str(v)) > 500:
-                        result[k] = "（大型对象已省略）"
-            # error: 始终完整保留
-            # diff_summary: 始终完整保留（已很紧凑）
-            return json.dumps(data, ensure_ascii=False, default=str)
-        except (json.JSONDecodeError, TypeError):
-            return content[:3000]
 
     async def _finalize_script_change(self, merged: str, current: str, script_name: str,
                                        arguments: dict, db: AsyncSession, context: Dict) -> str:
@@ -1215,28 +1139,37 @@ class DataProcessorAgent(BaseAgent):
                         context["debug_last_success_params"] = parameters
                     else:
                         _err = str(result.get("error") or _inner.get("error") or "")
-                        _hint = _analyze_error(_err)
-                        if _hint:
-                            result["error_hint"] = _hint
                     logger.info(f"debug run_script (pipeline): success={not _failed}")
                     return json.dumps(result, ensure_ascii=False, default=str)
                 else:
-                    # 技能：subprocess 沙箱
+                    # 技能：subprocess 沙箱（流式，进度通过 context 推给前端）
                     folder = context.get("debug_folder")
                     if not folder:
                         return json.dumps({"success": False, "error": "缺少 folder"})
-                    from app.services.skill_runner import run_skill_script_async
+                    from app.services.skill_runner import run_skill_script_streaming_async
                     ds_id = context.get("debug_datasource_id")
                     ds_name = context.get("debug_datasource_name")
                     tbl = context.get("debug_table_name")
                     # 技能级运行：按 SKILL.md 参数规范校验必选参数（非阻断，仅告警）
                     _param_warning = self._check_required_params(context, parameters)
-                    result = await run_skill_script_async(
+                    result = None
+                    _progress_queue = context.get("_progress_queue")
+                    async for _item in run_skill_script_streaming_async(
                         skill_path=folder, script_name=script_name, parameters=parameters,
                         input_data=None, datasource_id=ds_id, datasource_name=ds_name, table_name=tbl,
                         user_id=str(user_id) if user_id else None,
-                        timeout=600,
-                    )
+                    ):
+                        _it = _item.get("type")
+                        if _it == "progress":
+                            _msg = _item.get("message", "")
+                            _prog_list = context.setdefault("_execution_progress", [])
+                            _prog_list.append(_msg)
+                            if _progress_queue is not None:
+                                _progress_queue.put_nowait(_msg)
+                        elif _it == "result":
+                            result = _item["result"]
+                    if result is None:
+                        result = {"success": False, "error": "执行无结果返回"}
                     if _param_warning:
                         result["param_warning"] = _param_warning
                     _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
@@ -1246,17 +1179,11 @@ class DataProcessorAgent(BaseAgent):
                                or (_inner.get("error") and str(_inner.get("error")).strip()))
                     if not _failed:
                         context["debug_last_success_params"] = parameters
-                    else:
-                        _err = str(result.get("error") or _inner.get("error") or "")
-                        _hint = _analyze_error(_err)
-                        if _hint:
-                            result["error_hint"] = _hint
                     logger.info(f"debug run_script (skill): success={not _failed}")
                     return json.dumps(result, ensure_ascii=False, default=str)
             except Exception as e:
                 logger.warning(f"run_script 失败: {e}")
-                _hint = _analyze_error(str(e))
-                return json.dumps({"success": False, "error": str(e), **({"error_hint": _hint} if _hint else {})}, ensure_ascii=False)
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
         if name == "modify_and_run":
             # 合并工具：modify_script + run_script 一步到位
@@ -1526,10 +1453,10 @@ class DataProcessorAgent(BaseAgent):
                 "default_model": info.get("default_model", ""),
             })
 
-        # 可用模型列表（带能力描述，供 LLM 了解当前可选项）
+        # 可用模型列表
         available_models = [
-            {"model": val, "description": desc}
-            for val, desc in llm_manager._available_models_with_desc()
+            {"model": m, "description": "快速" if "flash" in m.lower() else "深度"}
+            for m in llm_manager._available_models()
         ]
 
         return _json.dumps({
@@ -1603,6 +1530,10 @@ class DataProcessorAgent(BaseAgent):
         last_params = context.get("debug_last_success_params")
         if last_params:
             parts.append(f"最近成功参数: {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
+        # 本次执行参数（用户传入的实际参数，帮助 LLM 理解执行场景）
+        debug_params = context.get("debug_parameters")
+        if debug_params:
+            parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
 
         ctx = context.get("debug_user_context", {})
         if ctx:
@@ -1647,13 +1578,6 @@ class DataProcessorAgent(BaseAgent):
 
         system_prompt = self.build_debug_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
-
-        # 注入跨 handoff 调试历史（避免 DataProcessor 忘记之前尝试过什么）
-        if context.get("debug_session_log"):
-            local_messages.append({
-                "role": "user",
-                "content": f"## 之前调试历史（避免重复已失败的修复方向）\n{context['debug_session_log']}"
-            })
 
         # 注入历史
         history = context.get("history", [])
@@ -1709,18 +1633,14 @@ class DataProcessorAgent(BaseAgent):
         _should_handoff = False
         _handoff_output_table = None
         script_name = context.get("debug_script_name", "main.py")
+        _stuck = StuckDetector(investigate_threshold=5, max_total_rounds=40)
 
         logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
-        yield {"type": "model", "content": await llm_manager.pick_model_async(user_msg, history)}
+        yield {"type": "model", "content": llm_manager._default}
 
         while _fix_attempts < max_fix_attempts:
             _total_llm_calls += 1
-
-            # 上下文压缩（对齐 OpenCode compaction）
-            if should_compact(local_messages):
-                yield {"type": "content", "content": "\n📦 正在压缩上下文...\n"}
-                local_messages = await compact_messages(local_messages, llm_manager)
 
             local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _fix_attempts + 1)}
 
@@ -1730,7 +1650,7 @@ class DataProcessorAgent(BaseAgent):
             logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "/" + str(max_fix_attempts) + "）")
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=debug_tools, temperature=0.1,
-                model=None, tool_choice="auto",
+                model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
                 if t == "thinking":
@@ -1793,11 +1713,31 @@ class DataProcessorAgent(BaseAgent):
                     yield {"type": "done", "result": {"agent": self.name, "content": content, "platform_issue": True}}
                     return
                 if context.get("debug_analyze_only"):
-                    yield {"type": "done", "result": {"agent": self.name, "content": content}}
+                    yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
                     return
+                _idle_hint = _stuck.record_idle()
+                _hint = _idle_hint or "请调用工具修改并执行脚本。"
                 local_messages.append({"role": "assistant", "content": content})
-                local_messages.append({"role": "user", "content": "请调用工具修改并执行脚本。"})
+                local_messages.append({"role": "user", "content": _hint})
                 continue
+
+            # StuckDetector：记录工具调用，检测卡死模式
+            _stuck_hint = None
+            for tc in tool_calls:
+                try:
+                    _args = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    _args = {}
+                _hint = _stuck.record_tool_call(tc["function"]["name"], _args)
+                if _hint:
+                    _stuck_hint = _hint
+                    break
+
+            # 总轮次上限 → 强制退出
+            if _stuck_hint and "总轮次上限" in _stuck_hint:
+                yield {"type": "give_up", "reason": _stuck_hint}
+                yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
+                return
 
             local_messages.append({
                 "role": "assistant",
@@ -1807,11 +1747,14 @@ class DataProcessorAgent(BaseAgent):
 
             for tc in tool_calls:
                 _tn = tc["function"]["name"]
-                if _tn == "run_script":
+                if _tn in ("run_script", "modify_and_run", "edit_and_run"):
                     yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
                     break
 
-            results = await self._execute_tool_calls_parallel(tool_calls, db, user_id, context)
+            # 实时 yield progress（技能脚本 stdout 逐行），不再等 gather 结束后批量 yield
+            async for _prog_evt in self._execute_tools_with_progress(tool_calls, db, user_id, context):
+                yield _prog_evt
+            results = context.pop("_last_tool_results", [])
             # 工具结果摘要（像 OpenCode 显示 grep/read 结果）
             _result_lines = []
             _pending_handoff = None
@@ -1845,32 +1788,29 @@ class DataProcessorAgent(BaseAgent):
                                 _glines.append(f"  ...（共 {_cnt} 个）")
                             _result_lines.append("\n".join(_glines))
                     elif tool_name == "read_script" and _rd.get("success"):
-                        _content = _rd.get("content", "")
-                        _func = _rd.get("function", "")
                         _total = _rd.get("total_lines", 0)
-                        _truncated = _rd.get("truncated", False)
+                        _func = _rd.get("function", "")
                         _header = f"  📖 {_script_name}"
                         if _func:
                             _header += f":{_func}"
-                        # 从 content 提取实际行号范围（确保和内容一致）
-                        _cl = _content.split("\n")
+                        # 从 content 提取行号范围（只显示行号，不显示内容，对齐 OpenCode）
+                        _content = _rd.get("content", "")
                         _first_line = ""
                         _last_line = ""
-                        for _cl_line in _cl:
+                        for _cl_line in _content.split("\n"):
                             if _cl_line.strip().startswith("L"):
                                 _first_line = _cl_line.strip().split(":")[0]
                                 break
-                        for _cl_line in reversed(_cl):
+                        for _cl_line in reversed(_content.split("\n")):
                             if _cl_line.strip().startswith("L"):
                                 _last_line = _cl_line.strip().split(":")[0]
                                 break
                         if _first_line and _last_line:
                             _header += f" {_first_line}-{_last_line}"
-                            # 计算实际读取行数
                             try:
                                 _n1 = int(_first_line.lstrip("L"))
                                 _n2 = int(_last_line.lstrip("L"))
-                                _header += f" (读了{_n2 - _n1 + 1}行"
+                                _header += f" ({_n2 - _n1 + 1}行"
                                 if _total:
                                     _header += f"/共{_total}行"
                                 _header += ")"
@@ -1879,9 +1819,7 @@ class DataProcessorAgent(BaseAgent):
                                     _header += f" (共{_total}行)"
                         elif _total:
                             _header += f" (共{_total}行)"
-                        if len(_cl) > 20:
-                            _cl = _cl[:20] + ["..."]
-                        _result_lines.append(_header + "\n```\n" + "\n".join(_cl) + "\n```")
+                        _result_lines.append(_header)
                     elif tool_name == "get_table_schema" and _rd.get("success"):
                         _cols = len(_rd.get("columns", []))
                         _result_lines.append(f"  表结构: {_cols} 列")
@@ -1907,7 +1845,7 @@ class DataProcessorAgent(BaseAgent):
                         if _mdata.get("skill_md_updated"):
                             yield {"type": "skill_md_updated"}
 
-                if tool_name == "run_script":
+                if tool_name in ("run_script", "modify_and_run", "edit_and_run"):
                     try:
                         rdata = json.loads(r["content"])
                     except json.JSONDecodeError as e:
@@ -1946,7 +1884,7 @@ class DataProcessorAgent(BaseAgent):
                         _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
                         _err_type = rdata.get("error_type") or _inner_r.get("error_type") or ""
                         yield {"type": "content", "content": f"\n❌ 执行失败：{_err_msg[:300]}\n"}
-                        if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制", "数据问题")):
+                        if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制")):
                             yield {"type": "give_up", "reason": _err_type}
                             yield {"type": "done", "result": {"agent": self.name, "content": _err_type}}
                             return
@@ -1978,6 +1916,26 @@ class DataProcessorAgent(BaseAgent):
             # yield 调查工具结果摘要
             if _result_lines:
                 yield {"type": "content", "content": "\n".join(_result_lines) + "\n"}
+
+            # 记录本轮工具调用到 context（供下一轮 system prompt 显示）
+            context["debug_tool_calls"] = [
+                {"tool": tc["function"]["name"],
+                 "success": not any("error" in r.get("content", "") for r in results if r["tool_call_id"] == tc["id"]),
+                 "message": _result_lines[i] if i < len(_result_lines) else ""}
+                for i, tc in enumerate(tool_calls)
+            ]
+
+            # 如果本轮只改了脚本没执行，直接结束，提示用户尝试
+            _tool_names = [tc["function"]["name"] for tc in tool_calls]
+            _has_edit_only = "edit_script" in _tool_names and "run_script" not in _tool_names
+            if _has_edit_only and not _should_handoff:
+                yield {"type": "content", "content": "\n\n✅ 脚本修改完毕，请尝试执行吧。\n"}
+                yield {"type": "done", "result": {"agent": self.name, "content": "脚本修改完成", "script_updated": True}}
+                return
+
+            # StuckDetector 干预提示注入（在 assistant + tool 消息之后，作为下一轮引导）
+            if _stuck_hint:
+                local_messages.append({"role": "user", "content": _stuck_hint})
 
             # 先处理执行成功触发的自动 handoff（含写入表信息）
             if _should_handoff:
@@ -2015,6 +1973,21 @@ class DataProcessorAgent(BaseAgent):
                 }
                 return
 
+            # 滑动窗口：每轮只保留 system + 上一轮的 assistant+tool 结果 + 原始用户指令
+            # 避免上下文累积膨胀，每轮 LLM 只需看上一轮错误即可（对齐 OpenCode 工作方式）
+            if len(local_messages) > 5:
+                # 保留: [0]system, [1]原始用户消息, [-2]上一轮assistant, [-1]上一轮tool结果
+                _orig_user = local_messages[1] if len(local_messages) > 1 else None
+                _last_assistant = local_messages[-2] if len(local_messages) >= 2 else None
+                _last_tool = local_messages[-1] if local_messages else None
+                local_messages = [local_messages[0]]
+                if _orig_user:
+                    local_messages.append(_orig_user)
+                if _last_assistant:
+                    local_messages.append(_last_assistant)
+                if _last_tool:
+                    local_messages.append(_last_tool)
+
         # 修改次数用完 → 让 LLM 判断是代码问题还是平台问题
         _classify_msg = (
             f"经过 {_fix_attempts} 次修改尝试（上限 {max_fix_attempts} 次），脚本仍然无法通过检查。\n"
@@ -2030,7 +2003,7 @@ class DataProcessorAgent(BaseAgent):
         try:
             async for _evt in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=debug_tools, temperature=0.1,
-                model=None, tool_choice="auto",
+                model=llm_manager._flash, tool_choice="auto",
             ):
                 if _evt.get("type") == "content":
                     _classification += _evt.get("content", "")

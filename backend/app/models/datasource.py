@@ -68,6 +68,7 @@ class TableMetadata(Base):
 
     # ========== 运营元数据 ==========
     last_synced_at = Column(DateTime)
+    data_updated_at = Column(DateTime)  # 数据源端数据的真实最后更新时间（区别于元数据记录的 updated_at）
     last_accessed_at = Column(DateTime)
     access_count = Column(Integer, default=0)
     quality_rules = Column(JSON)

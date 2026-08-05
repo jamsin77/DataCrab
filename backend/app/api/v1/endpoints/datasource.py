@@ -1,9 +1,24 @@
 """数据源管理API端点"""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Any
+
+
+def _normalize_ts(ts: Any) -> Optional[datetime]:
+    """归一化时间戳为 aware UTC datetime，消除 aware/naive 混合导致的比较错误。
+
+    返回 aware UTC，isoformat() 带 +00:00，前端 new Date 才能正确转本地时区显示。
+    - aware datetime → 转 UTC
+    - naive datetime → 假定已是 UTC，补 tzinfo=UTC
+    - 其他类型 → None
+    """
+    if not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
 
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -247,21 +262,30 @@ async def get_datasource_tree(
         meta_map: dict = {}
         if table_names:
             meta_result = await db.execute(
-                select(TableMetadata.table_name, TableMetadata.updated_at).where(
+                select(TableMetadata.table_name, TableMetadata.data_updated_at, TableMetadata.created_at).where(
                     TableMetadata.data_source_id == datasource_id,
                     TableMetadata.table_name.in_(table_names),
                 )
             )
-            meta_map = {row[0]: row[1] for row in meta_result.all() if row[1]}
+            meta_map = {
+                row[0]: {"data_updated_at": row[1], "created_at": row[2]}
+                for row in meta_result.all()
+            }
 
         nodes_with_ts = []
         for item in schema:
             table_name = item.get("table_name", "")
             table_type = item.get("table_type", "")
-            ts = meta_map.get(table_name)
+            meta_info = meta_map.get(table_name, {})
+            # 优先使用连接器返回的实时 data_updated_at（反映外部修改，如用户手动加列），
+            # 其次用 DB TableMetadata.data_updated_at（DataCrab 写入时更新），最后用 created_at
+            live_ts = item.get("data_updated_at")
+            db_ts = meta_info.get("data_updated_at") or meta_info.get("created_at")
+            # 归一化为 naive UTC，避免 aware/naive 混合比较报错
+            ts = _normalize_ts(live_ts) or _normalize_ts(db_ts)
             meta = dict(item)
             if ts:
-                meta["updated_at"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                meta["data_updated_at"] = ts.isoformat()
             node = TreeNode(
                 id=f"{datasource_id}:{table_name}",
                 label=table_name,
@@ -271,7 +295,8 @@ async def get_datasource_tree(
             nodes_with_ts.append((node, ts))
 
         # 有更新时间的在前（按时间降序），无更新时间的排后（保持原顺序）
-        nodes_with_ts.sort(key=lambda x: x[1] or datetime.min, reverse=True)
+        _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        nodes_with_ts.sort(key=lambda x: x[1] or _EPOCH, reverse=True)
 
         return [n for n, _ in nodes_with_ts]
     except ValueError as e:
@@ -505,12 +530,33 @@ async def internal_write_table_data(
             kwargs["table_remark"] = body["table_remark"]
         if body.get("column_remarks"):
             kwargs["column_remarks"] = body["column_remarks"]
-        return await mgr.write_table(
+        result = await mgr.write_table(
             str(datasource_id),
             table_name,
             body.get("records", []),
             **kwargs,
         )
+        # 写入成功后更新 TableMetadata.data_updated_at，使浏览树显示最新修改时间
+        if isinstance(result, dict) and result.get("success", True):
+            from datetime import datetime as _dt
+            meta_result = await db.execute(
+                select(TableMetadata).where(
+                    TableMetadata.data_source_id == datasource_id,
+                    TableMetadata.table_name == table_name,
+                )
+            )
+            meta = meta_result.scalar_one_or_none()
+            if meta:
+                meta.data_updated_at = _dt.utcnow()
+            else:
+                meta = TableMetadata(
+                    data_source_id=datasource_id,
+                    table_name=table_name,
+                    data_updated_at=_dt.utcnow(),
+                )
+                db.add(meta)
+            await db.flush()
+        return result
     except Exception as e:
         logger.error(f"内部写入异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -536,7 +582,6 @@ async def internal_llm_chat(body: dict):
             messages,
             temperature=body.get("temperature", 0.7),
             max_tokens=int(body.get("max_tokens", 2000)),
-            context="技能脚本调用",
         )
         return {"content": result}
     except Exception as e:
@@ -632,7 +677,80 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
         reset_user_llm_config()
 
 
-# ==================== 内部 SQL 执行端点 ====================
+# ==================== 内部视频处理端点 ====================
+
+@router.post("/internal/video/info")
+async def internal_video_info(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部视频信息提取端点（无认证，仅供技能执行器子进程本机调用）。
+    提取视频元数据：时长、分辨率、帧率、编码等。"""
+    from pathlib import Path
+    from app.services.video_utils import probe_video, is_video_file
+
+    user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
+    video_path = body.get("video_path", "")
+    if not video_path:
+        raise HTTPException(status_code=400, detail="video_path 必填")
+
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
+    validated = _validate_file_path(video_path, allowed_dirs)
+    p = Path(validated)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+
+    if not is_video_file(str(p)):
+        raise HTTPException(status_code=400, detail=f"不支持的视频格式: {p.suffix}")
+
+    try:
+        result = probe_video(str(p))
+        result["video_path"] = str(p)
+        return result
+    except Exception as e:
+        logger.error(f"内部视频信息提取异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/internal/video/keyframes")
+async def internal_video_keyframes(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部视频关键帧抽取端点（无认证，仅供技能执行器子进程本机调用）。
+    抽取关键帧为 JPEG 图片，返回帧列表（含时间戳和图片路径）。"""
+    from pathlib import Path
+    from app.services.video_utils import extract_keyframes, is_video_file
+
+    user_id = body.get("user_id")
+    user_id = UUID(str(user_id)) if user_id else None
+    video_path = body.get("video_path", "")
+    if not video_path:
+        raise HTTPException(status_code=400, detail="video_path 必填")
+
+    max_frames = int(body.get("max_frames", 8))
+    output_dir = body.get("output_dir")
+    method = body.get("method", "auto")
+
+    allowed_dirs = await _collect_allowed_dirs(db, user_id)
+    validated = _validate_file_path(video_path, allowed_dirs)
+    p = Path(validated)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+
+    if not is_video_file(str(p)):
+        raise HTTPException(status_code=400, detail=f"不支持的视频格式: {p.suffix}")
+
+    # output_dir 须在授权目录内（如果指定了）
+    if output_dir:
+        _validate_file_path(output_dir, allowed_dirs)
+
+    try:
+        frames = extract_keyframes(
+            str(p),
+            max_frames=max_frames,
+            output_dir=output_dir,
+            method=method,
+        )
+        return {"success": True, "frames": frames, "count": len(frames)}
+    except Exception as e:
+        logger.error(f"内部视频关键帧抽取异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/internal/datasources/{datasource_id}/sql")
 async def internal_execute_sql(
@@ -835,6 +953,8 @@ async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
         elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
             # 图片/二进制 fail-fast：绝不返回 UTF-8 乱码（会掩盖错误信号，诱导 LLM 把乱码当数据传给 llm_vision）
             raise HTTPException(status_code=400, detail=f"read_file 不支持读取图片文件({ext})。请直接将图片路径传给 llm_vision(image_path, prompt) 进行 OCR/识别。")
+        elif ext in (".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp"):
+            raise HTTPException(status_code=400, detail=f"read_file 不支持读取视频文件({ext})。请使用 extract_video_info(video_path) 提取视频信息，或 extract_keyframes(video_path) 抽取关键帧。")
         else:
             return {"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}
     except Exception as e:

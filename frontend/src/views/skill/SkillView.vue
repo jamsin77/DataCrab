@@ -2,13 +2,13 @@
   <div class="skill-page">
     <div class="toolbar">
       <div class="toolbar-left">
-        <el-button type="primary" @click="showUploadDialog = true">
-          <el-icon><Upload /></el-icon>
-          导入技能
-        </el-button>
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
           生成技能
+        </el-button>
+        <el-button type="primary" @click="showUploadDialog = true">
+          <el-icon><Upload /></el-icon>
+          导入技能
         </el-button>
       </div>
       <div class="toolbar-right">
@@ -452,26 +452,6 @@
               </el-button>
             </el-tab-pane>
 
-            <el-tab-pane label="JSON 参数" name="json">
-              <div v-if="execParamsPlaceholder && execParamsPlaceholder !== '{&quot;key&quot;: &quot;value&quot;}'" class="json-examples">
-                <div class="json-examples-title">示例</div>
-                <div class="json-example-item" @click="fillJsonExample">
-                  <code>{{ execParamsPlaceholder }}</code>
-                </div>
-              </div>
-              <el-input
-                v-model="execParamsStr"
-                type="textarea"
-                :rows="6"
-                :placeholder="execParamsPlaceholder"
-              />
-              <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
-                <el-icon><VideoPause /></el-icon> 停止
-              </el-button>
-              <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkill" :disabled="!execParamsStr.trim() || debugStreaming">
-                <el-icon><VideoPlay /></el-icon> 执行
-              </el-button>
-            </el-tab-pane>
           </el-tabs>
         </div>
 
@@ -545,9 +525,12 @@
                       <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                     </el-collapse-item>
                   </el-collapse>
-                  <div v-if="msg.executingMsg" class="debug-msg-executing">
-                    <el-icon class="thinking-spin"><Loading /></el-icon>
-                    <span>{{ msg.executingMsg }}</span>
+                  <div v-if="msg.executingMsgs && msg.executingMsgs.length" class="debug-msg-executing">
+                    <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
+                      <el-icon v-if="i === msg.executingMsgs.length - 1" class="thinking-spin"><Loading /></el-icon>
+                      <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
+                      <span>{{ m }}</span>
+                    </div>
                   </div>
                   <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
@@ -693,7 +676,7 @@ import { useRouter } from 'vue-router'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
-  Promotion, ChatDotRound, InfoFilled, Share, VideoPause,
+  Promotion, ChatDotRound, InfoFilled, Share, VideoPause, CircleCheck,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1463,8 +1446,6 @@ function pushExecResult(result: any, thinking = '') {
 }
 const execNLQuery = ref('')
 const execCmdStr = ref('')
-const execParamsStr = ref('')
-const execParamsPlaceholder = ref('{"key": "value"}')
 const skillParams = ref<any[]>([])
 const cmdParamValues = reactive<Record<string, any>>({})
 const cmdExampleDsName = ref('')
@@ -1480,6 +1461,7 @@ interface DebugMessage {
   scriptUpdated?: string
   model?: string
   executingMsg?: string
+  executingMsgs?: string[]
   created_at?: string
 }
 
@@ -1529,11 +1511,28 @@ function onSkillListScroll() {
 }
 
 // 执行流式：在消息列表中开一条 live 助手消息，返回其索引
-function startExecMessage(userText: string): number {
+function startExecMessage(userText: string, initialExecutingMsg?: string): number {
   debugMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
+  const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, executingMsgs: initialExecutingMsg ? [`[${timeStr}] ${initialExecutingMsg}`] : [], created_at: new Date().toISOString() })
   nextTick(() => scrollSkillDebugToBottom(true))
   return debugMessages.value.length - 1
+}
+function setExecutingMsg(msg: any, text: string) {
+  if (!text) return
+  if (!msg.executingMsgs) msg.executingMsgs = []
+  const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const tagged = `[${timeStr}] ${text}`
+  const last = msg.executingMsgs[msg.executingMsgs.length - 1]
+  const lastText = last ? last.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '') : ''
+  if (last && lastText === text) {
+    msg.executingMsgs[msg.executingMsgs.length - 1] = tagged
+  } else {
+    msg.executingMsgs.push(tagged)
+  }
+}
+function clearExecutingMsg(msg: any) {
+  msg.executingMsgs = []
 }
 function finalizeExecMessage(idx: number, result: any) {
   const msg = debugMessages.value[idx]
@@ -1836,38 +1835,6 @@ const cmdExamples = computed(() => {
 })
 
 
-function generateJsonExample(params: any[]): string | null {
-  if (!params || params.length === 0) return null
-  const obj: Record<string, any> = {}
-  for (const p of params) {
-    if (p.is_datasource || p.is_table) continue
-    if (p.default !== null && p.default !== undefined) {
-      obj[p.name] = p.default
-    } else if (p.required) {
-      if (p.example) {
-        try { obj[p.name] = JSON.parse(p.example) } catch { obj[p.name] = p.example }
-      } else if (p.is_list || p.type === 'list') {
-        obj[p.name] = [""]
-      } else if (p.type === 'bool') {
-        obj[p.name] = false
-      } else if (p.type === 'int' || p.type === 'float') {
-        obj[p.name] = 0
-      } else if (p.type === 'dict') {
-        obj[p.name] = {}
-      } else {
-        obj[p.name] = ""
-      }
-    }
-  }
-  if (Object.keys(obj).length === 0) return null
-  return JSON.stringify(obj, null, 2)
-}
-
-function fillJsonExample() {
-  if (execParamsPlaceholder.value && execParamsPlaceholder.value !== '{"key": "value"}') {
-    execParamsStr.value = execParamsPlaceholder.value
-  }
-}
 
 
 function resetDebug() {
@@ -1878,8 +1845,6 @@ function resetDebug() {
   execPhase.value = 'idle'
   execNLQuery.value = ''
   execCmdStr.value = ''
-  execParamsStr.value = ''
-  execParamsPlaceholder.value = '{"key": "value"}'
   execTab.value = 'nl'
   skillParams.value = []
   cmdExampleDsName.value = ''
@@ -1907,8 +1872,6 @@ async function openDebug(skill: any, scriptName?: string) {
   execPhase.value = 'idle'
   execNLQuery.value = ''
   execCmdStr.value = `/${freshSkill.name || 'skill'} `
-  execParamsStr.value = ''
-  execParamsPlaceholder.value = '{"key": "value"}'
   execTab.value = 'nl'
   skillParams.value = []
   debugMessages.value = []
@@ -1919,8 +1882,6 @@ async function openDebug(skill: any, scriptName?: string) {
   try {
     const params = await api.get(`/skills/${freshSkill.id}/params`)
     skillParams.value = params || []
-    const example = generateJsonExample(params || [])
-    if (example) execParamsPlaceholder.value = example
     for (const p of params) {
       if (p.default !== null && p.default !== undefined) {
         cmdParamValues[p.name] = p.default
@@ -2005,145 +1966,6 @@ function buildCmdFromParams() {
   execCmdStr.value = parts.join(' ')
 }
 
-async function handleRunSkill() {
-  if (!debugSkill.value) return
-
-  let parameters: any = {}
-  if (execParamsStr.value.trim()) {
-    try {
-      parameters = JSON.parse(execParamsStr.value.trim())
-    } catch {
-      ElMessage.error('参数格式错误，请输入有效的 JSON')
-      return
-    }
-  }
-
-  execRunning.value = true
-  execPhase.value = 'executing'
-  execAbortController = new AbortController()
-  const assistantIdx = startExecMessage('执行(JSON 参数)')
-
-  let result: any = null
-  try {
-    const token = localStorage.getItem('access_token')
-    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        script_name: debugScriptName.value,
-        parameters,
-      }),
-      signal: execAbortController.signal,
-    })
-
-    if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(errText || `HTTP ${response.status}`)
-    }
-
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let thinkingDone = false
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-
-        try {
-          const data = JSON.parse(trimmed.slice(6))
-          const msg = debugMessages.value[assistantIdx]
-
-          if (data.type === 'model') {
-            msg.model = data.content
-          } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
-          } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) {
-              msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = false
-              thinkingDone = false
-            }
-            if (!msg.thinking) msg.thinkingOpen = false
-            msg.thinking = (msg.thinking || '') + data.content
-            scrollThinkingBodyToBottom(assistantIdx)
-          } else if (data.type === 'content') {
-            if (!thinkingDone && msg.thinking) {
-              thinkingDone = true
-              msg.thinkingOpen = false
-            }
-            if (!msg.content) msg.content = ''
-            msg.content += data.content
-          } else if (data.type === 'inspecting') {
-            msg.executingMsg = ''
-            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'inspection_result') {
-            msg.inspectionResult = data.result
-          } else if (data.type === 'progress') {
-            msg.executingMsg = data.message || ''
-          } else if (data.type === 'executing') {
-            msg.executingMsg = data.message || '正在执行技能脚本...'
-          } else if (data.type === 'fixing') {
-            msg.executingMsg = ''
-            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
-          } else if (data.type === 'round') {
-            console.log('[SkillView] 收到 round 事件:', data)
-            msg.executingMsg = ''
-            msg.thinkingOpen = false
-            thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
-          } else if (data.type === 'run_result') {
-            msg.executingMsg = ''
-            msg.runResult = data.result
-          } else if (data.type === 'script_updated') {
-            msg.scriptUpdated = data.script_name
-          } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
-          } else if (data.type === 'platform_issue') {
-            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
-          } else if (data.type === 'done') {
-            if (data.result != null) {
-              result = data.result
-            }
-          } else if (data.type === 'error') {
-            result = { success: false, error: data.content || '执行失败' }
-          }
-        } catch {
-          // skip malformed JSON
-        }
-      }
-      nextTick(() => scrollSkillDebugToBottom())
-    }
-  } catch (e: any) {
-    if (e.name === 'AbortError') {
-      result = { success: false, error: '已停止' }
-    } else {
-      result = {
-        success: false,
-        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
-      }
-    }
-  } finally {
-    execRunning.value = false
-    execPhase.value = 'idle'
-    execAbortController = null
-    finalizeExecMessage(assistantIdx, result)
-  }
-}
-
 async function handleRunSkillNL() {
   if (!debugSkill.value) return
   if (!execNLQuery.value.trim()) {
@@ -2156,19 +1978,37 @@ async function handleRunSkillNL() {
   execPhase.value = 'thinking'
   execAbortController = new AbortController()
   const assistantIdx = startExecMessage(userQuery)
+  let scriptChanged = false
+  let streamOk = false
 
   let result: any = null
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-nl-stream`, {
+    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+      role: m.role,
+      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+    }))
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        query: userQuery,
+        message: userQuery,
+        history,
         script_name: debugScriptName.value,
+        datasource_id: cmdExampleDsName.value
+          ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
+          : undefined,
+        table_name: cmdExampleTableName.value || undefined,
+        context: {
+          exec_tab: 'nl',
+          nl_query: userQuery,
+          datasource_name: cmdExampleDsName.value || '',
+          table_name: cmdExampleTableName.value || '',
+          skill_params: skillParams.value || [],
+        },
       }),
       signal: execAbortController.signal,
     })
@@ -2201,6 +2041,7 @@ async function handleRunSkillNL() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'ping') {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
@@ -2221,29 +2062,41 @@ async function handleRunSkillNL() {
             if (!msg.content) msg.content = ''
             msg.content += data.content
           } else if (data.type === 'inspecting') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
-          } else if (data.type === 'inferred_params') {
-            execPhase.value = 'executing'
-            if (!msg.thinking) msg.thinking = '参数推断完成'
           } else if (data.type === 'executing') {
             execPhase.value = 'executing'
-            if (!msg.thinking) msg.thinking = '正在执行技能脚本...'
+            setExecutingMsg(msg, data.message || '正在执行技能脚本...')
+          } else if (data.type === 'progress') {
+            setExecutingMsg(msg, data.message || '')
           } else if (data.type === 'fixing') {
             execPhase.value = 'executing'
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
           } else if (data.type === 'round') {
             msg.thinkingOpen = false
             thinkingDone = true
+            clearExecutingMsg(msg)
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
             msg.runResult = data.result
+            const r = data.result || {}
+            const inner = typeof r.result === 'object' && r.result ? r.result : {}
+            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            if (failed) {
+              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+              msg.content += `\n❌ 执行失败：${errMsg}\n`
+            } else if (!msg.content) {
+              msg.content = '技能执行完成'
+            }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
+            scriptChanged = true
+            refreshDebugContext()
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'platform_issue') {
@@ -2252,6 +2105,12 @@ async function handleRunSkillNL() {
             if (data.result != null) {
               result = data.result
             }
+            if (!msg.content || msg.content.trim() === '') {
+              msg.content = '✅ 调试完成'
+            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
+              msg.content += '\n\n✅ 调试完成'
+            }
+            msg.thinkingOpen = false
           } else if (data.type === 'error') {
             result = { success: false, error: data.content || '执行失败' }
           }
@@ -2261,6 +2120,7 @@ async function handleRunSkillNL() {
       }
       nextTick(() => scrollSkillDebugToBottom())
     }
+    streamOk = true
   } catch (e: any) {
     if (e.name === 'AbortError') {
       result = { success: false, error: '已停止' }
@@ -2274,7 +2134,25 @@ async function handleRunSkillNL() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
-    finalizeExecMessage(assistantIdx, result)
+    if (result) {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg) {
+        msg.runResult = result
+        if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
+      }
+    }
+  }
+
+  // 脚本被 AI 更新后，自动重新执行
+  if (scriptChanged && streamOk && debugSkill.value) {
+    const assistantMsg = debugMessages.value[assistantIdx]
+    const hasRunResult = assistantMsg?.runResult
+    if (!hasRunResult && execNLQuery.value.trim()) {
+      if (assistantMsg) {
+        assistantMsg.content += '\n\n> 脚本已更新，正在重新执行技能…'
+      }
+      await handleRunSkillNL()
+    }
   }
 }
 
@@ -2325,22 +2203,37 @@ async function handleRunCmd() {
   execRunning.value = true
   execPhase.value = 'executing'
   execAbortController = new AbortController()
-  const assistantIdx = startExecMessage(cmd)
+  const assistantIdx = startExecMessage(cmd, '正在执行技能脚本...')
+  let scriptChanged = false
+  let streamOk = false
 
   let result: any = null
   try {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/run-stream`, {
+    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+      role: m.role,
+      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+    }))
+    const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
+        message: cmd,
+        history,
         script_name: debugScriptName.value,
         datasource_id: dsId,
         table_name: tableName || undefined,
-        parameters,
+        context: {
+          exec_tab: 'cmd',
+          cmd_str: cmd,
+          parsed_parameters: parameters,
+          datasource_name: datasourceName,
+          table_name: tableName,
+          skill_params: skillParams.value || [],
+        },
       }),
       signal: execAbortController.signal,
     })
@@ -2373,6 +2266,7 @@ async function handleRunCmd() {
 
           if (data.type === 'model') {
             msg.model = data.content
+          } else if (data.type === 'ping') {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
@@ -2392,30 +2286,39 @@ async function handleRunCmd() {
             if (!msg.content) msg.content = ''
             msg.content += data.content
           } else if (data.type === 'inspecting') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'inspection_result') {
             msg.inspectionResult = data.result
-          } else if (data.type === 'progress') {
-            msg.executingMsg = data.message || ''
           } else if (data.type === 'executing') {
-            msg.executingMsg = data.message || '正在执行技能脚本...'
+            setExecutingMsg(msg, data.message || '正在执行技能脚本...')
+          } else if (data.type === 'progress') {
+            setExecutingMsg(msg, data.message || '')
           } else if (data.type === 'fixing') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
           } else if (data.type === 'round') {
-            console.log('[SkillView] 收到 round 事件:', data)
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.thinkingOpen = false
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
-            msg.executingMsg = ''
             msg.runResult = data.result
+            const r = data.result || {}
+            const inner = typeof r.result === 'object' && r.result ? r.result : {}
+            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            if (failed) {
+              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+              msg.content += `\n❌ 执行失败：${errMsg}\n`
+            } else if (!msg.content) {
+              msg.content = '技能执行完成'
+            }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
+            scriptChanged = true
+            refreshDebugContext()
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'platform_issue') {
@@ -2424,6 +2327,12 @@ async function handleRunCmd() {
             if (data.result != null) {
               result = data.result
             }
+            if (!msg.content || msg.content.trim() === '') {
+              msg.content = '✅ 调试完成'
+            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
+              msg.content += '\n\n✅ 调试完成'
+            }
+            msg.thinkingOpen = false
           } else if (data.type === 'error') {
             result = { success: false, error: data.content || '执行失败' }
           }
@@ -2433,6 +2342,7 @@ async function handleRunCmd() {
       }
       nextTick(() => scrollSkillDebugToBottom())
     }
+    streamOk = true
   } catch (e: any) {
     if (e.name === 'AbortError') {
       result = { success: false, error: '已停止' }
@@ -2446,7 +2356,24 @@ async function handleRunCmd() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
-    finalizeExecMessage(assistantIdx, result)
+    if (result) {
+      const msg = debugMessages.value[assistantIdx]
+      if (msg) {
+        msg.runResult = result
+        if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
+      }
+    }
+  }
+
+  if (scriptChanged && streamOk && debugSkill.value) {
+    const assistantMsg = debugMessages.value[assistantIdx]
+    const hasRunResult = assistantMsg?.runResult
+    if (!hasRunResult && execCmdStr.value.trim()) {
+      if (assistantMsg) {
+        assistantMsg.content += '\n\n> 脚本已更新，正在重新执行…'
+      }
+      await handleRunCmd()
+    }
   }
 }
 
@@ -2527,7 +2454,6 @@ async function handleDebugSend() {
           exec_tab: execTab.value,
           nl_query: execNLQuery.value || '',
           cmd_str: execCmdStr.value || '',
-          json_params: execParamsStr.value || '',
           datasource_name: cmdExampleDsName.value || '',
           table_name: cmdExampleTableName.value || '',
           skill_params: skillParams.value || [],
@@ -2587,7 +2513,7 @@ async function handleDebugSend() {
             }
             msg.content += data.content
           } else if (data.type === 'executing') {
-            msg.executingMsg = data.message || '正在执行脚本...'
+            setExecutingMsg(msg, data.message || '正在执行脚本...')
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
           } else if (data.type === 'tool_result') {
             const tc = data.content || ''
@@ -2595,7 +2521,6 @@ async function handleDebugSend() {
             try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
             msg.content += `\n  └ ${brief}\n`
           } else if (data.type === 'run_result') {
-            msg.executingMsg = ''
             if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
             msg.runResult = data.result
             const r = data.result || {}
@@ -2614,18 +2539,18 @@ async function handleDebugSend() {
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           } else if (data.type === 'inspecting') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
             console.log('[SkillView] 收到 round 事件:', data)
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.thinkingOpen = false
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
@@ -2650,12 +2575,11 @@ async function handleDebugSend() {
             warnText += '\n\n> 如需修复，请回复"修复警告问题"'
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
-            msg.executingMsg = ''
+            clearExecutingMsg(msg)
             msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'done') {
-            msg.executingMsg = ''
             if (!msg.content || msg.content.trim() === '') {
               msg.content = '✅ 调试完成'
             } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
@@ -2695,7 +2619,7 @@ async function handleDebugSend() {
     // 清理执行中状态（防止循环结束后仍显示"正在执行..."）
     const finalMsg = debugMessages.value[assistantIdx]
     if (finalMsg) {
-      finalMsg.executingMsg = ''
+      clearExecutingMsg(finalMsg)
     }
     await nextTick()
     scrollSkillDebugToBottom()
@@ -2711,11 +2635,6 @@ async function handleDebugSend() {
           assistantMsg.content += '\n\n> 脚本已更新，正在用自然语言重新执行技能…'
         }
         await handleRunSkillNL()
-      } else if (execParamsStr.value.trim()) {
-        if (assistantMsg) {
-          assistantMsg.content += '\n\n> 脚本已更新，正在用 JSON 参数重新执行技能…'
-        }
-        await handleRunSkill()
       } else if (assistantMsg) {
         assistantMsg.content += '\n\n> 脚本已更新。在左侧执行面板输入参数后执行，即可查看运行结果。'
       }
@@ -3194,38 +3113,6 @@ onMounted(() => {
 }
 
 
-.json-examples {
-  background: #fafafa;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
-
-  .json-examples-title {
-    font-size: 11px;
-    color: #909399;
-    margin-bottom: 4px;
-  }
-
-  .json-example-item {
-    cursor: pointer;
-    padding: 4px 8px;
-    border-radius: 3px;
-    transition: background 0.2s;
-
-    &:hover { background: #ecf5ff; }
-
-    code {
-      font-family: 'Consolas', 'Monaco', monospace;
-      font-size: 12px;
-      color: #409eff;
-      white-space: pre-wrap;
-      word-break: break-all;
-      line-height: 1.4;
-    }
-  }
-}
-
 .cmd-parse-hint {
   margin-top: 8px;
   
@@ -3466,15 +3353,24 @@ onMounted(() => {
 }
 
 .debug-msg-executing {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   padding: 6px 0;
   font-size: 13px;
   color: #909399;
 
+  .executing-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+  }
+
   .thinking-spin {
     animation: rotate 1.2s linear infinite;
+  }
+
+  .executing-dot {
+    color: #67c23a;
+    font-size: 14px;
   }
 }
 

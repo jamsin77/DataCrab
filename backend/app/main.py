@@ -11,6 +11,8 @@ from app.core.database import engine, Base, async_session
 from app.api.v1.router import api_router
 from app.services.task_runner import start_scheduler, stop_scheduler
 
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", ""), rotation="1 MB")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -146,6 +148,9 @@ def _migrate_builtin_flags(connection):
         if "schema_hash" not in columns:
             connection.execute(text("ALTER TABLE table_metadata ADD COLUMN schema_hash VARCHAR(64)"))
             logger.info("table_metadata表已添加 schema_hash 列")
+        if "data_updated_at" not in columns:
+            connection.execute(text("ALTER TABLE table_metadata ADD COLUMN data_updated_at DATETIME"))
+            logger.info("table_metadata表已添加 data_updated_at 列")
     except Exception as e:
         logger.warning(f"table_metadata表迁移跳过: {e}")
 
@@ -166,14 +171,21 @@ async def _seed_skills_and_pipelines():
             existing_names = set()
             result = await db.execute(sa_select(Skill.name))
             existing_names = {r[0] for r in result.fetchall()}
+            # 用 skill_path 中的文件夹名去重，避免同一文件夹创建多条记录
+            result = await db.execute(sa_select(Skill.skill_path))
+            existing_folders = {Path(r[0]).name for r in result.fetchall() if r[0]}
             _seen_in_this_scan = set()
             for skill_folder in sorted(skill_base.iterdir()):
                 if not skill_folder.is_dir() or not (skill_folder / "SKILL.md").exists():
                     continue
                 folder_name = skill_folder.name
+                if folder_name in existing_folders:
+                    continue
                 info = get_skill_info_from_path(skill_folder)
-                skill_name = info.get("name") or folder_name
-                if skill_name in existing_names or skill_name in _seen_in_this_scan:
+                skill_name = info.get("name") or ""
+                # SKILL.md 无 front matter 时 name 为空，跳过（避免用 UUID 创建无效记录）
+                if not skill_name or skill_name in existing_names or skill_name in _seen_in_this_scan:
+                    logger.warning(f"跳过 seed 技能文件夹 {folder_name}：SKILL.md 无 front matter 或名称重复")
                     continue
                 _seen_in_this_scan.add(skill_name)
                 skill = Skill(

@@ -8,12 +8,26 @@ import glob
 from typing import List, Dict, Any, Optional
 import os
 import io
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import httpx
 from loguru import logger
 
 from app.services.datasource import BaseConnector
+
+
+def _mtime_to_utc(path: str) -> Optional[datetime]:
+    """文件 mtime → UTC aware datetime。
+
+    os.path.getmtime 返回 timestamp（float），fromtimestamp 默认转本地 naive；
+    显式用 fromtimestamp(ts, tz=timezone.utc) 得到 UTC aware，避免本地 naive
+    被误当 UTC 导致时区错乱。
+    """
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    except Exception:
+        return None
 
 # 标识符安全校验：拒绝 SQL 注入危险字符，允许 Unicode（含中文）表名/列名
 # 危险字符：双引号(PostgreSQL/SQLite引用符)、反引号(MySQL引用符)、单引号(SQL字符串)、分号(语句分隔)、null字节
@@ -66,7 +80,19 @@ class PostgreSQLConnector(BaseConnector):
         tables = await self._connection.fetch(
             "SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = 'public'"
         )
-        return [dict(t) for t in tables]
+        result = [dict(t) for t in tables]
+        try:
+            stat_rows = await self._connection.fetch(
+                "SELECT relname, GREATEST(last_analyze, last_autoanalyze) AS last_analyzed FROM pg_stat_user_tables"
+            )
+            stat_map = {r["relname"]: r["last_analyzed"] for r in stat_rows if r["last_analyzed"]}
+            for item in result:
+                tname = item.get("table_name")
+                if tname and tname in stat_map:
+                    item["data_updated_at"] = stat_map[tname]
+        except Exception:
+            pass
+        return result
 
     async def get_table_data(
         self, table: str, page: int = 1, page_size: int = 20,
@@ -188,7 +214,7 @@ class PostgreSQLConnector(BaseConnector):
             # asyncpg 自动提交，无需 commit()
             return {"success": True, "rows_written": len(records)}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         if self._connection:
@@ -236,9 +262,17 @@ class MySQLConnector(BaseConnector):
         if not self._connection:
             raise ConnectionError("数据库连接失败，无法执行查询")
         async with self._connection.cursor() as cur:
-            await cur.execute("SHOW TABLES")
+            await cur.execute(
+                "SELECT table_name, table_type, update_time FROM information_schema.tables WHERE table_schema = DATABASE()"
+            )
             rows = await cur.fetchall()
-        return [{"table_name": r[0], "table_type": "TABLE"} for r in rows]
+        result = []
+        for r in rows:
+            item = {"table_name": r[0], "table_type": r[1]}
+            if r[2]:
+                item["data_updated_at"] = r[2]
+            result.append(item)
+        return result
 
     async def get_table_data(
         self, table: str, page: int = 1, page_size: int = 20,
@@ -345,7 +379,7 @@ class MySQLConnector(BaseConnector):
             await self._connection.commit()
             return {"success": True, "rows_written": len(records)}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         if self._connection:
@@ -366,7 +400,11 @@ class CSVConnector(BaseConnector):
         file_path = self.config.get("file_path", "")
         if not os.path.exists(file_path):
             return []
-        return [{"table_name": os.path.basename(file_path), "table_type": "csv"}]
+        data_updated_at = _mtime_to_utc(file_path)
+        item = {"table_name": os.path.basename(file_path), "table_type": "csv"}
+        if data_updated_at:
+            item["data_updated_at"] = data_updated_at
+        return [item]
 
     async def get_table_data(
         self, table: str, page: int = 1, page_size: int = 20,
@@ -403,7 +441,7 @@ class CSVConnector(BaseConnector):
             df_new.to_csv(file_path, index=False, encoding="utf-8-sig")
             return {"success": True, "rows_written": len(df_new)}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         pass
@@ -490,6 +528,7 @@ class ExcelConnector(BaseConnector):
         result = []
         for fpath in files:
             base = os.path.splitext(os.path.basename(fpath))[0]
+            file_data_updated_at = _mtime_to_utc(fpath)
             try:
                 xl = pd.ExcelFile(fpath)
                 for i, sheet in enumerate(xl.sheet_names):
@@ -497,21 +536,27 @@ class ExcelConnector(BaseConnector):
                         table_name = base
                     else:
                         table_name = f"{base}_{sheet}"
-                    result.append({
+                    item = {
                         "table_name": table_name,
                         "table_type": "excel_sheet",
                         "file_path": fpath,
                         "sheet_name": sheet,
                         "sheet_index": i,
-                    })
+                    }
+                    if file_data_updated_at:
+                        item["data_updated_at"] = file_data_updated_at
+                    result.append(item)
             except Exception:
-                result.append({
+                item = {
                     "table_name": base,
                     "table_type": "excel",
                     "file_path": fpath,
                     "sheet_name": None,
                     "sheet_index": 0,
-                })
+                }
+                if file_data_updated_at:
+                    item["data_updated_at"] = file_data_updated_at
+                result.append(item)
         return result
 
     async def get_table_data(
@@ -607,7 +652,7 @@ class ExcelConnector(BaseConnector):
                     df.to_excel(writer, sheet_name=s, index=False)
             return {"success": True, "rows_written": len(df_new)}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         pass
@@ -680,7 +725,7 @@ class OBSConnector(BaseConnector):
                         "table_name": obj.object_name,
                         "table_type": "obs_object",
                         "size": obj.size,
-                        "last_modified": str(obj.last_modified),
+                        "data_updated_at": obj.last_modified,
                     }
                     for obj in objects
                 ]
@@ -800,7 +845,7 @@ class OBSConnector(BaseConnector):
             return {"success": True, "rows_written": len(df_new), "object": object_name}
         except Exception as e:
             logger.error(f"OBS写入失败: {e}")
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         self._client = None
@@ -862,15 +907,22 @@ class HadoopHDFSConnector(BaseConnector):
 
             data = resp.json()
             items = data.get("FileStatuses", {}).get("FileStatus", [])
-            return [
-                {
+            from datetime import datetime as _dt
+            result = []
+            for item in items:
+                mtime_ms = item.get("modificationTime")
+                entry = {
                     "table_name": item.get("pathSuffix", ""),
                     "table_type": "hdfs_directory" if item.get("type") == "DIRECTORY" else "hdfs_file",
                     "size": item.get("length", 0),
-                    "modification_time": item.get("modificationTime", ""),
                 }
-                for item in items
-            ]
+                if mtime_ms:
+                    try:
+                        entry["data_updated_at"] = _dt.fromtimestamp(mtime_ms / 1000)
+                    except Exception:
+                        pass
+                result.append(entry)
+            return result
         except Exception as e:
             logger.error(f"Hadoop HDFS获取结构失败: {e}")
             return []
@@ -991,7 +1043,7 @@ class HadoopHDFSConnector(BaseConnector):
             return {"success": False, "message": f"HDFS PUT 失败: HTTP {put_resp.status_code}"}
         except Exception as e:
             logger.error(f"HDFS写入失败: {e}")
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         if self._client:
@@ -1169,7 +1221,16 @@ class SQLiteConnector(BaseConnector):
             "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
         ) as cursor:
             rows = await cursor.fetchall()
-        return [{"table_name": r["name"], "table_type": r["type"]} for r in rows]
+        # SQLite 不跟踪单表修改时间，用数据库文件 mtime 作为 data_updated_at（任意表被修改，文件 mtime 都会变）
+        db_path = self.config.get("database", self.config.get("file_path", ""))
+        data_updated_at = _mtime_to_utc(db_path)
+        result = []
+        for r in rows:
+            item = {"table_name": r["name"], "table_type": r["type"]}
+            if data_updated_at:
+                item["data_updated_at"] = data_updated_at
+            result.append(item)
+        return result
 
     async def get_table_data(
         self, table: str, page: int = 1, page_size: int = 20,
@@ -1274,7 +1335,7 @@ class SQLiteConnector(BaseConnector):
             await self._connection.commit()
             return {"success": True, "rows_written": len(records)}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
     async def close(self) -> None:
         if self._connection:

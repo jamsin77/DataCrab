@@ -529,6 +529,7 @@ async def stream_response(
         session_id = str(request.session_id)
         cancel_event = asyncio.Event()
         _active_stream_events[session_id] = cancel_event
+        full_response = ""
 
         try:
             user_message = ChatMessage(
@@ -601,7 +602,6 @@ async def stream_response(
                 trace_id=trace_id,
             )
 
-            full_response = ""
             agen = runtime.run("data_processor", message, context).__aiter__()
             while True:
                 if cancel_event.is_set():
@@ -655,6 +655,20 @@ async def stream_response(
             import traceback as _tb
             err_detail = f"{e}\n\n{ _tb.format_exc()}"
             logger.error(f"流式响应失败: {err_detail}")
+            # 保存已收到的部分内容 + 错误信息，避免前端刷新 DB 后回复消失
+            from app.core.database import async_session as _new_session
+            async with _new_session() as save_session:
+                partial = full_response or ""
+                if partial:
+                    partial += "\n\n"
+                partial += f"❌ 响应出错: {e}"
+                ai_message = ChatMessage(
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=partial,
+                )
+                save_session.add(ai_message)
+                await save_session.commit()
             yield f"data: {json.dumps({'type': 'error', 'content': err_detail}, ensure_ascii=False)}\n\n"
         finally:
             _active_stream_events.pop(session_id, None)

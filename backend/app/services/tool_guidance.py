@@ -80,6 +80,7 @@ PLATFORM_CAPABILITIES = {
         "available_functions": [
             "write_table_data", "get_table_data", "query_table_data", "execute_sql",
             "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+            "extract_video_info", "extract_keyframes",
             "log", "read_file", "write_file", "compute_map", "call_operator",
             "get_datasource_id_by_name", "resolve_column",
         ],

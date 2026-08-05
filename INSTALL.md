@@ -27,10 +27,12 @@ npm install
 - 前端 npm 依赖
 - 后端 Python 核心依赖
 
-> **可选依赖**：如果需要文档知识库 RAG 或 OBS 对象存储，额外执行：
-> ```bash
-> pip install -e ./backend[all]
-> ```
+> **可选依赖**：
+> - 文档知识库 RAG 或 OBS 对象存储：
+>   ```bash
+>   pip install -e ./backend[all]
+>   ```
+> - 视频处理（关键帧场景检测）：安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入 PATH。未安装时自动回退 opencv 等间隔抽帧。
 
 ## 3. 配置环境变量
 

@@ -27,10 +27,12 @@ This automatically installs:
 - Frontend npm dependencies
 - Backend Python core dependencies
 
-> **Optional**: For knowledge base RAG or OBS storage, additionally run:
-> ```bash
-> pip install -e ./backend[all]
-> ```
+> **Optional**:
+> - Knowledge base RAG or OBS storage:
+>   ```bash
+>   pip install -e ./backend[all]
+>   ```
+> - Video processing (keyframe scene detection): install [ffmpeg](https://ffmpeg.org/download.html) and add to PATH. Falls back to opencv interval extraction if not installed.
 
 ## 3. Configure Environment
 

@@ -55,6 +55,10 @@ api.interceptors.response.use(
         }
       }
       // 其他错误不在这里显示ElMessage，由调用方处理
+    } else if (error.code === 'ERR_NETWORK' || error.message?.includes('Network')) {
+      // 网络错误：后端可能正在 reload（开发模式改代码触发 uvicorn 重启）
+      // 不跳转登录页，让调用方 catch 处理；给一个友好错误消息
+      error.message = '后端服务暂时不可用，可能正在重启，请稍后重试'
     }
     return Promise.reject(error)
   }

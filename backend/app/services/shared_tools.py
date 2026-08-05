@@ -169,8 +169,12 @@ SHARED_TOOL_SCHEMAS: List[Dict[str, Any]] = [
 async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
     """查询表数据。结果超 8000 字符自动截断（E），携带来源标记（K）。"""
     try:
+        ds_id = args.get("datasource_id")
+        table_name = args.get("table_name")
+        if not ds_id or not table_name:
+            return json.dumps({"error": f"缺少必需参数 datasource_id 和 table_name"}, ensure_ascii=False)
         result = await db.execute(
-            select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
+            select(DataSource).where(DataSource.id == _uuid.UUID(ds_id))
         )
         datasource = result.scalar_one_or_none()
         if not datasource:
@@ -184,7 +188,7 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
         sort_column = args.get("sort_column")
 
         if filter_column or sort_column:
-            df = await connector.get_table_data(args["table_name"], page=1, page_size=50000)
+            df = await connector.get_table_data(table_name, page=1, page_size=50000)
             if filter_column and filter_value and filter_column in df.columns:
                 if "|" in filter_value:
                     mask = df[filter_column].astype(str).str.contains(filter_value, na=False, regex=True)
@@ -199,11 +203,11 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
         else:
             total = 0
             try:
-                stats = await connector.get_table_stats(args["table_name"])
+                stats = await connector.get_table_stats(table_name)
                 total = stats.get("row_count", 0)
             except Exception as e:
                 logger.warning(f"query_table_data stats 获取失败: {e}")
-            df = await connector.get_table_data(args["table_name"], page=1, page_size=limit or 100)
+            df = await connector.get_table_data(table_name, page=1, page_size=limit or 100)
 
         await connector.close()
 
@@ -213,7 +217,7 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
             "columns": list(df.columns),
             "rows": df.fillna("").values.tolist(),
             "format": "split",
-            "_source": f"datasource:{args['datasource_id']}/table:{args['table_name']}",
+            "_source": f"datasource:{ds_id}/table:{table_name}",
         }, ensure_ascii=False, default=str)
 
         return truncate_tool_result(result_str)
@@ -225,30 +229,34 @@ async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:
 async def get_table_schema(args: dict, db: AsyncSession, user_id) -> str:
     """获取表结构。"""
     try:
+        ds_id = args.get("datasource_id")
+        table_name = args.get("table_name")
+        if not ds_id or not table_name:
+            return json.dumps({"error": "缺少必需参数 datasource_id 和 table_name"}, ensure_ascii=False)
         result = await db.execute(
-            select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
+            select(DataSource).where(DataSource.id == _uuid.UUID(ds_id))
         )
         datasource = result.scalar_one_or_none()
         if not datasource:
             return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
 
         connector = get_connector(datasource.type, datasource.connection_config or {})
-        df = await connector.get_table_data(args["table_name"], page=1, page_size=5)
+        df = await connector.get_table_data(table_name, page=1, page_size=5)
         stats = {}
         try:
-            stats = await connector.get_table_stats(args["table_name"])
+            stats = await connector.get_table_stats(table_name)
         except Exception as e:
             logger.warning(f"get_table_schema stats 获取失败: {e}")
         await connector.close()
 
         return json.dumps({
-            "table_name": args["table_name"],
+            "table_name": table_name,
             "row_count": stats.get("row_count", "未知"),
             "columns": [
                 {"name": col, "dtype": str(df[col].dtype), "sample": df[col].dropna().head(3).tolist()}
                 for col in df.columns
             ],
-            "_source": f"datasource:{args['datasource_id']}/table:{args['table_name']}",
+            "_source": f"datasource:{ds_id}/table:{table_name}",
         }, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -306,9 +314,14 @@ async def list_user_file_links(db: AsyncSession, user_id) -> str:
 async def save_file_to_link(args: dict, db: AsyncSession, user_id) -> str:
     """保存文件到链接目录。"""
     try:
+        link_id = args.get("link_id")
+        subpath = args.get("subpath")
+        content = args.get("content")
+        if not link_id or not subpath or content is None:
+            return json.dumps({"error": "缺少必需参数 link_id/subpath/content"}, ensure_ascii=False)
         result = await db.execute(
             select(FileLink).where(
-                FileLink.id == _uuid.UUID(args["link_id"]),
+                FileLink.id == _uuid.UUID(link_id),
                 FileLink.created_by == user_id,
             )
         )
@@ -319,13 +332,13 @@ async def save_file_to_link(args: dict, db: AsyncSession, user_id) -> str:
             return json.dumps({"error": "只能向目录类型的链接写入文件"}, ensure_ascii=False)
 
         base_path = Path(link.path).resolve()
-        full_path = (base_path / args["subpath"]).resolve()
+        full_path = (base_path / subpath).resolve()
         if not str(full_path).startswith(str(base_path)):
             return json.dumps({"error": "非法路径"}, ensure_ascii=False)
 
         full_path.parent.mkdir(parents=True, exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
-            f.write(args["content"])
+            f.write(content)
 
         return json.dumps({"status": "success", "path": str(full_path), "size": full_path.stat().st_size}, ensure_ascii=False)
     except Exception as e:
@@ -375,8 +388,11 @@ async def kb_search(args: dict, db: AsyncSession, user_id) -> str:
 async def execute_sql(args: dict, db: AsyncSession, user_id) -> str:
     """在数据源上执行 SQL 查询（只读 SELECT，行数上限）。"""
     try:
+        ds_id = args.get("datasource_id")
+        if not ds_id:
+            return json.dumps({"error": "缺少必需参数 datasource_id"}, ensure_ascii=False)
         result = await db.execute(
-            select(DataSource).where(DataSource.id == _uuid.UUID(args["datasource_id"]))
+            select(DataSource).where(DataSource.id == _uuid.UUID(ds_id))
         )
         datasource = result.scalar_one_or_none()
         if not datasource:

@@ -79,6 +79,7 @@ check_*.py
 *.temp
 *.log
 *.err
+dev_*.txt
 
 # Data files
 *.xlsx

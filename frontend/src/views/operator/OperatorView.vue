@@ -2,6 +2,10 @@
   <div class="operator-page">
     <div class="toolbar">
       <div class="toolbar-left">
+        <el-button type="success" @click="showGenerateDialog = true">
+          <el-icon><MagicStick /></el-icon>
+          生成算子
+        </el-button>
         <el-upload
           :show-file-list="false"
           :before-upload="handleUpload"
@@ -13,10 +17,6 @@
             导入算子
           </el-button>
         </el-upload>
-        <el-button type="success" @click="showGenerateDialog = true">
-          <el-icon><MagicStick /></el-icon>
-          生成算子
-        </el-button>
       </div>
       <div class="toolbar-right">
         <el-select v-model="sortBy" style="width: 120px" @change="loadOperators">

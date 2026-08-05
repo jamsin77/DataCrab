@@ -261,6 +261,8 @@ def build_operator_namespace(current_user_id):
                 elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
                     # 图片 fail-fast：绝不返回 UTF-8 乱码（会掩盖错误信号，诱导把乱码当数据传给 llm_vision）
                     raise RuntimeError(f"read_file 不支持读取图片文件({ext})。请直接将图片路径传给 llm_vision(image_path, prompt) 进行 OCR/识别。")
+                elif ext in (".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp"):
+                    raise RuntimeError(f"read_file 不支持读取视频文件({ext})。请使用 extract_video_info(video_path) 提取视频信息，或 extract_keyframes(video_path) 抽取关键帧。")
                 else:
                     return resolved.read_text(encoding="utf-8")
 
@@ -381,6 +383,51 @@ def build_operator_namespace(current_user_id):
 
         return run_async_in_thread(_run())
 
+    def extract_video_info(video_path):
+        """提取视频元数据（时长、分辨率、帧率、编码等）"""
+        from pathlib import Path
+        from app.services.video_utils import probe_video, is_video_file
+
+        async def _run():
+            async with async_session() as db:
+                allowed = await _get_allowed_paths(db, current_user_id)
+                resolved = Path(video_path).resolve()
+                ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"路径不在授权目录范围内: {video_path}")
+                if not resolved.exists():
+                    raise RuntimeError(f"视频文件不存在: {video_path}")
+                if not is_video_file(str(resolved)):
+                    raise RuntimeError(f"不支持的视频格式: {resolved.suffix}")
+                return probe_video(str(resolved))
+
+        return run_async_in_thread(_run())
+
+    def extract_keyframes(video_path, max_frames=8, output_dir=None, method="auto"):
+        """抽取视频关键帧，输出为 JPEG 图片文件"""
+        from pathlib import Path
+        from app.services.video_utils import extract_keyframes as _extract, is_video_file
+
+        async def _run():
+            async with async_session() as db:
+                allowed = await _get_allowed_paths(db, current_user_id)
+                resolved = Path(video_path).resolve()
+                ok = any(str(resolved).startswith(str(Path(a).resolve())) for a in allowed)
+                if not ok:
+                    raise RuntimeError(f"路径不在授权目录范围内: {video_path}")
+                if not resolved.exists():
+                    raise RuntimeError(f"视频文件不存在: {video_path}")
+                if not is_video_file(str(resolved)):
+                    raise RuntimeError(f"不支持的视频格式: {resolved.suffix}")
+                if output_dir:
+                    out = Path(output_dir).resolve()
+                    ok2 = any(str(out).startswith(str(Path(a).resolve())) for a in allowed)
+                    if not ok2:
+                        raise RuntimeError(f"output_dir 不在授权目录范围内: {output_dir}")
+                return _extract(str(resolved), max_frames=max_frames, output_dir=output_dir, method=method)
+
+        return run_async_in_thread(_run())
+
     def call_operator(operator_name, **params):
         """调用用户自定义算子（通过内部 HTTP 端点执行算子脚本）"""
         import urllib.request as _ureq
@@ -431,6 +478,8 @@ def build_operator_namespace(current_user_id):
         "get_datasource_id_by_name": get_datasource_id_by_name,
         "llm_chat": llm_chat,
         "llm_vision": llm_vision,
+        "extract_video_info": extract_video_info,
+        "extract_keyframes": extract_keyframes,
         "execute_sql": execute_sql,
         "list_tables": list_tables,
         "iter_table_data": iter_table_data,

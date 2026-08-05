@@ -54,19 +54,7 @@ _PLATFORM_ERROR_PATTERNS = [
     ("NotImplementedError", "平台限制：该功能未实现"),
 ]
 
-# 数据问题关键词（用户配置问题，修改脚本无法解决）
-_DATA_ERROR_PATTERNS = [
-    ("数据源不存在", "数据问题：数据源不存在，请检查数据源配置"),
-    ("源表不存在", "数据问题：源表不存在，请检查表名"),
-    ("源文件不存在", "数据问题：源文件不存在，请检查文件路径"),
-    ("找不到源数据源", "数据问题：找不到源数据源，请检查数据源名称"),
-    ("找不到目标数据源", "数据问题：找不到目标数据源，请检查数据源名称"),
-    ("路径不在授权目录", "数据问题：路径不在授权目录，请在文件链接中添加目录"),
-    ("关系", "数据问题：表不存在（PostgreSQL relation），请检查表名"),
-    ("does not exist", "数据问题：表/文件不存在，请检查名称"),
-]
-
-# 脚本问题关键词（修改脚本可修复）
+# 脚本问题关键词（仅用于 LLM 推断辅助，不强制退出）
 _SCRIPT_ERROR_PATTERNS = [
     ("KeyError", "script_error"),
     ("ValueError", "script_error"),
@@ -85,8 +73,7 @@ def _classify_execution_error(error_msg: str) -> str:
     """分类执行错误，按级别返回：
     - 环境问题（L4，退出）：PyCapsule/DLL/ModuleNotFound/Permission/Connection
     - 平台限制（L5，退出）：不支持的策略/功能/数据源类型
-    - 数据问题（L6，报告用户）：数据源/表/文件不存在
-    - script_error（L1/L2，可修复）：其他脚本错误
+    - script_error（默认，可修复）：其他所有错误（含数据问题，交给 LLM 判断）
     """
     for pattern, msg in _ENV_ERROR_PATTERNS:
         if pattern in error_msg:
@@ -94,13 +81,7 @@ def _classify_execution_error(error_msg: str) -> str:
     for pattern, msg in _PLATFORM_ERROR_PATTERNS:
         if pattern in error_msg:
             return msg
-    for pattern, msg in _DATA_ERROR_PATTERNS:
-        if pattern in error_msg:
-            return msg
-    for pattern, error_type in _SCRIPT_ERROR_PATTERNS:
-        if pattern in error_msg:
-            return error_type
-    return "script_error"  # 默认按脚本问题处理
+    return "script_error"  # 默认按脚本问题处理，交给 LLM 判断
 
 
 import re as _re
@@ -488,6 +469,47 @@ def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_toke
         print(f"[SkillRunner] llm_vision failed: {{e}}")
         raise
 
+def extract_video_info(video_path):
+    # 提取视频元数据（时长、分辨率、帧率、编码等）
+    # video_path: 视频文件路径（必须在文件链接授权目录内）
+    # 返回: dict {{"duration": float, "width": int, "height": int, "fps": float, "codec": str, ...}}
+    import urllib.request
+    _payload = json.dumps({{"video_path": video_path, "user_id": INJECTED_USER_ID}}).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/video/info", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] extract_video_info failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
+    except Exception as e:
+        print(f"[SkillRunner] extract_video_info failed: {{e}}")
+        raise
+
+def extract_keyframes(video_path, max_frames=8, output_dir=None, method="auto"):
+    # 抽取视频关键帧，输出为 JPEG 图片文件
+    # video_path: 视频文件路径（必须在文件链接授权目录内）
+    # max_frames: 最多抽取帧数（默认 8）
+    # output_dir: 输出目录（默认在视频同目录下建 _keyframes 子目录）
+    # method: "auto"（场景检测+等间隔补充）或 "interval"（纯等间隔）
+    # 返回: list[dict] 如 [{{"frame": 1, "timestamp": 2.5, "image_path": "/path/to/frame_001.jpg"}}, ...]
+    # 抽出的帧图片可直接传给 llm_vision 做内容理解
+    import urllib.request
+    _payload = json.dumps({{"video_path": video_path, "max_frames": int(max_frames), "output_dir": output_dir, "method": method, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
+    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/video/keyframes", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    try:
+        with urllib.request.urlopen(_req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("frames", [])
+    except urllib.error.HTTPError as e:
+        _msg = _http_err(e)
+        print(f"[SkillRunner] extract_keyframes failed: HTTP {{e.code}} {{_msg}}")
+        raise RuntimeError(_msg)
+    except Exception as e:
+        print(f"[SkillRunner] extract_keyframes failed: {{e}}")
+        raise
+
 def call_operator(operator_name, **params):
     # 调用用户自定义算子（通过内部 HTTP 端点执行算子脚本）
     # operator_name: 算子名称或 UUID
@@ -586,6 +608,8 @@ _builtins.compute_map = compute_map
 _builtins.llm_vision = _wrap_tool_log("llm_vision", llm_vision)
 _builtins.llm_chat = _wrap_tool_log("llm_chat", llm_chat)
 _builtins.call_operator = _wrap_tool_log("call_operator", call_operator)
+_builtins.extract_video_info = _wrap_tool_log("extract_video_info", extract_video_info)
+_builtins.extract_keyframes = _wrap_tool_log("extract_keyframes", extract_keyframes)
 _builtins.log = log
 _builtins.get_datasource_id_by_name = _wrap_tool_log("get_datasource_id_by_name", _dc_get_datasource_id_by_name)
 _builtins.get_table_schema = _wrap_tool_log("get_table_schema", _dc_get_table_schema)
@@ -593,9 +617,10 @@ _builtins.resolve_column = resolve_column
 
 _INJECTED_FUNCTIONS = [
     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
     "log", "read_file", "write_file", "compute_map", "call_operator",
     "get_datasource_id_by_name", "resolve_column",
+    "extract_video_info", "extract_keyframes",
 ]
 
 # atexit 确保脚本崩溃时也输出 tool_call_log（供调试 agent 追踪错误来源）
@@ -804,7 +829,7 @@ def run_skill_script(
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],
@@ -837,12 +862,13 @@ def run_skill_script(
         return {
             "success": False,
             "error": f"脚本执行超时（{timeout}秒）",
+            "error_type": "超时",
             "stdout": _timeout_stdout.strip(),
             "tool_calls": _timeout_tool_calls or [],
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],
@@ -967,6 +993,7 @@ def run_skill_script_streaming(
     """
     parameters = parameters or {}
     timeout = timeout or settings.SKILL_RUNNER_TIMEOUT
+    logger.info(f"run_skill_script_streaming: timeout={timeout}, script={script_name}")
     script_path = skill_path / "scripts" / script_name
 
     if not script_path.exists():
@@ -1065,65 +1092,107 @@ def run_skill_script_streaming(
         )
 
         # 逐行读 stdout，过滤标记行，yield 进度行
-        # 用 readline() 而非 for line in（Windows 上 for line 会缓冲）
-        try:
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                line = line.rstrip("\n\r")
-                if not line:
-                    continue
-                # 检查标记行
-                is_marker = False
-                for marker in _MARKER_PREFIXES:
-                    if marker in line:
-                        is_marker = True
-                        try:
-                            json_str = line.split(marker, 1)[1].strip()
-                            parsed = json.loads(json_str)
-                            if marker == "__RESULT__":
-                                result = _sanitize_nans(parsed)
-                            elif marker == "__WRITTEN_TABLES__":
-                                written_tables = parsed
-                            elif marker == "__TOOL_CALL_LOG__":
-                                tool_call_log = parsed
-                        except (json.JSONDecodeError, IndexError):
-                            pass
-                        break
-                if is_marker:
-                    continue
-                # 普通行 → yield 进度
-                stdout_lines.append(line)
-                yield {"type": "progress", "message": line}
-        except Exception:
-            pass
+        # 用线程+队列替代直接 readline()，使超时能被真正执行
+        # （readline() 阻塞时无法检查超时，子进程卡在 HTTP 调用会导致永久挂起）
+        import threading as _threading
+        import queue as _queue
 
-        # 等待进程结束（带超时）
-        remaining = timeout - (time.perf_counter() - start)
-        if remaining <= 0:
-            remaining = 1
-        try:
-            proc.wait(timeout=remaining)
-        except _sp.TimeoutExpired:
-            proc.terminate()
+        _line_q: _queue.Queue = _queue.Queue()
+        _reader_done = False
+
+        def _stdout_reader():
+            nonlocal _reader_done
             try:
-                proc.wait(timeout=5)
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    _line_q.put(line.rstrip("\n\r"))
+            except Exception:
+                pass
+            finally:
+                _reader_done = True
+                _line_q.put(None)  # sentinel
+
+        _reader_thread = _threading.Thread(target=_stdout_reader, daemon=True)
+        _reader_thread.start()
+
+        _timed_out = False
+        _deadline = start + timeout
+        while True:
+            try:
+                line = _line_q.get(timeout=1.0)
+            except _queue.Empty:
+                # 检查超时
+                if time.perf_counter() >= _deadline:
+                    _timed_out = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except _sp.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
+                continue
+
+            if line is None:
+                break
+
+            if not line:
+                continue
+            # 检查标记行
+            is_marker = False
+            for marker in _MARKER_PREFIXES:
+                if marker in line:
+                    is_marker = True
+                    try:
+                        json_str = line.split(marker, 1)[1].strip()
+                        parsed = json.loads(json_str)
+                        if marker == "__RESULT__":
+                            result = _sanitize_nans(parsed)
+                        elif marker == "__WRITTEN_TABLES__":
+                            written_tables = parsed
+                        elif marker == "__TOOL_CALL_LOG__":
+                            tool_call_log = parsed
+                    except (json.JSONDecodeError, IndexError):
+                        pass
+                    break
+            if is_marker:
+                continue
+            # 普通行 → yield 进度
+            stdout_lines.append(line)
+            yield {"type": "progress", "message": line}
+
+        # 进程可能已自然结束，或已被超时终止
+        if not _timed_out:
+            remaining = timeout - (time.perf_counter() - start)
+            if remaining <= 0:
+                remaining = 1
+            try:
+                proc.wait(timeout=remaining)
             except _sp.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except _sp.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
 
         stderr = proc.stderr.read() if proc.stderr else ""
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        error_type = None
-        if proc.returncode != 0:
-            error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
-            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
-            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
-            error_type = _classify_execution_error(error_msg)
+        if _timed_out:
+            error_msg = f"脚本执行超时（{timeout}秒），脚本可能存在死循环或处理数据量过大导致执行缓慢"
+            error_type = "超时"
         else:
-            error_msg = None
+            error_type = None
+            if proc.returncode != 0:
+                error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
+                _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+                error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
+                error_type = _classify_execution_error(error_msg)
+            else:
+                error_msg = None
 
         if stderr.strip() and proc.returncode == 0:
             stdout_lines.append("[stderr]")
@@ -1139,7 +1208,7 @@ def run_skill_script_streaming(
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],
@@ -1353,7 +1422,7 @@ def run_skill_script_by_content(
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],
@@ -1384,12 +1453,13 @@ def run_skill_script_by_content(
         return {
             "success": False,
             "error": f"脚本执行超时（{timeout}秒）",
+            "error_type": "超时",
             "stdout": _timeout_stdout.strip(),
             "tool_calls": _timeout_tool_calls or [],
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],
@@ -1506,61 +1576,97 @@ def run_skill_script_streaming_by_content(
             env={**os.environ, "PYTHONPATH": str(backend_path), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"},
         )
 
-        try:
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                line = line.rstrip("\n\r")
-                if not line:
-                    continue
-                is_marker = False
-                for marker in _MARKER_PREFIXES:
-                    if marker in line:
-                        is_marker = True
-                        try:
-                            json_str = line.split(marker, 1)[1].strip()
-                            parsed = json.loads(json_str)
-                            if marker == "__RESULT__":
-                                result = _sanitize_nans(parsed)
-                            elif marker == "__WRITTEN_TABLES__":
-                                written_tables = parsed
-                            elif marker == "__TOOL_CALL_LOG__":
-                                tool_call_log = parsed
-                        except (json.JSONDecodeError, IndexError):
-                            pass
-                        break
-                if is_marker:
-                    continue
-                stdout_lines.append(line)
-                yield {"type": "progress", "message": line}
-        except Exception:
-            pass
+        # 用线程+队列替代直接 readline()，使超时能被真正执行
+        import threading as _threading
+        import queue as _queue
 
-        remaining = timeout - (time.perf_counter() - start)
-        if remaining <= 0:
-            remaining = 1
-        try:
-            proc.wait(timeout=remaining)
-        except _sp.TimeoutExpired:
-            proc.terminate()
+        _line_q: _queue.Queue = _queue.Queue()
+
+        def _stdout_reader():
             try:
-                proc.wait(timeout=5)
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    _line_q.put(line.rstrip("\n\r"))
+            except Exception:
+                pass
+            finally:
+                _line_q.put(None)
+
+        _reader_thread = _threading.Thread(target=_stdout_reader, daemon=True)
+        _reader_thread.start()
+
+        _timed_out = False
+        _deadline = start + timeout
+        while True:
+            try:
+                line = _line_q.get(timeout=1.0)
+            except _queue.Empty:
+                if time.perf_counter() >= _deadline:
+                    _timed_out = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except _sp.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
+                continue
+            if line is None:
+                break
+            if not line:
+                continue
+            is_marker = False
+            for marker in _MARKER_PREFIXES:
+                if marker in line:
+                    is_marker = True
+                    try:
+                        json_str = line.split(marker, 1)[1].strip()
+                        parsed = json.loads(json_str)
+                        if marker == "__RESULT__":
+                            result = _sanitize_nans(parsed)
+                        elif marker == "__WRITTEN_TABLES__":
+                            written_tables = parsed
+                        elif marker == "__TOOL_CALL_LOG__":
+                            tool_call_log = parsed
+                    except (json.JSONDecodeError, IndexError):
+                        pass
+                    break
+            if is_marker:
+                continue
+            stdout_lines.append(line)
+            yield {"type": "progress", "message": line}
+
+        if not _timed_out:
+            remaining = timeout - (time.perf_counter() - start)
+            if remaining <= 0:
+                remaining = 1
+            try:
+                proc.wait(timeout=remaining)
             except _sp.TimeoutExpired:
-                proc.kill()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except _sp.TimeoutExpired:
+                    proc.kill()
                 proc.wait()
 
         stderr = proc.stderr.read() if proc.stderr else ""
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        error_type = None
-        if proc.returncode != 0:
-            error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
-            _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
-            error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
-            error_type = _classify_execution_error(error_msg)
+        if _timed_out:
+            error_msg = f"脚本执行超时（{timeout}秒），脚本可能存在死循环或处理数据量过大导致执行缓慢"
+            error_type = "超时"
         else:
-            error_msg = None
+            error_type = None
+            if proc.returncode != 0:
+                error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
+                _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
+                error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
+                error_type = _classify_execution_error(error_msg)
+            else:
+                error_msg = None
 
         if stderr.strip() and proc.returncode == 0:
             stdout_lines.append("[stderr]")
@@ -1576,7 +1682,7 @@ def run_skill_script_streaming_by_content(
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
+                    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
                     "log", "read_file", "write_file", "compute_map",
                     "get_datasource_id_by_name", "resolve_column",
                 ],

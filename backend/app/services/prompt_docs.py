@@ -89,6 +89,22 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
   - 用途: OCR文字识别、图片内容描述、关键信息提取、图片分类等
   - 支持格式: png/jpg/jpeg/bmp/webp/gif/tiff
 
+### 视频处理函数
+- `extract_video_info(video_path)` → dict: 提取视频元数据
+  - video_path: 视频文件路径（必须在文件链接授权目录内）
+  - 返回: {"duration": 秒, "width": 像素, "height": 像素, "fps": 帧率, "codec": 编码, "bit_rate": 码率, "size": 字节数, "total_frames": 总帧数, "audio": {"codec": ..., "sample_rate": ..., "channels": ...}}
+  - 支持格式: mp4/avi/mov/mkv/flv/wmv/webm/m4v/mpg/mpeg/ts/3gp
+  - 用途: 获取视频基本信息，用于判断视频规格、时长等
+
+- `extract_keyframes(video_path, max_frames=8, output_dir=None, method="auto")` → list[dict]: 抽取视频关键帧
+  - video_path: 视频文件路径（必须在文件链接授权目录内）
+  - max_frames: 最多抽取帧数（默认8）
+  - output_dir: 输出目录（默认在视频同目录下建 _keyframes 子目录，须在授权目录内）
+  - method: "auto"（场景检测+等间隔补充）或 "interval"（纯等间隔）
+  - 返回: [{"frame": 1, "timestamp": 2.5, "image_path": "/path/to/frame_001.jpg"}, ...]
+  - 用途: 抽取视频关键画面，帧图片可直接传给 llm_vision 做内容理解/OCR/描述
+  - 典型流程: `frames = extract_keyframes(video_path)` → `for f in frames: desc = llm_vision(f["image_path"], "描述画面内容")`
+
 ### 算子调用函数
 - `call_operator(operator_name, **params)` → dict: 调用用户自定义算子
   - operator_name: 算子名称或 UUID（必填）
@@ -142,6 +158,12 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 图片文字提取/识别**必须用 `llm_vision(image_path, prompt)`**，第一个参数是图片路径（不是图片数据）
 - 不要先用 `read_file` 读图片再传给 `llm_vision`——`read_file` 不支持图片，`llm_vision` 自己处理 base64 编码
 
+### 视频处理场景
+- 视频信息提取用 `extract_video_info(video_path)`，获取时长/分辨率/帧率/编码等元数据
+- 视频关键画面抽取用 `extract_keyframes(video_path)`，返回帧图片路径列表
+- `read_file` 不支持视频格式，直接用 `extract_video_info` 或 `extract_keyframes`
+- 视频内容理解：先 `extract_keyframes` 抽帧 → 对每帧 `llm_vision(frame["image_path"], prompt)` 做内容分析
+
 ### 列名处理
 - 用户用自然语言提到列名时，**先调 `resolve_column(df, name)` 解析实际列名**，不要直接 `df[name]`
 - 避免因中英文/近义词不匹配导致 KeyError
@@ -152,4 +174,29 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 写入后检查返回值的 `success` 字段，失败时 raise 而不是静默继续
 
 ### 大表处理
-- 数据量超过 1 万行时，用 `iter_table_data` 分块读取，避免一次性加载到内存"""
+- 数据量超过 1 万行时，用 `iter_table_data` 分块读取，避免一次性加载到内存
+
+### 并发处理
+- 作为数据处理智能体，脚本优先按并发编写，提升执行效率
+- I/O 密集型任务（多表查询、多次 LLM 调用、多文件读写）用 `concurrent.futures.ThreadPoolExecutor`
+- CPU 密集型任务（大规模计算）用 `concurrent.futures.ProcessPoolExecutor`
+- 独立子任务才并发，有依赖关系的步骤保持串行
+- 并发数控制在合理范围（默认 4-8），避免压垮数据源或触发 API 限流
+- 示例：
+```python
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def _process_table(ds_id, table_name):
+    result = query_table_data(ds_id, table_name)
+    if not result.get("success"):
+        raise ValueError(f"查询失败: {result.get('error')}")
+    df = pd.DataFrame(result["data"], columns=result["columns"])
+    return _transform(df)
+
+tables = ["table_a", "table_b", "table_c"]
+with ThreadPoolExecutor(max_workers=4) as executor:
+    futures = {executor.submit(_process_table, ds_id, t): t for t in tables}
+    results = {}
+    for fut in as_completed(futures):
+        results[futures[fut]] = fut.result()
+```"""

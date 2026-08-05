@@ -129,7 +129,7 @@
             >
               <el-icon style="margin-right: 6px; flex-shrink: 0;"><Grid /></el-icon>
               <span class="browse-table-label">{{ item.label }}</span>
-              <span v-if="item.metadata?.updated_at" class="browse-table-time">{{ formatUpdateTime(item.metadata.updated_at) }}</span>
+              <span v-if="item.metadata?.data_updated_at" class="browse-table-time">{{ formatUpdateTime(item.metadata.data_updated_at) }}</span>
             </div>
           </el-tooltip>
           <el-empty v-if="browseTree.length === 0 && !browseLoading" description="暂无数据表" :image-size="60" />
@@ -548,6 +548,11 @@ function formatUpdateTime(ts: string): string {
 
 async function refreshCurrentTable() {
   if (selectedTable.value) {
+    // 同时刷新树（更新时间）和表数据
+    try {
+      const tree = await api.get(`/datasources/${browsingSource.value.id}/tree`)
+      browseTree.value = tree || []
+    } catch { /* ignore */ }
     await selectBrowseTable(selectedTable.value)
   } else {
     await onBrowseOpened()

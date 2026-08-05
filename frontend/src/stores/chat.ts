@@ -118,6 +118,10 @@ export const useChatStore = defineStore('chat', () => {
           } else if (event.type === 'content' && event.content) {
             msg.content = (msg.content || '') + event.content
             streamingContent.value = msg.content
+          } else if (event.type === 'progress' || event.type === 'executing') {
+            msg.executingMsg = event.message || event.content || ''
+          } else if (event.type === 'tool_result' || event.type === 'agent_switch' || event.type === 'inspecting' || event.type === 'retry' || event.type === 'round') {
+            msg.executingMsg = event.message || event.reason || ''
           }
         }
       )
