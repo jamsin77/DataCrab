@@ -105,7 +105,7 @@ class StuckDetector:
     # 修改类工具（改脚本或执行脚本）
     FIX_TOOLS = {"edit_script", "run_script", "modify_script", "modify_and_run", "edit_and_run"}
 
-    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3, investigate_threshold: int = 5, max_total_rounds: int = 30):
+    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3, investigate_threshold: int = 3, max_total_rounds: int = 15):
         self.repeat_threshold = repeat_threshold
         self.idle_threshold = idle_threshold
         self.investigate_threshold = investigate_threshold
@@ -125,7 +125,6 @@ class StuckDetector:
 
         # 检测总轮次上限
         if self._total_rounds >= self.max_total_rounds:
-            self._total_rounds = 0
             return (
                 f"已达到总轮次上限（{self.max_total_rounds} 轮），无法继续修复。"
                 "如果这是可修复的问题，请总结已调查的信息，给出修复建议后结束。"

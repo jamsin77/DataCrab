@@ -19,6 +19,9 @@
       <el-tab-pane label="权限管理" name="permission">
         <PermissionView />
       </el-tab-pane>
+      <el-tab-pane label="关于" name="about">
+        <AboutView />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -30,6 +33,7 @@ import AgentConfigView from './AgentConfigView.vue'
 import ModelConfigView from './ModelConfigView.vue'
 import DataStandardsConfig from './DataStandardsConfig.vue'
 import PermissionView from './PermissionView.vue'
+import AboutView from './AboutView.vue'
 import MetadataView from '@/views/metadata/MetadataView.vue'
 import DataSourceView from '@/views/datasource/DataSourceView.vue'
 
@@ -39,7 +43,7 @@ const activeTab = ref('agent')
 
 onMounted(() => {
   const tab = (route.query.tab as string) || 'agent'
-  if (['datasource', 'agent', 'model', 'standards', 'metadata', 'permission'].includes(tab)) {
+  if (['datasource', 'agent', 'model', 'standards', 'metadata', 'permission', 'about'].includes(tab)) {
     activeTab.value = tab
   }
 })

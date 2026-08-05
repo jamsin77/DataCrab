@@ -1534,6 +1534,13 @@ function setExecutingMsg(msg: any, text: string) {
 function clearExecutingMsg(msg: any) {
   msg.executingMsgs = []
 }
+function archiveExecutingMsg(msg: any) {
+  // 阶段切换时：把执行日志固化到 content 里保留，然后清空 executingMsgs 开始新一轮
+  if (msg.executingMsgs && msg.executingMsgs.length > 0) {
+    msg.content += '\n\n```\n' + msg.executingMsgs.join('\n') + '\n```\n'
+    msg.executingMsgs = []
+  }
+}
 function finalizeExecMessage(idx: number, result: any) {
   const msg = debugMessages.value[idx]
   if (msg) {
@@ -2062,7 +2069,7 @@ async function handleRunSkillNL() {
             if (!msg.content) msg.content = ''
             msg.content += data.content
           } else if (data.type === 'inspecting') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
@@ -2075,12 +2082,12 @@ async function handleRunSkillNL() {
             setExecutingMsg(msg, data.message || '')
           } else if (data.type === 'fixing') {
             execPhase.value = 'executing'
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
           } else if (data.type === 'round') {
             msg.thinkingOpen = false
             thinkingDone = true
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'run_result') {
             msg.runResult = data.result
@@ -2098,8 +2105,12 @@ async function handleRunSkillNL() {
             scriptChanged = true
             refreshDebugContext()
           } else if (data.type === 'give_up') {
+            archiveExecutingMsg(msg)
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+            result = { success: false, error: data.reason || '修复失败' }
+            break
           } else if (data.type === 'platform_issue') {
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
           } else if (data.type === 'done') {
             if (data.result != null) {
@@ -2111,8 +2122,11 @@ async function handleRunSkillNL() {
               msg.content += '\n\n✅ 调试完成'
             }
             msg.thinkingOpen = false
+            archiveExecutingMsg(msg)
+            break
           } else if (data.type === 'error') {
             result = { success: false, error: data.content || '执行失败' }
+            break
           }
         } catch {
           // skip malformed JSON
@@ -2134,12 +2148,13 @@ async function handleRunSkillNL() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
-    if (result) {
-      const msg = debugMessages.value[assistantIdx]
-      if (msg) {
-        msg.runResult = result
-        if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
-      }
+    const _msg = debugMessages.value[assistantIdx]
+    if (_msg && _msg.executingMsgs && _msg.executingMsgs.length > 0) {
+      archiveExecutingMsg(_msg)
+    }
+    if (result && _msg) {
+      _msg.runResult = result
+      if (!_msg.content) _msg.content = result?.success ? '执行完成' : '执行失败'
     }
   }
 
@@ -2286,7 +2301,7 @@ async function handleRunCmd() {
             if (!msg.content) msg.content = ''
             msg.content += data.content
           } else if (data.type === 'inspecting') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
@@ -2297,10 +2312,10 @@ async function handleRunCmd() {
           } else if (data.type === 'progress') {
             setExecutingMsg(msg, data.message || '')
           } else if (data.type === 'fixing') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
           } else if (data.type === 'round') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.thinkingOpen = false
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
@@ -2320,8 +2335,12 @@ async function handleRunCmd() {
             scriptChanged = true
             refreshDebugContext()
           } else if (data.type === 'give_up') {
+            archiveExecutingMsg(msg)
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+            result = { success: false, error: data.reason || '修复失败' }
+            break
           } else if (data.type === 'platform_issue') {
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
           } else if (data.type === 'done') {
             if (data.result != null) {
@@ -2333,8 +2352,11 @@ async function handleRunCmd() {
               msg.content += '\n\n✅ 调试完成'
             }
             msg.thinkingOpen = false
+            archiveExecutingMsg(msg)
+            break
           } else if (data.type === 'error') {
             result = { success: false, error: data.content || '执行失败' }
+            break
           }
         } catch {
           // skip malformed JSON
@@ -2356,12 +2378,13 @@ async function handleRunCmd() {
     execRunning.value = false
     execPhase.value = 'idle'
     execAbortController = null
-    if (result) {
-      const msg = debugMessages.value[assistantIdx]
-      if (msg) {
-        msg.runResult = result
-        if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
-      }
+    const _msg = debugMessages.value[assistantIdx]
+    if (_msg && _msg.executingMsgs && _msg.executingMsgs.length > 0) {
+      archiveExecutingMsg(_msg)
+    }
+    if (result && _msg) {
+      _msg.runResult = result
+      if (!_msg.content) _msg.content = result?.success ? '执行完成' : '执行失败'
     }
   }
 
@@ -2539,23 +2562,26 @@ async function handleDebugSend() {
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           } else if (data.type === 'inspecting') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
             console.log('[SkillView] 收到 round 事件:', data)
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.thinkingOpen = false
             thinkingDone = true
             msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
           } else if (data.type === 'give_up') {
+            archiveExecutingMsg(msg)
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+            result = { success: false, error: data.reason || '修复失败' }
+            break
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
             let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
@@ -2564,6 +2590,8 @@ async function handleDebugSend() {
               if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
             }
             msg.content += fatalText
+            result = { success: false, error: '致命问题' }
+            break
           } else if (data.type === 'warning_confirmation') {
             const issues = data.issues || []
             let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
@@ -2575,17 +2603,22 @@ async function handleDebugSend() {
             warnText += '\n\n> 如需修复，请回复"修复警告问题"'
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
-            clearExecutingMsg(msg)
+            archiveExecutingMsg(msg)
             msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'done') {
+            if (data.result != null) {
+              result = data.result
+            }
             if (!msg.content || msg.content.trim() === '') {
               msg.content = '✅ 调试完成'
             } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
               msg.content += '\n\n✅ 调试完成'
             }
             msg.thinkingOpen = false
+            archiveExecutingMsg(msg)
+            break
           }
         } catch (e) {
           console.error('[DEBUG-CHAT] parse error:', e, 'line:', trimmed.substring(0, 200))
@@ -2614,13 +2647,12 @@ async function handleDebugSend() {
       msg.content = msg.content ? `${msg.content}\n\n${errHint}` : errHint
     }
   } finally {
+    const _msg = debugMessages.value[assistantIdx]
+    if (_msg && _msg.executingMsgs && _msg.executingMsgs.length > 0) {
+      archiveExecutingMsg(_msg)
+    }
     debugStreaming.value = false
     debugAbortController = null
-    // 清理执行中状态（防止循环结束后仍显示"正在执行..."）
-    const finalMsg = debugMessages.value[assistantIdx]
-    if (finalMsg) {
-      clearExecutingMsg(finalMsg)
-    }
     await nextTick()
     scrollSkillDebugToBottom()
   }

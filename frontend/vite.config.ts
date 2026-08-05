@@ -31,12 +31,18 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         timeout: 180000,
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            console.error('[vite proxy]', err.message)
+          })
+        },
       },
       '/ws': {
         target: 'ws://localhost:8000',

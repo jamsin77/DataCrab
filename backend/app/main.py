@@ -11,7 +11,7 @@ from app.core.database import engine, Base, async_session
 from app.api.v1.router import api_router
 from app.services.task_runner import start_scheduler, stop_scheduler
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", ""), rotation="1 MB")
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", ""), rotation="1 MB")
 
 
 @asynccontextmanager
@@ -317,10 +317,12 @@ app = FastAPI(
 )
 
 # CORS中间件
+_cors_origins = settings.CORS_ORIGINS
+_allow_credentials = "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

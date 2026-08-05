@@ -307,9 +307,11 @@ async def stream_agent_events_sse(
             _task = asyncio.ensure_future(runtime_gen.__anext__())
 
             t = event.get("type")
+            logger.info(f"[SSE-DEBUG] event type={t} inspector_active={_inspector_active}")
             if t == "agent_switch":
                 agent = event.get("agent")
                 _inspector_active = (agent == "data_inspector")
+                logger.info(f"[SSE-DEBUG] agent_switch to={agent} inspector_active={_inspector_active}")
                 if agent == "data_inspector":
                     evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                 elif agent == "data_processor":
@@ -320,6 +322,7 @@ async def stream_agent_events_sse(
                 if evt:
                     yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
             elif t == "done":
+                logger.info(f"[SSE-DEBUG] done event inspector_active={_inspector_active} summary_len={len(_inspector_summary)} content_sent={_inspector_content_sent} result={str(event.get('result',''))[:200]}")
                 if _inspector_active and _inspector_summary and not _inspector_content_sent:
                     yield f"data: {json.dumps({'type': 'content', 'content': _inspector_summary}, ensure_ascii=False)}\n\n"
                 _inspector_active = False
@@ -327,6 +330,7 @@ async def stream_agent_events_sse(
             elif _inspector_active and t == "warning_confirmation":
                 _inspector_summary = event.get("summary", "")
             elif _inspector_active and t == "content":
+                logger.info(f"[SSE-DEBUG] inspector content: {event.get('content','')[:120]}")
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 _inspector_content_sent = True
             elif _inspector_active and t == "fatal":

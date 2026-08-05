@@ -279,6 +279,7 @@ class DataInspectorAgent(BaseAgent):
             inspect_prompt += "\n请分析以上检查结果。发现 error/critical 问题请调用 handoff_to_processor 交接修复；仅 warning 问题请列出建议用户处理；无问题请说明检查通过。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
+            logger.info(f"[Inspector-DEBUG] INSPECT_RESULT report_len={len(report)} report_preview={report[:200]}")
             yield {"type": "content", "content": report + "\n"}
 
         elif message.reason == HandoffReason.FIX_COMPLETED:
@@ -294,6 +295,7 @@ class DataInspectorAgent(BaseAgent):
             inspect_prompt = f"数据已修复并重新检查，结果如下：\n\n{report}\n\n请确认之前的问题是否已修复，并检查是否引入新问题。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
+            logger.info(f"[Inspector-DEBUG] FIX_COMPLETED report_len={len(report)} report_preview={report[:200]}")
             yield {"type": "content", "content": report + "\n"}
 
         else:

@@ -352,10 +352,11 @@ def _is_platform_issue_report(content: str) -> bool:
         return False
     return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
-DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
-看错误信息，修复脚本并执行。每次修改都要全力解决问题，不要指望下一次。执行成功后系统自动检查数据质量，无需手动操作。总共 {max_rounds} 轮，执行错误最多 {max_exec_failures} 次。
+DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。先用 run_script 执行脚本看看结果。如果有错误再修复。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
+执行成功后系统自动检查数据质量，无需手动操作。总共 {max_rounds} 轮，执行错误最多 {max_exec_failures} 次。
 
 ## 必须遵守
+- **优先执行**：没有错误信息时直接调 run_script 执行，不要先读脚本"调查"。只有在执行失败后才需要读脚本/grep 定位问题
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
 - 下方「内置工具函数」文档列出了所有可用函数和签名，修改脚本前先看
 - **超时不是 bug**：如果错误信息包含"脚本执行超时"，说明脚本运行时间过长（非逻辑错误）。修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发处理），不是找逻辑 bug。如果无法在脚本层面优化，直接报告"超时，需要用户减少数据量或优化性能"
@@ -477,29 +478,65 @@ class DataProcessorAgent(BaseAgent):
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, model=llm_manager._default,
-                temperature=0.3
-            )
+            # 流式调用：推理过程 + content + tool_calls 实时推送（避免非流式调用长时间无响应）
+            response = None
+            try:
+                if i == 0:
+                    pass  # model 事件在流式方法内部 yield
+                _content_parts = []
+                _tool_calls = None
+                _finish_reason = None
+                async for _chunk in llm_manager.chat_stream_with_tools_and_thinking(
+                    messages=local_messages, tools=self.tools, model=llm_manager._default,
+                    temperature=0.3,
+                ):
+                    _ct = _chunk.get("type")
+                    if _ct == "model":
+                        if i == 0:
+                            yield {"type": "model", "content": _chunk.get("content", "")}
+                    elif _ct == "thinking":
+                        yield {"type": "thinking", "content": _chunk.get("content", "")}
+                    elif _ct == "content":
+                        _c = _chunk.get("content", "")
+                        _content_parts.append(_c)
+                        yield {"type": "content", "content": _c}
+                    elif _ct == "tool_calls":
+                        _tool_calls = _chunk.get("tool_calls", [])
+                    elif _ct == "finish":
+                        _finish_reason = _chunk.get("finish_reason")
+                response = {
+                    "content": "".join(_content_parts),
+                    "tool_calls": _tool_calls or [],
+                    "finish_reason": _finish_reason,
+                    "reasoning": None,  # thinking 已实时 yield，不需要再 yield
+                }
+            except Exception as e:
+                logger.warning(f"流式调用失败: {e}，回退非流式")
+                response = await llm_manager.chat_with_tools(
+                    messages=local_messages, tools=self.tools, model=llm_manager._default,
+                    temperature=0.3
+                )
+                if i == 0:
+                    yield {"type": "model", "content": llm_manager._default}
+                reasoning = response.get("reasoning")
+                if reasoning:
+                    yield {"type": "thinking", "content": reasoning}
+
             if response is None:
                 yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
                 yield {"type": "done", "result": {"agent": self.name, "content": "模型不可用"}}
                 return
-            if i == 0:
-                yield {"type": "model", "content": llm_manager._default}
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
+            content = response.get("content", "")
 
-            # 推理过程（GLM 等推理模型返回 reasoning_content）
+            # 推理过程已在流式阶段实时 yield，这里只处理非流式回退的情况
             reasoning = response.get("reasoning")
-            if reasoning:
+            if reasoning and not _content_parts:
                 yield {"type": "thinking", "content": reasoning}
 
             if not tool_calls:
-                content = response.get("content", "")
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
-                # 例外：system prompt 已预注入实时数据时，Agent 基于预注入数据回答是合理的
                 if not had_any_tool_calls and not has_preinjected_data:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
                     if warn and i < max_iterations - 1:
@@ -514,9 +551,10 @@ class DataProcessorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                if content:
+                # content 已在流式阶段 yield，这里不重复 yield
+                if not content:
                     yield {"type": "content", "content": content}
-                yield {"type": "done", "result": {"agent": self.name, "content": content}}
+                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
                 return
 
             had_any_tool_calls = True
@@ -531,10 +569,7 @@ class DataProcessorAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            content = response.get("content") or ""
-            if content:
-                yield {"type": "content", "content": content}
-
+            # content 已在流式阶段实时 yield，不需要重复
             local_messages.append({
                 "role": "assistant",
                 "content": content,
@@ -614,10 +649,10 @@ class DataProcessorAgent(BaseAgent):
 
     async def _execute_tools_with_progress(self, tool_calls: list, db, user_id, context: Dict):
         """执行工具调用，期间实时 yield progress 事件（技能脚本 stdout 逐行）。
-        
+
         用 asyncio.Queue 把 run_script 子进程的 stdout 进度实时推送给前端，
         而不是等 gather 结束后批量 yield（旧模式进度要等几十秒才显示）。
-        
+
         最终结果存入 context["_last_tool_results"]，调用方从中取。
         """
         progress_queue = asyncio.Queue()
@@ -630,11 +665,16 @@ class DataProcessorAgent(BaseAgent):
 
         # 同时监控 queue 和 task：queue 有数据就 yield，task 完成就拿结果
         while not exec_task.done():
-            done, _pending = await asyncio.wait(
-                {exec_task, asyncio.ensure_future(progress_queue.get())},
+            q_task = asyncio.ensure_future(progress_queue.get())
+            done, pending = await asyncio.wait(
+                {exec_task, q_task},
                 return_when=asyncio.FIRST_COMPLETED,
                 timeout=2.0,
             )
+            # 取消未完成的 queue.get task（避免泄漏）
+            for p in pending:
+                if p is not exec_task:
+                    p.cancel()
             for d in done:
                 if d is exec_task:
                     continue
@@ -643,7 +683,7 @@ class DataProcessorAgent(BaseAgent):
                     prog_msg = d.result()
                     if prog_msg:
                         yield {"type": "progress", "message": prog_msg}
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass
 
         # task 已完成，drain 队列里剩余的 progress
@@ -1733,8 +1773,8 @@ class DataProcessorAgent(BaseAgent):
                     _stuck_hint = _hint
                     break
 
-            # 总轮次上限 → 强制退出
-            if _stuck_hint and "总轮次上限" in _stuck_hint:
+            # 总轮次上限 或 只调查不修改 → 强制退出
+            if _stuck_hint and ("总轮次上限" in _stuck_hint or "只调查" in _stuck_hint):
                 yield {"type": "give_up", "reason": _stuck_hint}
                 yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
                 return
@@ -1866,12 +1906,14 @@ class DataProcessorAgent(BaseAgent):
                         _exec_failures_before_success = 0
                         context["debug_exec_failures"] = 0
                         _wt = rdata.get("written_tables")
+                        logger.info(f"[handoff检查] run_script成功, written_tables={_wt}, inner_result_keys={list(_inner_r.keys()) if _inner_r else 'None'}")
                         if _wt:
                             _handoff_output_table = _wt[-1].get("table_name")
                             context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
                         else:
                             _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
                         context["debug_output_table"] = _handoff_output_table
+                        logger.info(f"[handoff检查] _handoff_output_table={_handoff_output_table}, debug_output_datasource_id={context.get('debug_output_datasource_id')}")
                         folder = context.get("debug_folder")
                         if folder:
                             try:
@@ -1942,6 +1984,7 @@ class DataProcessorAgent(BaseAgent):
                 ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
                 logger.info(f"[handoff检查] _should_handoff=True, ds_id={ds_id}, tbl={tbl}, written_tables={rdata.get('written_tables') if 'rdata' in dir() else 'N/A'}, output_table={_handoff_output_table}")
+                logger.info(f"[handoff检查] debug_max_inspections={context.get('debug_max_inspections', 7)}, debug_output_datasource_id={context.get('debug_output_datasource_id')}, debug_datasource_id={context.get('debug_datasource_id')}, debug_table_name={context.get('debug_table_name')}")
                 if context.get("debug_max_inspections", 7) <= 0:
                     yield {"type": "done", "result": {"agent": self.name, "content": "修复成功", "success": True}}
                     return
@@ -1949,10 +1992,12 @@ class DataProcessorAgent(BaseAgent):
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
                 # 目标表信息不能为空——空了 Inspector 不知道检查什么
                 if not ds_id or not tbl:
+                    logger.info(f"[handoff检查] ⚠ 跳过质量检查: ds_id={ds_id!r}, tbl={tbl!r}")
                     yield {"type": "content", "content": f"\n⚠ 执行成功但无法确定检查目标（数据源ID={ds_id or '空'}, 表名={tbl or '空'}），跳过质量检查\n"}
                     yield {"type": "done", "result": {"agent": self.name, "content": "执行成功，但无法启动质量检查：目标表信息缺失"}}
                     return
                 _is_recheck = _inspection_round > 0
+                logger.info(f"[handoff检查] ✅ 触发 handoff to data_inspector, ds_id={ds_id}, tbl={tbl}, is_recheck={_is_recheck}")
                 yield {
                     "type": "handoff", "to": "data_inspector",
                     "reason": HandoffReason.FIX_COMPLETED.value if _is_recheck else HandoffReason.INSPECT_RESULT.value,

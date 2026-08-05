@@ -120,8 +120,14 @@ export const useChatStore = defineStore('chat', () => {
             streamingContent.value = msg.content
           } else if (event.type === 'progress' || event.type === 'executing') {
             msg.executingMsg = event.message || event.content || ''
-          } else if (event.type === 'tool_result' || event.type === 'agent_switch' || event.type === 'inspecting' || event.type === 'retry' || event.type === 'round') {
-            msg.executingMsg = event.message || event.reason || ''
+          } else if (event.type === 'tool_result') {
+            msg.executingMsg = event.content || event.message || ''
+          } else if (event.type === 'agent_switch') {
+            msg.executingMsg = event.reason || event.message || ''
+          } else if (event.type === 'inspecting' || event.type === 'retry') {
+            msg.executingMsg = event.message || ''
+          } else if (event.type === 'round') {
+            msg.executingMsg = event.message || `第 ${event.round} 轮`
           }
         }
       )

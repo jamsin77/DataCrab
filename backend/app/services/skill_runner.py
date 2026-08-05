@@ -111,9 +111,12 @@ def _fix_traceback_lines(error_msg: str, preamble_lines: int) -> str:
 SKILL_RUNNER_TEMPLATE = """
 import json
 import sys
+import os
 import traceback
 import urllib.error
 import pandas as pd
+
+_API_BASE = os.environ.get("DATACRAB_API_BASE", "http://localhost:8000")
 
 ALLOWED_IMPORTS = {{"pd": pd, "json": json, "numpy": __import__("numpy") if "numpy" in sys.modules else None}}
 
@@ -185,7 +188,7 @@ def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_
     page = (offset // limit) + 1 if limit > 0 else 1
     _tn = urllib.parse.quote(str(table_name))
     _ds = urllib.parse.quote(str(datasource_id), safe='')
-    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data?page={{page}}&page_size={{limit}}"
+    url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data?page={{page}}&page_size={{limit}}"
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -201,7 +204,7 @@ def _dc_query_table_data(datasource_id, table_name, limit=1000, offset=0, order_
 def _dc_get_table_schema(datasource_id, table_name):
     import urllib.request, urllib.parse
     _ds = urllib.parse.quote(str(datasource_id), safe='')
-    url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/schema"
+    url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/schema"
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -216,7 +219,7 @@ def _dc_get_table_schema(datasource_id, table_name):
 
 def _dc_get_datasource_id_by_name(name):
     import urllib.request
-    url = "http://localhost:8000/api/v1/datasources/internal/datasources"
+    url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             sources = json.loads(resp.read().decode("utf-8"))
@@ -248,7 +251,7 @@ def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
     # 返回: 大模型的文本回复
     import urllib.request
     _payload = json.dumps({{"prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens), "user_id": INJECTED_USER_ID}}).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/llm/chat", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/llm/chat", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -282,7 +285,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
     _payload = json.dumps({{"records": _sanitize_nans(_records or []), **_kwargs}}).encode("utf-8")
     _tn = urllib.parse.quote(str(table_name))
     _ds = urllib.parse.quote(str(datasource_id), safe='')
-    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data"
+    _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data"
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
@@ -312,7 +315,7 @@ def list_tables(datasource_id):
             datasource_id = _resolved
     import urllib.request, urllib.parse
     _ds = urllib.parse.quote(str(datasource_id), safe='')
-    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables"
+    _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables"
     try:
         with urllib.request.urlopen(_url, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -341,7 +344,7 @@ def iter_table_data(datasource_id, table_name, chunk_size=10000):
     _ds = urllib.parse.quote(str(datasource_id), safe='')
     page = 1
     while True:
-        _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/chunks?chunk_size={{chunk_size}}&page={{page}}"
+        _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/chunks?chunk_size={{chunk_size}}&page={{page}}"
         try:
             with urllib.request.urlopen(_url, timeout=120) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -371,7 +374,7 @@ def execute_sql(datasource_id, sql, params=None, limit=10000):
     import urllib.request, urllib.parse
     _payload = json.dumps({{"sql": sql, "limit": int(limit)}}).encode("utf-8")
     _ds = urllib.parse.quote(str(datasource_id), safe='')
-    _url = f"http://localhost:8000/api/v1/datasources/internal/datasources/{{_ds}}/sql"
+    _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/sql"
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
@@ -392,7 +395,7 @@ def read_file(path, format=None):
     # 返回: text→str, json→dict/list, csv/excel→dict {{"columns": [...], "rows": [...]}}
     import urllib.request
     _payload = json.dumps({{"path": path, "user_id": INJECTED_USER_ID}}).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/read", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/files/read", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=60) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -421,7 +424,7 @@ def write_file(path, data, format=None):
     # 返回: dict {{"success": bool, "path": str, "size": int}}
     import urllib.request
     _payload = json.dumps({{"path": path, "data": data, "format": format, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/files/write", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/files/write", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -456,7 +459,7 @@ def llm_vision(image_path, prompt, system_prompt=None, temperature=0.3, max_toke
     # 返回: str 大模型的文本回复
     import urllib.request
     _payload = json.dumps({{"image_path": image_path, "prompt": prompt, "system_prompt": system_prompt, "temperature": temperature, "max_tokens": int(max_tokens), "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/llm/vision", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/llm/vision", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -475,7 +478,7 @@ def extract_video_info(video_path):
     # 返回: dict {{"duration": float, "width": int, "height": int, "fps": float, "codec": str, ...}}
     import urllib.request
     _payload = json.dumps({{"video_path": video_path, "user_id": INJECTED_USER_ID}}).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/video/info", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/video/info", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -497,7 +500,7 @@ def extract_keyframes(video_path, max_frames=8, output_dir=None, method="auto"):
     # 抽出的帧图片可直接传给 llm_vision 做内容理解
     import urllib.request
     _payload = json.dumps({{"video_path": video_path, "max_frames": int(max_frames), "output_dir": output_dir, "method": method, "user_id": INJECTED_USER_ID}}, ensure_ascii=False).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/datasources/internal/video/keyframes", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/datasources/internal/video/keyframes", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -517,7 +520,7 @@ def call_operator(operator_name, **params):
     # 返回: dict {{"success": bool, "result": ..., "stdout": str, "error": str}}
     import urllib.request
     _payload = json.dumps({{"operator_name": operator_name, "parameters": params, "user_id": INJECTED_USER_ID}}, ensure_ascii=False, default=str).encode("utf-8")
-    _req = urllib.request.Request("http://localhost:8000/api/v1/operators/internal/execute", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
+    _req = urllib.request.Request(f"{{_API_BASE}}/api/v1/operators/internal/execute", data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
         with urllib.request.urlopen(_req, timeout=120) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -1022,7 +1025,7 @@ def run_skill_script_streaming(
             func_defs = [(n.name, n) for n in _ast.iter_child_nodes(tree) if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not n.name.startswith("_")]
             if func_defs:
                 def _param_count(fn):
-                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs) + (1 if fn.args.vararg else 0) + (1 if fn.args.kwarg else 0)
                 best = max(func_defs, key=lambda f: _param_count(f[1]))
                 if "main" in [f[0] for f in func_defs]:
                     main_node = next(f[1] for f in func_defs if f[0] == "main")
@@ -1517,7 +1520,7 @@ def run_skill_script_streaming_by_content(
             func_defs = [(n.name, n) for n in _ast.iter_child_nodes(tree) if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and not n.name.startswith("_")]
             if func_defs:
                 def _param_count(fn):
-                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                    return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs) + (1 if fn.args.vararg else 0) + (1 if fn.args.kwarg else 0)
                 best = max(func_defs, key=lambda f: _param_count(f[1]))
                 if "main" in [f[0] for f in func_defs]:
                     main_node = next(f[1] for f in func_defs if f[0] == "main")

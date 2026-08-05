@@ -21,6 +21,14 @@
       "context_summary": "工具: run_script\nAI输出: 脚本已读取完毕，我来分析一下关键逻辑然后执行：\n\n1. `_pipeline_entry` (L700-701) 调用 `main()`，参数中 `source_table_name='*'` 会被默认为 `'所有的图片'`，`target_table_name='*'` 会自动生成时间戳表名\n2. `image_column` 设为 `'所有图片'`，但代码中 OCR 部分直接硬编码使用 `fi"
     }
   ],
-  "positive": [],
+  "positive": [
+    {
+      "timestamp": "2026-08-05T16:00:48.515695",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260805_160011', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    }
+  ],
   "lessons": ""
 }

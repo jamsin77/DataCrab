@@ -630,9 +630,14 @@ async def stream_response(
                     full_response += content
                     yield f"data: {json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
                 elif event.get("type") == "tool_result":
-                    yield f"data: {json.dumps({'type': 'tool_result', 'content': event.get('content', '')[:200]}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'content': event.get('content', '')[:2000]}, ensure_ascii=False)}\n\n"
                 elif event.get("type") == "done":
-                    pass
+                    result = event.get("result") or {}
+                    _done_content = result.get("content", "") if isinstance(result, dict) else ""
+                    if _done_content and _done_content.strip() not in full_response.strip():
+                        full_response += _done_content
+                        yield f"data: {json.dumps({'type': 'content', 'content': _done_content}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 else:
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
