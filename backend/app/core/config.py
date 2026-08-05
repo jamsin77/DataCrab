@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     # 内部 API 地址（技能沙箱子进程调主进程用）
     # 直接部署默认 http://localhost:8000；Docker 部署设为 http://backend:8000
-    INTERNAL_API_BASE: str = "http://localhost:8000"
+    DATACRAB_API_BASE: str = "http://localhost:8000"
 
     # 日志配置
     LOG_LEVEL: str = "INFO"
