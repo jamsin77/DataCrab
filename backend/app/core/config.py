@@ -58,7 +58,12 @@ class Settings(BaseSettings):
     ENCRYPT_KEY: str = ""
 
     # CORS配置
+    # 公网部署时在 .env 设置 CORS_ORIGINS=["*"] 或指定来源，如 ["http://1.2.3.4:5173","http://example.com"]
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
+
+    # 内部 API 地址（技能沙箱子进程调主进程用）
+    # 直接部署默认 http://localhost:8000；Docker 部署设为 http://backend:8000
+    INTERNAL_API_BASE: str = "http://localhost:8000"
 
     # 日志配置
     LOG_LEVEL: str = "INFO"
