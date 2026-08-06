@@ -387,9 +387,12 @@ class DataInspectorTools:
 
             if not quality_dimensions or "completeness" in quality_dimensions:
                 for col in df.columns:
-                    null_rate = df[col].isna().mean()
+                    _null_mask = df[col].isna()
+                    if df[col].dtype == object:
+                        _null_mask = _null_mask | (df[col].astype(str).str.strip() == "")
+                    null_rate = _null_mask.mean()
                     if null_rate > null_thr:
-                        _sev = "critical" if null_rate >= 1.0 else ("error" if null_rate > null_thr * 3 else "warning")
+                        _sev = dq_rules.get("DQ-COM-003", {}).get("severity", "warning")
                         issues.append({
                             "dimension": "completeness",
                             "rule_id": "DQ-COM-003",
@@ -518,13 +521,16 @@ class DataInspectorTools:
                 for col in df.columns:
                     cl = str(col).lower()
                     if any(kw in cl for kw in _required_keywords):
-                        null_count = int(df[col].isna().sum())
+                        _null_mask = df[col].isna()
+                        if df[col].dtype == object:
+                            _null_mask = _null_mask | (df[col].astype(str).str.strip() == "")
+                        null_count = int(_null_mask.sum())
                         if null_count > 0:
                             issues.append({
                                 "dimension": "completeness",
                                 "rule_id": "DQ-COM-001",
                                 "column": col,
-                                "severity": "critical",
+                                "severity": "error",
                                 "description": f"必填字段 '{col}' 有 {null_count} 个空值（阈值 0%）",
                                 "suggestion": "补充缺失值或回源补数",
                             })
@@ -955,14 +961,14 @@ class DataInspectorTools:
                 null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value", 0.9))
                 dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value", 0.01)
             except Exception:
-                pass
+                dq_rules = {}
 
             # 完整性
             if not quality_dimensions or "completeness" in quality_dimensions:
                 for col in df.columns:
                     null_rate = df[col].isna().mean()
                     if null_rate > null_thr:
-                        _sev = "critical" if null_rate >= 1.0 else ("error" if null_rate > null_thr * 3 else "warning")
+                        _sev = dq_rules.get("DQ-COM-003", {}).get("severity", "warning")
                         issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _sev, "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行"})
 
             # 唯一性
@@ -1075,23 +1081,26 @@ class DataInspectorTools:
         }
 
     def format_report(self, results: dict) -> str:
-        """格式化检查结果为紧凑报告（注入 user message）"""
+        """格式化检查结果为完整报告（含表格、每条规则详情）"""
         lines = []
-        
+
         # 数据概览
         profile = results.get("profile") or {}
         if "error" in profile:
-            lines.append(f"## 数据概览\n❌ {profile['error']}")
+            lines.append("## 数据概览\n❌ %s" % profile["error"])
         else:
             row_count = profile.get("row_count", 0)
             col_count = profile.get("column_count", 0)
-            lines.append(f"## 数据概览\n行数: {row_count}, 列数: {col_count}")
+            lines.append("## 数据概览\n总行数: %d, 总列数: %d\n" % (row_count, col_count))
             cols = profile.get("columns", {})
-            col_parts = []
-            for name, info in cols.items():
-                col_parts.append(f"  {name}(null={info.get('null_rate',0):.1%}, unique={info.get('unique_count',0)})")
-            if col_parts:
-                lines.append("\n".join(col_parts))
+            if cols:
+                lines.append("| 列名 | 类型 | 空值率 | 唯一值数 |")
+                lines.append("|------|------|--------|----------|")
+                for name, info in cols.items():
+                    dtype = info.get("dtype", "")
+                    null_rate = info.get("null_rate", 0)
+                    unique = info.get("unique_count", 0)
+                    lines.append("| %s | %s | %.1f%% | %d |" % (name, dtype, null_rate * 100, unique))
 
         # 三项检查
         for dim, label in [("standards", "标准检查"), ("quality", "质量检查"), ("security", "安全检查")]:
@@ -1099,22 +1108,20 @@ class DataInspectorTools:
             issues = result.get("issues", [])
             passed = result.get("passed", len(issues) == 0)
             if passed and not issues:
-                lines.append(f"\n## {label}\n✅ 通过")
+                lines.append("\n## %s\n✅ 通过" % label)
             elif issues:
                 error_count = sum(1 for i in issues if i.get("severity") in ("error", "critical", "fatal"))
                 warning_count = sum(1 for i in issues if i.get("severity") == "warning")
-                lines.append(f"\n## {label}\n❌ {len(issues)} 个问题（{error_count} error/critical, {warning_count} warning）:")
+                lines.append("\n## %s\n❌ %d 个问题（%d error/critical, %d warning）:\n" % (label, len(issues), error_count, warning_count))
+                lines.append("| 序号 | 规则ID | 严重等级 | 列名 | 问题描述 | 修复建议 |")
+                lines.append("|------|--------|----------|------|----------|----------|")
                 for idx, issue in enumerate(issues, 1):
                     sev = issue.get("severity", "warning")
-                    desc = issue.get("description", "")
+                    rule_id = issue.get("rule_id", "")
                     col = issue.get("column", "")
+                    desc = issue.get("description", "")
                     sug = issue.get("suggestion", "")
-                    line = f"{idx}. [{sev}] {desc}"
-                    if col:
-                        line += f" (列: {col})"
-                    if sug:
-                        line += f" → {sug}"
-                    lines.append(line)
+                    lines.append("| %d | %s | %s | %s | %s | %s |" % (idx, rule_id, sev, col, desc, sug))
 
         return "\n".join(lines)
 

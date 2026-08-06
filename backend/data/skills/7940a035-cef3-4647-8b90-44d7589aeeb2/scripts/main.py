@@ -336,7 +336,7 @@ def main(input_data=None, **kwargs):
     output_table = output_table_name or f"{table_name}_merged"
     records = target_df.to_dict(orient="records")
 
-    # 分批写入
+    # 分批写入：第一批用 overwrite 清空重建，后续用 append 追加
     clearing_strategies = {"overwrite", "replace", "truncate"}
     for i in range(0, len(records), batch_size):
         batch_num = i // batch_size + 1
@@ -346,7 +346,8 @@ def main(input_data=None, **kwargs):
             current_strategy = "append"
         write_result = write_table_data(ds_id, output_table, records=batch, if_table_exists=current_strategy)
         if not write_result.get("success"):
-            return {"success": False, "error": f"写入失败: {write_result.get('message')}"}
+            return {"success": False, "error": f"写入失败(批次{batch_num}): {write_result.get('message', write_result)}"}
+        log("info", f"批次 {batch_num} 写入成功: {len(batch)} 行 (策略={current_strategy})")
 
     log("info", f"归并完成: {len(df)} → {len(target_df)} 行，写入表: {output_table}")
     return {

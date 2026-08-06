@@ -59,10 +59,6 @@ export const chatApi = {
     return api.delete(`/chat/sessions/${sessionId}/messages`)
   },
 
-  sendMessage(sessionId: string, content: string): Promise<ChatMessage> {
-    return api.post('/chat/messages', { session_id: sessionId, content })
-  },
-
   stopGeneration(sessionId: string): Promise<void> {
     return api.post('/chat/stop', null, { params: { session_id: sessionId } })
   },

@@ -32,6 +32,7 @@ from app.services.agent_utils import (
     get_context_pressure_level,
     build_pressure_warning,
     get_anti_hallucination_section,
+    truncate_tool_result,
 )
 from loguru import logger
 
@@ -168,7 +169,7 @@ class AgentService:
 
             results = await self._execute_tool_calls_parallel(tool_calls, ctx)
             for r in results:
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": truncate_tool_result(r["content"])})
 
             # 上下文压力主动告警（R）
             level, ratio = get_context_pressure_level(local_messages)
@@ -257,7 +258,7 @@ class AgentService:
 
             results = await self._execute_tool_calls_parallel(tool_calls, ctx)
             for r in results:
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": truncate_tool_result(r["content"])})
                 # 检测 delegate 信号
                 if r.get("tool_name") == "delegate_to_inspector":
                     try:

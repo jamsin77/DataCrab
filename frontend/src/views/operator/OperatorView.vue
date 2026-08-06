@@ -764,6 +764,10 @@ function parseJsonValue(raw: string): any {
 async function runDebug() {
   if (!debugOperator.value) return
   debugRunning.value = true
+  const _userText = opInput.value.trim()
+  opMessages.value.push({ role: 'user', content: _userText ? `${_userText}\n运行这个技能吧` : '运行这个技能吧', created_at: new Date().toISOString() })
+  opInput.value = ''
+  nextTick(() => scrollOpToBottom(true))
 
   const inputs = debugInputs.value
   const optParams = debugOptionalParams.value

@@ -56,6 +56,7 @@ class PostgreSQLConnector(BaseConnector):
                 user=self.config.get("user"),
                 password=self.config.get("password"),
             )
+            await self._connection.set_autocommit(True)
             return True
         except Exception as e:
             logger.error(f"PostgreSQL连接失败: {e}")
@@ -211,7 +212,6 @@ class PostgreSQLConnector(BaseConnector):
                         safe_remark = str(remark).replace("'", "''")
                         await self._connection.execute(f'COMMENT ON COLUMN "{table}"."{col_name}" IS \'{safe_remark}\'')
 
-            # asyncpg 自动提交，无需 commit()
             return {"success": True, "rows_written": len(records)}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}

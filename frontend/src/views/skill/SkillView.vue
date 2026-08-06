@@ -1550,6 +1550,206 @@ function finalizeExecMessage(idx: number, result: any) {
   nextTick(() => scrollSkillDebugToBottom())
 }
 
+/** 公共 debug SSE 事件处理（三处 handler 共享）。
+ *  返回值：'break' 表示应中断 SSE 循环（done/error/give_up/fatal），null 表示继续。
+ */
+function processDebugSSEEvent(
+  data: any,
+  msg: any,
+  state: { thinkingDone: boolean; scriptChanged: boolean; result: any },
+  assistantIdx: number,
+): 'break' | null {
+  const setThinkingDone = () => {
+    if (!state.thinkingDone && msg.thinking) {
+      state.thinkingDone = true
+      msg.thinkingOpen = false
+    }
+  }
+
+  switch (data.type) {
+    case 'model':
+      msg.model = data.content
+      break
+    case 'ping':
+      break
+    case 'clear_thinking':
+      msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; state.thinkingDone = false
+      break
+    case 'thinking':
+      if (state.thinkingDone && msg.thinking) {
+        msg.thinking += '\n\n--- 新一轮推理 ---\n'
+        msg.thinkingOpen = false
+        state.thinkingDone = false
+      }
+      if (!msg.thinking) msg.thinkingOpen = false
+      msg.thinking = (msg.thinking || '') + data.content
+      scrollThinkingBodyToBottom(assistantIdx)
+      break
+    case 'content':
+      setThinkingDone()
+      execPhase.value = 'executing'
+      if (!msg.content) msg.content = ''
+      msg.content += data.content
+      break
+    case 'executing':
+      execPhase.value = 'executing'
+      setExecutingMsg(msg, data.message || '正在执行技能脚本...')
+      setThinkingDone()
+      break
+    case 'progress':
+      setExecutingMsg(msg, data.message || '')
+      break
+    case 'tool_result': {
+      const tc = data.content || ''
+      let brief = tc.substring(0, 200)
+      try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
+      msg.content += `\n  └ ${brief}\n`
+      break
+    }
+    case 'inspecting':
+      archiveExecutingMsg(msg)
+      msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+      msg.thinkingOpen = false
+      state.thinkingDone = true
+      break
+    case 'inspection_result':
+      msg.inspectionResult = data.result
+      break
+    case 'retry':
+      archiveExecutingMsg(msg)
+      msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+      msg.thinkingOpen = false
+      state.thinkingDone = true
+      break
+    case 'round':
+      archiveExecutingMsg(msg)
+      msg.thinkingOpen = false
+      state.thinkingDone = true
+      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
+      break
+    case 'fixing':
+      execPhase.value = 'executing'
+      archiveExecutingMsg(msg)
+      msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
+      break
+    case 'run_result':
+      setThinkingDone()
+      archiveExecutingMsg(msg)
+      msg.runResult = data.result
+      {
+        const r = data.result || {}
+        const inner = typeof r.result === 'object' && r.result ? r.result : {}
+        const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+        if (failed) {
+          const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
+          msg.content += `\n❌ 执行失败：${errMsg}\n`
+        } else if (!msg.content) {
+          msg.content = '技能执行完成'
+        }
+      }
+      break
+    case 'script_updated':
+      msg.scriptUpdated = data.script_name
+      state.scriptChanged = true
+      refreshDebugContext()
+      break
+    case 'give_up':
+      archiveExecutingMsg(msg)
+      msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+      state.result = { success: false, error: data.reason || '修复失败' }
+      return 'break'
+    case 'platform_issue':
+      archiveExecutingMsg(msg)
+      msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
+      msg.thinkingOpen = false
+      state.thinkingDone = true
+      break
+    case 'fatal': {
+      const issues = data.issues || []
+      let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+      for (const issue of issues) {
+        fatalText += `\n- [FATAL] ${issue.description || ''}`
+        if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
+      }
+      msg.content += fatalText
+      state.result = { success: false, error: '致命问题' }
+      return 'break'
+    }
+    case 'warning_confirmation': {
+      const issues = data.issues || []
+      let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+      for (const issue of issues) {
+        warnText += `\n- [WARNING] ${issue.description || ''}`
+        if (issue.column) warnText += ` (列: ${issue.column})`
+        if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
+      }
+      warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+      msg.content += warnText
+      break
+    }
+    case 'done':
+      if (data.result != null) {
+        state.result = data.result
+      }
+      if (!msg.content || msg.content.trim() === '') {
+        msg.content = '✅ 调试完成'
+      } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
+        msg.content += '\n\n✅ 调试完成'
+      }
+      msg.thinkingOpen = false
+      archiveExecutingMsg(msg)
+      return 'break'
+    case 'error':
+      msg.content += `\n\n错误: ${data.content || '未知错误'}`
+      state.result = { success: false, error: data.content || '执行失败' }
+      return 'break'
+  }
+  return null
+}
+
+/** 公共 SSE 流读取（三处 handler 共享） */
+async function readDebugSSEStream(
+  response: Response,
+  assistantIdx: number,
+  scriptChangedRef: { value: boolean },
+): Promise<{ result: any; streamOk: boolean }> {
+  const reader = response.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const state = { thinkingDone: false, scriptChanged: false, result: null as any }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data: ')) continue
+      try {
+        const data = JSON.parse(trimmed.slice(6))
+        const msg = debugMessages.value[assistantIdx]
+        const ret = processDebugSSEEvent(data, msg, state, assistantIdx)
+        if (ret === 'break') {
+          // drain 剩余流
+          try { await reader.read() } catch {}
+          scriptChangedRef.value = state.scriptChanged
+          return { result: state.result, streamOk: true }
+        }
+      } catch {
+        // skip malformed JSON
+      }
+    }
+    nextTick(() => scrollSkillDebugToBottom())
+  }
+
+  scriptChangedRef.value = state.scriptChanged
+  return { result: state.result, streamOk: true }
+}
+
 // ==================== 输入历史记录（localStorage 持久化） ====================
 const HISTORY_MAX = 100
 
@@ -2025,116 +2225,11 @@ async function handleRunSkillNL() {
       throw new Error(errText || `HTTP ${response.status}`)
     }
 
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let thinkingDone = false
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-
-        try {
-          const data = JSON.parse(trimmed.slice(6))
-          const msg = debugMessages.value[assistantIdx]
-
-          if (data.type === 'model') {
-            msg.model = data.content
-          } else if (data.type === 'ping') {
-          } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
-          } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) {
-              msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = false
-              thinkingDone = false
-            }
-            if (!msg.thinking) msg.thinkingOpen = false
-            msg.thinking = (msg.thinking || '') + data.content
-            scrollThinkingBodyToBottom(assistantIdx)
-          } else if (data.type === 'content') {
-            if (!thinkingDone && msg.thinking) {
-              thinkingDone = true
-              msg.thinkingOpen = false
-            }
-            execPhase.value = 'executing'
-            if (!msg.content) msg.content = ''
-            msg.content += data.content
-          } else if (data.type === 'inspecting') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'inspection_result') {
-            msg.inspectionResult = data.result
-          } else if (data.type === 'executing') {
-            execPhase.value = 'executing'
-            setExecutingMsg(msg, data.message || '正在执行技能脚本...')
-          } else if (data.type === 'progress') {
-            setExecutingMsg(msg, data.message || '')
-          } else if (data.type === 'fixing') {
-            execPhase.value = 'executing'
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
-          } else if (data.type === 'round') {
-            msg.thinkingOpen = false
-            thinkingDone = true
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
-          } else if (data.type === 'run_result') {
-            msg.runResult = data.result
-            const r = data.result || {}
-            const inner = typeof r.result === 'object' && r.result ? r.result : {}
-            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
-            if (failed) {
-              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
-              msg.content += `\n❌ 执行失败：${errMsg}\n`
-            } else if (!msg.content) {
-              msg.content = '技能执行完成'
-            }
-          } else if (data.type === 'script_updated') {
-            msg.scriptUpdated = data.script_name
-            scriptChanged = true
-            refreshDebugContext()
-          } else if (data.type === 'give_up') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
-            result = { success: false, error: data.reason || '修复失败' }
-            break
-          } else if (data.type === 'platform_issue') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
-          } else if (data.type === 'done') {
-            if (data.result != null) {
-              result = data.result
-            }
-            if (!msg.content || msg.content.trim() === '') {
-              msg.content = '✅ 调试完成'
-            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
-              msg.content += '\n\n✅ 调试完成'
-            }
-            msg.thinkingOpen = false
-            archiveExecutingMsg(msg)
-            break
-          } else if (data.type === 'error') {
-            result = { success: false, error: data.content || '执行失败' }
-            break
-          }
-        } catch {
-          // skip malformed JSON
-        }
-      }
-      nextTick(() => scrollSkillDebugToBottom())
-    }
-    streamOk = true
+    const scriptChangedRef = { value: false }
+    const sseResult = await readDebugSSEStream(response, assistantIdx, scriptChangedRef)
+    result = sseResult.result
+    scriptChanged = scriptChangedRef.value
+    streamOk = sseResult.streamOk
   } catch (e: any) {
     if (e.name === 'AbortError') {
       result = { success: false, error: '已停止' }
@@ -2258,113 +2353,11 @@ async function handleRunCmd() {
       throw new Error(errText || `HTTP ${response.status}`)
     }
 
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let thinkingDone = false
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-
-        try {
-          const data = JSON.parse(trimmed.slice(6))
-          const msg = debugMessages.value[assistantIdx]
-
-          if (data.type === 'model') {
-            msg.model = data.content
-          } else if (data.type === 'ping') {
-          } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
-          } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) {
-              msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = false
-              thinkingDone = false
-            }
-            if (!msg.thinking) msg.thinkingOpen = false
-            msg.thinking = (msg.thinking || '') + data.content
-            scrollThinkingBodyToBottom(assistantIdx)
-          } else if (data.type === 'content') {
-            if (!thinkingDone && msg.thinking) {
-              thinkingDone = true
-              msg.thinkingOpen = false
-            }
-            if (!msg.content) msg.content = ''
-            msg.content += data.content
-          } else if (data.type === 'inspecting') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'inspection_result') {
-            msg.inspectionResult = data.result
-          } else if (data.type === 'executing') {
-            setExecutingMsg(msg, data.message || '正在执行技能脚本...')
-          } else if (data.type === 'progress') {
-            setExecutingMsg(msg, data.message || '')
-          } else if (data.type === 'fixing') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
-          } else if (data.type === 'round') {
-            archiveExecutingMsg(msg)
-            msg.thinkingOpen = false
-            thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
-          } else if (data.type === 'run_result') {
-            msg.runResult = data.result
-            const r = data.result || {}
-            const inner = typeof r.result === 'object' && r.result ? r.result : {}
-            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
-            if (failed) {
-              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
-              msg.content += `\n❌ 执行失败：${errMsg}\n`
-            } else if (!msg.content) {
-              msg.content = '技能执行完成'
-            }
-          } else if (data.type === 'script_updated') {
-            msg.scriptUpdated = data.script_name
-            scriptChanged = true
-            refreshDebugContext()
-          } else if (data.type === 'give_up') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
-            result = { success: false, error: data.reason || '修复失败' }
-            break
-          } else if (data.type === 'platform_issue') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔧 **平台能力缺失**\n\n${data.message || ''}\n`
-          } else if (data.type === 'done') {
-            if (data.result != null) {
-              result = data.result
-            }
-            if (!msg.content || msg.content.trim() === '') {
-              msg.content = '✅ 调试完成'
-            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
-              msg.content += '\n\n✅ 调试完成'
-            }
-            msg.thinkingOpen = false
-            archiveExecutingMsg(msg)
-            break
-          } else if (data.type === 'error') {
-            result = { success: false, error: data.content || '执行失败' }
-            break
-          }
-        } catch {
-          // skip malformed JSON
-        }
-      }
-      nextTick(() => scrollSkillDebugToBottom())
-    }
-    streamOk = true
+    const scriptChangedRef = { value: false }
+    const sseResult = await readDebugSSEStream(response, assistantIdx, scriptChangedRef)
+    result = sseResult.result
+    scriptChanged = scriptChangedRef.value
+    streamOk = sseResult.streamOk
   } catch (e: any) {
     if (e.name === 'AbortError') {
       result = { success: false, error: '已停止' }
@@ -2490,149 +2483,15 @@ async function handleDebugSend() {
       throw new Error(errText || `HTTP ${response.status}`)
     }
 
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let thinkingDone = false
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data: ')) continue
-
-        try {
-          const data = JSON.parse(trimmed.slice(6))
-          const msg = debugMessages.value[assistantIdx]
-
-          if (data.type === 'model') {
-            msg.model = data.content
-          } else if (data.type === 'ping') {
-            // SSE 心跳，忽略
-          } else if (data.type === 'clear_thinking') {
-            msg.thinking = ''
-            msg.content = ''
-            msg.thinkingOpen = false
-            thinkingDone = false
-          } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) {
-              msg.thinking += '\n\n--- 新一轮推理 ---\n'
-              msg.thinkingOpen = false
-              thinkingDone = false
-            }
-            if (!msg.thinking) msg.thinkingOpen = false
-            msg.thinking = (msg.thinking || '') + data.content
-            scrollThinkingBodyToBottom(assistantIdx)
-          } else if (data.type === 'content') {
-            if (!thinkingDone && msg.thinking) {
-              thinkingDone = true
-              msg.thinkingOpen = false
-            }
-            msg.content += data.content
-          } else if (data.type === 'executing') {
-            setExecutingMsg(msg, data.message || '正在执行脚本...')
-            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
-          } else if (data.type === 'tool_result') {
-            const tc = data.content || ''
-            let brief = tc.substring(0, 200)
-            try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
-            msg.content += `\n  └ ${brief}\n`
-          } else if (data.type === 'run_result') {
-            if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
-            msg.runResult = data.result
-            const r = data.result || {}
-            const inner = typeof r.result === 'object' && r.result ? r.result : {}
-            const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
-            if (failed) {
-              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
-              msg.content += `\n❌ 执行失败：${errMsg}\n`
-            } else if (!msg.content) {
-              msg.content = '技能执行完成'
-            }
-          } else if (data.type === 'script_updated') {
-            msg.scriptUpdated = data.script_name
-            scriptChanged = true
-            refreshDebugContext()
-          } else if (data.type === 'error') {
-            msg.content += `\n\n错误: ${data.content || '未知错误'}`
-          } else if (data.type === 'inspecting') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'retry') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'round') {
-            console.log('[SkillView] 收到 round 事件:', data)
-            archiveExecutingMsg(msg)
-            msg.thinkingOpen = false
-            thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
-          } else if (data.type === 'give_up') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
-            result = { success: false, error: data.reason || '修复失败' }
-            break
-          } else if (data.type === 'fatal') {
-            const issues = data.issues || []
-            let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
-            for (const issue of issues) {
-              fatalText += `\n- [FATAL] ${issue.description || ''}`
-              if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
-            }
-            msg.content += fatalText
-            result = { success: false, error: '致命问题' }
-            break
-          } else if (data.type === 'warning_confirmation') {
-            const issues = data.issues || []
-            let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
-            for (const issue of issues) {
-              warnText += `\n- [WARNING] ${issue.description || ''}`
-              if (issue.column) warnText += ` (列: ${issue.column})`
-              if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
-            }
-            warnText += '\n\n> 如需修复，请回复"修复警告问题"'
-            msg.content += warnText
-          } else if (data.type === 'platform_issue') {
-            archiveExecutingMsg(msg)
-            msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
-          } else if (data.type === 'done') {
-            if (data.result != null) {
-              result = data.result
-            }
-            if (!msg.content || msg.content.trim() === '') {
-              msg.content = '✅ 调试完成'
-            } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
-              msg.content += '\n\n✅ 调试完成'
-            }
-            msg.thinkingOpen = false
-            archiveExecutingMsg(msg)
-            break
-          }
-        } catch (e) {
-          console.error('[DEBUG-CHAT] parse error:', e, 'line:', trimmed.substring(0, 200))
-        }
-      }
-      nextTick(() => scrollSkillDebugToBottom())
+    const scriptChangedRef = { value: false }
+    const sseResult = await readDebugSSEStream(response, assistantIdx, scriptChangedRef)
+    let result: any = sseResult.result
+    scriptChanged = scriptChangedRef.value
+    streamOk = sseResult.streamOk
+    if (result) {
+      const msg = debugMessages.value[assistantIdx]
+      msg.runResult = result
     }
-
-    const finalMsg = debugMessages.value[assistantIdx]
-    if (finalMsg.thinking && !thinkingDone) {
-      finalMsg.thinkingOpen = false
-    }
-    streamOk = true
-
   } catch (e: any) {
     if (e.name === 'AbortError') {
       const msg = debugMessages.value[assistantIdx]

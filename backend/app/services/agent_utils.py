@@ -93,26 +93,18 @@ def truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS
 class StuckDetector:
     """检测 Agent 原地打转。
 
-    借鉴 DeepAnalyze 的 StuckDetector，识别三种模式：
+    识别两种模式：
     - 重复调用：连续 N 轮调用相同工具 + 相同参数
     - 空转：连续 N 轮有输出但没有工具调用
-    - 只调查不修改：连续 N 轮只调调查工具（read/grep）不调修改工具（edit/run）
     另有总轮次上限兜底，防止无限循环。
     """
 
-    # 调查类工具（只读不改）
-    INVESTIGATION_TOOLS = {"read_script", "grep_script", "get_table_schema", "query_table_data", "list_user_datasources", "list_tables"}
-    # 修改类工具（改脚本或执行脚本）
-    FIX_TOOLS = {"edit_script", "run_script", "modify_script", "modify_and_run", "edit_and_run"}
-
-    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3, investigate_threshold: int = 3, max_total_rounds: int = 15):
+    def __init__(self, repeat_threshold: int = 2, idle_threshold: int = 3, max_total_rounds: int = 15):
         self.repeat_threshold = repeat_threshold
         self.idle_threshold = idle_threshold
-        self.investigate_threshold = investigate_threshold
         self.max_total_rounds = max_total_rounds
         self._call_history: List[str] = []
         self._idle_count: int = 0
-        self._investigate_count: int = 0
         self._total_rounds: int = 0
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> Optional[str]:
@@ -139,20 +131,6 @@ class StuckDetector:
                     "你刚才已连续重复调用相同的工具和参数，但没有取得进展。"
                     "请尝试不同策略：换一个工具、调整参数、或重新分析问题。"
                 )
-
-        # 检测只调查不修改
-        if tool_name in self.INVESTIGATION_TOOLS:
-            self._investigate_count += 1
-        elif tool_name in self.FIX_TOOLS:
-            self._investigate_count = 0
-
-        if self._investigate_count >= self.investigate_threshold:
-            self._investigate_count = 0
-            return (
-                f"已连续 {self.investigate_threshold} 轮只调查（read/grep）未修改脚本。"
-                "请立即调用 edit_script 修改脚本，或调用 run_script 执行验证，"
-                "或如果确认无法修复则总结原因后结束。"
-            )
 
         return None
 
@@ -365,13 +343,20 @@ def extract_identifiers_from_messages(messages: List[Dict[str, Any]]) -> str:
     """从消息列表中机械抽取标识符（UUID/表名/数据源ID等），压缩时不丢失。
 
     复用 extract_identifiers(text) 的完整模式集，逐条消息抽取后去重排序。
+    同时抽取 tool_calls arguments 中的标识符（数据源 ID/表名常出现在工具参数中）。
     """
     identifiers: Set[str] = set()
     for m in messages:
         content = m.get("content", "")
-        if not isinstance(content, str) or not content:
-            continue
-        identifiers |= extract_identifiers(content)
+        if isinstance(content, str) and content:
+            identifiers |= extract_identifiers(content)
+        for tc in m.get("tool_calls") or []:
+            args = tc.get("function", {}).get("arguments", "")
+            if args:
+                identifiers |= extract_identifiers(args)
+        tool_content = m.get("content", "")
+        if isinstance(tool_content, str) and tool_content:
+            identifiers |= extract_identifiers(tool_content)
     return "\n".join(sorted(identifiers)) if identifiers else ""
 
 
@@ -422,10 +407,15 @@ async def compact_messages(
         role = m.get("role", "")
         content = m.get("content", "")
         if isinstance(content, str) and content:
-            old_text.append(f"[{role}] {content[:500]}")
+            old_text.append(f"[{role}] {content[:1000]}")
         elif m.get("tool_calls"):
-            tc_names = [tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]]
-            old_text.append(f"[{role}] 调用工具: {', '.join(tc_names)}")
+            tc_parts = []
+            for tc in m["tool_calls"]:
+                fn = tc.get("function", {})
+                name = fn.get("name", "?")
+                args = fn.get("arguments", "")
+                tc_parts.append(f"{name}({args[:200]})")
+            old_text.append(f"[{role}] 调用工具: {', '.join(tc_parts)}")
 
     old_summary = "\n".join(old_text)[-4000:]  # 最多 4000 字符给 LLM 压缩
 
@@ -452,10 +442,15 @@ async def compact_messages(
 
     # 构建压缩后的消息列表
     compacted = list(system_msgs)
-    compacted.append({
-        "role": "user",
-        "content": f"## 之前对话摘要（自动压缩）\n{summary}\n\n--- 以上为压缩的历史，以下是最近的对话 ---",
-    })
+    summary_text = f"## 之前对话摘要（自动压缩）\n{summary}\n\n--- 以上为压缩的历史，以下是最近的对话 ---"
+    if recent_messages and recent_messages[0].get("role") == "user":
+        recent_messages = list(recent_messages)
+        recent_messages[0] = {
+            **recent_messages[0],
+            "content": summary_text + "\n\n" + recent_messages[0].get("content", ""),
+        }
+    else:
+        compacted.append({"role": "user", "content": summary_text})
     compacted.extend(recent_messages)
 
     _old_tokens = estimate_messages_tokens(messages)

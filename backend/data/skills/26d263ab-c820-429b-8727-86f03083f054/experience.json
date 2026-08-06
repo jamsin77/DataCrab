@@ -429,6 +429,26 @@
       "parameters": {},
       "stdout_preview": "[INFO] 从数据源 '文物库' 加载表 'national_key_cultural_relic_protection_units_merged'\n[INFO] 加载完成: 5057 行, 9 列\n[INFO] 加载完成: 5057 行, 9 列\n列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', ",
       "context_summary": "工具: run_script\nAI输出: 我来先执行脚本，按照用户需求从\"地址\"列提取地级市信息。"
+    },
+    {
+      "timestamp": "2026-08-06T09:57:15.080063",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢",
+      "parameters": {},
+      "stdout_preview": "[INFO] 从数据源 '3c55f752-191c-46c4-a5a9-1c959c3438bc' 加载表 'national_key_cultural_relic_protection_units_merged'\n[INFO] 加载完成: 5057 行, 9 列\n[INFO] 加载完成: 5057 行, 9 列\n列名: ['batch', 'classification', 'name', '",
+      "context_summary": "工具: run_script\nAI输出: 现在让我用正确的参数运行脚本。关键修正：\n- `column_name` 应为 \"地址\"（源列，要从中提取城市）\n- `categories` 应为 \"地级市\"（提取目标，触发 LLM 的地级市提取 prompt）\n- `target_column` 为 \"地级市\"（结果写入列）\n- `mode` 为 \"update\"（如果已有地级市列就覆盖）\n- `if_table_exists` 为 \"ove"
+    },
+    {
+      "timestamp": "2026-08-06T10:07:09.033039",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpo22sv430.py\", line 838, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpo22sv430.py\", line 827, in main\n    return semantic_classify(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpo22sv430",
+      "parameters": {},
+      "stdout_preview": "[INFO] 从数据源 '3c55f752-191c-46c4-a5a9-1c959c3438bc' 加载表 'national_key_cultural_relic_protection_units_merged'\n[SkillRunner] resolve datasource failed: timed out\n[SkillRunner] iter_table_data page 1 fai",
+      "context_summary": "工具: run_script\nAI输出: 现在让我用修正后的参数再次运行。关键改进：\n1. 提取任务的批次大小保持 50（不再自动调大到 120），避免 JSON 截断\n2. 新增 `_post_process_city` 后处理函数，修正县级市、历史名称、前缀等问题\n3. 修正了 county_level_cities 排除列表中错误排除的地级市"
     }
   ],
   "positive": [
@@ -596,6 +616,41 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 5000, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2591, 'categories_found': ['北京市', '运城市', '长治市', '重庆市', '晋中市'"
+    },
+    {
+      "timestamp": "2026-08-05T18:45:20.079764",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 5000, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2591, 'categories_found': ['北京市', '运城市', '长治市', '重庆市', '晋中市'"
+    },
+    {
+      "timestamp": "2026-08-05T19:07:59.645192",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 5000, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2591, 'categories_found': ['北京市', '运城市', '长治市', '重庆市', '晋中市'"
+    },
+    {
+      "timestamp": "2026-08-05T19:24:32.622143",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 5000, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2591, 'categories_found': ['北京市', '运城市', '长治市', '重庆市', '晋中市'"
+    },
+    {
+      "timestamp": "2026-08-05T20:35:27.468563",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 908, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 683, 'categories_found': ['重庆市', '黄山市', '武汉市', '上海市', '北京市', "
+    },
+    {
+      "timestamp": "2026-08-06T11:05:09.844456",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4000, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2201, 'categories_found': ['北京市', '运城市', '郑州市', '晋城市', '长治市'"
     }
   ],
   "lessons": ""

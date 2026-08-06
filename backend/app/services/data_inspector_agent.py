@@ -28,6 +28,7 @@ from app.services.agent_utils import (
     get_anti_hallucination_section,
     should_compact,
     compact_messages,
+    truncate_tool_result,
 )
 
 
@@ -113,11 +114,9 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的 DataInspector（数据检�
 - **质量检查**：完整性、唯一性、范围合理性、业务逻辑一致性
 - **安全检查**：PII识别、敏感数据暴露、脱敏完整性
 
-## 交接规则
-- 发现 `fatal` 问题（违反法律法规）：**不要**交接修复，直接在内容中说明违法风险并停止
-- 发现 `error` 或 `critical` 问题：使用 handoff_to_processor 交接给 DataProcessor **自动修复**
-- 仅发现 `warning` 问题：在内容中列出问题，说明由用户决定是否修复，不要交接
-- 所有问题已修复或无问题时，返回检查通过结果
+## 结果输出
+- 发现 `fatal` 问题（违反法律法规）：直接在内容中说明违法风险并停止
+- 其他问题：在内容中列出（含严重等级、影响范围、修复建议），由用户决定是否修复
 """
 
 DATA_INSPECTOR_TOOLS = [
@@ -195,33 +194,6 @@ DATA_INSPECTOR_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "handoff_to_processor",
-            "description": "将检查发现的问题交接给 DataProcessor 进行修复",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "issues": {
-                        "type": "array",
-                        "description": "问题列表",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "description": {"type": "string", "description": "问题描述"},
-                                "severity": {"type": "string", "enum": ["warning", "error", "critical", "fatal"]},
-                                "column": {"type": "string", "description": "涉及列名"},
-                                "suggestion": {"type": "string", "description": "修复建议"},
-                            },
-                        },
-                    },
-                    "summary": {"type": "string", "description": "检查摘要"},
-                },
-                "required": ["issues", "summary"],
-            },
-        },
-    },
 ]
 
 class DataInspectorAgent(BaseAgent):
@@ -251,7 +223,7 @@ class DataInspectorAgent(BaseAgent):
             yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
             return
 
-        # 将 payload 中的数据源信息写入 context，供 handoff_to_processor 回交时使用（P2-5）
+        # 将 payload 中的数据源信息写入 context（供 RunTime 回交时使用）
         context["current_datasource_id"] = message.payload.get("datasource_id", "")
         context["current_table_name"] = message.payload.get("table_name", "")
 
@@ -271,12 +243,13 @@ class DataInspectorAgent(BaseAgent):
             yield {"type": "content", "content": "\n🔍 正在执行数据质量检查...\n"}
             from app.services.inspector_tools import inspector_tools
             check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 
             inspect_prompt = f"数据已自动检查完成，结果如下：\n\n{report}\n\n"
             if op_desc:
                 inspect_prompt += f"操作描述: {op_desc}\n"
-            inspect_prompt += "\n请分析以上检查结果。发现 error/critical 问题请调用 handoff_to_processor 交接修复；仅 warning 问题请列出建议用户处理；无问题请说明检查通过。"
+            inspect_prompt += "\n请分析以上检查结果。发现问题请列出（含严重等级、影响范围、修复建议）；无问题请说明检查通过。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] INSPECT_RESULT report_len={len(report)} report_preview={report[:200]}")
@@ -290,6 +263,7 @@ class DataInspectorAgent(BaseAgent):
             yield {"type": "content", "content": "\n🔍 正在复查数据质量...\n"}
             from app.services.inspector_tools import inspector_tools
             check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 
             inspect_prompt = f"数据已修复并重新检查，结果如下：\n\n{report}\n\n请确认之前的问题是否已修复，并检查是否引入新问题。"
@@ -362,14 +336,12 @@ class DataInspectorAgent(BaseAgent):
                     continue
 
                 # 最终结论：输出 content
-                for chunk in content:
-                    yield {"type": "content", "content": chunk}
-                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
+                yield {"type": "content", "content": content}
+                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True, "check_results": context.get("_check_results")}}
                 return
 
             # 有工具调用：输出 content（LLM 在解释要做什么）
-            for chunk in content:
-                yield {"type": "content", "content": chunk}
+            yield {"type": "content", "content": content}
 
             had_any_tool_calls = True
 
@@ -391,40 +363,9 @@ class DataInspectorAgent(BaseAgent):
 
             results = await self._execute_tool_calls_parallel(tool_calls, db, context)
             for r in results:
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": truncate_tool_result(r["content"])})
                 yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
 
-                try:
-                    result_data = json.loads(r["content"])
-                    if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        issues = result_data.get("payload", {}).get("issues", [])
-                        summary = result_data.get("payload", {}).get("summary", "")
-                        has_fatal = any(i.get("severity") == "fatal" for i in issues)
-                        has_auto_fix = any(i.get("severity") in ("error", "critical") for i in issues)
-
-                        if has_fatal:
-                            fatal_issues = [i for i in issues if i.get("severity") == "fatal"]
-                            yield {"type": "fatal", "issues": fatal_issues, "summary": summary}
-                            # content 已在流式阶段逐 token 输出，不再重复 yield
-                            yield {"type": "done", "result": {"agent": self.name, "content": "发现致命问题（违反法律法规），已停止处理", "success": False}}
-                            return
-                        elif not has_auto_fix:
-                            yield {"type": "warning_confirmation", "issues": issues, "summary": summary}
-                            # content 已在流式阶段逐 token 输出，不再重复 yield
-                            yield {"type": "done", "result": {"agent": self.name, "content": "仅发现警告问题，等待用户确认是否修复", "success": True}}
-                            return
-                        else:
-                            # error/critical → 自动修复
-                            yield {
-                                "type": "handoff",
-                                "to": result_data["to"],
-                                "reason": result_data["reason"],
-                                "payload": result_data.get("payload", {}),
-                                "from": self.name,
-                            }
-                            return
-                except (json.JSONDecodeError, AttributeError):
-                    pass
 
             # 上下文压力主动告警（R）
             level, ratio = get_context_pressure_level(local_messages)
@@ -436,7 +377,7 @@ class DataInspectorAgent(BaseAgent):
                     logger.info(f"DataInspector 上下文压力告警: level={level}, ratio={ratio:.1%}")
 
         yield {"type": "content", "content": "检查超时，请稍后重试。"}
-        yield {"type": "done", "result": {"agent": self.name, "content": "检查超时", "success": False}}
+        yield {"type": "done", "result": {"agent": self.name, "content": "检查超时", "success": False, "check_results": context.get("_check_results")}}
 
     async def _execute_tool_calls_parallel(self, tool_calls: list, db, context: Dict) -> list:
         async def _safe_execute(tc):
@@ -503,20 +444,5 @@ class DataInspectorAgent(BaseAgent):
                 arguments.get("amount_column"),
             )
             return json.dumps(result, ensure_ascii=False, default=str)
-        elif name == "handoff_to_processor":
-            _llm_issues = arguments.get("issues", [])
-            _local_msgs = context.get("_local_messages", [])
-            _issues = _correct_severity(_llm_issues, _local_msgs)
-            return json.dumps({
-                "_handoff": True,
-                "to": "data_processor",
-                "reason": HandoffReason.FIX_REQUIRED.value,
-                "payload": {
-                    "issues": _issues,
-                    "summary": arguments.get("summary", ""),
-                    "datasource_id": context.get("current_datasource_id", ""),
-                    "table_name": context.get("current_table_name", ""),
-                },
-            }, ensure_ascii=False)
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)

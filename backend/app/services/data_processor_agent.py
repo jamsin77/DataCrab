@@ -15,7 +15,7 @@ import json
 import asyncio
 import os
 from pathlib import Path
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -54,9 +54,8 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的 DataProcessor（数据处�
 1. **安全红线**：DataCrab 不能修改平台自身，只能处理用户数据
 2. **输出默认同源**：处理后的数据默认写回原数据源
 3. **修改后必验证**：每次修改数据后必须验证结果
-4. **交接检查**：数据处理完成后，应交接给 DataInspector 进行质量检查
-5. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
-6. **翻译优先用算子**：涉及文本翻译（如中英文互译、列翻译、表名/列名翻译）时，优先调用「文本翻译」算子完成，不要在脚本中自行编写 LLM 翻译逻辑
+4. **准确优先**：所有数据结论必须基于工具返回的实际数据，不得编造或凭记忆推测
+5. **翻译优先用算子**：涉及文本翻译（如中英文互译、列翻译、表名/列名翻译）时，优先调用「文本翻译」算子完成，不要在脚本中自行编写 LLM 翻译逻辑
 
 ## 扩展能力（允许用户扩展平台的数据源连接器与大模型适配器）
 当用户要求添加或删除数据源类型、大模型厂商时，你可以生成代码并调用工具注册或删除：
@@ -77,32 +76,7 @@ DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的 DataProcessor（数据处�
 ### delete_llm_adapter — 删除大模型适配器
 用户说"删除某个 Provider"时调用，传入 provider_name。
 
-## 当收到 DataInspector 的检查结果时
-- 应定位问题根源
-- 修改处理逻辑修复问题
-- 重新执行后再次交接检查
-
-## 交接规则
-- 数据处理（写入/修改/清洗/转换数据）完成后，使用 handoff_to_inspector 交接给 DataInspector
-- 查询、可视化、统计等只读操作不交接
-- 当用户请求是数据质量检查相关时，直接交接（delegate）给 DataInspector
 """
-
-# handoff 工具（DataProcessor 专用）
-HANDOFF_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "handoff_to_inspector",
-        "description": "将处理结果交接给 DataInspector 进行质量检查。无需传参，自动使用当前调试的数据源和表",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
-                "result_summary": {"type": "string", "description": "处理结果摘要"},
-            },
-        },
-    },
-}
 
 # 调试模式工具（modify_script + run_script + modify_and_run）
 MODIFY_SCRIPT_TOOL = {
@@ -197,7 +171,7 @@ READ_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_script",
-        "description": "读取代码的逐字内容（不压缩，带行号）。默认返回前 2000 行，大文件用 grep_script 搜关键词定位行号后，传 offset/limit 只读相关行。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围。平台代码只读，不可修改。",
+        "description": "读取代码的逐字内容（不压缩，带行号）。默认返回前 2000 行，一次读大窗口，避免反复读小段。需要看特定行时用 offset/limit。scope='script'（默认）读当前调试脚本，行级补丁前调用获取精确 old_string；scope='platform' 读平台源码指定行范围。平台代码只读，不可修改。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -205,8 +179,8 @@ READ_SCRIPT_TOOL = {
                 "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
                 "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
                 "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
-                "offset": {"type": "integer", "description": "起始行号（1-indexed，grep 到行号后用 offset=行号-5）"},
-                "limit": {"type": "integer", "description": "读取行数（不传时默认返回前 2000 行；配合 offset 只读相关行，如 limit=15）"},
+                "offset": {"type": "integer", "description": "起始行号（1-indexed）"},
+                "limit": {"type": "integer", "description": "读取行数（不传时默认返回前 2000 行）"},
             },
             "required": [],
         },
@@ -352,14 +326,14 @@ def _is_platform_issue_report(content: str) -> bool:
         return False
     return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
 
-DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。先用 run_script 执行脚本看看结果。如果有错误再修复。修复前先判断：这是DataCrab能修复的技能错误吗？平台限制（连接器不支持创建新文件/表等）直接报告不可修复，不要硬改脚本。
-执行成功后系统自动检查数据质量，无需手动操作。总共 {max_rounds} 轮，执行错误最多 {max_exec_failures} 次。
+DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_script 读代码定位问题，用 edit_script 修改，用 run_script 执行验证。
 
-## 必须遵守
-- **优先执行**：没有错误信息时直接调 run_script 执行，不要先读脚本"调查"。只有在执行失败后才需要读脚本/grep 定位问题
-- 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，**必须优先使用内置函数**，不要在脚本中安装数据库扩展（如 plpython3u）、不要直接调用外部 API、不要自己造轮子
+总共 {max_rounds} 次修改机会，执行错误最多 {max_exec_failures} 次。
+
+## 平台规范
+- 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，优先使用内置函数，不要在脚本中安装数据库扩展、不要直接调用外部 API
 - 下方「内置工具函数」文档列出了所有可用函数和签名，修改脚本前先看
-- **超时不是 bug**：如果错误信息包含"脚本执行超时"，说明脚本运行时间过长（非逻辑错误）。修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发处理），不是找逻辑 bug。如果无法在脚本层面优化，直接报告"超时，需要用户减少数据量或优化性能"
+- 超时不是 bug：错误信息含"脚本执行超时"说明运行时间过长（非逻辑错误），修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发），不是找逻辑 bug
 """
 
 # 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
@@ -377,7 +351,11 @@ SKILL_DEBUG_EXTRA = """
 # key = (is_skill, max_rounds, max_inspections)；一次会话内不变
 _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
 
-DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + [HANDOFF_TOOL] + EXTENSION_TOOLS
+# 主对话 system prompt 静态缓存（persona + instructions + 沙箱文档 + 工具指引 + 反幻觉）
+# 纯静态，进程级 memoize → 字节稳定命中 GLM prefix cache
+_MAIN_STATIC_PROMPT_CACHE: Optional[str] = None
+
+DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + EXTENSION_TOOLS
 
 
 
@@ -433,24 +411,15 @@ class DataProcessorAgent(BaseAgent):
         if history:
             local_messages.extend(history)
 
+        # 动态上下文（数据源列表）注入为 user 消息前缀，不进 system prompt 保证字节稳定
+        _datasource_ctx = context.get("datasource_context", "")
+
         if message.payload:
-            if message.reason == HandoffReason.FIX_REQUIRED:
-                issues = message.payload.get("issues", [])
-                summary = message.payload.get("summary", "")
-                fix_prompt = f"DataInspector 发现以下问题需要修复：\n\n摘要：{summary}\n\n问题列表：\n"
-                for i, issue in enumerate(issues, 1):
-                    fix_prompt += f"{i}. [{issue.get('severity', 'warning')}] {issue.get('description', '')}"
-                    if issue.get("column"):
-                        fix_prompt += f" (列: {issue['column']})"
-                    if issue.get("suggestion"):
-                        fix_prompt += f" → 建议: {issue['suggestion']}"
-                    fix_prompt += "\n"
-                fix_prompt += "\n请分析问题根源，修复数据，修复完成后使用 handoff_to_inspector 交接再检查。注意：这些都是 error 或 critical 级别问题，需要自动修复。fatal 级别问题不会交接给你（会直接停止），warning 级别问题由用户决定。"
-                local_messages.append({"role": "user", "content": fix_prompt})
-            else:
-                user_msg = message.payload.get("user_message", message.payload.get("content", ""))
-                if user_msg:
-                    local_messages.append({"role": "user", "content": user_msg})
+            user_msg = message.payload.get("user_message", message.payload.get("content", ""))
+            if user_msg:
+                if _datasource_ctx:
+                    user_msg = _datasource_ctx + "\n\n---\n\n" + user_msg
+                local_messages.append({"role": "user", "content": user_msg})
         else:
             yield {"type": "done", "result": {"error": "空消息"}}
             return
@@ -478,65 +447,29 @@ class DataProcessorAgent(BaseAgent):
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            # 流式调用：推理过程 + content + tool_calls 实时推送（避免非流式调用长时间无响应）
-            response = None
-            try:
-                if i == 0:
-                    pass  # model 事件在流式方法内部 yield
-                _content_parts = []
-                _tool_calls = None
-                _finish_reason = None
-                async for _chunk in llm_manager.chat_stream_with_tools_and_thinking(
-                    messages=local_messages, tools=self.tools, model=llm_manager._default,
-                    temperature=0.3,
-                ):
-                    _ct = _chunk.get("type")
-                    if _ct == "model":
-                        if i == 0:
-                            yield {"type": "model", "content": _chunk.get("content", "")}
-                    elif _ct == "thinking":
-                        yield {"type": "thinking", "content": _chunk.get("content", "")}
-                    elif _ct == "content":
-                        _c = _chunk.get("content", "")
-                        _content_parts.append(_c)
-                        yield {"type": "content", "content": _c}
-                    elif _ct == "tool_calls":
-                        _tool_calls = _chunk.get("tool_calls", [])
-                    elif _ct == "finish":
-                        _finish_reason = _chunk.get("finish_reason")
-                response = {
-                    "content": "".join(_content_parts),
-                    "tool_calls": _tool_calls or [],
-                    "finish_reason": _finish_reason,
-                    "reasoning": None,  # thinking 已实时 yield，不需要再 yield
-                }
-            except Exception as e:
-                logger.warning(f"流式调用失败: {e}，回退非流式")
-                response = await llm_manager.chat_with_tools(
-                    messages=local_messages, tools=self.tools, model=llm_manager._default,
-                    temperature=0.3
-                )
-                if i == 0:
-                    yield {"type": "model", "content": llm_manager._default}
-                reasoning = response.get("reasoning")
-                if reasoning:
-                    yield {"type": "thinking", "content": reasoning}
-
+            response = await llm_manager.chat_with_tools(
+                messages=local_messages, tools=self.tools, model=llm_manager._default,
+                temperature=0.3
+            )
             if response is None:
                 yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
                 yield {"type": "done", "result": {"agent": self.name, "content": "模型不可用"}}
                 return
+            if i == 0:
+                yield {"type": "model", "content": llm_manager._default}
             tool_calls = response.get("tool_calls", [])
             finish_reason = response.get("finish_reason")
-            content = response.get("content", "")
 
-            # 推理过程已在流式阶段实时 yield，这里只处理非流式回退的情况
+            # 推理过程（GLM 等推理模型返回 reasoning_content）
             reasoning = response.get("reasoning")
-            if reasoning and not _content_parts:
+            if reasoning:
                 yield {"type": "thinking", "content": reasoning}
 
             if not tool_calls:
+                content = response.get("content", "")
+
                 # 反幻觉：无工具支撑的数据声明警告（P）
+                # 例外：system prompt 已预注入实时数据时，Agent 基于预注入数据回答是合理的
                 if not had_any_tool_calls and not has_preinjected_data:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
                     if warn and i < max_iterations - 1:
@@ -551,10 +484,9 @@ class DataProcessorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                # content 已在流式阶段 yield，这里不重复 yield
-                if not content:
+                if content:
                     yield {"type": "content", "content": content}
-                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
+                yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
             had_any_tool_calls = True
@@ -569,7 +501,10 @@ class DataProcessorAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            # content 已在流式阶段实时 yield，不需要重复
+            content = response.get("content") or ""
+            if content:
+                yield {"type": "content", "content": content}
+
             local_messages.append({
                 "role": "assistant",
                 "content": content,
@@ -581,7 +516,7 @@ class DataProcessorAgent(BaseAgent):
                 yield _prog_evt
             results = context.pop("_last_tool_results", [])
             for r in results:
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": truncate_tool_result(r["content"])})
                 yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
 
                 # 搜索饱和检测（U）：对 kb_search 结果检测重复
@@ -594,20 +529,6 @@ class DataProcessorAgent(BaseAgent):
                     sat_warn = saturation_detector.record_search(r["content"])
                     if sat_warn:
                         local_messages.append({"role": "user", "content": sat_warn})
-
-                try:
-                    result_data = json.loads(r["content"])
-                    if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        yield {
-                            "type": "handoff",
-                            "to": result_data["to"],
-                            "reason": result_data["reason"],
-                            "payload": result_data.get("payload", {}),
-                            "from": self.name,
-                        }
-                        return
-                except (json.JSONDecodeError, AttributeError):
-                    pass
 
             # 上下文压力主动告警（R）
             level, ratio = get_context_pressure_level(local_messages)
@@ -622,14 +543,23 @@ class DataProcessorAgent(BaseAgent):
         yield {"type": "done", "result": {"agent": self.name, "content": "处理超时"}}
 
     def build_system_prompt(self, context: Dict[str, Any]) -> str:
-        datasource_context = context.get("datasource_context", "")
+        """构建主对话 system prompt 静态区（字节稳定 → 命中 prefix cache）。
+
+        静态区 = persona + instructions + 沙箱文档 + 工具指引 + 反幻觉。
+        进程级 memoize（_MAIN_STATIC_PROMPT_CACHE），一次构建全程不变。
+        动态信息（datasource_context）通过 run() 注入为 user 消息前缀，不进 system。
+        """
+        global _MAIN_STATIC_PROMPT_CACHE
+        if _MAIN_STATIC_PROMPT_CACHE is not None:
+            return _MAIN_STATIC_PROMPT_CACHE
+
         persona = context.get("persona", "")
         persona_block = f"{persona}\n\n---\n\n" if persona else ""
-        ctx_block = f"\n## 可用数据源\n{datasource_context}\n" if datasource_context else ""
         tool_guidance = get_tool_guidance()
-        # 三级反幻觉注入：DataProcessor 用 standard 级别（T）
         anti_hallucination = get_anti_hallucination_section("standard")
-        return f"{persona_block}{self.instructions}{ctx_block}\n{tool_guidance}{anti_hallucination}"
+        prompt = f"{persona_block}{self.instructions}\n{tool_guidance}{anti_hallucination}"
+        _MAIN_STATIC_PROMPT_CACHE = prompt
+        return prompt
 
     async def _execute_tool_calls_parallel(self, tool_calls: list, db: AsyncSession, user_id, context: Dict) -> list:
         async def _safe_execute(tc):
@@ -875,22 +805,6 @@ class DataProcessorAgent(BaseAgent):
 
     async def _execute_tool(self, name: str, arguments: dict, db: AsyncSession, user_id, context: Dict) -> str:
         logger.info(f"DataProcessor执行工具: {name}")
-
-        if name == "handoff_to_inspector":
-            # 优先从 context 取（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
-            ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id") or arguments.get("datasource_id", "")
-            tbl = context.get("debug_output_table") or context.get("debug_table_name") or context.get("current_table_name", "")
-            return json.dumps({
-                "_handoff": True,
-                "to": "data_inspector",
-                "reason": HandoffReason.INSPECT_RESULT.value,
-                "payload": {
-                    "datasource_id": ds_id,
-                    "table_name": tbl,
-                    "operation_description": arguments.get("operation_description", ""),
-                    "result_summary": arguments.get("result_summary", ""),
-                },
-            }, ensure_ascii=False)
 
         # ---- 调试模式工具 ----
         if name == "modify_script":
@@ -1541,19 +1455,30 @@ class DataProcessorAgent(BaseAgent):
 
     # ==================== 调试模式 ====================
 
-    def build_debug_system_prompt(self, context: Dict[str, Any], round_num: int = 1) -> str:
-        """构建调试模式 system prompt（精简版，对齐 OpenCode）。"""
+    def build_debug_system_prompt(self, context: Dict[str, Any]) -> str:
+        """构建调试模式 system prompt 静态区（字节稳定 → 命中 prefix cache）。
+
+        静态区 = 指令 + 沙箱函数签名 + 平台规范 + 目标连接器能力。
+        一次会话内不变，用 _DEBUG_STATIC_PROMPT_CACHE memoize。
+        动态信息（参数/上下文）通过 build_debug_dynamic_hints 注入为 user 消息，
+        不混入 system prompt 以保证字节稳定。
+        """
         max_rounds = context.get("debug_max_rounds", 7)
         max_exec_failures = context.get("debug_max_exec_failures", 3)
+        target_ds_type = context.get("debug_output_datasource_type", "")
+        cache_key = (max_rounds, max_exec_failures, target_ds_type)
+
+        cached = _DEBUG_STATIC_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_exec_failures}", str(max_exec_failures))
 
         # 沙箱函数签名契约（对齐 OpenCode：工具 schema 永远在 prompt 里，LLM 不必猜 API）
-        # 放静态区保证字节稳定 → 命中 prefix cache；含 llm_vision(image_path,...) 等关键签名
         prompt += "\n\n" + SANDBOX_TOOLS_DOC
         prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
 
         # 目标连接器能力（1-2 行，不放完整能力清单）
-        target_ds_type = context.get("debug_output_datasource_type", "")
         if target_ds_type:
             from app.services.tool_guidance import PLATFORM_CAPABILITIES
             _caps = PLATFORM_CAPABILITIES.get("connector", {}).get(target_ds_type, {})
@@ -1563,14 +1488,21 @@ class DataProcessorAgent(BaseAgent):
             if not _can_create:
                 prompt += "。标❌的能力修改脚本无法绕过，直接报告"
 
-        # 动态信息（精简：不放脚本摘要，LLM 需要时用 read_script 读）
+        _DEBUG_STATIC_PROMPT_CACHE[cache_key] = prompt
+        return prompt
+
+    def build_debug_dynamic_hints(self, context: Dict[str, Any]) -> str:
+        """构建调试模式动态提示（注入为 user 消息，不进 system prompt）。
+
+        会话级动态信息：入口函数提示、最近成功参数、本次执行参数、数据源/表上下文。
+        每轮的工具调用结果已在 tool 消息中，不在此重复注入。
+        """
         parts = []
         if context.get("debug_function_name") == "_pipeline_entry":
             parts.append("入口函数 _pipeline_entry 参数已固化，直接调 run_script 执行即可，不需要先读脚本")
         last_params = context.get("debug_last_success_params")
         if last_params:
             parts.append(f"最近成功参数: {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
-        # 本次执行参数（用户传入的实际参数，帮助 LLM 理解执行场景）
         debug_params = context.get("debug_parameters")
         if debug_params:
             parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
@@ -1581,19 +1513,7 @@ class DataProcessorAgent(BaseAgent):
             _tbl = ctx.get("table_name") or ""
             if _ds or _tbl:
                 parts.append(f"数据源: {_ds}, 表: {_tbl}")
-
-        _tool_calls = context.get("debug_tool_calls")
-        if _tool_calls:
-            _tc_lines = [f"- {_tc.get('tool')}: {'✅' if _tc.get('success') else '❌'} {str(_tc.get('message',''))[:150]}" for _tc in _tool_calls]
-            parts.append("上次工具调用:\n" + "\n".join(_tc_lines))
-
-        _exec_stdout = context.get("debug_exec_stdout")
-        if _exec_stdout:
-            parts.append(f"上次输出:\n```\n{_exec_stdout[:1000]}\n```")
-
-        if parts:
-            prompt += "\n\n" + "\n\n".join(parts)
-        return prompt
+        return "\n\n".join(parts) if parts else ""
 
     async def run_debug(
         self,
@@ -1606,7 +1526,7 @@ class DataProcessorAgent(BaseAgent):
         - 用 chat_stream_with_tools_and_thinking()（流式推理 + 工具调用）
         - 额外工具：modify_script / run_script
         - 自愈循环：run_script 失败时 LLM 自动看到错误并重试
-        - 执行成功后 handoff_to_inspector 触发 DataInspector
+        - 执行成功后 RunTime 自动交接 DataInspector
         """
         db: AsyncSession = context.get("db")
         user_id = context.get("user_id")
@@ -1623,6 +1543,9 @@ class DataProcessorAgent(BaseAgent):
         history = context.get("history", [])
         if history:
             local_messages.extend(history)
+
+        # 动态提示（会话级参数/上下文，拼到用户消息前缀，不进 system prompt 保证字节稳定）
+        _dynamic_hints = self.build_debug_dynamic_hints(context)
 
         # 用户消息
         # 消息处理：区分初始用户消息 vs DataInspector 回交的修复请求
@@ -1642,12 +1565,14 @@ class DataProcessorAgent(BaseAgent):
             fix_prompt = f"DataInspector 发现以下数据质量问题需要修复（第{_inspection_round}轮检查）：\n\n摘要：{summary}\n\n问题列表：\n"
             for idx, issue in enumerate(issues, 1):
                 fix_prompt += f"{idx}. [{issue.get('severity', 'warning')}] {issue.get('description', '')}"
-                if issue.get("column"):
+                if issue.get('column'):
                     fix_prompt += f" (列: {issue['column']})"
-                if issue.get("suggestion"):
+                if issue.get('suggestion'):
                     fix_prompt += f" → 建议: {issue['suggestion']}"
                 fix_prompt += "\n"
-            fix_prompt += "\n请分析问题根源，修改脚本修复，修复后重新执行并调用 handoff_to_inspector 交接再检查。"
+            fix_prompt += "\n请分析问题根源，修改脚本修复，修复后重新执行。"
+            if _dynamic_hints:
+                fix_prompt = _dynamic_hints + "\n\n" + fix_prompt
             local_messages.append({"role": "user", "content": fix_prompt})
             user_msg = fix_prompt
             yield {"type": "round", "round": _inspection_round}
@@ -1656,6 +1581,8 @@ class DataProcessorAgent(BaseAgent):
             if not user_msg:
                 yield {"type": "done", "result": {"error": "空消息"}}
                 return
+            if _dynamic_hints:
+                user_msg = _dynamic_hints + "\n\n" + user_msg
             local_messages.append({"role": "user", "content": user_msg})
 
         # 调试模式工具（对齐 OpenCode：5 个工具，职责清晰）
@@ -1673,7 +1600,7 @@ class DataProcessorAgent(BaseAgent):
         _should_handoff = False
         _handoff_output_table = None
         script_name = context.get("debug_script_name", "main.py")
-        _stuck = StuckDetector(investigate_threshold=5, max_total_rounds=40)
+        _stuck = StuckDetector(max_total_rounds=40)
 
         logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
@@ -1682,12 +1609,33 @@ class DataProcessorAgent(BaseAgent):
         while _fix_attempts < max_fix_attempts:
             _total_llm_calls += 1
 
-            local_messages[0] = {"role": "system", "content": self.build_debug_system_prompt(context, _fix_attempts + 1)}
+            # 上下文压缩（对齐 OpenCode compaction：摘要旧消息 + 保留近期原文 + 标识符保护）
+            # system prompt 在初始化时构建一次，字节稳定命中 prefix cache，不每轮重建
+            if should_compact(local_messages):
+                local_messages = await compact_messages(local_messages, llm_manager)
 
             content = ""
             tool_calls = []
 
             logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "/" + str(max_fix_attempts) + "）")
+            # 记录传给 LLM 的完整 messages（调试用，写文件）
+            try:
+                import os as _os
+                _dbg_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "debug_messages.log")
+                with open(_dbg_path, "w", encoding="utf-8") as _df:
+                    _df.write(f"=== LLM调用#{_total_llm_calls} 修改尝试{_fix_attempts + 1}/{max_fix_attempts} ===\n")
+                    _df.write(f"tools: {[t.get('function',{}).get('name','?') for t in debug_tools]}\n\n")
+                    for _mi, _m in enumerate(local_messages):
+                        _mc = _m.get("content", "") or ""
+                        _role = _m.get("role", "")
+                        _tool_calls = _m.get("tool_calls")
+                        _df.write(f"--- messages[{_mi}] role={_role} len={len(_mc)} ---\n")
+                        _df.write(_mc[:2000] + ("\n...(truncated)" if len(_mc) > 2000 else "") + "\n")
+                        if _tool_calls:
+                            _df.write(f"tool_calls: {json.dumps(_tool_calls, ensure_ascii=False)[:500]}\n")
+                        _df.write("\n")
+            except Exception:
+                pass
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=debug_tools, temperature=0.1,
                 model=llm_manager._default, tool_choice="auto",
@@ -1747,19 +1695,20 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "content", "content": '\n'.join(_actions) + '\n'}
 
             if not tool_calls:
-                # LLM 不调工具 = 在下结论。判定为平台问题 → 退出
                 if _is_platform_issue_report(content):
                     yield {"type": "platform_issue", "message": content}
                     yield {"type": "done", "result": {"agent": self.name, "content": content, "platform_issue": True}}
                     return
-                if context.get("debug_analyze_only"):
+                if content:
                     yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
                     return
                 _idle_hint = _stuck.record_idle()
-                _hint = _idle_hint or "请调用工具修改并执行脚本。"
-                local_messages.append({"role": "assistant", "content": content})
-                local_messages.append({"role": "user", "content": _hint})
-                continue
+                if _idle_hint:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": _idle_hint})
+                    continue
+                yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True}}
+                return
 
             # StuckDetector：记录工具调用，检测卡死模式
             _stuck_hint = None
@@ -1773,8 +1722,8 @@ class DataProcessorAgent(BaseAgent):
                     _stuck_hint = _hint
                     break
 
-            # 总轮次上限 或 只调查不修改 → 强制退出
-            if _stuck_hint and ("总轮次上限" in _stuck_hint or "只调查" in _stuck_hint):
+            # 总轮次上限 → 强制退出
+            if _stuck_hint and "总轮次上限" in _stuck_hint:
                 yield {"type": "give_up", "reason": _stuck_hint}
                 yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
                 return
@@ -1797,7 +1746,6 @@ class DataProcessorAgent(BaseAgent):
             results = context.pop("_last_tool_results", [])
             # 工具结果摘要（像 OpenCode 显示 grep/read 结果）
             _result_lines = []
-            _pending_handoff = None
             for r in results:
                 tool_name = ""
                 for tc in tool_calls:
@@ -1805,7 +1753,9 @@ class DataProcessorAgent(BaseAgent):
                         tool_name = tc["function"]["name"]
                         break
 
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": r["content"]})
+                # read_script/grep_script 结果不截断（对齐 OpenCode Read/Grep 保逐字，截断会导致 LLM 反复重读）
+                _tool_content = r["content"] if tool_name in ("read_script", "grep_script") else truncate_tool_result(r["content"])
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _tool_content})
 
                 # 调查工具结果显示（对齐 OpenCode：显示实际内容，不只是字符数摘要）
                 try:
@@ -1945,15 +1895,7 @@ class DataProcessorAgent(BaseAgent):
                             except Exception as e:
                                 logger.warning(f"记录反例失败(非致命): {e}")
 
-                try:
-                    result_data = json.loads(r["content"])
-                    if isinstance(result_data, dict) and result_data.get("_handoff"):
-                        _pending_handoff = {
-                            "to": result_data["to"], "reason": result_data["reason"],
-                            "payload": result_data.get("payload", {}),
-                        }
-                except (json.JSONDecodeError, AttributeError):
-                    pass
+
 
             # yield 调查工具结果摘要
             if _result_lines:
@@ -1967,71 +1909,28 @@ class DataProcessorAgent(BaseAgent):
                 for i, tc in enumerate(tool_calls)
             ]
 
-            # 如果本轮只改了脚本没执行，直接结束，提示用户尝试
-            _tool_names = [tc["function"]["name"] for tc in tool_calls]
-            _has_edit_only = "edit_script" in _tool_names and "run_script" not in _tool_names
-            if _has_edit_only and not _should_handoff:
-                yield {"type": "content", "content": "\n\n✅ 脚本修改完毕，请尝试执行吧。\n"}
-                yield {"type": "done", "result": {"agent": self.name, "content": "脚本修改完成", "script_updated": True}}
-                return
-
             # StuckDetector 干预提示注入（在 assistant + tool 消息之后，作为下一轮引导）
             if _stuck_hint:
                 local_messages.append({"role": "user", "content": _stuck_hint})
 
-            # 先处理执行成功触发的自动 handoff（含写入表信息）
+            # 执行成功 → done 带执行结果，RunTime 决定是否 handoff Inspector
             if _should_handoff:
                 ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
                 tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
-                logger.info(f"[handoff检查] _should_handoff=True, ds_id={ds_id}, tbl={tbl}, written_tables={rdata.get('written_tables') if 'rdata' in dir() else 'N/A'}, output_table={_handoff_output_table}")
-                logger.info(f"[handoff检查] debug_max_inspections={context.get('debug_max_inspections', 7)}, debug_output_datasource_id={context.get('debug_output_datasource_id')}, debug_datasource_id={context.get('debug_datasource_id')}, debug_table_name={context.get('debug_table_name')}")
-                if context.get("debug_max_inspections", 7) <= 0:
-                    yield {"type": "done", "result": {"agent": self.name, "content": "修复成功", "success": True}}
-                    return
-                ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
-                tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
-                # 目标表信息不能为空——空了 Inspector 不知道检查什么
+                logger.info(f"[run_debug] 执行成功 output_ds={ds_id} output_table={tbl}")
                 if not ds_id or not tbl:
-                    logger.info(f"[handoff检查] ⚠ 跳过质量检查: ds_id={ds_id!r}, tbl={tbl!r}")
                     yield {"type": "content", "content": f"\n⚠ 执行成功但无法确定检查目标（数据源ID={ds_id or '空'}, 表名={tbl or '空'}），跳过质量检查\n"}
-                    yield {"type": "done", "result": {"agent": self.name, "content": "执行成功，但无法启动质量检查：目标表信息缺失"}}
+                    yield {"type": "done", "result": {"agent": self.name, "content": "执行成功，但无法启动质量检查：目标表信息缺失", "success": True}}
                     return
-                _is_recheck = _inspection_round > 0
-                logger.info(f"[handoff检查] ✅ 触发 handoff to data_inspector, ds_id={ds_id}, tbl={tbl}, is_recheck={_is_recheck}")
-                yield {
-                    "type": "handoff", "to": "data_inspector",
-                    "reason": HandoffReason.FIX_COMPLETED.value if _is_recheck else HandoffReason.INSPECT_RESULT.value,
-                    "payload": {
-                        "datasource_id": ds_id, "table_name": tbl,
-                        "operation_description": f"第 {_inspection_round} 轮修复后复查" if _is_recheck else "技能调试执行成功，自动交接质量检查",
-                        "result_summary": "执行成功",
-                    },
-                    "from": self.name,
-                }
+                yield {"type": "done", "result": {
+                    "agent": self.name, "content": "执行成功", "success": True,
+                    "execution_success": True,
+                    "output_datasource_id": ds_id,
+                    "output_table": tbl,
+                }}
                 return
 
-            # 再处理 LLM 显式调用的 handoff_to_inspector（所有工具结果已处理完毕）
-            if _pending_handoff:
-                yield {
-                    "type": "handoff", "to": _pending_handoff["to"], "reason": _pending_handoff["reason"],
-                    "payload": _pending_handoff["payload"], "from": self.name,
-                }
-                return
 
-            # 滑动窗口：每轮只保留 system + 上一轮的 assistant+tool 结果 + 原始用户指令
-            # 避免上下文累积膨胀，每轮 LLM 只需看上一轮错误即可（对齐 OpenCode 工作方式）
-            if len(local_messages) > 5:
-                # 保留: [0]system, [1]原始用户消息, [-2]上一轮assistant, [-1]上一轮tool结果
-                _orig_user = local_messages[1] if len(local_messages) > 1 else None
-                _last_assistant = local_messages[-2] if len(local_messages) >= 2 else None
-                _last_tool = local_messages[-1] if local_messages else None
-                local_messages = [local_messages[0]]
-                if _orig_user:
-                    local_messages.append(_orig_user)
-                if _last_assistant:
-                    local_messages.append(_last_assistant)
-                if _last_tool:
-                    local_messages.append(_last_tool)
 
         # 修改次数用完 → 让 LLM 判断是代码问题还是平台问题
         _classify_msg = (

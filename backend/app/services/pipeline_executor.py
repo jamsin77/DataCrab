@@ -232,13 +232,13 @@ async def execute_pipeline_stream(
 
     yield {"type": "status", "status": "running", "message": "流程开始执行..."}
 
-    from app.services.skill_runner import run_skill_script_streaming_by_content
+    from app.services.skill_runner import run_skill_script_streaming
 
     _q: asyncio.Queue = asyncio.Queue()
 
     def _sync_gen():
         try:
-            for item in run_skill_script_streaming_by_content(
+            for item in run_skill_script_streaming(
                 script_content=pipeline.main_code,
                 parameters=inputs,
                 user_id=str(user_id) if user_id else None,

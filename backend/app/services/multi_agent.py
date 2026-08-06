@@ -148,58 +148,119 @@ class AgentRuntime:
         context: Dict[str, Any],
         max_handoffs: int = 10,
     ) -> AsyncGenerator[Dict, None]:
-        # 从 context 获取最大检查轮次，动态调整 handoff 上限和收敛阈值
-        # 一轮检查-修复循环需要 2 次 handoff（Processor→Inspector + Inspector→Processor）
         _max_inspections = context.get("debug_max_inspections", 7)
         max_handoffs = max(max_handoffs, _max_inspections * 2 + 2)
         handoff_count = 0
         current_agent = self.registry.get(agent_name)
         current_message = message
-        # 收敛检测：阈值 = max_inspections * 2 + 3（允许完整 7 轮循环 + 余量，
-        # 确保由 _inspection_round 检查终止而非 ConvergenceGuard 提前截断）
         guard = ConvergenceGuard(threshold=_max_inspections * 2 + 3)
 
         while current_agent and handoff_count < max_handoffs:
+            _done_result = None
             async for event in current_agent.run(current_message, context):
-                if event.get("type") == "handoff":
-                    self._event_store.record_handoff(
-                        from_agent=current_agent.name,
-                        to_agent=event["to"],
-                        reason=event["reason"],
-                        trace_id=current_message.trace_id,
-                    )
-
-                    # 收敛检测：记录签名 + 判断是否发散（G）
-                    payload = event.get("payload", {})
-                    guard.record(
-                        event["to"],
-                        payload.get("datasource_id", ""),
-                        payload.get("table_name", ""),
-                    )
-
-                    if guard.is_diverged():
-                        yield {"type": "content", "content": "自动修复未能收敛，同一问题反复出现，请人工介入检查。"}
-                        yield {"type": "done", "result": {"agent": "runtime", "content": "收敛失败"}}
-                        return
-
-                    target_name = event["to"]
-                    current_agent = self.registry.get(target_name)
-                    current_message = AgentMessage(
-                        from_agent=event.get("from", current_agent.name),
-                        to_agent=target_name,
-                        reason=HandoffReason(event["reason"]),
-                        payload=event.get("payload", {}),
-                        context=context,
-                        trace_id=current_message.trace_id,
-                        parent_trace_id=current_message.trace_id,
-                    )
-                    handoff_count += 1
-                    yield {"type": "agent_switch", "agent": target_name, "reason": event["reason"]}
+                if event.get("type") == "done":
+                    _done_result = event.get("result", {})
                     break
-                else:
-                    yield event
-            else:
+                yield event
+
+            # RunTime 层 HandOff 决策（Agent 不再 yield handoff，由 RunTime 根据 done 结果决定）
+            _next = self._decide_handoff(current_agent.name, _done_result, context)
+            if not _next:
+                if _done_result is not None:
+                    yield {"type": "done", "result": _done_result}
                 break
+
+            target_name, reason, payload = _next
+            self._event_store.record_handoff(
+                from_agent=current_agent.name, to_agent=target_name,
+                reason=reason.value, trace_id=current_message.trace_id,
+            )
+            guard.record(target_name, payload.get("datasource_id", ""), payload.get("table_name", ""))
+            if guard.is_diverged():
+                yield {"type": "content", "content": "自动修复未能收敛，同一问题反复出现，请人工介入检查。"}
+                yield {"type": "done", "result": {"agent": "runtime", "content": "收敛失败"}}
+                return
+
+            # Processor→Inspector 时递增检查轮次
+            if current_agent.name == "data_processor" and target_name == "data_inspector":
+                context["debug_inspection_round"] = context.get("debug_inspection_round", 0) + 1
+
+            current_agent = self.registry.get(target_name)
+            current_message = AgentMessage(
+                from_agent=current_agent.name,
+                to_agent=target_name,
+                reason=reason,
+                payload=payload,
+                context=context,
+                trace_id=current_message.trace_id,
+                parent_trace_id=current_message.trace_id,
+            )
+            handoff_count += 1
+            yield {"type": "agent_switch", "agent": target_name, "reason": reason.value}
+
+    def _decide_handoff(self, agent_name: str, done_result: Dict, context: Dict) -> tuple:
+        """RunTime 层 HandOff 决策：仅调试模式自动交接，主对话靠人判断。
+
+        Agent 只返回业务结果（done 事件），不感知 handoff 存在。
+        RunTime 按 Agent 角色 + 结果内容决定是否交接给对方。
+        """
+        if not done_result or not context.get("debug_mode"):
+            return None
+
+        if agent_name == "data_processor":
+            # Processor 执行成功 → 交 Inspector 检查
+            if not done_result.get("execution_success"):
+                return None
+            ds_id = done_result.get("output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
+            tbl = done_result.get("output_table") or context.get("debug_table_name") or context.get("current_table_name", "")
+            if not ds_id or not tbl:
+                return None
+            if context.get("debug_max_inspections", 7) <= 0:
+                return None
+            _round = context.get("debug_inspection_round", 0)
+            reason = HandoffReason.FIX_COMPLETED if _round > 0 else HandoffReason.INSPECT_RESULT
+            return ("data_inspector", reason, {
+                "datasource_id": ds_id, "table_name": tbl,
+                "operation_description": f"第 {_round} 轮修复后复查" if _round > 0 else "技能调试执行成功，自动交接质量检查",
+                "result_summary": "执行成功",
+            })
+
+        if agent_name == "data_inspector":
+            # Inspector 检查完 → 有 error/critical → 回交 Processor；fatal/warning 靠人判断
+            check_results = done_result.get("check_results")
+            if not check_results:
+                return None
+            issues = self._extract_issues(check_results)
+            has_fatal = any(i.get("severity") == "fatal" for i in issues)
+            has_auto_fix = any(i.get("severity") in ("error", "critical") for i in issues)
+            if has_fatal or not has_auto_fix:
+                return None
+            _round = context.get("debug_inspection_round", 0)
+            if _round >= context.get("debug_max_inspections", 7):
+                return None
+            ds_id = context.get("current_datasource_id", "") or context.get("debug_datasource_id", "")
+            tbl = context.get("current_table_name", "") or context.get("debug_table_name", "")
+            return ("data_processor", HandoffReason.FIX_REQUIRED, {
+                "issues": issues,
+                "summary": (done_result.get("content") or "")[:500],
+                "datasource_id": ds_id,
+                "table_name": tbl,
+            })
+
+        return None
+
+    @staticmethod
+    def _extract_issues(check_results: Dict) -> List[Dict]:
+        """从 inspector_tools.run_all_checks 结果提取 error/critical/fatal issue 列表"""
+        issues = []
+        if not isinstance(check_results, dict):
+            return issues
+        for dim in ("standards", "quality", "security"):
+            dim_result = check_results.get(dim) or {}
+            for issue in dim_result.get("issues", []):
+                if isinstance(issue, dict) and issue.get("severity") in ("error", "critical", "fatal"):
+                    issues.append(issue)
+        return issues
 
 
 agent_registry = AgentRegistry()

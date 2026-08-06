@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from collections import OrderedDict
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -30,7 +31,6 @@ from app.api.deps import get_current_user
 from app.services.llm import llm_manager
 from app.services.agent_config import agent_config
 from app.services.agent_utils import estimate_tokens, build_identifier_hint
-from app.services.tool_guidance import get_tool_guidance
 
 router = APIRouter()
 
@@ -49,20 +49,6 @@ async def get_agent_config():
     """获取Agent配置信息"""
     from app.services.agent_config import agent_config
     return agent_config.to_dict()
-
-
-def _build_system_prompt(datasource_context: str) -> str:
-    from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
-    persona_block = f"{ASSISTANT_PERSONA}\n\n---\n\n" if ASSISTANT_PERSONA else ""
-    tool_guidance = get_tool_guidance()
-    return f"""{persona_block}## 数据源知识库
-{datasource_context}
-
-{SANDBOX_TOOLS_DOC}
-
-{SAFETY_RULES_DOC}
-
-{tool_guidance}"""
 
 
 async def build_datasource_context(
@@ -363,103 +349,11 @@ async def clear_messages(
     )
 
 
-@router.post("/messages", response_model=ChatMessageResponse, status_code=status.HTTP_201_CREATED)
-async def send_message(
-    request: ChatMessageCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """发送消息"""
-    # 验证会话存在
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == request.session_id,
-            ChatSession.user_id == current_user.id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
-
-    # 保存用户消息
-    user_message = ChatMessage(
-        session_id=request.session_id,
-        role="user",
-        content=request.content,
-    )
-    db.add(user_message)
-    await db.flush()
-    await db.refresh(user_message)
-
-    # 刷新会话 updated_at，使会话列表按最近活跃排序
-    session.updated_at = datetime.utcnow()
-    await db.flush()
-
-    try:
-        # 设置当前用户的 LLM 配置（API Key 按用户隔离）
-        from app.services.llm import init_user_llm_context
-        await init_user_llm_context(current_user.id)
-
-        # 初始化LLM
-        await llm_manager.initialize()
-
-        # 获取历史消息（最近20条，不包括当前刚保存的）
-        history_result = await db.execute(
-            select(ChatMessage)
-            .where(
-                ChatMessage.session_id == request.session_id,
-                ChatMessage.id != user_message.id,
-            )
-            .order_by(ChatMessage.created_at.desc())
-            .limit(20)
-        )
-        history_messages = list(history_result.scalars().all())
-        history_messages.reverse()
-
-        # 构建数据源知识库（含实时数据查询）
-        datasource_context, data_preview = await build_datasource_context(
-            db, current_user.id, request.content
-        )
-
-        # 构建 system prompt（不含实时数据预览，保持字节稳定命中 prefix cache）
-        system_content = _build_system_prompt(datasource_context)
-
-        # 组装 messages 列表
-        messages = [{"role": "system", "content": system_content}]
-
-        messages.extend(await _compress_history(history_messages, str(request.session_id)))
-
-        # 实时数据预览作为一次性 user message 注入（不进 system，避免破坏 prefix cache）
-        user_content = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
-        messages.append({"role": "user", "content": user_content})
-
-        logger.info(f"chat messages: system={len(system_content)}chars, history={len(history_messages)}, total={len(messages)}")
-        for i, m in enumerate(messages):
-            preview = m["content"][:80].replace("\n", "\\n")
-            logger.debug(f"  msg[{i}] role={m['role']} preview={preview}...")
-
-        ai_content = await llm_manager.chat_with_messages(messages, max_tokens=2000)
-
-    except Exception as e:
-        logger.error(f"LLM调用失败: {e}")
-        ai_content = f"处理您的请求时出现错误: {str(e)}"
-
-    # 保存AI响应
-    ai_message = ChatMessage(
-        session_id=request.session_id,
-        role="assistant",
-        content=ai_content,
-    )
-    db.add(ai_message)
-    await db.flush()
-    await db.refresh(ai_message)
-
-    return ai_message
-
-
 # ==================== 上下文压缩 ====================
 # 会话历史压缩缓存：session_id -> (摘要文本, 已摘要覆盖到的最后一条消息id)
-_HISTORY_SUMMARIES: dict = {}
+# OrderedDict LRU：限制 100 个会话，防止长期运行内存泄漏
+_HISTORY_SUMMARIES: OrderedDict = OrderedDict()
+_HISTORY_SUMMARIES_MAX = 100
 HISTORY_CHAR_BUDGET = 6000   # 历史原文总 token 估算超过此值则触发压缩
 HISTORY_KEEP_RECENT = 6      # 压缩时保留最近 N 条原文
 PREVIEW_CHAR_LIMIT = 5000    # 单个数据源预览的字符上限
@@ -470,6 +364,8 @@ async def _compress_history(history_messages: list, session_id: str) -> list:
 
     改进（L）：标识符机械抽取——压缩时提取表名/数据源ID/UUID，保留在摘要中。
     改进（M）：使用 CJK 感知的 token 估算替代字符数。
+    改进（本轮）：摘要角色统一为 user（与 compact_messages 一致）；LRU 限制防泄漏；
+                  旧消息截断 500→1000 保留更多上下文。
     """
     if not history_messages:
         return []
@@ -485,10 +381,10 @@ async def _compress_history(history_messages: list, session_id: str) -> list:
     summary = None
     if cached and cached[1] == last_older_id:
         summary = cached[0]
+        _HISTORY_SUMMARIES.move_to_end(session_id)
     else:
         try:
-            older_text = "\n".join(f"[{m.role}] {(m.content or '')[:500]}" for m in older)
-            # 标识符保护：从旧消息中机械提取表名/数据源ID/UUID（L）
+            older_text = "\n".join(f"[{m.role}] {(m.content or '')[:1000]}" for m in older)
             id_hint = build_identifier_hint(older_text)
             summary = await llm_manager.chat_with_messages(
                 [
@@ -499,14 +395,23 @@ async def _compress_history(history_messages: list, session_id: str) -> list:
                 max_tokens=400,
             )
             _HISTORY_SUMMARIES[session_id] = (summary, last_older_id)
+            while len(_HISTORY_SUMMARIES) > _HISTORY_SUMMARIES_MAX:
+                _HISTORY_SUMMARIES.popitem(last=False)
         except Exception as e:
             logger.warning(f"历史摘要生成失败，降级为仅保留近期: {e}")
             summary = None
 
     compressed: list = []
     if summary:
-        compressed.append({"role": "system", "content": f"## 先前对话摘要\n{summary}"})
-    compressed.extend({"role": m.role, "content": m.content} for m in keep)
+        summary_text = f"## 先前对话摘要\n{summary}"
+        if keep and keep[0].role == "user":
+            compressed.append({"role": "user", "content": summary_text + "\n\n" + (keep[0].content or "")})
+            compressed.extend({"role": m.role, "content": m.content} for m in keep[1:])
+        else:
+            compressed.append({"role": "user", "content": summary_text})
+            compressed.extend({"role": m.role, "content": m.content} for m in keep)
+    else:
+        compressed.extend({"role": m.role, "content": m.content} for m in keep)
     return compressed
 
 
@@ -576,7 +481,7 @@ async def stream_response(
             # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
             await db.commit()
 
-            # 统一路由：始终从 data_processor 开始，Agent 自主决定是否 handoff（O）
+            # 统一路由：始终从 data_processor 开始，RunTime 决定是否 handoff（调试模式自动，主对话靠人判断）
             from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason
 
             runtime = ensure_agent_runtime()
