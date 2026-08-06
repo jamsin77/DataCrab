@@ -5,9 +5,8 @@
 而不是靠"优先使用 X"这类推荐性语言来引导。
 """
 
-TOOL_CAPABILITY_TABLE = """## 工具能力表（诚实声明）
-
-以下是各工具的真实能力和已知局限。请基于这些信息自主选择工具组合：
+# 主对话工具能力表（共享工具 + 扩展工具，不含调试工具）
+_MAIN_TOOL_CAPABILITY_TABLE = """## 工具能力表（诚实声明）
 
 | 工具 | 覆盖率 | 精确度 | 已知局限 |
 |------|--------|--------|----------|
@@ -23,25 +22,23 @@ TOOL_CAPABILITY_TABLE = """## 工具能力表（诚实声明）
 | check_etl_quality | 源表+目标表对比 | 高 | 需要源和目标都可访问；金额汇总对数需要指定金额列 |
 | kb_search | top_k默认5 | 中 | 仅搜索已上传文档的向量索引，top_k硬限制必然遗漏相关内容；PDF/DOCX仅纯文本，表格图片丢失；不支持结构化数据源 |
 
-### 工具选择原则
-- 需要原始数据 → query_table_data（注意 limit 限制）
-- 需要表结构 → get_table_schema
-- 需要数据概览/统计 → profile_data（比 query_table_data 更适合了解全貌）
-- 需要检查数据质量 → check_data_quality / check_data_standards / check_data_security
-- 需要跨表关联/复杂计算 → 写算子脚本（query_table_data 不支持 JOIN）
-- 需要保存结果 → save_file_to_link
-- 需要从文档/手册/报告中查找信息 → kb_search（注意 top_k 限制，需全面时多次不同关键词搜索）
+以上是能力描述，不是强制路由。请根据具体任务自主判断。
+"""
 
-### 调试脚本修改工具（仅调试模式）
+# 调试模式工具能力表（调试工具，不含共享工具）
+_DEBUG_TOOL_CAPABILITY_TABLE = """## 调试工具能力表（诚实声明）
+
 | 工具 | 输出量 | 精确度 | 已知局限 |
 |------|--------|--------|----------|
-| edit_and_run / edit_script | 小（只输出 old/new 片段） | 高（精确字符串匹配） | old_string 必须逐字唯一匹配；不唯一需补上下文；找不到时先 read_script 查看逐字内容；适合小改动 |
-| modify_and_run / modify_script | 大（输出整个函数/脚本） | 中（函数级合并，同名替换） | 输出量大可能截断；LLM 重生成整脚本可能丢 import；仅大改时用；支持一次输出多个函数（同名替换，新函数自动插入 if __name__ 之前） |
+| edit_and_run / edit_script | 小（只输出 old/new 片段） | 高（精确字符串匹配） | old_string 必须逐字唯一匹配；不唯一需补上下文；找不到时先 read_script 查看逐字内容 |
+| modify_and_run / modify_script | 大（输出整个函数/脚本） | 中（函数级合并，同名替换） | 输出量大可能截断；LLM 重生成整脚本可能丢 import；支持一次输出多个函数（同名替换，新函数自动插入 if __name__ 之前） |
 | read_script | 无（只读） | 高（逐字+行号） | scope=script 读用户脚本全文（大脚本占 token，可指定 function_name）；scope=platform 读平台源码指定行范围（只读不可修改） |
 | grep_script | 无（只读） | 高（正则+行号） | scope=script 搜用户脚本定位 old_string；scope=platform 搜平台源码追踪错误来源；只返回匹配行+上下文，比 read_script 省 token |
 
-注意：以上是能力描述，不是强制路由。请根据具体任务自主判断。小改动默认用 edit_and_run，大改才 modify_and_run。定位代码用 grep_script，需要逐字原文用 read_script。
+以上是能力描述，不是强制路由。请根据具体任务自主判断。
 """
+
+TOOL_CAPABILITY_TABLE = _MAIN_TOOL_CAPABILITY_TABLE
 
 PLATFORM_CAPABILITIES = {
     "connector": {
@@ -140,6 +137,10 @@ def get_platform_capabilities(target_connector_type: str = None) -> str:
     return "\n".join(lines)
 
 
-def get_tool_guidance() -> str:
-    """获取工具能力表文本，用于注入 system prompt。"""
-    return TOOL_CAPABILITY_TABLE
+def get_tool_guidance(debug: bool = False) -> str:
+    """获取工具能力表文本，用于注入 system prompt。
+
+    debug=True 返回调试工具能力表（edit/modify/read/grep），
+    debug=False 返回主对话工具能力表（共享工具 + 扩展工具）。
+    """
+    return _DEBUG_TOOL_CAPABILITY_TABLE if debug else _MAIN_TOOL_CAPABILITY_TABLE

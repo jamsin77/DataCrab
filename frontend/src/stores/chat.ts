@@ -97,7 +97,12 @@ export const useChatStore = defineStore('chat', () => {
           if (!msg) return
 
           if (event.type === 'error') {
+            msg.executingMsg = ''
             msg.content = (msg.content || '') + `\n\n❌ ${event.content || '未知错误'}`
+            return
+          }
+          if (event.type === 'done') {
+            msg.executingMsg = ''
             return
           }
           if (event.type === 'model') {
@@ -118,16 +123,15 @@ export const useChatStore = defineStore('chat', () => {
           } else if (event.type === 'content' && event.content) {
             msg.content = (msg.content || '') + event.content
             streamingContent.value = msg.content
+            msg.executingMsg = ''
           } else if (event.type === 'progress' || event.type === 'executing') {
             msg.executingMsg = event.message || event.content || ''
-          } else if (event.type === 'tool_result') {
-            msg.executingMsg = event.content || event.message || ''
           } else if (event.type === 'agent_switch') {
             msg.executingMsg = event.reason || event.message || ''
           } else if (event.type === 'inspecting' || event.type === 'retry') {
             msg.executingMsg = event.message || ''
           } else if (event.type === 'round') {
-            msg.executingMsg = event.message || `第 ${event.round} 轮`
+            msg.executingMsg = event.message || `第 ${event.round} 次修改`
           }
         }
       )

@@ -1514,7 +1514,7 @@ function onSkillListScroll() {
 function startExecMessage(userText: string, initialExecutingMsg?: string): number {
   debugMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
   const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, executingMsgs: initialExecutingMsg ? [`[${timeStr}] ${initialExecutingMsg}`] : [], created_at: new Date().toISOString() })
+  debugMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, executingMsgs: initialExecutingMsg ? [`[${timeStr}] ${initialExecutingMsg}`] : [], created_at: new Date().toISOString() })
   nextTick(() => scrollSkillDebugToBottom(true))
   return debugMessages.value.length - 1
 }
@@ -1535,9 +1535,10 @@ function clearExecutingMsg(msg: any) {
   msg.executingMsgs = []
 }
 function archiveExecutingMsg(msg: any) {
-  // 阶段切换时：把执行日志固化到 content 里保留，然后清空 executingMsgs 开始新一轮
+  // 阶段切换时：把执行日志存到独立字段，不拼进 content（保持 content 纯净给 LLM）
   if (msg.executingMsgs && msg.executingMsgs.length > 0) {
-    msg.content += '\n\n```\n' + msg.executingMsgs.join('\n') + '\n```\n'
+    msg.stdouts = msg.stdouts || []
+    msg.stdouts.push(msg.executingMsgs.join('\n'))
     msg.executingMsgs = []
   }
 }
@@ -1573,7 +1574,7 @@ function processDebugSSEEvent(
     case 'ping':
       break
     case 'clear_thinking':
-      msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; state.thinkingDone = false
+      msg.thinking = ''; msg.content = ''; msg.llmContent = ''; msg.thinkingOpen = false; state.thinkingDone = false
       break
     case 'thinking':
       if (state.thinkingDone && msg.thinking) {
@@ -1590,7 +1591,33 @@ function processDebugSSEEvent(
       execPhase.value = 'executing'
       if (!msg.content) msg.content = ''
       msg.content += data.content
+      msg.llmContent = (msg.llmContent || '') + data.content
       break
+    case 'tool_action': {
+      // 工具调用显示卡片（不进 llmContent）
+      msg.toolActions = msg.toolActions || []
+      const _taTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      for (const act of (data.actions || [])) {
+        const icon = act.icon || ''
+        const script = act.script || 'main.py'
+        const detail = act.detail || ''
+        let line = `[${_taTime}] ${icon} ${script}${detail ? ' ' + detail : ''}`
+        if (act.diff) {
+          line += '\n```diff\n' + act.diff + '\n```'
+        }
+        msg.content += (msg.content ? '\n' : '') + line
+        msg.toolActions.push(act)
+      }
+      break
+    }
+    case 'tool_summary': {
+      // 工具结果摘要（不进 llmContent）
+      const _tsTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      for (const s of (data.summaries || [])) {
+        msg.content += (msg.content ? '\n' : '') + `[${_tsTime}] ${s}`
+      }
+      break
+    }
     case 'executing':
       execPhase.value = 'executing'
       setExecutingMsg(msg, data.message || '正在执行技能脚本...')
@@ -1599,13 +1626,6 @@ function processDebugSSEEvent(
     case 'progress':
       setExecutingMsg(msg, data.message || '')
       break
-    case 'tool_result': {
-      const tc = data.content || ''
-      let brief = tc.substring(0, 200)
-      try { const d = JSON.parse(tc); brief = d.error ? `❌ ${d.error}` : (d.message || d.summary || tc.substring(0, 200)) } catch {}
-      msg.content += `\n  └ ${brief}\n`
-      break
-    }
     case 'inspecting':
       archiveExecutingMsg(msg)
       msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
@@ -1615,9 +1635,13 @@ function processDebugSSEEvent(
     case 'inspection_result':
       msg.inspectionResult = data.result
       break
+    case 'inspection_report':
+      msg.inspectionReport = data.report
+      msg.content += (msg.content ? '\n\n' : '') + data.report + '\n'
+      break
     case 'retry':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+      msg.content += `\n\n---\n🔄 ${data.message || '开始修复...'}\n`
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -1625,7 +1649,7 @@ function processDebugSSEEvent(
       archiveExecutingMsg(msg)
       msg.thinkingOpen = false
       state.thinkingDone = true
-      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
+      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
       break
     case 'fixing':
       execPhase.value = 'executing'
@@ -2191,9 +2215,9 @@ async function handleRunSkillNL() {
   let result: any = null
   try {
     const token = localStorage.getItem('access_token')
-    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+    const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
     }))
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
@@ -2320,9 +2344,9 @@ async function handleRunCmd() {
   let result: any = null
   try {
     const token = localStorage.getItem('access_token')
-    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+    const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
     }))
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
@@ -2438,7 +2462,7 @@ async function handleDebugSend() {
   debugAbortController = new AbortController()
 
   const assistantIdx = debugMessages.value.length
-  debugMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
+  debugMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   skillPinnedToBottom.value = true
   nextTick(() => scrollSkillDebugToBottom(true))
 
@@ -2447,9 +2471,9 @@ async function handleDebugSend() {
 
   try {
     const token = localStorage.getItem('access_token')
-    const history = debugMessages.value.slice(0, assistantIdx).map(m => ({
+    const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
     }))
 
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {

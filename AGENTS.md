@@ -600,3 +600,99 @@ DataProcessorAgent（统一入口）
 **验证**：`app.main` 完整加载 183 路由（删除 2 个流式端点后 -1）；134 测试全通过（修复 `test_read_script_platform_scope` 硬编码行号 → 全文搜索）；无 `pick_model`/`run_skill_stream`/`run_skill_nl_stream` 残留引用（仅 llm.py 注释已清理）。
 
 **与前轮关系**：第十八轮 `pick_model_async` 被本轮 `_default/_flash` 替代——不再问 LLM 选模型（省一次调用），简单场景直接用配置模型。第十三轮删除的"只调查不修改"检测器以更温和形式回归（StuckDetector 内，5 轮阈值 + 仅提示不 give_up + 30 轮总上限兜底）。第八轮 `_compress_tool_result` + 第十六轮调试循环上下文压缩被删除（复杂度高、调试场景消息量有限收益低；主对话 chat.py 的 `_compress_history` 保留不动）。第二十轮视频处理不受影响。
+
+## 待实施：DataAnalystAgent（数据分析智能体）
+
+### 定位与边界
+
+| 维度 | DataAnalyst（新） | DataProcessor（现有） |
+|---|---|---|
+| 职责 | 只读分析：查询、统计、分布、洞察 | 修改数据/脚本：清洗、转换、分类、ETL |
+| 判断 | 结果对错靠人判断 | 自动检查（Inspector）+ 自愈修复 |
+| Handoff | 无 | → DataInspector |
+| 信息链 | 简单线性（system + user + tool + 结论） | 复杂（跨 handoff 持久化 + 修改计数 + 压缩） |
+| 技能 | 分析类技能（只读查询） | 处理类技能（修改数据） |
+
+**边界规则**：是否修改数据/脚本。只查不改 → DataAnalyst；要修改 → DataProcessor。
+
+### 触发与路由
+
+`chat.py` 路由层判断走哪个 Agent：
+- **关键词路由**：含"查询/统计/分析/分布/多少/查看/列出"且不含"清洗/转换/修改/处理/分类/写入"→ DataAnalyst
+- **技能路由**：用户指定技能时，按技能类型（`skill_type` 字段）分派——分析类技能走 DataAnalyst
+- **默认兜底**：无法判断时走 DataProcessor（保持现有行为不变）
+
+### 工具集
+
+只读工具子集（从 `shared_tools.py` 复用，不新增）：
+- `query_table_data` — 查询表数据（支持 limit/offset 分页）
+- `get_table_schema` — 获取表结构
+- `list_user_datasources` — 列出数据源
+- `execute_sql` — 执行原生 SQL（分析场景常用）
+- `kb_search` — 知识库搜索
+
+**不暴露**：`write_table_data`、`save_file_to_link`、调试工具（edit_script/run_script 等）。
+
+### 信息链设计
+
+```
+system: 分析指令 + 工具签名 + 反幻觉（standard 级）
+user: "查文物库 remark 不空的记录"
+assistant: {content: "我来查", tool_calls: [execute_sql]}
+tool: {content: "149 行..."}                    ← 工具结果
+assistant: {content: "共149条，分布如下..."}     ← 分析结论
+→ done（无 handoff）
+```
+
+- 单轮或多轮工具调用（查一次不够再查，LLM 自主决定）
+- 无修改尝试计数器
+- 无跨 handoff 持久化
+- 无 StuckDetector 修改检测（保留空转检测 + 总轮次上限）
+- 上下文压缩保留（`should_compact` / `compact_messages`）
+
+### 流式输出
+
+- `thinking` 事件（推理过程）
+- `content` 事件（分析结论）
+- `tool_action` 事件（工具调用显示，复用 debug 的分离设计）
+- `tool_summary` 事件（工具结果摘要）
+- `done` 事件（结束，无 handoff）
+- **不发**：`round`/`inspecting`/`retry`/`give_up`/`platform_issue`
+
+### 技能归属
+
+SKILL.md 新增 `skill_type` 字段（front matter）：
+```yaml
+skill_type: analysis    # analysis=分析类(DataAnalyst) / processing=处理类(DataProcessor)
+```
+现有技能默认 `processing`（保持兼容）。新建分析类技能时 AI 自动标注 `analysis`。
+
+### 工具结果截断策略（分析场景）
+
+分析场景需要看更多数据，当前 `MAX_TOOL_RESULT_CHARS = 8000` + 只留 5 行太激进。
+- DataAnalyst 用更大的阈值：`ANALYSIS_MAX_TOOL_RESULT_CHARS = 30000`，`ANALYSIS_MAX_PREVIEW_ROWS = 50`
+- 截断时追加提示："共 149 行，已显示前 50 行。用 offset=50 获取后续数据"
+- 不修改 `truncate_tool_result` 本身（DataProcessor 保持 8000），DataAnalyst 用独立截断参数
+
+### 不影响的现有机制
+
+| 机制 | 影响 |
+|---|---|
+| DataProcessor `run()` / `run_debug()` | 不动 |
+| DataInspector | 不动 |
+| multi_agent runtime handoff | 不动（DataAnalyst 不参与 handoff） |
+| ConvergenceGuard | 不动 |
+| experience 正反例 | 不动（DataAnalyst 不修改没有正反例） |
+| compact_messages | 复用，不动 |
+| debug 模式（技能/算子/流程调试） | 不动 |
+
+### 需要新增/修改的文件
+
+| 文件 | 改动 |
+|---|---|
+| `data_analyst_agent.py`（新增） | DataAnalystAgent 类：`run()` 方法 + 简单信息链 |
+| `multi_agent.py` | 注册 DataAnalyst；路由逻辑（`_decide_handoff` 对 DataAnalyst 返回 None） |
+| `chat.py` | 路由判断：关键词/技能类型 → 选 Agent |
+| `shared_tools.py` | 定义只读工具子集 `ANALYSIS_TOOLS` |
+| `skill_parser.py` | 解析 SKILL.md 的 `skill_type` 字段 |
+| `SkillView.vue` / `ChatView.vue` | 分析类技能不显示调试按钮（只读无需调试） |
