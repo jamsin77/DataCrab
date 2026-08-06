@@ -3,42 +3,91 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
 
+# ── 全国地级以上行政区划白名单（约340个，用于校验分类结果） ──
+_PREFECTURE_CITIES = frozenset({
+    "北京市","上海市","天津市","重庆市",
+    "石家庄市","唐山市","秦皇岛市","邯郸市","邢台市","保定市","张家口市","承德市","沧州市","廊坊市","衡水市",
+    "太原市","大同市","阳泉市","长治市","晋城市","朔州市","晋中市","运城市","忻州市","临汾市","吕梁市",
+    "呼和浩特市","包头市","乌海市","赤峰市","通辽市","鄂尔多斯市","呼伦贝尔市","巴彦淖尔市","乌兰察布市","兴安盟","锡林郭勒盟","阿拉善盟",
+    "沈阳市","大连市","鞍山市","抚顺市","本溪市","丹东市","锦州市","营口市","阜新市","辽阳市","盘锦市","铁岭市","朝阳市","葫芦岛市",
+    "长春市","吉林市","四平市","辽源市","通化市","白山市","松原市","白城市","延边朝鲜族自治州",
+    "哈尔滨市","齐齐哈尔市","鸡西市","鹤岗市","双鸭山市","大庆市","伊春市","佳木斯市","七台河市","牡丹江市","黑河市","绥化市","大兴安岭地区",
+    "南京市","无锡市","徐州市","常州市","苏州市","南通市","连云港市","淮安市","盐城市","扬州市","镇江市","泰州市","宿迁市",
+    "杭州市","宁波市","温州市","嘉兴市","湖州市","绍兴市","金华市","衢州市","舟山市","台州市","丽水市",
+    "合肥市","芜湖市","蚌埠市","淮南市","马鞍山市","淮北市","铜陵市","安庆市","黄山市","滁州市","阜阳市","宿州市","六安市","亳州市","池州市","宣城市",
+    "福州市","厦门市","莆田市","三明市","泉州市","漳州市","南平市","龙岩市","宁德市",
+    "南昌市","景德镇市","萍乡市","九江市","新余市","鹰潭市","赣州市","吉安市","宜春市","抚州市","上饶市",
+    "济南市","青岛市","淄博市","枣庄市","东营市","烟台市","潍坊市","济宁市","泰安市","威海市","日照市","临沂市","德州市","聊城市","滨州市","菏泽市",
+    "郑州市","开封市","洛阳市","平顶山市","安阳市","鹤壁市","新乡市","焦作市","濮阳市","许昌市","漯河市","三门峡市","南阳市","商丘市","信阳市","周口市","驻马店市",
+    "武汉市","黄石市","十堰市","宜昌市","襄阳市","鄂州市","荆门市","孝感市","荆州市","黄冈市","咸宁市","随州市","恩施土家族苗族自治州","湖北省直辖",
+    "长沙市","株洲市","湘潭市","衡阳市","邵阳市","岳阳市","常德市","张家界市","益阳市","郴州市","永州市","怀化市","娄底市","湘西土家族苗族自治州",
+    "广州市","韶关市","深圳市","珠海市","汕头市","佛山市","江门市","湛江市","茂名市","肇庆市","惠州市","梅州市","汕尾市","河源市","阳江市","清远市","东莞市","中山市","潮州市","揭阳市","云浮市",
+    "南宁市","柳州市","桂林市","梧州市","北海市","防城港市","钦州市","贵港市","玉林市","百色市","贺州市","河池市","来宾市","崇左市",
+    "海口市","三亚市","儋州市","海南省直辖",
+    "成都市","自贡市","攀枝花市","泸州市","德阳市","绵阳市","广元市","遂宁市","内江市","乐山市","南充市","眉山市","宜宾市","广安市","达州市","雅安市","巴中市","资阳市","阿坝藏族羌族自治州","甘孜藏族自治州","凉山彝族自治州",
+    "贵阳市","六盘水市","遵义市","安顺市","毕节市","铜仁市","黔西南布依族苗族自治州","黔东南苗族侗族自治州","黔南布依族苗族自治州",
+    "昆明市","曲靖市","玉溪市","保山市","昭通市","丽江市","普洱市","临沧市","楚雄彝族自治州","红河哈尼族彝族自治州","文山壮族苗族自治州","西双版纳傣族自治州","大理白族自治州","德宏傣族景颇族自治州","怒江傈僳族自治州","迪庆藏族自治州",
+    "拉萨市","日喀则市","昌都市","林芝市","山南市","那曲市","阿里地区",
+    "西安市","铜川市","宝鸡市","咸阳市","渭南市","延安市","汉中市","榆林市","安康市","商洛市",
+    "兰州市","嘉峪关市","金昌市","白银市","天水市","武威市","张掖市","平凉市","酒泉市","庆阳市","定西市","陇南市","临夏回族自治州","甘南藏族自治州",
+    "西宁市","海东市","海北藏族自治州","黄南藏族自治州","海南藏族自治州","果洛藏族自治州","玉树藏族自治州","海西蒙古族藏族自治州",
+    "银川市","石嘴山市","吴忠市","固原市","中卫市",
+    "乌鲁木齐市","克拉玛依市","吐鲁番市","哈密市","昌吉回族自治州","博尔塔拉蒙古自治州","巴音郭楞蒙古自治州","阿克苏地区","克孜勒苏柯尔克孜自治州","喀什地区","和田地区","伊犁哈萨克自治州","塔城地区","阿勒泰地区",
+    "香港特别行政区","澳门特别行政区","台湾省",
+})
+
+
+def _is_uuid(s: str) -> bool:
+    """判断字符串是否为UUID格式"""
+    return bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', s, re.I))
+
+
 def _resolve_datasource(datasource_name: str) -> str:
-    """解析数据源：先按名称查ID，查不到则假定传入的已是UUID/ID，直接使用"""
+    """解析数据源：UUID直接使用，中文名称才查ID（避免不必要的网络调用）"""
+    if _is_uuid(datasource_name):
+        return datasource_name
     ds_id = get_datasource_id_by_name(datasource_name)
     if ds_id:
         return ds_id
-    # 传入的可能已经是数据源UUID/ID，直接使用
     return datasource_name
 
 
 def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
-    """从数据源加载表数据（小表用query_table_data一次性加载，大表用分块读取）"""
+    """从数据源加载表数据。
+
+    ⚠️ 不使用 query_table_data 的一次性加载，因为它返回的 row_count = len(df)
+    （实际返回行数，非表总行数），导致截断检测失效。
+    改用 iter_table_data 分块读取（timeout=120s，更可靠），并用 API 返回的
+    total 字段做行数校验，确保不丢数据。
+    """
     ds_id = _resolve_datasource(datasource_name)
 
-    # 先尝试一次性加载（适用于万行以内的表，更快更可靠）
-    result = query_table_data(ds_id, table_name, limit=10000)
-    if result.get("success") and result.get("data"):
-        df = pd.DataFrame(result["data"], columns=result.get("columns"))
-        # 如果数据量接近上限，可能还有更多数据，切换到分块读取
-        if len(df) < 9500:
-            log("info", f"加载完成: {len(df)} 行, {len(df.columns)} 列")
-            return df
-        log("info", f"数据量较大（{len(df)}行），切换到分块读取")
-
-    # 大表分块读取
+    # 统一分块读取（iter_table_data 内部 timeout=120s，远比 query_table_data 的 30s 安全）
     chunks = []
-    total_rows = 0
+    expected_total = 0
     for chunk in iter_table_data(ds_id, table_name, chunk_size=10000):
         chunk_rows = chunk.get("rows", [])
         if chunk_rows:
             chunks.append(pd.DataFrame(chunk_rows))
-            total_rows += len(chunk_rows)
+        # 从每个 chunk 的 total 字段获取表总行数（所有 chunk 返回的 total 相同）
+        if chunk.get("total"):
+            expected_total = chunk["total"]
+        log("info", f"已读取 {sum(len(c) for c in chunks)} 行（总计 {expected_total} 行）")
 
     if not chunks:
         raise ValueError(f"表 '{table_name}' 中没有数据")
 
     df = pd.concat(chunks, ignore_index=True)
+
+    # 行数校验：如果实际加载行数与 API 报告的总行数不一致，说明数据被截断
+    if expected_total and len(df) != expected_total:
+        raise ValueError(
+            f"⚠️ 行数不匹配！表总行数 {expected_total}，实际加载 {len(df)} 行，数据被截断。"
+            f"已中止处理以防止用截断数据覆盖原表。请重试。"
+        )
+    else:
+        log("info", f"行数校验通过: {len(df)}/{expected_total} 行")
+
     log("info", f"加载完成: {len(df)} 行, {len(df.columns)} 列")
     return df
 
@@ -153,6 +202,8 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
                 "   - \"莱芜\"→\"济南市\"（莱芜已并入济南）\n"
                 "   - \"思茅\"→\"普洱市\"（思茅已改名普洱）\n"
                 "   - \"中甸\"→\"香格里拉市\"（属迪庆藏族自治州）\n"
+                "   - \"旅大\"→\"大连市\"（旅大市已改名大连市）\n"
+                "   - \"呼伦贝尔盟\"→\"呼伦贝尔市\"（盟已改市）\n"
                 "   - \"日喀则\"→\"日喀则市\"\n"
                 "   - \"昌都\"→\"昌都市\"\n"
                 "   - \"林芝\"→\"林芝市\"\n"
@@ -164,8 +215,17 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
                 "   - 其他历史地名请根据你的地理知识映射到最新的地级市\n"
                 "7. 【自治州/地区/盟】对于自治州、地区、盟，返回该自治州/地区/盟的名称（如\"凉山彝族自治州\"、\"大兴安岭地区\"、\"兴安盟\"）\n"
                 "8. 【直辖市】北京、上海、天津、重庆的地址，返回直辖市名称（如\"北京市\"、\"上海市\"）\n"
-                "9. 如果确实无法判断，返回\"未知\"\n"
-                "10. 返回纯JSON，不要包含任何其他文字或解释\n\n"
+                "9. 【禁止返回县级市】县级市不是地级市，必须映射到其所属的地级市。例如：\n"
+                "   - \"昆山\"→\"苏州市\"（昆山是苏州市下辖的县级市）\n"
+                "   - \"义乌\"→\"金华市\"（义乌是金华市下辖的县级市）\n"
+                "   - \"曲阜\"→\"济宁市\"（曲阜是济宁市下辖的县级市）\n"
+                "   - \"安国\"→\"保定市\"（安国是保定市下辖的县级市）\n"
+                "   - \"龙海\"→\"漳州市\"（龙海是漳州市下辖的县级市）\n"
+                "   - 其他县级市请根据你的地理知识映射到所属地级市\n"
+                "10. 【禁止合并多个城市】每条数据只返回一个地级市，不要用顿号或逗号连接多个城市\n"
+                "11. 【禁止重复\"市\"字】返回的城市名称只包含一个\"市\"字（如\"乐山市\"，不要写成\"乐山市市\"）\n"
+                "12. 如果确实无法判断，返回\"未知\"\n"
+                "13. 返回纯JSON，不要包含任何其他文字或解释\n\n"
                 '请以JSON格式返回结果，格式为 {"序号": "地级市名称"}，例如：\n'
                 '{"1": "济南市", "2": "北京市", "3": "西安市"}'
             )
@@ -211,8 +271,8 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
 
         # 检查空返回
         if not result or not result.strip():
-            log("warn", f"LLM返回空结果（尝试 {attempt + 1}/{max_retries}）")
-            last_error = "LLM返回空字符串"
+            log("warn", f"AI未返回有效内容（可能因数据量过大导致超时），正在重试（第 {attempt + 1}/{max_retries} 次）")
+            last_error = "AI返回空字符串"
             continue
 
         try:
@@ -233,13 +293,12 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
             return value_to_category, categories_str
         except Exception as e:
             last_error = str(e)
-            log("warn", f"LLM分类结果解析失败（尝试 {attempt + 1}/{max_retries}）: {e}")
-            log("warn", f"原始返回(前300字): {result[:300]}")
+            log("warn", f"AI返回的格式不正确，无法解析（内容可能被截断），正在重试（第 {attempt + 1}/{max_retries} 次）")
             continue
 
     # 所有重试均失败，尝试将批次拆分为更小的子批次
     if len(values) > 10:
-        log("warn", f"全批次重试失败，尝试拆分为更小子批次处理")
+        log("warn", f"本批 {len(values)} 条地址处理失败，正在拆分为更小的批次重新处理")
         mid = len(values) // 2
         left_result, left_cats = _classify_batch(values[:mid], categories, max_retries=2)
         right_result, right_cats = _classify_batch(values[mid:], categories, max_retries=2)
@@ -252,7 +311,7 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
         cats_str = ", ".join(sorted(set(all_cats))) if all_cats else None
         return merged, cats_str
 
-    log("error", f"批次分类彻底失败（已重试 {max_retries} 次），最后错误: {last_error}")
+    log("error", f"以下 {len(values)} 条地址经过多次重试仍无法识别地级市，已标记为'分类失败': {values[:5]}{'...' if len(values) > 5 else ''}")
     return {v: "分类失败" for v in values}, None
 
 
@@ -318,7 +377,7 @@ def _rule_extract_city(address: str) -> Optional[str]:
         "额尔古纳", "乌兰浩特", "阿尔山", "霍林郭勒", "丰镇", "新民",
         "瓦房店", "普兰店", "庄河", "海城", "东港", "凤城", "凌海",
         "北镇", "盖州", "大石桥", "灯塔", "调兵山", "开原", "北票",
-        "凌源", "葫芦岛", "九台", "榆树", "德惠", "蛟河", "桦甸",
+        "凌源", "九台", "榆树", "德惠", "蛟河", "桦甸",
         "舒兰", "磐石", "公主岭", "双辽", "梅河口", "集安", "洮南",
         "大安", "临江", "和龙", "珲春", "龙井", "图们", "敦化",
         "尚志", "双城", "五常", "讷河", "北安", "五大连池", "肇东",
@@ -361,24 +420,47 @@ def _rule_extract_city(address: str) -> Optional[str]:
         "阿勒泰", "和田", "喀什", "阿克苏", "库尔勒",
         "昌吉", "阜康", "博乐", "伊宁", "奎屯", "乌苏", "阿图什"
     }
+    # 遍历所有"XX市"匹配，优先返回白名单中的地级市
     for m in re.finditer(r'([\u4e00-\u9fa5]{2,6})市', addr):
         city_short = m.group(1)
         if city_short not in county_level_cities:
-            return city_short + "市"
+            candidate = _post_process_city(city_short + "市")
+            if candidate in _PREFECTURE_CITIES:
+                return candidate
+            # 不在白名单中，继续查找下一个匹配
+
+    # 所有匹配均不在白名单中，尝试映射第一个到所属地级市
+    m = re.search(r'([\u4e00-\u9fa5]{2,6})市', addr)
+    if m:
+        candidate = _post_process_city(m.group(1) + "市")
+        if candidate in _PREFECTURE_CITIES:
+            return candidate
 
     return None
 
 
 def _post_process_city(city: str) -> str:
-    """后处理：清理地级市名称，修正县级市、历史名称、前缀等问题"""
+    """后处理：清理地级市名称，修正县级市、历史名称、前缀、乱码、多城市合并等问题"""
     if not city or city in ("未知", "未分类", "分类失败", ""):
         return city
     city = str(city).strip()
 
-    # 1. 去除省份/自治区前缀（包括被截断的前缀如"疆维吾尔自治区"、"藏自治区"等）
+    # 0. 多城市合并处理（如"葫芦岛市、秦皇岛市"→"葫芦岛市"，取第一个）
+    for sep in ["、", ",", "，", "/"]:
+        if sep in city:
+            city = city.split(sep)[0].strip()
+            break
+
+    # 0.5 去除重复"市"字（如"乐山市市"→"乐山市"）
+    city = re.sub(r'(市)市+', r'\1', city)
+
+    # 1. 去除省份/自治区前缀（包括被截断/乱码的前缀如"藏直治区"、"尔自区"等）
     city = re.sub(r'^[\u4e00-\u9fa5]*省', '', city)
     city = re.sub(r'^[\u4e00-\u9fa5]*自治区', '', city)
-    if city.startswith("治区"):
+    # 处理乱码/截断的自治区前缀（如"藏直治区"→"","尔自区"→""）
+    city = re.sub(r'^[\u4e00-\u9fa5]{0,4}治区', '', city)
+    city = re.sub(r'^[\u4e00-\u9fa5]{0,4}自区', '', city)
+    if city.startswith("治区") or city.startswith("自区"):
         city = city[2:]
 
     # 2. 处理"地级市+县级市"模式（如"晋城市高平市"→"晋城市"）
@@ -392,6 +474,12 @@ def _post_process_city(city: str) -> str:
         "海东地区": "海东市", "昌都地区": "昌都市", "山南地区": "山南市",
         "那曲地区": "那曲市", "吐鲁番地区": "吐鲁番市", "哈密地区": "哈密市",
         "日喀则地区": "日喀则市", "巢湖市": "合肥市",
+        "旅大市": "大连市", "呼伦贝尔盟": "呼伦贝尔市",
+        "昭乌达盟": "赤峰市", "哲里木盟": "通辽市",
+        "伊克昭盟": "鄂尔多斯市", "巴彦淖尔盟": "巴彦淖尔市",
+        "乌兰察布盟": "乌兰察布市", "海拉尔市": "呼伦贝尔市",
+        "东胜市": "鄂尔多斯市", "沙市市": "荆州市",
+        "万县市": "重庆市", "涪陵市": "重庆市",
     }
     if city in _OLD_NEW:
         return _OLD_NEW[city]
@@ -486,9 +574,52 @@ def _post_process_city(city: str) -> str:
         "宁安市": "牡丹江市", "穆棱市": "牡丹江市", "东宁市": "牡丹江市",
         "琼海市": "海南省直辖", "万宁市": "海南省直辖", "文昌市": "海南省直辖",
         "五指山市": "海南省直辖", "东方市": "海南省直辖",
+        # ── 补充缺失的县级市→地级市映射 ──
+        "安国市": "保定市", "高碑店市": "保定市",
+        "晋州市": "石家庄市", "新乐市": "石家庄市", "鹿泉市": "石家庄市", "藁城市": "石家庄市",
+        "冀州市": "衡水市",
+        "离石市": "吕梁市", "潞城市": "长治市", "怀仁市": "朔州市",
+        "吴江市": "苏州市", "大丰市": "盐城市", "江都市": "扬州市",
+        "奉化市": "宁波市", "龙港市": "温州市", "玉环市": "台州市",
+        "龙海市": "漳州市", "长乐市": "福州市", "漳平市": "龙岩市",
+        "福安市": "宁德市", "福鼎市": "宁德市",
+        "共青城市": "九江市", "庐山市": "九江市",
+        "二连浩特市": "锡林郭勒盟", "锡林浩特市": "锡林郭勒盟",
+        "仙桃市": "湖北省直辖", "天门市": "湖北省直辖", "潜江市": "湖北省直辖",
+        "长垣市": "新乡市", "普宁市": "揭阳市",
     }
     if city in _COUNTY_MAP:
         return _COUNTY_MAP[city]
+
+    # 6. 最终清理：如果结果仍含乱码/前缀残留，尝试提取末尾的"XX市/自治州/地区/盟"
+    m = re.search(r'([\u4e00-\u9fa5]{2,12}(?:市|自治州|地区|盟))$', city)
+    if m and m.group(1) != city:
+        extracted = m.group(1)
+        if extracted in _COUNTY_MAP:
+            return _COUNTY_MAP[extracted]
+        if extracted in _PREFECTURE_CITIES:
+            return extracted
+
+    # 7. 白名单校验 + 模糊匹配修正
+    if city not in _PREFECTURE_CITIES and city not in ("未知", "未分类", "分类失败", ""):
+        # 尝试模糊匹配：从结果中提取核心部分，与白名单比对
+        core = re.sub(r'(市|自治州|地区|盟)$', '', city)
+        matched = None
+        for pc in _PREFECTURE_CITIES:
+            # 结果的核心部分包含在白名单城市名中（如"济南"匹配"济南市"）
+            if core and len(core) >= 2 and core in pc:
+                matched = pc
+                break
+        if not matched:
+            # 尝试前缀匹配（如"济南历城"→"济南市"）
+            for pc in _PREFECTURE_CITIES:
+                pc_core = re.sub(r'(市|自治州|地区|盟)$', '', pc)
+                if len(pc_core) >= 2 and city.startswith(pc_core):
+                    matched = pc
+                    break
+        if matched:
+            return matched
+        log("warn", f"「{city}」不在标准地级市名单中，可能需要人工核查")
 
     return city
 
@@ -574,7 +705,7 @@ def _classify_all_values(
                     value_to_category.update(batch_result)
                     log("info", f"第 {batch_num}/{total_batches} 批完成（{batch_len} 个唯一值）")
                 except Exception as e:
-                    log("error", f"第 {batch_num}/{total_batches} 批处理失败: {e}")
+                    log("error", f"第 {batch_num}/{total_batches} 批（{batch_len} 条地址）处理出错: {e}，该批地址将标记为'未分类'")
 
     return value_to_category
 
@@ -586,37 +717,84 @@ def _write_result(
     target_column: str,
     if_table_exists: str
 ) -> Dict[str, Any]:
-    """将分类结果写回数据源（分批写入）"""
+    """将分类结果写回数据源（分批写入 + 查询实际行数校验）。
+
+    ⚠️ 核心安全措施：
+    1. 分批写入（每批 500 行），避免平台单次写入限制导致静默截断
+    2. 第一批用原策略（如 overwrite 先清表），后续批次用 append
+    3. 写完后查询表实际行数做最终校验，不信任返回值中的 rows_written
+    """
+    import time
+
     ds_id = _resolve_datasource(datasource_name)
 
     records = df.to_dict(orient="records")
+    total_records = len(records)
 
     # 为新分类列添加列备注
     column_remarks = {target_column: "语义分类结果（由AI自动生成）"}
 
-    batch_size = 1000
-    clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}
-    total_batches = (len(records) + batch_size - 1) // batch_size
+    # ── 统一分批写入（每批 500 行，避免平台单次写入限制导致静默截断） ──
+    batch_size = 500
+    total_batches = (total_records + batch_size - 1) // batch_size
 
-    for i in range(0, len(records), batch_size):
+    log("info", f"开始分批写入: {total_records} 行, 分 {total_batches} 批（每批 {batch_size} 行, 策略: {if_table_exists}）")
+
+    rows_written_total = 0
+    for i in range(0, total_records, batch_size):
         batch_num = i // batch_size + 1
         batch = records[i:i + batch_size]
-        current_strategy = if_table_exists
-        if batch_num > 1 and if_table_exists in clearing_strategies:
-            current_strategy = "append"
 
-        log("info", f"写入第 {batch_num}/{total_batches} 批（{len(batch)} 行）")
-        result = write_table_data(
-            ds_id,
-            table_name,
-            records=batch,
-            if_table_exists=current_strategy,
-            column_remarks=column_remarks if batch_num == 1 else None,
-        )
-        if not result.get("success"):
-            raise ValueError(f"写入失败: {result.get('message', '未知错误')}")
+        # 第一批用原策略（如 overwrite 会先清表），后续批次用 append
+        current_strategy = if_table_exists if batch_num == 1 else "append"
 
-    return {"rows_written": len(records)}
+        log("info", f"写入第 {batch_num}/{total_batches} 批（{len(batch)} 行，策略: {current_strategy}）")
+
+        max_retries = 3
+        result = None
+        for attempt in range(max_retries):
+            if attempt > 0:
+                wait_sec = min(3 * attempt, 5)
+                log("info", f"等待 {wait_sec}s 后重试写入（第 {attempt + 1}/{max_retries} 次）")
+                time.sleep(wait_sec)
+            result = write_table_data(
+                ds_id,
+                table_name,
+                records=batch,
+                if_table_exists=current_strategy,
+                column_remarks=column_remarks if batch_num == 1 else None,
+            )
+            if result.get("success"):
+                break
+            log("warn", f"写入失败（第 {attempt + 1}/{max_retries} 次）: {result.get('message', '未知错误')}")
+
+        if not result or not result.get("success"):
+            raise ValueError(
+                f"写入第 {batch_num}/{total_batches} 批失败（已写入 {rows_written_total}/{total_records} 行）: "
+                f"{result.get('message', '未知错误') if result else '未知错误'}"
+            )
+
+        # 累加写入行数
+        batch_written = result.get("rows_written", len(batch))
+        rows_written_total += batch_written
+        log("info", f"累计写入 {rows_written_total}/{total_records} 行")
+
+    # ── 写入后最终校验：查询表实际行数，防止平台静默截断 ──
+    log("info", "正在查询表实际行数做最终校验...")
+    verify_result = query_table_data(ds_id, table_name, limit=total_records + 1000)
+    if verify_result.get("success"):
+        actual_row_count = len(verify_result.get("data", []))
+        if actual_row_count != total_records:
+            raise ValueError(
+                f"⚠️ 写入后行数校验失败！期望 {total_records} 行，表中实际 {actual_row_count} 行，"
+                f"数据可能丢失。请重新运行。"
+            )
+        log("info", f"最终校验通过: 表中实际 {actual_row_count} 行（期望 {total_records} 行）")
+    else:
+        log("warn", f"无法查询表行数做校验: {verify_result.get('error', '未知错误')}")
+
+    log("info", f"写入完成，共 {rows_written_total} 行（校验通过）")
+    return {"rows_written": rows_written_total}
 
 
 def semantic_classify(
@@ -723,10 +901,10 @@ def semantic_classify(
             target_column = existing_col
             log("info", f"更新已有列: '{target_column}'")
         else:
-            log("warn", f"目标列 '{target_column}' 不存在，将新建该列")
+            log("warn", f"目标列 '{target_column}' 在表中不存在，将自动新建该列并填入分类结果")
     else:
         if target_column in df.columns:
-            log("warn", f"列 '{target_column}' 已存在，将覆盖该列数据")
+            log("warn", f"列 '{target_column}' 已存在，将覆盖该列原有数据")
         else:
             log("info", f"新增列: '{target_column}'")
 
@@ -775,7 +953,35 @@ def semantic_classify(
         city_keywords = ("地级市", "城市", "市", "行政区划", "行政区域")
         if any(kw in cat_name for kw in city_keywords) or any(kw in target_column for kw in city_keywords):
             value_to_category = {k: _post_process_city(v) for k, v in value_to_category.items()}
-            log("info", "已对分类结果进行后处理（清理县级市、历史名称、前缀等）")
+            log("info", "已对分类结果进行后处理（修正县级市→地级市、历史地名→最新名称、清理乱码前缀等）")
+
+            # ── 5.6 对"未知/分类失败"的值进行二次重试（逐条并发处理，提高准确率） ──
+            retry_values = [v for v, cat in value_to_category.items() if cat in ("未知", "分类失败", "未分类")]
+            if retry_values:
+                log("info", f"有 {len(retry_values)} 条地址首次未能识别地级市，正在逐条重新分析...")
+
+                def _retry_single(val):
+                    result, _ = _classify_batch([val], categories_param, max_retries=2)
+                    return val, result.get(val, "分类失败")
+
+                with ThreadPoolExecutor(max_workers=min(4, len(retry_values))) as executor:
+                    futures = [executor.submit(_retry_single, v) for v in retry_values]
+                    for fut in as_completed(futures):
+                        v, cat = fut.result()
+                        if cat not in ("未知", "分类失败", "未分类"):
+                            value_to_category[v] = _post_process_city(cat)
+
+                still_failed = sum(1 for v in retry_values if value_to_category[v] in ("未知", "分类失败", "未分类"))
+                if still_failed:
+                    log("warn", f"经过二次分析，仍有 {still_failed} 条地址无法识别所属地级市，已标记为'分类失败'")
+
+            # ── 5.7 最终校验：统计不在白名单中的结果 ──
+            invalid_cities = set()
+            for cat in value_to_category.values():
+                if cat not in _PREFECTURE_CITIES and cat not in ("未知", "未分类", "分类失败", ""):
+                    invalid_cities.add(cat)
+            if invalid_cities:
+                log("warn", f"有 {len(invalid_cities)} 个城市名不在标准地级市名单中，可能需要人工核查: {list(invalid_cities)[:10]}")
 
     # ── 6. 映射回全表 ──
     def _map_value(v: str) -> str:
@@ -835,4 +1041,10 @@ def main(**params) -> Dict[str, Any]:
     resolved.setdefault("batch_size", 50)
     resolved.setdefault("if_table_exists", "replace")
 
-    return semantic_classify(**resolved)
+    try:
+        return semantic_classify(**resolved)
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[ERROR] 完整错误信息:\n{tb}")
+        return {"success": False, "error": str(e), "traceback": tb}

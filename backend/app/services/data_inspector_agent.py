@@ -240,7 +240,7 @@ class DataInspectorAgent(BaseAgent):
             result_summary = message.payload.get("result_summary", "")
 
             # 预执行所有检查（加载数据1次 → 4项检查 → 紧凑报告）
-            yield {"type": "content", "content": "\n🔍 正在执行数据质量检查...\n"}
+            yield {"type": "inspecting", "message": "正在执行数据质量检查..."}
             from app.services.inspector_tools import inspector_tools
             check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
             context["_check_results"] = check_results
@@ -253,14 +253,14 @@ class DataInspectorAgent(BaseAgent):
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] INSPECT_RESULT report_len={len(report)} report_preview={report[:200]}")
-            yield {"type": "content", "content": report + "\n"}
+            yield {"type": "inspection_report", "report": report}
 
         elif message.reason == HandoffReason.FIX_COMPLETED:
             ds_id = message.payload.get("datasource_id", "")
             table_name = message.payload.get("table_name", "")
 
             # 复查：重新预执行（清缓存，加载最新数据）
-            yield {"type": "content", "content": "\n🔍 正在复查数据质量...\n"}
+            yield {"type": "inspecting", "message": "正在复查数据质量..."}
             from app.services.inspector_tools import inspector_tools
             check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
             context["_check_results"] = check_results
@@ -270,7 +270,7 @@ class DataInspectorAgent(BaseAgent):
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] FIX_COMPLETED report_len={len(report)} report_preview={report[:200]}")
-            yield {"type": "content", "content": report + "\n"}
+            yield {"type": "inspection_report", "report": report}
 
         else:
             user_msg = message.payload.get("user_message", message.payload.get("content", ""))

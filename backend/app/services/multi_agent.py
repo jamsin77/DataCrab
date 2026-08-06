@@ -377,7 +377,7 @@ async def stream_agent_events_sse(
                     evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                 elif agent == "data_processor":
                     _retry_round = context.get("debug_inspection_round", 0) + 1
-                    evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，第 {_retry_round} 轮修复..."}
+                    evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，开始第 {_retry_round} 次修复..."}
                 else:
                     evt = None
                 if evt:
@@ -397,7 +397,7 @@ async def stream_agent_events_sse(
             elif _inspector_active and t == "fatal":
                 _inspector_summary = event.get("summary", "") or "发现致命问题，已停止处理"
             elif _inspector_active and t == "tool_result":
-                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                pass  # 不转发 Inspector 工具原始 JSON（报告已通过 inspection_report 格式化发送）
             else:
                 if t in ("executing", "progress", "run_result", "inspecting", "inspection_result"):
                     logger.info(f"[SSE] 转发 type={t}")

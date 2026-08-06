@@ -435,7 +435,7 @@ async def debug_pipeline_chat(
 
     history = []
     for h in (req.history or [])[-10:]:
-        history.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
+        history.append({"role": h.get("role", "user"), "content": h.get("content", "")})
 
     user_msg = req.message
     if last_result or last_error:

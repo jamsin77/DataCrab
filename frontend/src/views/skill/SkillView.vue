@@ -507,12 +507,16 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-if="msg.role === 'user'" class="debug-msg-user">
+                  {{ msg.content }}
+                  <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                </div>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
                       <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                      <el-button text size="small" @click.stop="copyText(msg.thinking)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
@@ -564,7 +568,11 @@
                     </div>
                     <div v-if="msg.runResult.result != null" class="debug-result-data">
                       <el-collapse>
-                        <el-collapse-item title="返回数据">
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">返回数据</span>
+                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
                           <pre>{{ formatResult(msg.runResult.result) }}</pre>
                         </el-collapse-item>
                       </el-collapse>
@@ -576,6 +584,7 @@
                         {{ msg.inspectionResult.passed ? '检查通过' : '发现问题' }}
                       </el-tag>
                       <span class="inspection-summary">{{ msg.inspectionResult.summary }}</span>
+                      <el-button text size="small" @click="copyText(msg.inspectionResult.summary)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                     </div>
                     <div v-if="msg.inspectionResult.issues && msg.inspectionResult.issues.length" class="inspection-issues">
                       <div v-for="(issue, idx) in msg.inspectionResult.issues" :key="idx" class="inspection-issue-item">
@@ -584,6 +593,7 @@
                             {{ issue.severity }}
                           </el-tag>
                           <span class="inspection-issue-desc">{{ issue.description }}</span>
+                          <el-button text size="small" @click="copyText(issue.description + (issue.suggestion ? '\n→ ' + issue.suggestion : ''))" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                         </div>
                         <div v-if="issue.suggestion" class="inspection-issue-suggestion">→ {{ issue.suggestion }}</div>
                       </div>
@@ -2226,7 +2236,7 @@ async function handleRunSkillNL() {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        message: userQuery,
+        message: userQuery + '\n\n（只执行不修改代码，直接用当前脚本运行）',
         history,
         script_name: debugScriptName.value,
         datasource_id: cmdExampleDsName.value
@@ -3358,6 +3368,17 @@ onMounted(() => {
     padding: 2px 6px;
     font-size: 12px;
   }
+
+  .msg-copy-btn {
+    padding: 2px 4px;
+    font-size: 12px;
+    color: #909399;
+    &:hover { color: #409eff; }
+  }
+  .debug-msg-user .msg-copy-btn { margin-left: 8px; vertical-align: middle; }
+  .thinking-header .msg-copy-btn { margin-left: auto; }
+  .inspection-header .msg-copy-btn { margin-left: 8px; }
+  .inspection-issue-main .msg-copy-btn { margin-left: 8px; }
 
   .debug-result-error {
     padding: 6px 10px;

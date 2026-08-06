@@ -174,12 +174,16 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <div v-if="msg.role === 'user'" class="debug-msg-user">
+                  {{ msg.content }}
+                  <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                </div>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
                       <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                      <el-button text size="small" @click.stop="copyText(msg.thinking)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
@@ -228,7 +232,11 @@
                     </div>
                     <div v-if="msg.runResult.result != null" class="debug-result-data">
                       <el-collapse>
-                        <el-collapse-item title="返回结果">
+                        <el-collapse-item>
+                          <template #title>
+                            <span class="collapse-label">返回结果</span>
+                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          </template>
                           <pre>{{ formatResult(msg.runResult.result) }}</pre>
                         </el-collapse-item>
                       </el-collapse>
@@ -1304,16 +1312,16 @@ async function handleOpSend() {
   opAbortController = new AbortController()
 
   const assistantIdx = opMessages.value.length
-  opMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
+  opMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   opPinnedToBottom.value = true
   await nextTick()
   scrollOpToBottom(true)
 
   try {
     const token = localStorage.getItem('access_token')
-    const history = opMessages.value.slice(0, assistantIdx).map(m => ({
+    const history = opMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: m.content + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
     }))
 
     const contextData: Record<string, string> = {}
@@ -1380,6 +1388,7 @@ async function handleOpSend() {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
+            msg.llmContent = ''
             msg.thinkingOpen = false
             thinkingDone = false
           } else if (data.type === 'thinking') {
@@ -1396,6 +1405,22 @@ async function handleOpSend() {
               msg.thinkingOpen = false
             }
             msg.content += data.content
+            msg.llmContent = (msg.llmContent || '') + data.content
+          } else if (data.type === 'tool_action') {
+            msg.toolActions = msg.toolActions || []
+            for (const act of (data.actions || [])) {
+              const icon = act.icon || ''
+              const script = act.script || 'main.py'
+              const detail = act.detail || ''
+              let line = `${icon} ${script}${detail ? ' ' + detail : ''}`
+              if (act.diff) line += '\n```diff\n' + act.diff + '\n```'
+              msg.content += (msg.content ? '\n' : '') + line
+              msg.toolActions.push(act)
+            }
+          } else if (data.type === 'tool_summary') {
+            for (const s of (data.summaries || [])) {
+              msg.content += (msg.content ? '\n' : '') + s
+            }
           } else if (data.type === 'script_updated') {
             msg.scriptUpdated = data.script_name
             try {
@@ -1420,6 +1445,9 @@ async function handleOpSend() {
             }
           } else if (data.type === 'error') {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
+          } else if (data.type === 'inspection_report') {
+            msg.inspectionReport = data.report
+            msg.content += (msg.content ? '\n\n' : '') + data.report + '\n'
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
@@ -1427,14 +1455,14 @@ async function handleOpSend() {
             thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
-            msg.content += `\n\n---\n🔄 ${data.message || '第' + data.round + '次修复尝试'}\n`
+            msg.content += `\n\n---\n🔄 ${data.message || '开始修复...'}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改尝试'} ───\n`
+            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
           } else if (data.type === 'give_up') {
             msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
           } else if (data.type === 'fatal') {
@@ -1741,6 +1769,14 @@ onMounted(() => {
     font-size: 12px;
     z-index: 1;
   }
+  .msg-copy-btn {
+    padding: 2px 4px;
+    font-size: 12px;
+    color: #909399;
+    &:hover { color: #409eff; }
+  }
+  .debug-msg-user .msg-copy-btn { margin-left: 8px; vertical-align: middle; }
+  .thinking-header .msg-copy-btn { margin-left: auto; }
   .debug-result-error {
     padding: 6px 10px;
     pre {

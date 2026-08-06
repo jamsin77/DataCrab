@@ -1159,7 +1159,7 @@ async def debug_operator_chat(
 
     history = []
     for h in (request.history or [])[-10:]:
-        history.append({"role": h.get("role", "user"), "content": h.get("content", "")[:500]})
+        history.append({"role": h.get("role", "user"), "content": h.get("content", "")})
 
     user_msg = request.message
     if user_ctx or last_result or last_error:

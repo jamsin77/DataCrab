@@ -614,6 +614,26 @@
       "parameters": {},
       "stdout_preview": "[INFO] 通过名称找到数据源: 文物库 -> 3c55f752-191c-46c4-a5a9-1c959c3438bc\n[INFO] 总数据量: 5296 行\n[INFO] 列名: ['batch', 'classification', 'name', 'era', 'address', 'remark', 'ID', 'timestamp']\n[INFO] 在所有列中搜索关键词: ['归并'",
       "context_summary": "工具: run_script\nAI输出: 现在让我查看实际的表数据，以了解列名和“分类”列的值："
+    },
+    {
+      "timestamp": "2026-08-06T14:20:12.215611",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到数据源: 3c55",
+      "parameters": {},
+      "stdout_preview": "[SkillRunner] resolve datasource failed: timed out",
+      "context_summary": "工具: run_script\nAI输出: 现在运行脚本验证修复效果："
+    },
+    {
+      "timestamp": "2026-08-06T14:20:29.233916",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到数据源: 文物列表",
+      "parameters": {},
+      "stdout_preview": "[SkillRunner] resolve datasource failed: timed out",
+      "context_summary": "工具: run_script\nAI输出: 数据源ID不完整，需要用名称查找。用户提到数据源名称是\"文物列表\"，让我用名称试一下："
     }
   ],
   "positive": [
@@ -880,6 +900,20 @@
     },
     {
       "timestamp": "2026-08-06T09:46:30.881585",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-08-06T14:24:39.450121",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-08-06T14:35:27.743454",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},

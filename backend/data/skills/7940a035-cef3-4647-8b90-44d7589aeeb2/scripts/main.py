@@ -247,15 +247,40 @@ def main(input_data=None, **kwargs):
             else:
                 log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
         elif 'contains' in filter_condition:
-            parts = filter_condition.split('contains', 1)
-            col = parts[0].strip()
-            val = parts[1].strip()
-            if col in df.columns:
-                vals = [v.strip() for v in val.split('|')]
-                source_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
-                filter_used = True
+            # 支持 "col contains val1 or col contains val2" 语法
+            # 也支持 "col contains val1|val2" 语法
+            similar_keywords = ['归并', '合并', '归入', '并入', '合并到', '合并入', '归并入', '并入到']
+
+            if re.search(r'\s+or\s+', filter_condition, re.IGNORECASE):
+                # 解析多个 "col contains val" 子句，用 or 连接
+                clauses = re.split(r'\s+or\s+', filter_condition, flags=re.IGNORECASE)
+                for clause in clauses:
+                    clause = clause.strip()
+                    if 'contains' in clause:
+                        parts = clause.split('contains', 1)
+                        col = parts[0].strip()
+                        val = parts[1].strip()
+                        if col in df.columns:
+                            # "类似语义" 展开为同义关键词列表
+                            if '类似语义' in val:
+                                vals = similar_keywords
+                            else:
+                                vals = [v.strip() for v in val.split('|')]
+                            col_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
+                            source_mask = source_mask | col_mask
+                            filter_used = True
+                        else:
+                            log("warn", f"筛选列 '{col}' 不存在")
             else:
-                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+                parts = filter_condition.split('contains', 1)
+                col = parts[0].strip()
+                val = parts[1].strip()
+                if col in df.columns:
+                    vals = [v.strip() for v in val.split('|')]
+                    source_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
+                    filter_used = True
+                else:
+                    log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
 
     if not filter_used:
         # 关键词搜索：在所有文本列中搜索归并/合并相关关键词

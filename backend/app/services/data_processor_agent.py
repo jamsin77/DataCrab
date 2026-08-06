@@ -70,29 +70,12 @@ DataCrab 只能处理用户数据，绝不能修改平台自身。
 - delete_llm_adapter：用户说"删除 Provider"时调用，传入 provider_name
 """
 
-# 调试模式工具（modify_script + run_script + modify_and_run）
-MODIFY_SCRIPT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "modify_script",
-        "description": "修改当前调试的技能/脚本（不执行）。提供修改后的函数代码（可含多个 def 定义），系统自动合并到现有脚本（同名函数替换，新函数自动插入 if __name__ 之前）并做语法检查。技能调试时若需更新参数规范/描述等技能元信息，可通过 skill_md 一并提供更新后的完整 SKILL.md 全文，系统会同步写入。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "code": {"type": "string", "description": "修改后的函数代码（可含一个或多个 def 定义；同名函数替换，新函数自动插入 if __name__ 之前）"},
-                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。当需要新增/修改参数规范、描述等技能元信息时提供。修改函数签名（增减参数）时务必同步更新此处的参数规范表。算子/流程调试无需此参数。"},
-            },
-            "required": ["code"],
-        },
-    },
-}
-
+# 调试模式工具（对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep）
 RUN_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "run_script",
-        "description": "运行当前调试的技能/脚本（在沙箱中执行），返回执行结果。\n\n用法：\n- parameters 是业务参数（数据源名、表名、策略等），须符合 SKILL.md 参数规范\n- 必选参数不可缺失，系统会校验并告警\n- 返回执行结果：成功返回 stdout + result，失败返回错误信息 + traceback\n- 输出超过限制时会截断，关键错误信息保留\n- 脚本执行超时（300秒）不是 bug——说明运行时间过长，修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发），不是找逻辑 bug\n- edit_script 修改后调 run_script 验证修复是否正确\n\n场景：\n- 修改后验证：edit_script 改完 → run_script 跑一遍看结果\n- 复现问题：用原始参数 run_script 看错误是否还在",
+        "description": "运行当前调试的技能/脚本（在沙箱中执行），返回执行结果。\n\n用法：\n- parameters 是业务参数（数据源名、表名、策略等），须符合 SKILL.md 参数规范\n- 必选参数不可缺失，系统会校验并告警\n- 返回执行结果：成功返回 stdout + result，失败返回错误信息 + traceback\n- 成功时 stdout 过长会截断（如打印大量数据行）；失败时错误信息和 traceback 完整保留\n- 脚本执行超时（300秒）不是 bug——说明运行时间过长，修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发），不是找逻辑 bug\n- edit_script 修改后调 run_script 验证修复是否正确\n\n场景：\n- 修改后验证：edit_script 改完 → run_script 跑一遍看结果\n- 复现问题：用原始参数 run_script 看错误是否还在",
         "parameters": {
             "type": "object",
             "properties": {
@@ -104,29 +87,11 @@ RUN_SCRIPT_TOOL = {
     },
 }
 
-MODIFY_AND_RUN_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "modify_and_run",
-        "description": "修改技能/脚本并立即执行（推荐优先使用）。一步完成：合并代码（+ 可选更新 SKILL.md）→ 语法检查 → 执行验证。比分别调用 modify_script + run_script 更高效，节省一轮对话。支持一次输出多个函数（同名替换，新函数自动插入 if __name__ 之前）。技能调试时可通过 skill_md 同步更新技能规范。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "code": {"type": "string", "description": "修改后的函数代码（可含一个或多个 def 定义；同名函数替换，新函数自动插入 if __name__ 之前）"},
-                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。需要新增/修改参数规范、描述等技能元信息时提供。算子/流程调试无需此参数。"},
-                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
-            },
-            "required": ["code"],
-        },
-    },
-}
-
 EDIT_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "edit_script",
-        "description": "精确字符串替换，修改脚本（不执行）。提供 old_string 和 new_string，系统精确定位并替换。\n\n用法：\n- 修改前必须先调 read_script 查看逐字内容，获取精确的 old_string\n- old_string 必须逐字匹配（包括缩进、空格、注释），不能凭记忆编写\n- old_string 在脚本中必须唯一；不唯一时多带几行上下文使其唯一\n- old_string 未找到时会报错——检查缩进或先 read_script 确认\n- old_string 多次匹配时会报错——多带上下文行使其唯一\n- 保持 new_string 的缩进与周围代码一致\n- 适合小修改（改几行/改逻辑）。大范围重写（整函数/多函数）用 modify_and_run\n\n场景：\n- 修复 bug：read_script 看到问题代码 → edit_script 替换错误逻辑\n- 调整参数：edit_script 改默认值或策略",
+        "description": "精确字符串替换，修改脚本。提供 old_string 和 new_string，系统精确定位并替换。\n\n用法：\n- 修改前必须先调 read_script 查看逐字内容，获取精确的 old_string\n- old_string 必须逐字匹配（包括缩进、空格、注释），不能凭记忆编写\n- old_string 在脚本中必须唯一；不唯一时多带几行上下文使其唯一\n- old_string 未找到或多次匹配时会报错——多带上下文行使其唯一\n- 保持 new_string 的缩进与周围代码一致",
         "parameters": {
             "type": "object",
             "properties": {
@@ -140,30 +105,11 @@ EDIT_SCRIPT_TOOL = {
     },
 }
 
-EDIT_AND_RUN_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "edit_and_run",
-        "description": "行级补丁修改脚本并立即执行（小修改首选，推荐优先使用）。一步完成：精确补丁 → 语法检查 → 执行验证。比 modify_and_run 更省 token（只输出改动片段，不重写整函数，不会截断）。old_string 必须逐字唯一匹配；不匹配会报错，此时先调 read_script 查看逐字内容再重试。大范围重写（整函数/多函数）才用 modify_and_run。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "old_string": {"type": "string", "description": "脚本中要被替换的原文片段（逐字复制，必须唯一匹配）"},
-                "new_string": {"type": "string", "description": "替换后的新内容（保持正确缩进）"},
-                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
-                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。"},
-            },
-            "required": ["old_string", "new_string"],
-        },
-    },
-}
-
 READ_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "read_script",
-        "description": "读取代码的逐字内容（带行号）。\n\n用法：\n- 默认返回前 2000 行或 50KB（先到先限），大文件会截断\n- 大文件先用 grep_script 搜关键词定位行号，再用 offset/limit 只读相关行\n- offset 是起始行号（1-indexed），limit 是读取行数\n- 避免反复读小片段（如 10 行），需要更多上下文时读大窗口（如 30-50 行）\n- 内容格式为 \"L行号: 代码\"，行号可用于 edit_script 的定位\n- scope='script'（默认）读当前调试脚本；scope='platform' 读平台源码\n- function_name 可只读指定函数（如 function_name=\"_write_result\"）\n- 行级补丁前调用获取精确 old_string（逐字复制，不要凭记忆）\n\n场景：\n- grep 定位到行号后，read_script(offset=行号, limit=30) 读上下文\n- edit_script 前读取要修改的代码片段，获取精确的 old_string",
+        "description": "读取代码的逐字内容（带行号）。\n\n用法：\n- 默认返回前 2000 行，大文件用 offset 翻页读取后续内容\n- 避免反复读小片段（70 行以下），需要更多上下文时读更大的窗口\n- 内容格式为 \"L行号: 代码\"，行号可用于 edit_script 的定位\n- function_name 可只读指定函数（如 function_name=\"_write_result\"）\n- 行级补丁前调用获取精确 old_string（逐字复制，不要凭记忆）\n- 可同时读取多个文件/函数，并行调用\n- 先读脚本本身（scope=script）定位 bug，确认脚本逻辑无误后再查平台源码（scope=platform）",
         "parameters": {
             "type": "object",
             "properties": {
@@ -183,7 +129,7 @@ GREP_SCRIPT_TOOL = {
     "type": "function",
     "function": {
         "name": "grep_script",
-        "description": "在代码中搜索关键词或正则表达式，返回匹配行+行号+上下文。\n\n用法：\n- pattern 是正则表达式（默认大小写不敏感），如 \"write_table_data\" 或 \"batch.*append\"\n- 返回每个匹配的行号和内容，附带上下文行（默认 3 行）\n- 拿到行号后用 read_script(offset=行号, limit=20) 读取上下文\n- scope='script'（默认）搜当前调试脚本；scope='platform' 搜平台源码\n- 搜平台源码时用 file_filter 限定文件（如 \"connectors.py\"）\n\n场景：\n- 定位 bug：grep \"raise|except|write_table_data|batch\" 找写入/异常相关代码\n- 找函数定义：grep \"def _write_result\" 定位函数行号\n- 找变量引用：grep \"if_table_exists\" 看哪些地方用了这个参数",
+        "description": "在代码中搜索关键词或正则表达式，返回匹配行+行号+上下文。\n\n用法：\n- pattern 是正则表达式（默认大小写不敏感），如 \"write_table_data\" 或 \"batch.*append\"\n- 返回每个匹配的行号和内容，附带上下文行（默认 3 行）\n- 搜平台源码时用 file_filter 限定文件（如 \"connectors.py\"）",
         "parameters": {
             "type": "object",
             "properties": {
@@ -200,7 +146,7 @@ GREP_SCRIPT_TOOL = {
     },
 }
 
-DEBUG_TOOLS = [MODIFY_SCRIPT_TOOL, RUN_SCRIPT_TOOL, MODIFY_AND_RUN_TOOL, EDIT_SCRIPT_TOOL, EDIT_AND_RUN_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
+DEBUG_TOOLS = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
 
 # 自定义扩展工具（save_connector + save_llm_adapter）
 
@@ -331,7 +277,7 @@ SKILL_DEBUG_EXTRA = """
 
 ## 技能级操作说明（你正在调试技能，不是孤立脚本）
 技能 = SKILL.md 规范（参数定义/描述/处理类型）+ scripts/main.py 脚本。你的修改和运行都应面向技能整体：
-- **修改技能**：通过 `code` 修改脚本函数（函数级合并）；若需新增/修改参数规范、描述等技能元信息，通过 `skill_md` 提供**更新后的完整 SKILL.md 全文**，系统会一并写入。两者可在同一次 modify_and_run 调用中同时提供。
+- **修改技能**：用 edit_script 修改脚本（行级补丁）；若需新增/修改参数规范、描述等技能元信息，通过 `skill_md` 提供**更新后的完整 SKILL.md 全文**，系统会一并写入。
 - **运行技能**：`run_script` 的 parameters 必须符合 SKILL.md 参数规范表（必选参数不可缺失，系统会校验并告警）。
 - **保持一致**：修改函数签名（增减参数）时，务必同步更新 SKILL.md 的参数规范表，使脚本与技能规范一致。
 - SKILL.md 全文已在下方展示，需要修改时输出完整新版本到 skill_md 参数。
@@ -423,7 +369,7 @@ class DataProcessorAgent(BaseAgent):
         message: AgentMessage,
         context: Dict[str, Any],
     ) -> AsyncGenerator[Dict, None]:
-        # 调试模式：分派到 run_debug()，走流式工具调用 + modify_script/run_script
+        # 调试模式：分派到 run_debug()，走流式工具调用 + edit_script/run_script
         if context.get("debug_mode"):
             async for event in self.run_debug(message, context):
                 yield event
@@ -762,7 +708,7 @@ class DataProcessorAgent(BaseAgent):
     async def _finalize_script_change(self, merged: str, current: str, script_name: str,
                                        arguments: dict, db: AsyncSession, context: Dict) -> str:
         """持久化合并后的脚本（operator/pipeline/skill）+ skill_md + AST 语法检查 + diff。
-        modify_script 与 edit_script 共用此方法，返回 JSON 结果字符串。"""
+        edit_script 共用此方法，返回 JSON 结果字符串。"""
         context["debug_script_content"] = merged
 
         # 写入对应存储
@@ -811,16 +757,16 @@ class DataProcessorAgent(BaseAgent):
                 context["debug_skill_md_full"] = _new_md
                 context["debug_skill_md"] = _new_md[:1200]
                 _skill_md_updated = True
-                logger.info(f"debug modify_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
+                logger.info(f"debug edit_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
 
-        logger.info(f"debug modify_script: {script_name} 已更新 ({len(merged)} 字符)")
+        logger.info(f"debug edit_script: {script_name} 已更新 ({len(merged)} 字符)")
 
         # AST 语法预检
         import ast as _ast
         try:
             _ast.parse(merged)
         except SyntaxError as _se:
-            logger.warning(f"modify_script 语法错误: {_se}")
+            logger.warning(f"edit_script 语法错误: {_se}")
             return json.dumps({
                 "success": False,
                 "error": f"语法错误（第{_se.lineno}行）: {_se.msg}",
@@ -840,22 +786,6 @@ class DataProcessorAgent(BaseAgent):
         logger.info(f"DataProcessor执行工具: {name}")
 
         # ---- 调试模式工具 ----
-        if name == "modify_script":
-            if not context.get("_script_has_been_read"):
-                return json.dumps({"success": False, "error": "必须先调用 read_script 查看脚本内容，再修改。"}, ensure_ascii=False)
-            code = arguments.get("code", "")
-            if not code:
-                return json.dumps({"success": False, "error": "缺少 code"})
-            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            try:
-                from app.services.operator_parser import apply_partial_code
-                current = context.get("debug_script_content", "")
-                merged = apply_partial_code(current, code)
-                return await self._finalize_script_change(merged, current, script_name, arguments, db, context)
-            except Exception as e:
-                logger.warning(f"modify_script 失败: {e}")
-                return json.dumps({"success": False, "error": str(e)})
-
         if name == "edit_script":
             if not context.get("_script_has_been_read"):
                 return json.dumps({"success": False, "error": "必须先调用 read_script 查看脚本内容，再修改。"}, ensure_ascii=False)
@@ -928,7 +858,7 @@ class DataProcessorAgent(BaseAgent):
             function_name = arguments.get("function_name")
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 0))
-            # 标记脚本已读（edit_script/modify_script 前必须先 read）
+            # 标记脚本已读（edit_script 前必须先 read）
             context["_script_has_been_read"] = True
 
             if function_name:
@@ -954,10 +884,9 @@ class DataProcessorAgent(BaseAgent):
                                                "shown_lines": e - s}, ensure_ascii=False)
                     return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
                 except SyntaxError as _se:
-                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
+                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。用 edit_script 修复语法。"}, ensure_ascii=False)
             # 默认返回前 2000 行（对齐 OpenCode Read），传 offset/limit 读指定范围
             _DEFAULT_READ_CAP = 2000
-            _MAX_READ_BYTES = 50 * 1024  # 50KB 硬 cap（对齐 OpenCode），防止大文件全文灌入 context
             all_lines = current.splitlines()
             _total = len(all_lines)
             if offset > 0 or limit > 0:
@@ -966,26 +895,12 @@ class DataProcessorAgent(BaseAgent):
             else:
                 start = 0
                 end = min(_total, _DEFAULT_READ_CAP)
-            # 50KB 硬 cap：按行累加，超了就截断
-            _bytes = 0
-            _cut = end
-            for i in range(start, end):
-                _line_bytes = len(all_lines[i].encode("utf-8")) + len(f"L{i+1}: \n".encode("utf-8"))
-                if _bytes + _line_bytes > _MAX_READ_BYTES:
-                    _cut = i
-                    break
-                _bytes += _line_bytes
-            _truncated_by_bytes = _cut < end
-            end = _cut
             numbered = "\n".join(f"L{i+1}: {all_lines[i]}" for i in range(start, end))
             result = {"success": True, "script_name": script_name, "offset": start + 1,
                       "limit": end - start, "total_lines": _total, "content": numbered}
             if end < _total:
                 result["has_more"] = True
-                if _truncated_by_bytes:
-                    result["hint"] = f"输出达 50KB 上限，只显示到 L{end}。用 grep_script 搜关键词定位行号，再 read_script(offset=行号, limit=20) 只读相关行"
-                else:
-                    result["hint"] = f"还有 {_total - end} 行未显示，用 grep_script 搜关键词定位行号，再 read_script(offset=行号, limit=20) 只读相关行"
+                result["hint"] = f"还有 {_total - end} 行未显示，用 offset={end + 1} 翻页读取后续内容"
             return json.dumps(result, ensure_ascii=False)
 
         if name == "grep_script":
@@ -1057,7 +972,7 @@ class DataProcessorAgent(BaseAgent):
                     search_lines = all_lines[func_start - 1: func_end]
                     line_offset = func_start
                 except SyntaxError as _se:
-                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。可先用 modify_script 整函数替换修复语法。"}, ensure_ascii=False)
+                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。用 edit_script 修复语法。"}, ensure_ascii=False)
             else:
                 search_lines = all_lines
                 line_offset = 1
@@ -1186,62 +1101,6 @@ class DataProcessorAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"run_script 失败: {e}")
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-
-        if name == "modify_and_run":
-            # 合并工具：modify_script + run_script 一步到位
-            _modify_result = await self._execute_tool("modify_script", {
-                "code": arguments.get("code", ""),
-                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
-                "skill_md": arguments.get("skill_md", ""),
-            }, db, user_id, context)
-            try:
-                _mdata = json.loads(_modify_result)
-            except json.JSONDecodeError:
-                _mdata = {"success": False, "error": "modify 结果解析失败"}
-            if not _mdata.get("success"):
-                # 修改失败（含语法错误）→ 直接返回，不执行
-                return _modify_result
-            # 修改成功 → 执行
-            _run_result = await self._execute_tool("run_script", {
-                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
-                "parameters": arguments.get("parameters", {}),
-            }, db, user_id, context)
-            try:
-                _rdata = json.loads(_run_result)
-            except json.JSONDecodeError:
-                _rdata = {"success": False, "error": "run 结果解析失败"}
-            # 合并结果
-            _rdata["modify"] = _mdata
-            _rdata["script_name"] = _mdata.get("script_name", "main.py")
-            return json.dumps(_rdata, ensure_ascii=False, default=str)
-
-        if name == "edit_and_run":
-            # 合并工具：edit_script + run_script 一步到位（行级补丁版，小修改首选）
-            _edit_result = await self._execute_tool("edit_script", {
-                "old_string": arguments.get("old_string", ""),
-                "new_string": arguments.get("new_string", ""),
-                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
-                "skill_md": arguments.get("skill_md", ""),
-            }, db, user_id, context)
-            try:
-                _mdata = json.loads(_edit_result)
-            except json.JSONDecodeError:
-                _mdata = {"success": False, "error": "edit 结果解析失败"}
-            if not _mdata.get("success"):
-                # 补丁失败（未找到/不唯一/语法错误）→ 直接返回，不执行
-                return _edit_result
-            # 补丁成功 → 执行
-            _run_result = await self._execute_tool("run_script", {
-                "script_name": arguments.get("script_name") or context.get("debug_script_name", "main.py"),
-                "parameters": arguments.get("parameters", {}),
-            }, db, user_id, context)
-            try:
-                _rdata = json.loads(_run_result)
-            except json.JSONDecodeError:
-                _rdata = {"success": False, "error": "run 结果解析失败"}
-            _rdata["modify"] = _mdata
-            _rdata["script_name"] = _mdata.get("script_name", "main.py")
-            return json.dumps(_rdata, ensure_ascii=False, default=str)
 
         # ---- 自定义扩展工具 ----
         if name == "save_connector":
@@ -1572,7 +1431,7 @@ class DataProcessorAgent(BaseAgent):
 
         与 run() 的区别：
         - 用 chat_stream_with_tools_and_thinking()（流式推理 + 工具调用）
-        - 额外工具：modify_script / run_script
+        - 额外工具：edit_script / run_script
         - 自愈循环：run_script 失败时 LLM 自动看到错误并重试
         - 执行成功后 RunTime 自动交接 DataInspector
         """
@@ -1639,7 +1498,8 @@ class DataProcessorAgent(BaseAgent):
         # 调试模式工具（对齐 OpenCode：5 个工具，职责清晰）
         # read_script=Read, grep_script=Grep, edit_script=Edit, run_script=Bash
         # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
-        # edit_and_run/modify_and_run 已删除：先 edit_script 改，再 run_script 跑
+        # 4 个工具对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep
+        # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
         debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
@@ -1787,7 +1647,7 @@ class DataProcessorAgent(BaseAgent):
 
             for tc in tool_calls:
                 _tn = tc["function"]["name"]
-                if _tn in ("run_script", "modify_and_run", "edit_and_run"):
+                if _tn == "run_script":
                     yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
                     break
 
@@ -1807,7 +1667,7 @@ class DataProcessorAgent(BaseAgent):
                 # tool 消息精简（对齐 OpenCode：tool result 只留关键信息，不塞 stdout/整脚本）
                 if tool_name in ("read_script", "grep_script"):
                     _tool_content = r["content"]
-                elif tool_name in ("run_script", "modify_and_run", "edit_and_run"):
+                elif tool_name == "run_script":
                     _tool_content = _slim_run_script_result(r["content"])
                 else:
                     _tool_content = truncate_tool_result(r["content"])
@@ -1882,7 +1742,7 @@ class DataProcessorAgent(BaseAgent):
                         if _mdata.get("skill_md_updated"):
                             yield {"type": "skill_md_updated"}
 
-                if tool_name in ("run_script", "modify_and_run", "edit_and_run"):
+                if tool_name == "run_script":
                     try:
                         rdata = json.loads(r["content"])
                     except json.JSONDecodeError as e:

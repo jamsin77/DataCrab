@@ -834,17 +834,8 @@ async def debug_skill_chat(
     from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message, stream_agent_events_sse
     runtime = ensure_agent_runtime()
 
-    # 智能选择历史：首条 + 末尾3条 + 中间用户消息优先
-    _raw_history = request.history
-    _selected = []
-    if _raw_history:
-        _selected.append(_raw_history[0])  # 首条（原始需求）
-        _middle = _raw_history[1:-3] if len(_raw_history) > 4 else []
-        _user_middle = [m for m in _middle if m.get("role") != "assistant"][:2]
-        _selected.extend(_user_middle)
-        if len(_raw_history) > 1:
-            _selected.extend(_raw_history[-3:])  # 末尾3条
-    history = [{"role": m.get("role", "user"), "content": m.get("content", "")[:500]} for m in _selected]
+    # history 已由前端净化（llmContent 只含 LLM 输出），直接透传，不再截断/挑选
+    history = request.history or []
 
     context = build_debug_context(
         db=db,

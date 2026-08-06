@@ -2295,6 +2295,13 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'migrated_rows': 5296, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳'], 'target_table': '全国重点文物保护单位', 'table_remark': 'national_key_cultural_relic_protection_units', 'co"
+    },
+    {
+      "timestamp": "2026-08-06T20:27:38.370150",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '编号', '时间戳', '地级市'], 'target_table': '全国重点文物保护单位合并', 'table_remark': 'national_key_cultural_relic_protection_un"
     }
   ],
   "lessons": "",
