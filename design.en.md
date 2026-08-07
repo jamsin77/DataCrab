@@ -4436,3 +4436,101 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 **Verification**: `app.main` fully loads 184 routes; `LLMProvider`/`UserLLMConfig` table columns confirmed no fast_model; `_handle_get_llm_config` source confirmed no fast_model reference; `llm_manager.fast_model` property confirmed absent.
 
 **Relationship to prior rounds**: Completes the cleanup Round 18 left unfinished (Round 18 only deleted the llm_manager property; DB/schema/endpoint/frontend residuals were not cleaned). `default_model` is not in scope — seed providers still write it, registry still reads it, as the Provider-recommended deep-model name (not a dead field). settings.LLM_FAST_MODEL retention is a backward-compat compromise (deleting it would break existing .env deployments); business code no longer reads it.
+
+### 11.31 Round 20: Video Processing — Keyframe Extraction + Metadata Probe
+
+**Core need**: User requested "extract key scenes and information from a video." Aligned with the existing `llm_vision` image-processing pipeline, added video processing — metadata extraction + keyframe extraction to images (passable to `llm_vision` for content understanding).
+
+| Improvement | File | Description |
+|------|------|------|
+| **video_utils.py shared module** | video_utils.py (new) | `probe_video` (ffprobe-first, opencv fallback) + `extract_keyframes` (ffmpeg scene-detection-first, opencv equal-interval fallback); frame images PIL-compressed to 1024px + JPEG quality 85 |
+| **internal/video/info endpoint** | datasource.py | Video metadata extraction endpoint; skill sandbox subprocess calls via HTTP |
+| **internal/video/keyframes endpoint** | datasource.py | Video keyframe extraction endpoint (path validation + output_dir authorization) |
+| **extract_video_info / extract_keyframes sandbox functions** | skill_runner.py + sandbox_ns.py | Skill sandbox (HTTP) + operator sandbox (direct); returns metadata / keyframe list; frame images passable to llm_vision |
+| **Docs + capability table + deps** | prompt_docs.py + tool_guidance.py + requirements.txt | SANDBOX_TOOLS_DOC + PLATFORM_CONVENTIONS_DOC + available_functions + opencv-python-headless + pillow |
+
+### 11.32 Round 21: Model Selection Simplified + Endpoint Pruning + Chat Export + Streaming Error Recovery + Data Update Time Tracking + StuckDetector Enhancement
+
+**Core insight**: Round 18's `pick_model_async` (LLM picks model) was complex and cost an extra LLM call; simple scenarios don't need to ask the LLM. This round does subtraction: simplify model selection, delete redundant endpoints, delete low-value mechanisms, and add chat export + streaming error recovery.
+
+| Improvement | File | Description |
+|------|------|------|
+| **Model selection simplified** | llm.py + config.py | Deleted `pick_model_async`/`pick_model`; replaced with `_default` (configured deep model) + `_flash` (flash-named model) properties |
+| **skill.py streaming endpoints pruned** | skill.py | Deleted `run_skill_stream` + `run_skill_nl_stream` (-624 lines) |
+| **data_processor_agent pruned** | data_processor_agent.py | Deleted `_analyze_error` + `_save_session_log` + `_compress_tool_result`; deleted debug-loop context compaction |
+| **StuckDetector enhanced** | agent_utils.py | Added "investigate-only" detection (5 consecutive read/grep rounds → prompt) + total-round cap (30 → prompt) |
+| **Streaming error recovery** | chat.py | On streaming error, save partial content + error to DB (prevents reply disappearing on refresh) |
+| **Chat export** | ChatView.vue + chat.ts | Export conversation as Markdown (with reasoning fold-out, model, timestamp) |
+| **data_updated_at tracking** | datasource.py + metadata.py + connectors.py + models/datasource.py | TableMetadata new `data_updated_at` column (data-source-side real update time) |
+
+**Verification**: `app.main` loads 183 routes; 134 tests pass; no `pick_model`/`run_skill_stream`/`run_skill_nl_stream` residual references.
+
+### 11.33 Round 22: Debug Chat Streaming + Execution Progress Archiving + Inspector Diagnostic Logs + StuckDetector Tightened + About Page
+
+**Core insight**: Main-chat loop used non-streaming `chat_with_tools` (long wait, no feedback); debug execution progress was cleared on phase switch (lost); Inspector handoff trigger was unobservable; StuckDetector thresholds too loose.
+
+| Improvement | File | Description |
+|------|------|------|
+| **Main-chat streaming** | data_processor_agent.py | `run()` from non-streaming → streaming `chat_stream_with_tools_and_thinking`, real-time yield model/thinking/content |
+| **Execution progress archiving** | SkillView.vue | `archiveExecutingMsg`: on phase switch, freeze executingMsgs to `msg.stdouts` (not merged into content) |
+| **Inspector + handoff diagnostic logs** | data_inspector_agent.py + data_processor_agent.py | `[Inspector-DEBUG]` / `[handoff检查]` logs; main.py log filter extended |
+| **StuckDetector tightened** | agent_utils.py | `investigate_threshold` 5→3, `max_total_rounds` 30→15 |
+| **tool_result expansion + done conclusion** | chat.py | content truncation 200→2000; done event extracts result.content |
+| **Internal API address configurable** | skill_runner.py | `_API_BASE = os.environ.get("DATACRAB_API_BASE", ...)`; 13 hardcoded replacements |
+| **About page** | AboutView.vue (new) + ConfigView.vue | Project intro, core features, tech stack, open-source link |
+| **semantic-classify place-name mapping** | data/skills/26d263ab | system_prompt rewritten; 15 historical place-name mappings + autonomous-region/municipality rules |
+
+### 11.34 Round 23: Handoff Moved to RunTime + skill_runner Merged + StuckDetector Simplified + Non-Streaming Endpoint Deleted
+
+**Core insight**: Handoff was initiated by Agent `yield {"type":"handoff"}` — Agent needed to be aware of handoff and decide when to hand off, violating the Orchestrator-Worker principle (Agent should focus on tasks; flow orchestration is RunTime's job). skill_runner had 3 overlapping functions. `POST /messages` non-streaming endpoint overlapped with streaming. This round does architectural subtraction.
+
+| Improvement | File | Description |
+|------|------|------|
+| **Handoff moved to RunTime** | multi_agent.py | `AgentRuntime.run()` rewritten: from Agent yield handoff → RunTime intercepts `done` event, calls `_decide_handoff()` to decide; new `_extract_issues()` extracts error/critical/fatal from check results |
+| **Deleted handoff tools** | data_processor_agent.py + data_inspector_agent.py | Both Agents deleted handoff tool schema + `_execute_tool` branches + `run()` `_handoff` signal parsing; Agents are unaware of handoff |
+| **Prefix Cache staticization** | data_processor_agent.py | `build_system_prompt()` process-level memoize; datasource_context moved from system prompt → user message prefix |
+| **skill_runner 3-function merge** | skill_runner.py | `run_skill_script`/`by_content`/`streaming_by_content` merged into `run_skill_script_streaming` (supports skill_path or script_content); net -685 lines |
+| **_stream_execute shared core** | skill_runner.py | Dual-layer timeout (idle no-output + hard cap total) + marker-line parsing + error classification; no longer filters `[WARN]` lines |
+| **Deleted POST /messages** | chat.py + chat.ts | Deleted non-streaming endpoint (~95 lines) + frontend `sendMessage()` |
+| **StuckDetector simplified** | agent_utils.py | Deleted "investigate-only" detection (`INVESTIGATION_TOOLS`/`FIX_TOOLS` all deleted); only idle detection + total-round cap retained |
+| **Compaction improvements** | agent_utils.py + chat.py | `extract_identifiers_from_messages` enhanced (extracts from tool_calls.arguments); `compact_messages` old-message truncation 500→1000 + summary role system→user |
+| **Cross-handoff context persistence** | data_processor_agent.py | Inspector handoff-back restores tool-call history from `context["_processor_local_messages"]` |
+| **format_report tabularized** | inspector_tools.py | Column overview + issue list from plain text → Markdown tables |
+| **SkillView SSE shared** | SkillView.vue | New `processDebugSSEEvent()` + `readDebugSSEStream()` shared functions; 3 handlers replaced |
+
+**Relationship to prior rounds**: Round 17 "delete handoff_to_inspector tool" only deleted the tool schema but Agent still initiated handoff via yield; this round completely moves handoff decision to RunTime (Agent is completely unaware). Round 13's "investigate-only" detector is deleted again (architectural decision: investigation is legitimate behavior, should not be punished).
+
+### 11.35 Round 24: System Prompt Simplified + Debug Display Aligned with OpenCode + soul.md Compressed + tool_guidance Split
+
+**Core insight**: soul.md was 95 lines verbose; tool_guidance injected debug tool table into main chat (main chat doesn't need edit_script/run_script); debug tool calls and results were mixed in content (unlike OpenCode's independent cards); frontend history passed tool cards to backend (wasted tokens + interfered with LLM).
+
+| Improvement | File | Description |
+|------|------|------|
+| **soul.md compressed 95→30 lines** | soul.md | Deleted verbose behavior-rule sections (safety red lines moved to instructions); kept core: identity, capability list, style |
+| **DATA_PROCESSOR_INSTRUCTIONS rewritten** | data_processor_agent.py | Added "safety red lines" section; "work guidelines" 6→5; "extended capabilities" sections → 4 one-liners |
+| **tool_guidance main/debug split** | tool_guidance.py | `TOOL_CAPABILITY_TABLE` split into `_MAIN_TOOL_CAPABILITY_TABLE` + `_DEBUG_TOOL_CAPABILITY_TABLE`; main chat doesn't inject debug tool table |
+| **llmContent separation** | SkillView.vue | Message object new `llmContent` field (only LLM output, no tool cards); history extraction uses `m.llmContent ?? m.content` |
+| **tool_action/tool_summary independent events** | data_processor_agent.py + SkillView.vue | Tool calls/results from `yield content` → independent events (not in content); frontend with timestamped cards |
+| **_slim_run_script_result** | data_processor_agent.py | Slim run_script tool result (success: only summary+written_tables; failure: only error+error_type) |
+| **executingMsg lifecycle fix** | chat.ts | `error`/`done`/`content` events clear `msg.executingMsg` (fixes blue-spinner residual) |
+| **Deleted main-chat round event** | data_processor_agent.py | `run()` main chat deleted per-round `yield {"type":"round"}` (avoids "Round N" spinner bothering users) |
+
+### 11.36 Round 25: Debug Tools Pruned to 4 + Inspector Report Independent Event + Frontend Copy Buttons + Dynamic Version + Docker Deployment
+
+**Core insight**: Debug tools pruned from 7 to 4 (edit_script/run_script/read_script/grep_script, fully aligned with OpenCode Grep/Read/Edit/Bash) — edit_script (line-level patch) already covers all modification scenarios; exposing multiple modification tools only confuses the LLM. Inspector report from mixed in content → independent `inspection_report` event. Version from hardcoded → git dynamic. Docker from dev mode → nginx hosting.
+
+| Improvement | File | Description |
+|------|------|------|
+| **Debug tools pruned to 4** | data_processor_agent.py | `DEBUG_TOOLS` from 7 → 4 (`[EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]`); deleted modify_script/modify_and_run/edit_and_run |
+| **Inspector report independent event** | data_inspector_agent.py | `yield content` → `yield {"type":"inspecting"}` + `yield {"type":"inspection_report","report":report}` |
+| **History passthrough purified** | skill.py + operator.py + pipeline.py | Deleted "smart history selection" → direct passthrough `request.history` (frontend already purified with `llmContent`) |
+| **Frontend copy buttons** | SkillView/OperatorView/PipelineView.vue | User messages / reasoning / results / inspection results all get copy buttons |
+| **OperatorView/PipelineView llmContent** | OperatorView.vue + PipelineView.vue | Same as SkillView: `llmContent` field + `tool_action`/`tool_summary`/`inspection_report` event handling |
+| **Dynamic version** | version.py (new) + main.py + config.py | `get_version()`: `YYYY.MM.DD.commit-count` (git log, `@lru_cache` cached); `GET /config/version` endpoint |
+| **Frontend version display** | version.ts (new) + MainLayout.vue + LoginView.vue + AboutView.vue | Pinia store `useVersionStore`; sidebar footer + login page + about page |
+| **Docker nginx hosting** | frontend/Dockerfile + docker-compose.yml + nginx/nginx.conf | Frontend multi-stage build: builder `npm run build` → `nginx:alpine` hosts `dist/`; SPA routing fallback; port 5173→80 |
+| **SSE long-connection support** | nginx/nginx.conf | `proxy_buffering off` + `proxy_read_timeout 300s` + `proxy_cache off` + `proxy_http_version 1.1` |
+| **DATACRAB_API_BASE config** | config.py + .env.example + docker-compose.yml | skill_runner subprocess uses it to access backend API; Docker sets to `http://backend:8000` |
+| **backend_data volume persistence** | docker-compose.yml | backend volumes add `backend_data:/app/data` |
+
+**Relationship to prior rounds**: The line-level patch primitive (edit_script/apply_partial_code) established in Rounds 10-11 becomes the sole modification entry point this round. Round 23's Inspector `check_results` in context for RunTime `_extract_issues` pairs with `inspection_report` independent event for frontend formatting. Round 24's llmContent separation extends to OperatorView/PipelineView.

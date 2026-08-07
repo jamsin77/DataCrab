@@ -533,3 +533,9 @@ async def list_available_models(
         "current_model": settings.OPENAI_MODEL,
         "models": models,
     }
+
+
+@router.get("/version")
+async def get_app_version():
+    """获取应用版本号（无需认证，前端启动时调用）"""
+    return {"version": settings.APP_VERSION}

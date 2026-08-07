@@ -13,19 +13,19 @@ Process data through conversation, accumulate data-processing Skills, form a dat
 
 ## Features
 
-- Conversational data interaction (SSE streaming) + multi-agent collaboration (DataProcessor → DataInspector handoff)
+- Conversational data interaction (SSE streaming) + multi-agent collaboration (DataProcessor → DataInspector, Handoff decided by RunTime)
 - 8 data-source connectors (PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma) + custom connectors (AI-generated code, sandboxed)
 - Full skill/operator/pipeline lifecycle (CRUD + AI generate/debug + self-healing loop + experience library)
 - 7 write-table strategies + scheduling system (Cron/interval/manual + 30s scan worker)
 - Document knowledge base RAG + metadata management (auto technical sync + AI business enrichment)
-- RBAC permissions (user/role/permission, view/use/manage levels)
+- Video processing (keyframe extraction + metadata probe) + RBAC permissions (user/role/permission, view/use/manage levels)
 
 ## Tech Stack
 
 - FastAPI + Uvicorn
 - SQLAlchemy 2.0 (async)
 - pandas / numpy
-- Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible (model auto-selection pick_model_async + multi-model degradation chain + CircuitBreaker)
+- Zhipu GLM / Alibaba Bailian / SiliconFlow / Azure / custom OpenAI-compatible (`_default`/`_flash` dual-model + multi-model degradation chain + CircuitBreaker + vision/embedding by provider)
 - SQLite (development) / PostgreSQL 14+ (production)
 - ChromaDB (knowledge base vector store)
 

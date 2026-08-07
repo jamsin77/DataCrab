@@ -75,3 +75,18 @@ npm run dev
 | `npm run dev:frontend` | 仅启动前端 |
 | `npm run build:frontend` | 构建前端生产包 |
 | `pip install -e ./backend[all]` | 安装可选依赖（知识库 + OBS） |
+
+## Docker 部署
+
+```bash
+docker-compose up -d
+```
+
+- 前端：nginx 托管构建产物（端口 80）
+- 后端：Uvicorn + 数据卷持久化（`backend_data:/app/data`）
+- nginx：反向代理 + SSE 长连接支持（`proxy_buffering off` + `proxy_read_timeout 300s`）
+- `DATACRAB_API_BASE` 环境变量：skill_runner 子进程通过它访问后端 API（Docker 中设为 `http://backend:8000`）
+
+## 版本号
+
+版本号动态生成，格式为 `YYYY.MM.DD.提交次数`（基于 git log），显示在侧边栏底部、登录页和关于页。

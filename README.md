@@ -36,9 +36,10 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 | 智能体 | 职责 | 触发场景 |
 |--------|------|----------|
 | **DataProcessor**（Orchestrator） | 理解用户意图、修改/执行脚本、调度数据处理、交接检查 | 聊天页面 + 技能/算子/流程调试助手 |
-| **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后自主 handoff |
+| **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后 RunTime 自动 handoff |
 
 - **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走 DataProcessor → DataInspector 多智能体流程
+- **Handoff 由 RunTime 决策**：Agent 不感知 handoff 存在，RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决定是否交接（调试模式自动，主对话靠人判断）
 - **Orchestrator-Worker 粒度**：简单操作（edit_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
 - **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用
 - 智能体交接（Handoff）：处理完成自动交接检查，发现问题自动交接修复
@@ -83,7 +84,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 - **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
 - **调试/执行**：在沙盒命名空间中运行算子，注入工具函数（query_table_data、llm_chat 等）
-- **AI 调试助手**：Chat 风格交互式调试，4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；执行成功后 runtime 自动交接 DataInspector 质量检查
+- **AI 调试助手**：Chat 风格交互式调试，4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；执行成功后 RunTime 自动交接 DataInspector 质量检查；Inspector 报告通过独立事件格式化展示
 - **下载**：导出为 `.py` 文件
 - **自我进化经验库**：调试失败自动记录反例、修错后成功采集正例，LLM 归纳经验（常见错误+成功模式）并注入后续生成/修改/调试提示词，越用越聪明
 
@@ -165,7 +166,7 @@ assets/           # 静态资源
 
 - 运行时动态切换模型提供商/密钥/模型
 - 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
-- **模型自动选择**：`pick_model_async` 按任务上下文从可用模型列表中选最合适且最经济的模型（LLM 推断 + 结果缓存）；简单场景（参数推断/对话）规则兜底用 flash 模型不问 LLM；所有 chat 方法 `model=None` 时自动推断
+- **双模型架构**：`_default`（配置的深度模型，用于生成/修改脚本）+ `_flash`（名称含 flash 的快速模型，用于参数推断/对话）；所有 chat 方法用 `self._default`
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
 - 视觉/嵌入模型按 provider 自动选择（GLM→glm-4v-plus/embedding-3 等）；备用模型降级链 + CircuitBreaker 熔断
@@ -182,6 +183,23 @@ assets/           # 静态资源
 
 - MD 可编辑、可恢复默认；后端 `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
 - DataInspector 提示词注入三份库；检查工具确定性执行正则/聚合，问题标注 `STD/DQ/SEC` 编号；语义类由 LLM 判断
+- 检查报告通过 `inspection_report` 独立事件格式化展示（Markdown 表格：列概览 + 问题列表）
+
+### 14. 视频处理能力
+
+- **元数据提取**：`extract_video_info()` 返回时长/分辨率/帧率/编码/码率/总帧数等
+- **关键帧抽取**：`extract_keyframes()` 返回带时间戳的关键帧图片列表，帧图片可直接传给 `llm_vision` 做内容理解
+- ffmpeg 场景检测优先，未安装时回退 opencv 等间隔抽取；帧图片 PIL 压缩 1024px + JPEG quality 85
+
+### 15. 版本号动态生成
+
+- 版本号格式：`YYYY.MM.DD.提交次数`（git log 生成，`@lru_cache` 缓存）
+- 侧边栏底部、登录页、关于页三处显示
+- `GET /config/version` 端点（无需认证）
+
+### 16. 关于页
+
+- 系统设置中新增「关于」tab，展示项目简介、核心特性、技术栈、开源地址
 
 ---
 
@@ -222,7 +240,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，177 条路由）
+│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，183 条路由）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
@@ -242,11 +260,12 @@ DataCrab/
 │   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 8 种数据源连接器
 │   │       ├── shared_tools.py  # 7 个公共工具统一入口（LRU 缓存）
-│   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警等）
-│   │       ├── tool_guidance.py # 工具诚实能力表
+│   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警/压缩等）
+│   │       ├── tool_guidance.py # 工具诚实能力表（主对话/调试拆分）
 │   │       ├── data_harness.py # 非侵入式流程层 Harness（收敛检测+经验采集）
 │   │       ├── experience.py   # 自我进化经验库（正反例+归纳）
-│   │       └── operator_parser.py # Python AST 脚本解析器
+│   │       ├── operator_parser.py # Python AST 脚本解析器
+│   │       └── video_utils.py  # 视频处理（关键帧抽取+元数据提取）
 │   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
 │   ├── src/
@@ -325,7 +344,7 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 
 ## 架构亮点
 
-1. **多智能体协作闭环**：DataProcessor + DataInspector 双智能体，Handoff 机制自动交接，处理+检查形成自愈闭环（Multi-Agent Collaboration）
+1. **多智能体协作闭环**：DataProcessor + DataInspector 双智能体，Handoff 由 RunTime 自动决策（Agent 不感知 handoff），处理+检查形成自愈闭环（Multi-Agent Collaboration）
 2. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
 3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析，Skill 即资产可沉淀可复用
 4. **流程 = Python 主函数**：抛弃 DAG 模型，每个流程就是一个可独立运行的 Python 函数
@@ -334,4 +353,6 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 7. **元数据管理**：技术元数据一键同步 + 业务元数据 AI 补充，统一数据目录
 8. **流式优先架构**：多处端点支持 SSE 流式响应，提供实时反馈
 9. **AST 脚本自省**：Python AST 解析自动提取函数签名和文档，零配置注册算子
-10. **AI 调试助手**：Chat 风格交互式调试，AI 推理过程可视化，执行失败自动反馈错误堆栈给 AI 修复（Loop Engineering 实践）
+10. **AI 调试助手**：Chat 风格交互式调试（4 工具对齐 OpenCode），AI 推理过程可视化，执行失败自动反馈错误堆栈给 AI 修复（Loop Engineering 实践）
+11. **Prefix Cache 优化**：system prompt 进程级 memoize + datasource_context 移出 system → user message，字节稳定命中 GLM context cache，input 成本降 30%+
+12. **Docker 一键部署**：前端多阶段构建 nginx 托管 + SSE 长连接支持 + 数据卷持久化

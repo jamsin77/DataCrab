@@ -10,6 +10,10 @@ from app.core.config import settings
 from app.core.database import engine, Base, async_session
 from app.api.v1.router import api_router
 from app.services.task_runner import start_scheduler, stop_scheduler
+from app.core.version import get_version
+
+# 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
+settings.APP_VERSION = get_version()
 
 logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", ""), rotation="1 MB")
 

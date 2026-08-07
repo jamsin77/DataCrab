@@ -43,6 +43,7 @@
         </el-menu-item>
       </el-menu>
       <div class="sidebar-footer">
+        <span v-if="!isCollapsed && version" class="version-text">v{{ version }}</span>
         <el-button text @click="isCollapsed = !isCollapsed">
           <el-icon><Fold v-if="!isCollapsed" /><Expand v-else /></el-icon>
         </el-button>
@@ -83,15 +84,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useVersionStore } from '@/stores/version'
 import { ChatDotRound, Operation, MagicStick, Share, Timer, Tools, Fold, Expand } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const versionStore = useVersionStore()
 const isCollapsed = ref(false)
+const version = ref('')
+
+onMounted(async () => {
+  version.value = await versionStore.loadVersion()
+})
 
 const currentRoute = computed(() => route.path)
 const pageTitle = computed(() => {
@@ -165,6 +173,13 @@ async function handleUserCommand(command: string) {
     padding: 12px;
     text-align: center;
     border-top: 1px solid #e8e8e8;
+
+    .version-text {
+      display: block;
+      font-size: 12px;
+      color: var(--el-text-color-placeholder);
+      margin-bottom: 4px;
+    }
   }
 }
 

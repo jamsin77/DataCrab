@@ -20,28 +20,29 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | 文件 | 职责 |
 |------|------|
 | `agent.py` | 单 Agent 服务（AgentService），非流式 /chat 端点使用 |
-| `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime / Handoff） |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 4 工具（edit_script/run_script/read_script/grep_script）+ runtime 自动交接 Inspector |
-| `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report）；severity 校正 |
+| `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 4 工具（edit_script/run_script/read_script/grep_script，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）** |
+| `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
 | `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
-| `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、搜索饱和检测、工具结果缓存、上下文压缩（Compaction）** |
-| `tool_guidance.py` | **工具诚实能力表（注入 system prompt）** |
-| `llm.py` | LLM 管理器（模型自动选择 pick_model_async + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选） |
-| `chat.py`（endpoints） | 对话 API：流式响应、上下文压缩、统一路由、数据预览注入 |
+| `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
+| `tool_guidance.py` | **工具诚实能力表——主对话/调试模式拆分（`get_tool_guidance(debug=)`），主对话不注入调试工具表** |
+| `llm.py` | LLM 管理器（`_default`/`_flash` 模型属性 + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选） |
+| `chat.py`（endpoints） | 对话 API：**仅流式端点（非流式 POST /messages 已删）**、上下文压缩（LRU 缓存）、统一路由、数据预览注入 user message |
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex） |
 | `skill_library.py` | 技能向量索引（numpy + 磁盘持久化：.npy + JSON） |
-| `skill_runner.py` | 技能脚本沙箱执行 |
+| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 错误分类 LLM 推断）** |
 | `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
 | `connectors.py` | 数据源连接器（8 种：PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
 | `video_utils.py` | **视频处理工具：`probe_video`（元数据提取，ffprobe 优先回退 opencv）+ `extract_keyframes`（关键帧抽取，ffmpeg 场景检测优先回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85** |
-| `soul.md` | 助手人格与安全红线定义（原 personal.md，rename 对齐「灵魂」语义） |
+| `soul.md` | 助手人格定义（原 personal.md，rename 对齐「灵魂」语义）；安全红线已移至 DATA_PROCESSOR_INSTRUCTIONS |
+| `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-16 个端点文件、共 177 条路由，主要：
+16 个端点文件、共 183 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（28 路由，最多）
@@ -600,6 +601,105 @@ DataProcessorAgent（统一入口）
 **验证**：`app.main` 完整加载 183 路由（删除 2 个流式端点后 -1）；134 测试全通过（修复 `test_read_script_platform_scope` 硬编码行号 → 全文搜索）；无 `pick_model`/`run_skill_stream`/`run_skill_nl_stream` 残留引用（仅 llm.py 注释已清理）。
 
 **与前轮关系**：第十八轮 `pick_model_async` 被本轮 `_default/_flash` 替代——不再问 LLM 选模型（省一次调用），简单场景直接用配置模型。第十三轮删除的"只调查不修改"检测器以更温和形式回归（StuckDetector 内，5 轮阈值 + 仅提示不 give_up + 30 轮总上限兜底）。第八轮 `_compress_tool_result` + 第十六轮调试循环上下文压缩被删除（复杂度高、调试场景消息量有限收益低；主对话 chat.py 的 `_compress_history` 保留不动）。第二十轮视频处理不受影响。
+
+### 第二十二轮（调试对话流式化 + 执行进度归档 + Inspector 诊断日志 + StuckDetector 收紧 + 关于页 + semantic-classify 地名映射）
+
+**核心洞察**：主对话循环用非流式 `chat_with_tools`，用户等待时间长无反馈；调试执行进度在前端切换阶段时被直接清空丢失；Inspector handoff 触发原因不可观测；StuckDetector 阈值过松（5 轮调查 / 30 轮总计）。本轮补齐这些可感知差距。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **主对话循环流式化** | data_processor_agent.py | `run()` 从非流式 `chat_with_tools` → 流式 `chat_stream_with_tools_and_thinking`，实时 yield `model`/`thinking`/`content` 事件（避免长时间无响应）；流式失败时回退非流式 |
+| **执行进度归档** | SkillView.vue | `archiveExecutingMsg(msg)`：阶段切换时把 executingMsgs 固化到 `msg.stdouts`（不拼进 content 保持纯净），替代直接 `clearExecutingMsg` 丢失日志；3 个 handler 全部接入 |
+| **Inspector 报告诊断日志** | data_inspector_agent.py | INSPECT_RESULT / FIX_COMPLETED 分支各加 `logger.info("[Inspector-DEBUG] report_len=... report_preview=...")` |
+| **handoff 诊断日志** | data_processor_agent.py | `run_debug` handoff 触发处加 4 条 `logger.info("[handoff检查] ...")`（written_tables / output_table / debug_max_inspections / 跳过原因） |
+| **SSE 调试日志** | multi_agent.py + main.py | `stream_agent_events_sse` 加 `[SSE-DEBUG]` 日志（event type / agent_switch / done / inspector content）；main.py 日志过滤器扩展匹配 `[SSE-DEBUG]`/`[Inspector-DEBUG]`/`[handoff检查]` |
+| **StuckDetector 收紧** | agent_utils.py | `investigate_threshold` 5→3，`max_total_rounds` 30→15；删除 `_total_rounds >= max` 时的重置（保留计数） |
+| **StuckDetector 强制退出扩展** | data_processor_agent.py | 强制退出条件加 `"只调查" in _stuck_hint`（后于本轮 StuckDetector 收紧，在第二十三轮 Handoff 重构时改回只 `"总轮次上限"`） |
+| **tool_result 扩容** | chat.py | 转发给前端的 content 截断 200→2000 字符 |
+| **done 事件结论保留** | chat.py | `done` 事件不再 pass——提取 `result.content` 追加 yield（修复 done 时结论丢失） |
+| **CORS 通配规范** | chat.py | `allow_credentials` 改为 `"*" not in _cors_origins`（通配源时关闭 credentials，符合浏览器规范） |
+| **内部 API 地址可配置** | skill_runner.py | 模板加 `_API_BASE = os.environ.get("DATACRAB_API_BASE", "http://localhost:8000")`；13 处硬编码 localhost:8000 替换 |
+| **_param_count 修复** | skill_runner.py | 补算 `vararg`/`kwarg`（+1 each），修复 *args/**kwargs 入口函数检测 |
+| **关于页** | AboutView.vue（新增）+ ConfigView.vue | 关于页面展示项目简介、核心特性、技术栈、开源地址；配置页加"关于"tab |
+| **vite 网络配置** | vite.config.ts | `server.host` 加 `0.0.0.0`（允许外部访问）；`/api` 代理加 error 日志 |
+| **semantic-classify 地名映射** | data/skills/26d263ab | system_prompt 重写为"中国地理信息提取专家"；新增 15 条历史地名映射（沙市→荆州、万县→重庆等）+ 自治州/直辖市规则 |
+| **SSE 事件分类处理** | chat.ts | 拆分 `tool_result`/`agent_switch`/`inspecting`/`retry`/`round` 的 executingMsg 赋值逻辑 |
+
+**与前轮关系**：第二十一轮的 SSE 日志 + executingMsg 机制基础上，本轮补齐进度归档（不丢失）+ 诊断日志（handoff 可观测）+ 流式化（主对话不卡）。StuckDetector 收紧（3/15）在第二十三轮被进一步简化（删除"只调查"检测）。
+
+### 第二十三轮（Handoff 提到 RunTime + skill_runner 归并 + StuckDetector 简化 + 非流式端点删除 + 上下文压缩改进）
+
+**核心洞察**：Handoff 之前由 Agent `yield {"type":"handoff"}` 发起，Agent 需要感知 handoff 存在 + 自己决定何时交接——违反 Orchestrator-Worker 原则（Agent 应专注任务，流程编排由 RunTime 负责）。skill_runner 有 3 个函数（`run_skill_script`/`run_skill_script_by_content`/`run_skill_script_streaming_by_content`）功能重叠。`POST /messages` 非流式端点与流式端点重叠。本轮做架构层面减法。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **Handoff 提到 RunTime** | multi_agent.py | `AgentRuntime.run()` 重写：从 Agent yield handoff → RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决策；新增 `_extract_issues()` 从检查结果提取 error/critical/fatal；Processor 执行成功 → Inspector；Inspector 有 error/critical → Processor；fatal/warning 靠人判断 |
+| **删 handoff 工具** | data_processor_agent.py + data_inspector_agent.py | 两 Agent 删除 handoff 工具 schema + `_execute_tool` 分支 + `run()` 中 `_handoff` 信号解析；Agent 不感知 handoff 存在 |
+| **Prefix Cache 静态化** | data_processor_agent.py | `build_system_prompt()` 进程级 memoize（`_MAIN_STATIC_PROMPT_CACHE`）；datasource_context 移出 system prompt → 注入为 user 消息前缀；system 字节稳定命中 GLM prefix cache |
+| **动态提示分离** | data_processor_agent.py | 新增 `build_debug_dynamic_hints(context)`：入口函数/最近成功参数/本次参数/数据源表上下文 → 注入为 user 消息前缀（不进 system prompt） |
+| **skill_runner 三函数合一** | skill_runner.py | `run_skill_script`/`run_skill_script_by_content`/`run_skill_script_streaming_by_content` 合并为 `run_skill_script_streaming`（支持 `skill_path` 或 `script_content`）；`run_skill_script` 非流式委托流式版丢弃 progress 只取 result；净减 ~685 行 |
+| **_stream_execute 共享核心** | skill_runner.py | 新增 `_stream_execute(proc, timeout, temp_path)`：双层超时（idle 无输出 + hard cap 总时长）+ 标记行解析 + 错误分类；不再过滤 `[WARN]` 行全部透传 |
+| **删 POST /messages** | chat.py + chat.ts | 删除非流式 `POST /messages` 端点（~95 行）+ 前端 `sendMessage()` 方法 |
+| **StuckDetector 简化** | agent_utils.py | 删除"只调查不修改"检测（`INVESTIGATION_TOOLS`/`FIX_TOOLS`/`investigate_threshold`/`_investigate_count` 全删）；只保留空转检测 + 总轮次上限 |
+| **压缩改进** | agent_utils.py + chat.py | `extract_identifiers_from_messages` 增强（从 tool_calls.arguments 抽取）；`compact_messages` 旧消息截断 500→1000 + tool_calls 摘要列参数 + 摘要 role system→user（避免 system 污染 prefix cache）；`_HISTORY_SUMMARIES` 改 OrderedDict LRU（100 上限） |
+| **跨 handoff 上下文持久化** | data_processor_agent.py | `run_debug` Inspector 回交时从 `context["_processor_local_messages"]` 恢复工具调用历史（对齐 OpenCode 连续消息链）；`_should_handoff` 时保存 |
+| **Inspector 输出简化** | data_inspector_agent.py | content 输出从逐 token → 一次性 yield；`check_results` 写入 `context["_check_results"]`；done 事件带 `check_results`（供 RunTime `_extract_issues`） |
+| **format_report 表格化** | inspector_tools.py | 列概览 + 问题列表从纯文本 → Markdown 表格；`except: pass` → `dq_rules = {}` 兜底 |
+| **DQ 空值检测增强** | inspector_tools.py | DQ-COM-003/001 object 类型列加空字符串检测；severity 从硬编码 → 从 `dq_rules` 读取 |
+| **PostgreSQL autocommit** | connectors.py | `connect()` 加 `await self._connection.set_autocommit(True)` |
+| **SkillView SSE 共享** | SkillView.vue | 新增 `processDebugSSEEvent()` + `readDebugSSEStream()` 共享函数；3 处 handler 内联 SSE 代码替换为调用 |
+| **大表处理提示** | prompt_docs.py | PLATFORM_CONVENTIONS_DOC 加"周期性 log/print 进度避免被判定卡死" |
+
+**与前轮关系**：第十七轮"删 handoff_to_inspector 工具"只删了工具 schema 但 Agent 仍通过 yield handoff 发起交接；本轮彻底把 handoff 决策提到 RunTime（Agent 完全不感知）。第十三轮"只调查不修改"检测器在第二十一轮以温和形式回归，本轮再次删除（架构决策：调查是合法行为不应惩罚）。第十六轮 Prefix Cache 静态/动态分区在本轮进一步深化（datasource_context 也移出 system prompt）。
+
+### 第二十四轮（System Prompt 精简 + 调试显示对齐 OpenCode + soul.md 压缩 + tool_guidance 拆分）
+
+**核心洞察**：soul.md 95 行冗长，安全红线与人格定义混在一起；DATA_PROCESSOR_INSTRUCTIONS 的"扩展能力"分节过详细；tool_guidance 主对话也注入调试工具表（主对话不需要 edit_script/run_script）；调试工具调用和结果混在 content 里（不像 OpenCode 的独立 action/summary 卡片）；前端 history 把工具卡片也传给后端（浪费 token + 干扰 LLM）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **soul.md 压缩 95→30 行** | soul.md | 删除冗长行为规则/禁止回复/替代回复段（安全红线移到 instructions）；保留核心：身份定义、能力清单、风格 |
+| **DATA_PROCESSOR_INSTRUCTIONS 重写** | data_processor_agent.py | 加"安全红线"段（从 soul.md 移入）；"工作准则"6→5 条；"扩展能力"分节 → 4 条 one-liner |
+| **tool_guidance 主对话/调试拆分** | tool_guidance.py | `TOOL_CAPABILITY_TABLE` 拆为 `_MAIN_TOOL_CAPABILITY_TABLE` + `_DEBUG_TOOL_CAPABILITY_TABLE`；`get_tool_guidance(debug=False)` 参数；主对话不注入调试工具表；删"工具选择原则"段 |
+| **反幻觉 standard 级具体化** | data_processor_agent.py | 从原则 → 具体操作约束（"提到表名前先调 get_table_schema"） |
+| **llmContent 分离** | SkillView.vue | 消息对象新增 `llmContent` 字段（只含 LLM 输出不含工具卡片）；history 提取用 `m.llmContent ?? m.content`（只传 LLM 输出给后端） |
+| **tool_action/tool_summary 独立事件** | data_processor_agent.py + SkillView.vue | 工具调用从 `yield content` → `yield {"type":"tool_action","actions":[...]}` 独立事件；工具结果从 `yield content` → `yield {"type":"tool_summary","summaries":[...]}` 独立事件；前端带时间戳卡片 |
+| **read_script 50KB cap** | data_processor_agent.py | 加 `_MAX_READ_BYTES = 50KB` 硬 cap（后于本轮在第二十五轮删除恢复默认 2000 行） |
+| **grep_script 匹配上限** | data_processor_agent.py | `_MAX_MATCHES` 50→20 |
+| **_slim_run_script_result** | data_processor_agent.py | 新增：精简 run_script 工具结果（成功只留 summary+written_tables；失败只留 error+error_type） |
+| **executingMsg 生命周期修复** | chat.ts | `error`/`done`/`content` 事件时 `msg.executingMsg = ''`（修复蓝色转圈残留）；`round` 事件显示"第 N 次修改" |
+| **DEBUG_INSTRUCTIONS 推理中文** | data_processor_agent.py | 加"推理过程用中文" |
+| **archiveExecutingMsg → stdouts** | SkillView.vue | 从拼进 content → 存到 `msg.stdouts` 独立字段（保持 content 纯净） |
+| **删主对话 round 事件** | data_processor_agent.py | `run()` 主对话删除每轮 `yield {"type":"round"}`（避免"第N轮"转圈困扰用户） |
+| **round 事件 last_chance** | data_processor_agent.py | `run_debug` round 事件带 `last_chance` 标志（最后一次修改机会） |
+| **删 modify_script merged_preview** | data_processor_agent.py | 返回删除 `merged_preview`（8000+3000 字符） |
+
+**与前轮关系**：第十七轮 tool_guidance 已有主对话/调试拆分雏形（`get_tool_guidance(debug=)`），本轮彻底分离（主对话完全不注入调试工具表）。第十六轮 Prefix Cache 稳定（datasource_context 移出 system）在本轮配合 soul.md 压缩进一步减少 system prompt 体积。llmContent 分离是第二十三轮"history 透传净化"的前端实现。
+
+### 第二十五轮（调试工具精简至 4 个 + Inspector 报告独立事件 + 前端复制按钮 + 版本号动态生成 + Docker 部署完善）
+
+**核心洞察**：调试工具从 7 个（edit_script/run_script/read_script/grep_script/modify_script/modify_and_run/edit_and_run）精简至 4 个（edit_script/run_script/read_script/grep_script，完全对齐 OpenCode Grep/Read/Edit/Bash）——modify_script/modify_and_run/edit_and_run 的 schema+处理器保留但不暴露给调试 LLM，因为 edit_script（行级补丁）已覆盖所有修改场景，暴露多个修改工具只会让 LLM 困惑选择。Inspector 报告从混在 content 里 → 独立 `inspection_report` 事件。版本号从硬编码 1.0.0 → git 动态生成。Docker 部署从 dev 模式 → nginx 托管构建产物。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **调试工具精简至 4 个** | data_processor_agent.py | `DEBUG_TOOLS` 从 7 个 → 4 个（`[EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]`）；删 modify_script/modify_and_run/edit_and_run 三个工具 schema + `_execute_tool` 分支；`run_debug` 中三处判断 → 只 `run_script` |
+| **Inspector 报告独立事件** | data_inspector_agent.py | INSPECT_RESULT/FIX_COMPLETED 分支：`yield {"type":"content", ...}` → `yield {"type":"inspecting", "message":"..."}` + `yield {"type":"inspection_report", "report": report}` |
+| **Inspector tool_result 不转发** | multi_agent.py | Inspector `tool_result` 事件不再转发（`pass`，报告已通过 `inspection_report` 格式化发送） |
+| **history 透传净化** | skill.py + operator.py + pipeline.py | 删除"智能选择历史"逻辑 → 直接透传 `request.history`（前端已用 `llmContent` 净化）；删除 history content `[:500]` 截断 |
+| **前端复制按钮** | SkillView/OperatorView/PipelineView.vue | 用户消息/推理过程/返回数据/检查结果/检查问题均加复制按钮（`<el-button text size="small">`） |
+| **OperatorView/PipelineView llmContent** | OperatorView.vue + PipelineView.vue | 同 SkillView 加 `llmContent` 字段 + `tool_action`/`tool_summary`/`inspection_report` 事件处理 + 删 `tool_result` 事件 |
+| **retry/round 文案统一** | 三处调试页 | `retry` "第N次修复尝试"→"开始修复..."；`round` "修改尝试"→"修改" |
+| **read_script 50KB cap 删除** | data_processor_agent.py | 删除 `_MAX_READ_BYTES` 硬 cap（恢复默认 2000 行）；hint 改为"用 offset 翻页" |
+| **版本号动态生成** | version.py（新增）+ main.py + config.py | `get_version()`：`YYYY.MM.DD.提交次数`（git log 生成，`@lru_cache` 缓存）；启动时 `settings.APP_VERSION = get_version()`；新增 `GET /config/version` 端点 |
+| **前端版本显示** | version.ts（新增）+ MainLayout.vue + LoginView.vue + AboutView.vue | Pinia store `useVersionStore`：`loadVersion()` 调 `GET /config/version`；侧边栏底部 + 登录页 + 关于页显示版本号 |
+| **Docker nginx 托管** | frontend/Dockerfile + docker-compose.yml + nginx/nginx.conf | 前端多阶段构建：builder `npm run build` → 运行阶段 `nginx:alpine` 托管 `dist/`；SPA 路由回退；frontend 端口 5173→80 |
+| **SSE 长连接支持** | nginx/nginx.conf | `proxy_buffering off` + `proxy_read_timeout 300s` + `proxy_cache off` + `proxy_http_version 1.1` + `Connection ""` |
+| **DATACRAB_API_BASE 配置** | config.py + .env.example + docker-compose.yml | 新增 `DATACRAB_API_BASE` 配置项（skill_runner 子进程通过它访问后端 API）；Docker 中设为 `http://backend:8000` |
+| **backend_data 卷持久化** | docker-compose.yml | backend volumes 加 `backend_data:/app/data`（数据持久化） |
+| **semantic-classify 行政区划** | data/skills/26d263ab | 新增 `_PREFECTURE_CITIES` frozenset（340 个全国地级以上行政区划白名单）；`_load_data` 重写用 `iter_table_data` 分块读取 + 行数校验 |
+| **semantic-merge-records 筛选增强** | data/skills/7940a035 | `contains` 筛选支持 `or` 语法；"类似语义"关键词展开为同义词列表 |
+
+**与前轮关系**：第十~十一轮建立的行级补丁原语（edit_script/apply_partial_code）在本轮成为唯一修改入口（modify_script 等不再暴露），简化 LLM 工具选择面。第二十三轮 Inspector `check_results` 写入 context 供 RunTime `_extract_issues` 在本轮配合 `inspection_report` 独立事件让前端格式化展示。第二十四轮 llmContent 分离在本轮扩展到 OperatorView/PipelineView。版本号动态生成是对 Prefix Cache 理念的延伸（版本号不稳定不影响 cache，因为版本在 user 侧显示不在 system prompt 中）。
 
 ## 待实施：DataAnalystAgent（数据分析智能体）
 

@@ -2023,12 +2023,16 @@ class AgentRuntime:
         """
         运行智能体，自动处理交接，流式返回所有事件。
 
-        流程：
+        流程（第二十三轮重构后——Handoff 由 RunTime 决策，Agent 不感知 handoff）：
         1. 获取目标智能体
         2. 调用 agent.run() 获取流式输出
-        3. 如果输出包含 handoff 事件，自动切换到目标智能体继续执行
-        4. 重复直到无交接或达到最大交接次数
-        5. 记录所有事件到 EventStore（溯源用）
+        3. agent.run() 结束时 yield done 事件（携带 execution_success / check_results）
+        4. RunTime 拦截 done 事件，调用 _decide_handoff() 决定是否交接
+           - 调试模式：Processor 执行成功 → Inspector；Inspector 有 error/critical → Processor
+           - 主对话：靠人判断（fatal/warning 不自动交接）
+        5. 如果决定交接，切换到目标智能体继续执行
+        6. 重复直到无交接或达到最大交接次数
+        7. 记录所有事件到 EventStore（溯源用）
         """
         handoff_count = 0
         current_agent = self.registry.get(agent_name)
@@ -2036,30 +2040,34 @@ class AgentRuntime:
 
         while current_agent and handoff_count < max_handoffs:
             async for event in current_agent.run(current_message, context):
-                if event.get("type") == "handoff":
-                    # 记录交接事件
-                    self._event_store.record_handoff(
-                        from_agent=current_agent.name,
-                        to_agent=event["to"],
-                        reason=event["reason"],
-                        trace_id=current_message.trace_id,
+                if event.get("type") == "done":
+                    # RunTime 拦截 done，决定是否 handoff（Agent 不感知 handoff）
+                    done_result = event.get("result", {})
+                    target_name, reason, payload = self._decide_handoff(
+                        current_agent.name, done_result, context
                     )
-
-                    # 切换到目标智能体
-                    target_name = event["to"]
-                    current_agent = self.registry.get(target_name)
-                    current_message = AgentMessage(
-                        from_agent=event.get("from", current_agent.name),
-                        to_agent=target_name,
-                        reason=HandoffReason(event["reason"]),
-                        payload=event.get("payload", {}),
-                        context=context,
-                        trace_id=current_message.trace_id,
-                        parent_trace_id=current_message.trace_id,
-                    )
-                    handoff_count += 1
-                    yield {"type": "agent_switch", "agent": target_name, "reason": event["reason"]}
-                    break
+                    if target_name:
+                        self._event_store.record_handoff(
+                            from_agent=current_agent.name,
+                            to_agent=target_name,
+                            reason=reason,
+                            trace_id=current_message.trace_id,
+                        )
+                        current_agent = self.registry.get(target_name)
+                        current_message = AgentMessage(
+                            from_agent=current_agent.name,
+                            to_agent=target_name,
+                            reason=HandoffReason(reason),
+                            payload=payload,
+                            context=context,
+                            trace_id=current_message.trace_id,
+                            parent_trace_id=current_message.trace_id,
+                        )
+                        handoff_count += 1
+                        yield {"type": "agent_switch", "agent": target_name, "reason": reason}
+                        break
+                    else:
+                        yield event
                 else:
                     yield event
             else:
@@ -2129,23 +2137,8 @@ DATA_PROCESSOR_TOOLS = [
             "parameters": { ... }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "handoff_to_inspector",
-            "description": "将处理结果交接给数据检查智能体进行质量检查",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "datasource_id": {"type": "string", "description": "数据源ID"},
-                    "table_name": {"type": "string", "description": "检查的表名"},
-                    "operation_description": {"type": "string", "description": "本次数据处理的操作描述"},
-                    "result_summary": {"type": "string", "description": "处理结果摘要"}
-                },
-                "required": ["datasource_id", "table_name"]
-            }
-        }
-    },
+    // 注：handoff_to_inspector 工具已在第十七/二十三轮删除
+    // 现在 run_script 执行成功后由 RunTime 自动交接 DataInspector（Agent 不感知 handoff）
 ]
 ```
 
@@ -2244,33 +2237,8 @@ DATA_INSPECTOR_TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "handoff_to_processor",
-            "description": "将检查发现的问题交接给数据处理智能体进行修复",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "issues": {
-                        "type": "array",
-                        "description": "问题列表",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "description": {"type": "string", "description": "问题描述"},
-                                "severity": {"type": "string", "enum": ["warning", "error", "critical"]},
-                                "column": {"type": "string", "description": "涉及列名"},
-                                "suggestion": {"type": "string", "description": "修复建议"}
-                            }
-                        }
-                    },
-                    "summary": {"type": "string", "description": "检查摘要"}
-                },
-                "required": ["issues", "summary"]
-            }
-        }
-    },
+    // 注：handoff_to_processor 工具已在第十七/二十三轮删除
+    // 现在 Inspector 检查完成后由 RunTime 根据 check_results 中的 error/critical 自动决定是否交接 Processor
 ]
 ```
 
@@ -2288,11 +2256,11 @@ DATA_INSPECTOR_TOOLS = [
 │ 2. query_table_data() 读取数据                               │
 │ 3. 生成/选择清洗算子脚本                                      │
 │ 4. run_script() 执行清洗                                     │
-│ 5. 处理完成 → handoff_to_inspector()                         │
+│ 5. 处理完成 → yield done(execution_success=True)             │
 │    payload: {datasource_id, table_name, "去重和空值处理完成"} │
 └──────────────────────────────────────────────────────────────┘
-     │ Handoff(inspect_result)
-     ▼
+      │ RunTime 拦截 done → _decide_handoff() → 交接 Inspector
+      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ DataInspector                                                │
 │ 1. profile_data() 获取数据概览                                │
@@ -2302,10 +2270,10 @@ DATA_INSPECTOR_TOOLS = [
 │ 5. 发现问题：                                                 │
 │    - "时代"列有3个非标准值（warning）                          │
 │    - "编号"列存在2条重复（error）                              │
-│ 6. handoff_to_processor(issues=[...], summary="2个问题")     │
+│ 6. yield done(check_results=[...])                           │
 └──────────────────────────────────────────────────────────────┘
-     │ Handoff(fix_required)
-     ▼
+      │ RunTime 拦截 done → _extract_issues() 有 error → 交接 Processor
+      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ DataProcessor                                                │
 │ 1. 分析检查结果，定位问题根源                                  │
@@ -2313,18 +2281,18 @@ DATA_INSPECTOR_TOOLS = [
 │    - 时代列：增加标准值映射                                    │
 │    - 编号列：去重逻辑遗漏了某个字段组合                        │
 │ 3. run_script() 重新执行                                      │
-│ 4. 修复完成 → handoff_to_inspector() 再检查                   │
+│ 4. 修复完成 → yield done(execution_success=True) 再检查      │
 └──────────────────────────────────────────────────────────────┘
-     │ Handoff(inspect_result)
-     ▼
+      │ RunTime 拦截 done → _decide_handoff() → 交接 Inspector
+      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ DataInspector                                                │
 │ 1. 对修复后的数据再次检查                                     │
 │ 2. 所有检查通过                                               │
-│ 3. 返回 InspectionResult(passed=True)                         │
+│ 3. 返回 done(check_results=[])                               │
 └──────────────────────────────────────────────────────────────┘
-     │
-     ▼
+      │ RunTime 拦截 done → 无 error/critical → 不交接
+      ▼
 用户: 收到检查报告 + 处理结果
 ```
 
@@ -2337,18 +2305,17 @@ DATA_INSPECTOR_TOOLS = [
 ┌──────────────────────────────────────────────────────────────┐
 │ DataProcessor（路由层）                                       │
 │ 1. 识别意图：数据质量检查                                     │
-│ 2. 直接交接给 DataInspector                                  │
-│    handoff_to_inspector(reason=delegate)                     │
+│ 2. 执行检查工具或直接返回结果                                  │
+│    → yield done（RunTime 根据结果决定是否交接 Inspector）      │
 └──────────────────────────────────────────────────────────────┘
-     │ Handoff(delegate)
-     ▼
+      │ RunTime → _decide_handoff()（主对话靠人判断）
+      ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ DataInspector                                                │
 │ 1. profile_data() → 数据概览                                 │
 │ 2. check_data_quality(dimensions=['completeness', ...])      │
-│ 3. 生成检查报告                                               │
-│ 4. 如有问题 → handoff_to_processor(reason=fix_required)      │
-│    无问题 → 返回检查报告给用户                                │
+│ 3. 生成检查报告 → yield done(check_results=[...])            │
+│ 4. RunTime 根据 check_results 中 error/critical 决定是否交接  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -2668,10 +2635,10 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
 
 | 特性 | run()（主对话流） | run_debug()（调试助手） |
 |------|-------------------|------------------------|
-| LLM 调用 | chat_with_tools()（非流式） | chat_stream_with_tools_and_thinking()（流式） |
-| 工具集 | 共享工具 + handoff_to_inspector | edit_script + run_script + read_script + grep_script（4 个，对齐 OpenCode Grep/Read/Edit/Bash） |
-| system prompt | 通用数据处理指令 | 调试专用指令（含脚本内容、沙箱函数清单、参数记忆） |
-| 自愈 | handoff 来回（DataInspector ↔ DataProcessor） | 工具调用循环内自治（run_script 失败 → LLM 看到错误 → 自动 modify → 再 run） |
+| LLM 调用 | chat_stream_with_tools_and_thinking()（流式，第二十二轮改） | chat_stream_with_tools_and_thinking()（流式） |
+| 工具集 | 共享工具（不含调试工具） | edit_script + run_script + read_script + grep_script（4 个，对齐 OpenCode Grep/Read/Edit/Bash） |
+| system prompt | 通用数据处理指令（进程级 memoize，Prefix Cache） | 调试专用指令（静态区 memoize + 动态区 user message 注入） |
+| 自愈 | RunTime 自动交接（DataInspector ↔ DataProcessor） | run_script 执行成功 → RunTime 自动交接 Inspector；Inspector 有 error → 交接 Processor |
 
 ##### 新增工具
 
@@ -4054,10 +4021,10 @@ volumes:
 
 ### 11.5 路由改进
 
-#### 统一路由 + Agent 自主 handoff（chat.py）
+#### 统一路由 + Handoff（chat.py）
 - **问题**：`_route_to_agent` 用关键词匹配预判路由（"检查/质量"→inspector），边界场景误判
-- **改进**：始终从 DataProcessorAgent 开始，Agent 自主决定是否 handoff 给 inspector；`_route_to_agent` 函数已删除
-- **理念**：借鉴 DeepAnalyze 的"Agent 自主性"原则——系统给信号不给约束
+- **改进**：始终从 DataProcessorAgent 开始；**第二十三轮起 Handoff 由 RunTime `_decide_handoff()` 决策（Agent 不感知 handoff 存在）**；`_route_to_agent` 函数已删除
+- **理念**：借鉴 DeepAnalyze 的"Agent 自主性"原则——系统给信号不给约束；Orchestrator-Worker 原则——Agent 专注任务，流程编排由 RunTime 负责
 
 ### 11.6 经验库改进
 
@@ -4561,3 +4528,107 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 **验证**：`app.main` 完整加载 184 路由；`LLMProvider`/`UserLLMConfig` 表列确认无 fast_model；`_handle_get_llm_config` 源码确认无 fast_model 引用；`llm_manager.fast_model` 属性确认不存在。
 
 **与前轮的关系**：补齐第十八轮未完成的清理（第十八轮只删了 llm_manager 属性，DB/schema/endpoint/前端残留未清）。`default_model` 不在清理范围——seed providers 仍写入、registry 仍读取，作为 Provider 推荐深度模型名（非死字段）。settings.LLM_FAST_MODEL 保留是向后兼容妥协（删了会破坏已有 .env 部署），业务代码已完全不读。
+
+### 11.31 第二十轮：视频处理能力——关键帧抽取 + 元数据提取
+
+**核心需求**：用户要求"把一段视频的关键画面和信息提取出来"。对齐现有 `llm_vision` 图片处理链路，新增视频处理能力——提取视频元数据 + 抽取关键帧为图片（可传给 `llm_vision` 做内容理解）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **video_utils.py 共享模块** | video_utils.py（新增） | `probe_video`（ffprobe 优先，回退 opencv）+ `extract_keyframes`（ffmpeg 场景检测优先，回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85 |
+| **internal/video/info 端点** | datasource.py | 视频元数据提取端点（路径校验 + probe_video）；技能沙箱子进程通过 HTTP 调用 |
+| **internal/video/keyframes 端点** | datasource.py | 视频关键帧抽取端点（路径校验 + extract_keyframes + output_dir 授权校验） |
+| **read_file 视频格式 fail-fast** | datasource.py + sandbox_ns.py | 视频格式（mp4/avi/mov/mkv 等 12 种）→ 400 错误提示用 extract_video_info / extract_keyframes |
+| **extract_video_info / extract_keyframes 沙箱函数** | skill_runner.py + sandbox_ns.py | 技能沙箱（HTTP 调端点）+ 算子沙箱（直接实现）；返回元数据/关键帧列表，帧图片可直接传 llm_vision |
+| **文档 + 能力表 + 依赖** | prompt_docs.py + tool_guidance.py + requirements.txt | SANDBOX_TOOLS_DOC + PLATFORM_CONVENTIONS_DOC + available_functions + opencv-python-headless + pillow |
+
+**与前轮关系**：对齐 `llm_vision`（图片处理）的三层架构（共享工具 → datasource 端点 + sandbox_ns 直接实现 → skill_runner HTTP 调用）。`extract_keyframes` + `llm_vision` 组合实现"视频关键画面和信息提取"完整链路。
+
+### 11.32 第二十一轮：模型选择简化 + 端点精简 + 对话导出 + 流式错误恢复 + 数据更新时间追踪 + StuckDetector 增强
+
+**核心洞察**：第十八轮 `pick_model_async`（LLM 选模型）复杂度高、额外消耗一次 LLM 调用，且简单场景不需要问 LLM。本轮做减法：简化模型选择、删除冗余端点、删除低收益机制，同时补齐对话导出和流式错误恢复两个用户可感知改进。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **模型选择简化** | llm.py + config.py | 删除 `pick_model_async`/`pick_model`；替换为 `_default`（配置的深度模型）+ `_flash`（名称含 flash 的模型）属性；所有 chat 方法用 `self._default` |
+| **skill.py 流式端点精简** | skill.py | 删除 `run_skill_stream` + `run_skill_nl_stream` 两个流式端点（-624 行） |
+| **data_processor_agent 精简** | data_processor_agent.py | 删除 `_analyze_error` + `_save_session_log` + `_compress_tool_result`；删除调试循环上下文压缩；模型选择统一为 `llm_manager._default` |
+| **StuckDetector 增强** | agent_utils.py | 新增"只调查不修改"检测（连续 5 轮只 read/grep 不 edit/run → 提示）+ 总轮次上限（30 轮 → 提示） |
+| **流式错误恢复** | chat.py | 流式响应出错时保存已收到的部分内容 + 错误信息到 DB，避免前端刷新后回复消失 |
+| **对话导出** | ChatView.vue + chat.ts | 导出对话为 Markdown 文件（含推理过程折叠、模型、时间） |
+| **执行进度显示** | ChatView.vue + chat store | 处理 progress/executing/tool_result/agent_switch/inspecting/retry/round 事件 → executingMsg |
+| **data_updated_at 追踪** | datasource.py + metadata.py + connectors.py + models/datasource.py | TableMetadata 新增 `data_updated_at` 列（数据源端真实更新时间） |
+
+**验证**：`app.main` 完整加载 183 路由；134 测试全通过；无 `pick_model`/`run_skill_stream`/`run_skill_nl_stream` 残留引用。
+
+**与前轮关系**：第十八轮 `pick_model_async` 被本轮 `_default/_flash` 替代——不再问 LLM 选模型（省一次调用）。第八轮 `_compress_tool_result` + 第十六轮调试循环上下文压缩被删除（复杂度高、调试场景消息量有限收益低）。
+
+### 11.33 第二十二轮：调试对话流式化 + 执行进度归档 + Inspector 诊断日志 + StuckDetector 收紧 + 关于页
+
+**核心洞察**：主对话循环用非流式 `chat_with_tools`，用户等待时间长无反馈；调试执行进度在前端切换阶段时被直接清空丢失；Inspector handoff 触发原因不可观测；StuckDetector 阈值过松。本轮补齐这些可感知差距。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **主对话循环流式化** | data_processor_agent.py | `run()` 从非流式 → 流式 `chat_stream_with_tools_and_thinking`，实时 yield model/thinking/content 事件 |
+| **执行进度归档** | SkillView.vue | `archiveExecutingMsg`：阶段切换时固化 executingMsgs 到 `msg.stdouts`（不拼进 content 保持纯净） |
+| **Inspector + handoff 诊断日志** | data_inspector_agent.py + data_processor_agent.py | `[Inspector-DEBUG]` / `[handoff检查]` 日志；main.py 日志过滤器扩展 |
+| **StuckDetector 收紧** | agent_utils.py | `investigate_threshold` 5→3，`max_total_rounds` 30→15 |
+| **tool_result 扩容 + done 结论保留** | chat.py | content 截断 200→2000；done 事件提取 result.content 追加 yield |
+| **内部 API 地址可配置** | skill_runner.py | `_API_BASE = os.environ.get("DATACRAB_API_BASE", "http://localhost:8000")`；13 处硬编码替换 |
+| **关于页** | AboutView.vue（新增）+ ConfigView.vue | 项目简介、核心特性、技术栈、开源地址 |
+| **semantic-classify 地名映射** | data/skills/26d263ab | system_prompt 重写；15 条历史地名映射 + 自治州/直辖市规则 |
+
+### 11.34 第二十三轮：Handoff 提到 RunTime + skill_runner 归并 + StuckDetector 简化 + 非流式端点删除
+
+**核心洞察**：Handoff 之前由 Agent `yield {"type":"handoff"}` 发起，Agent 需要感知 handoff 存在 + 自己决定何时交接——违反 Orchestrator-Worker 原则（Agent 应专注任务，流程编排由 RunTime 负责）。skill_runner 有 3 个函数功能重叠。`POST /messages` 非流式端点与流式端点重叠。本轮做架构层面减法。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **Handoff 提到 RunTime** | multi_agent.py | `AgentRuntime.run()` 重写：从 Agent yield handoff → RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决策；新增 `_extract_issues()` 从检查结果提取 error/critical/fatal |
+| **删 handoff 工具** | data_processor_agent.py + data_inspector_agent.py | 两 Agent 删除 handoff 工具 schema + `_execute_tool` 分支 + `run()` 中 `_handoff` 信号解析；Agent 不感知 handoff 存在 |
+| **Prefix Cache 静态化** | data_processor_agent.py | `build_system_prompt()` 进程级 memoize；datasource_context 移出 system prompt → 注入为 user 消息前缀 |
+| **skill_runner 三函数合一** | skill_runner.py | `run_skill_script`/`by_content`/`streaming_by_content` 合并为 `run_skill_script_streaming`（支持 skill_path 或 script_content）；净减 ~685 行 |
+| **_stream_execute 共享核心** | skill_runner.py | 双层超时（idle 无输出 + hard cap 总时长）+ 标记行解析 + 错误分类；不再过滤 `[WARN]` 行 |
+| **删 POST /messages** | chat.py + chat.ts | 删除非流式端点（~95 行）+ 前端 `sendMessage()` 方法 |
+| **StuckDetector 简化** | agent_utils.py | 删除"只调查不修改"检测（`INVESTIGATION_TOOLS`/`FIX_TOOLS` 全删）；只保留空转检测 + 总轮次上限 |
+| **压缩改进** | agent_utils.py + chat.py | `extract_identifiers_from_messages` 增强（从 tool_calls.arguments 抽取）；`compact_messages` 旧消息截断 500→1000 + 摘要 role system→user |
+| **跨 handoff 上下文持久化** | data_processor_agent.py | Inspector 回交时从 `context["_processor_local_messages"]` 恢复工具调用历史 |
+| **format_report 表格化** | inspector_tools.py | 列概览 + 问题列表从纯文本 → Markdown 表格 |
+| **SkillView SSE 共享** | SkillView.vue | 新增 `processDebugSSEEvent()` + `readDebugSSEStream()` 共享函数；3 处 handler 替换 |
+
+**与前轮关系**：第十七轮"删 handoff_to_inspector 工具"只删了工具 schema 但 Agent 仍通过 yield handoff 发起交接；本轮彻底把 handoff 决策提到 RunTime（Agent 完全不感知）。第十三轮"只调查不修改"检测器再次删除（架构决策：调查是合法行为不应惩罚）。
+
+### 11.35 第二十四轮：System Prompt 精简 + 调试显示对齐 OpenCode + soul.md 压缩 + tool_guidance 拆分
+
+**核心洞察**：soul.md 95 行冗长，安全红线与人格定义混在一起；tool_guidance 主对话也注入调试工具表；调试工具调用和结果混在 content 里（不像 OpenCode 的独立卡片）；前端 history 把工具卡片也传给后端（浪费 token + 干扰 LLM）。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **soul.md 压缩 95→30 行** | soul.md | 删除冗长行为规则段（安全红线移到 instructions）；保留核心：身份定义、能力清单、风格 |
+| **DATA_PROCESSOR_INSTRUCTIONS 重写** | data_processor_agent.py | 加"安全红线"段；"工作准则"6→5 条；"扩展能力"分节 → 4 条 one-liner |
+| **tool_guidance 主对话/调试拆分** | tool_guidance.py | `TOOL_CAPABILITY_TABLE` 拆为 `_MAIN_TOOL_CAPABILITY_TABLE` + `_DEBUG_TOOL_CAPABILITY_TABLE`；主对话不注入调试工具表 |
+| **llmContent 分离** | SkillView.vue | 消息对象新增 `llmContent` 字段（只含 LLM 输出不含工具卡片）；history 提取用 `m.llmContent ?? m.content` |
+| **tool_action/tool_summary 独立事件** | data_processor_agent.py + SkillView.vue | 工具调用/结果从 `yield content` → 独立事件（不进 content）；前端带时间戳卡片 |
+| **_slim_run_script_result** | data_processor_agent.py | 精简 run_script 工具结果（成功只留 summary+written_tables；失败只留 error+error_type） |
+| **executingMsg 生命周期修复** | chat.ts | `error`/`done`/`content` 事件时 `msg.executingMsg = ''`（修复蓝色转圈残留） |
+| **删主对话 round 事件** | data_processor_agent.py | `run()` 主对话删除每轮 `yield {"type":"round"}`（避免"第N轮"转圈困扰用户） |
+
+### 11.36 第二十五轮：调试工具精简至 4 个 + Inspector 报告独立事件 + 前端复制按钮 + 版本号动态生成 + Docker 部署完善
+
+**核心洞察**：调试工具从 7 个精简至 4 个（edit_script/run_script/read_script/grep_script，完全对齐 OpenCode Grep/Read/Edit/Bash）——edit_script（行级补丁）已覆盖所有修改场景，暴露多个修改工具只会让 LLM 困惑选择。Inspector 报告从混在 content → 独立 `inspection_report` 事件。版本号从硬编码 → git 动态生成。Docker 部署从 dev 模式 → nginx 托管构建产物。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **调试工具精简至 4 个** | data_processor_agent.py | `DEBUG_TOOLS` 从 7 → 4（`[EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]`）；删 modify_script/modify_and_run/edit_and_run |
+| **Inspector 报告独立事件** | data_inspector_agent.py | `yield content` → `yield {"type":"inspecting"}` + `yield {"type":"inspection_report","report":report}` |
+| **history 透传净化** | skill.py + operator.py + pipeline.py | 删除"智能选择历史"逻辑 → 直接透传 `request.history`（前端已用 `llmContent` 净化） |
+| **前端复制按钮** | SkillView/OperatorView/PipelineView.vue | 用户消息/推理过程/返回数据/检查结果均加复制按钮 |
+| **OperatorView/PipelineView llmContent** | OperatorView.vue + PipelineView.vue | 同 SkillView 加 `llmContent` 字段 + `tool_action`/`tool_summary`/`inspection_report` 事件处理 |
+| **版本号动态生成** | version.py（新增）+ main.py + config.py | `get_version()`：`YYYY.MM.DD.提交次数`（git log 生成，`@lru_cache` 缓存）；`GET /config/version` 端点 |
+| **前端版本显示** | version.ts（新增）+ MainLayout.vue + LoginView.vue + AboutView.vue | Pinia store `useVersionStore`；侧边栏底部 + 登录页 + 关于页显示版本号 |
+| **Docker nginx 托管** | frontend/Dockerfile + docker-compose.yml + nginx/nginx.conf | 前端多阶段构建：builder `npm run build` → `nginx:alpine` 托管 `dist/`；SPA 路由回退；端口 5173→80 |
+| **SSE 长连接支持** | nginx/nginx.conf | `proxy_buffering off` + `proxy_read_timeout 300s` + `proxy_cache off` + `proxy_http_version 1.1` |
+| **DATACRAB_API_BASE 配置** | config.py + .env.example + docker-compose.yml | skill_runner 子进程通过它访问后端 API；Docker 中设为 `http://backend:8000` |
+| **backend_data 卷持久化** | docker-compose.yml | backend volumes 加 `backend_data:/app/data` |
+
+**与前轮关系**：第十~十一轮建立的行级补丁原语（edit_script/apply_partial_code）在本轮成为唯一修改入口。第二十三轮 Inspector `check_results` 写入 context 供 RunTime `_extract_issues` 在本轮配合 `inspection_report` 独立事件让前端格式化展示。第二十四轮 llmContent 分离在本轮扩展到 OperatorView/PipelineView。

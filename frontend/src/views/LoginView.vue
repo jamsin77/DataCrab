@@ -41,6 +41,7 @@
         <span class="divider">|</span>
         <el-link type="primary" @click="showReset = true">忘记密码</el-link>
       </div>
+      <div v-if="version" class="login-version">v{{ version }}</div>
     </div>
 
     <!-- 注册对话框 -->
@@ -87,15 +88,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useVersionStore } from '@/stores/version'
 import { authApi } from '@/api/auth'
 import { ElMessage } from 'element-plus'
 import type { FormInstance } from 'element-plus'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const versionStore = useVersionStore()
+const version = ref('')
+
+onMounted(async () => {
+  version.value = await versionStore.loadVersion()
+})
 
 const formRef = ref<FormInstance>()
 const registerFormRef = ref<FormInstance>()
@@ -255,6 +263,13 @@ async function handleRegister() {
       margin: 0 8px;
       color: #dcdfe6;
     }
+  }
+
+  .login-version {
+    text-align: center;
+    font-size: 12px;
+    color: #c0c4cc;
+    margin-top: 16px;
   }
 }
 </style>

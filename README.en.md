@@ -36,9 +36,10 @@ DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architectur
 | Agent | Responsibility | Trigger |
 |--------|------|----------|
 | **DataProcessor** (Orchestrator) | Understands user intent, modifies/executes scripts, schedules data processing, hands off to inspection | Chat page + skill/operator/pipeline debug assistants |
-| **DataInspector** (Worker) | Performs standard, quality, and security inspections on processed data | Auto-handoff after DataProcessor succeeds |
+| **DataInspector** (Worker) | Performs standard, quality, and security inspections on processed data | RunTime auto-handoff after DataProcessor succeeds |
 
 - **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the DataProcessor → DataInspector multi-agent flow
+- **Handoff decided by RunTime**: Agents are unaware of handoff; RunTime intercepts the `done` event and calls `_decide_handoff()` to decide whether to hand off (auto in debug mode, human judgment in main chat)
 - **Orchestrator-Worker granularity**: simple operations (edit_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
 - **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together
 - Agent Handoff: automatically hands off to inspection after processing; automatically hands back for repair when issues are found
@@ -103,7 +104,7 @@ assets/           # Static assets
 - **AI modification**: natural-language instructions modify SKILL.md content (SSE streaming, showing the thinking process)
 - **Execution**: run scripts in a subprocess sandbox with timeout control and SSE streaming status
 - **Natural-language execution**: the LLM infers execution parameters (with reasoning shown), then runs the skill
-- **AI debug assistant**: chat-style interactive debugging with a 4-tool model (edit_script/run_script/read_script/grep_script, aligning with OpenCode Grep/Read/Edit/Bash); the AI auto-executes or modifies scripts, with results shown in the message stream; on execution success the runtime auto-hands off to DataInspector for quality inspection
+- **AI debug assistant**: chat-style interactive debugging with a 4-tool model (edit_script/run_script/read_script/grep_script, aligning with OpenCode Grep/Read/Edit/Bash); the AI auto-executes or modifies scripts, with results shown in the message stream; on execution success the RunTime auto-hands off to DataInspector for quality inspection; Inspector reports are displayed via independent `inspection_report` events
 - **Skill self-evolution**: failures record negative examples, successes after a fix record positive examples; the LLM distills lessons into SKILL.md; shares a unified experience library with operators, auto-injected when generating new skills
 - **Skill JSON parameter examples**: parameter definitions support an `example` field; the frontend auto-fills example values
 
@@ -162,7 +163,7 @@ The platform exposes underlying LLM capabilities as a RESTful API:
 | Custom endpoint | Any OpenAI-API-compatible endpoint (vLLM, Ollama, etc.); adapter code can be uploaded |
 
 - Dynamically switch provider/key/model at runtime
-- **Model auto-selection**: `pick_model_async` picks the most suitable and economical model from the available-model list by task context (LLM inference + result caching); simple scenarios (parameter inference / chat) use a flash-model rule fallback without asking the LLM; all chat methods auto-infer when `model=None`
+- **Dual-model architecture**: `_default` (configured deep model, for script generation/modification) + `_flash` (flash-named fast model, for parameter inference/chat); all chat methods use `self._default`
 - Streaming output supports chain-of-thought / reasoning content
 - Function Calling support
 - Vision/embedding models auto-selected by provider (GLM→glm-4v-plus/embedding-3 etc.); backup-model degradation chain + CircuitBreaker
@@ -179,6 +180,23 @@ Three Markdown rule libraries, viewable/editable on the "System Settings" page; 
 
 - MD editable with "restore defaults"; backend `GET/PUT/POST /config/data-standards|data-quality|data-security`(+`/reset`)
 - DataInspector injects all three libraries into its prompt; check tools deterministically execute regex/aggregation, tagging issues with `STD/DQ/SEC` IDs; semantic checks by LLM
+- Inspection reports are displayed via independent `inspection_report` events (Markdown tables: column overview + issue list)
+
+### 14. Video Processing
+
+- **Metadata extraction**: `extract_video_info()` returns duration/resolution/fps/codec/bitrate/total frames, etc.
+- **Keyframe extraction**: `extract_keyframes()` returns a list of timestamped keyframe images that can be passed directly to `llm_vision` for content understanding
+- ffmpeg scene detection preferred; falls back to opencv equal-interval extraction when not installed; frame images PIL-compressed to 1024px + JPEG quality 85
+
+### 15. Dynamic Version Number
+
+- Version format: `YYYY.MM.DD.commit-count` (generated from git log, `@lru_cache` cached)
+- Displayed in sidebar footer, login page, and About page
+- `GET /config/version` endpoint (no auth required)
+
+### 16. About Page
+
+- New "About" tab in System Settings showing project intro, core features, tech stack, and open-source link
 
 ---
 
@@ -219,7 +237,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, types)
-│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 177 routes)
+│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 183 routes)
 │   │   ├── models/            # ORM models (19 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
@@ -239,11 +257,12 @@ DataCrab/
 │   │       ├── pipeline_executor.py # Pipeline execution engine
 │   │       ├── connectors.py    # 8 data-source connectors
 │   │       ├── shared_tools.py  # 7 shared tools unified entry (LRU cache)
-│   │       ├── agent_utils.py   # Agent engineering utils (anti-hallucination/turn budget/pressure alerts)
-│   │       ├── tool_guidance.py # Tool honesty capability table
+│   │       ├── agent_utils.py   # Agent engineering utils (anti-hallucination/turn budget/pressure alerts/compaction)
+│   │       ├── tool_guidance.py # Tool honesty capability table (main/debug split)
 │   │       ├── data_harness.py  # Non-intrusive flow-layer Harness (convergence + experience collection)
 │   │       ├── experience.py   # Self-evolving experience library (positive/negative examples + distillation)
-│   │       └── operator_parser.py # Python AST script parser
+│   │       ├── operator_parser.py # Python AST script parser
+│   │       └── video_utils.py  # Video processing (keyframe extraction + metadata probe)
 │   └── data/skills/           # Skill package on-disk storage
 ├── frontend/                   # Frontend app
 │   ├── src/
@@ -322,7 +341,7 @@ All API routes are prefixed with `/api/v1/`:
 
 ## Architecture Highlights
 
-1. **Multi-agent collaboration loop**: DataProcessor + DataInspector dual agents with automatic Handoff, forming a self-healing processing+inspection loop (Multi-Agent Collaboration)
+1. **Multi-agent collaboration loop**: DataProcessor + DataInspector dual agents; Handoff decided by RunTime (Agents are unaware of handoff), forming a self-healing processing+inspection loop (Multi-Agent Collaboration)
 2. **Pluggable connectors**: `BaseConnector` abstract class + registry pattern for easily extending new data source types
 3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable; Skills are accumulable, reusable assets
 4. **Pipeline = Python main function**: discards the DAG model; each pipeline is a standalone runnable Python function
@@ -331,4 +350,6 @@ All API routes are prefixed with `/api/v1/`:
 7. **Metadata management**: one-click technical metadata sync + AI-enriched business metadata for a unified data catalog
 8. **Streaming-first architecture**: multiple endpoints support SSE streaming for real-time feedback
 9. **AST script introspection**: Python AST parsing auto-extracts function signatures and docs, registering operators with zero config
-10. **AI debug assistant**: chat-style interactive debugging with visible AI reasoning; on execution failure, error stack traces are automatically fed back to the AI for repair (a Loop Engineering practice)
+10. **AI debug assistant**: chat-style interactive debugging (4 tools aligned with OpenCode), with visible AI reasoning; on execution failure, error stack traces are automatically fed back to the AI for repair (Loop Engineering)
+11. **Prefix Cache optimization**: system prompt process-level memoize + datasource_context moved from system to user message, byte-stable to hit GLM context cache, reducing input cost by 30%+
+12. **Docker one-click deployment**: frontend multi-stage build with nginx hosting + SSE long-connection support + data volume persistence

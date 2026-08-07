@@ -75,3 +75,18 @@ Terminal shows color-tagged logs:
 | `npm run dev:frontend` | Start frontend only |
 | `npm run build:frontend` | Build frontend production bundle |
 | `pip install -e ./backend[all]` | Install optional dependencies (KB + OBS) |
+
+## Docker Deployment
+
+```bash
+docker-compose up -d
+```
+
+- Frontend: nginx hosts built assets (port 80)
+- Backend: Uvicorn + data volume persistence (`backend_data:/app/data`)
+- nginx: reverse proxy + SSE long-connection support (`proxy_buffering off` + `proxy_read_timeout 300s`)
+- `DATACRAB_API_BASE` env var: skill_runner subprocess uses it to access backend API (set to `http://backend:8000` in Docker)
+
+## Version
+
+Version number is dynamically generated as `YYYY.MM.DD.commit-count` (from git log), displayed in sidebar footer, login page, and About page.

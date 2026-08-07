@@ -7,7 +7,7 @@
         </div>
         <h1 class="about-title">DataCrab</h1>
         <p class="about-subtitle">数据工程智能体</p>
-        <el-tag type="primary" effect="plain" round>v1.0.0</el-tag>
+        <el-tag type="primary" effect="plain" round>v{{ version || '...' }}</el-tag>
       </div>
 
       <el-divider />
@@ -32,7 +32,6 @@
           <li><el-icon color="#67C23A"><Check /></el-icon> 8 种数据源连接器，覆盖关系型数据库与文件格式</li>
           <li><el-icon color="#67C23A"><Check /></el-icon> 技能 / 算子 / 流程三层编排，可跨机器迁移打包</li>
           <li><el-icon color="#67C23A"><Check /></el-icon> 确定性数据质量检查（标准 / 完整性 / 唯一性 / 安全）</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 文档知识库 RAG，支持 ChromaDB 向量检索</li>
           <li><el-icon color="#67C23A"><Check /></el-icon> 定时调度系统，支持 cron 表达式与并发控制</li>
           <li><el-icon color="#67C23A"><Check /></el-icon> 视频处理能力（关键帧抽取 + 元数据提取）</li>
         </ul>
@@ -75,7 +74,16 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { Platform, Check, Link } from '@element-plus/icons-vue'
+import { useVersionStore } from '@/stores/version'
+
+const versionStore = useVersionStore()
+const version = ref('')
+
+onMounted(async () => {
+  version.value = await versionStore.loadVersion()
+})
 
 function openLink() {
   window.open('https://gitee.com/DataCrab/DataCrab', '_blank')
