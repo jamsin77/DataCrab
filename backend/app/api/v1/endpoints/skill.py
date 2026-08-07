@@ -449,7 +449,7 @@ async def get_skill_md(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    content = read_skill_md(_get_skill_folder(skill_id))
+    content = read_skill_md(_resolve_skill_folder(skill))
     return {"skill_md": content or "", "parsed": parse_skill_md(content) if content else {}}
 
 
@@ -466,7 +466,7 @@ async def update_skill_md(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_md(folder, request.content)
 
@@ -493,7 +493,7 @@ async def get_skill_scripts(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    return list_skill_scripts(_get_skill_folder(skill_id))
+    return list_skill_scripts(_resolve_skill_folder(skill))
 
 
 @router.get("/{skill_id}/scripts/{script_name}")
@@ -509,7 +509,7 @@ async def get_skill_script(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    content = read_skill_script(_get_skill_folder(skill_id), script_name)
+    content = read_skill_script(_resolve_skill_folder(skill), script_name)
     if content is None:
         raise HTTPException(status_code=404, detail="脚本不存在")
     return {"name": script_name, "content": content}
@@ -529,7 +529,7 @@ async def update_skill_script(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     folder.mkdir(parents=True, exist_ok=True)
     write_skill_script(folder, script_name, request.content)
     return {"name": script_name, "ok": True}
@@ -548,7 +548,7 @@ async def delete_skill_script(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    script_path = _get_skill_folder(skill_id) / "scripts" / script_name
+    script_path = _resolve_skill_folder(skill) / "scripts" / script_name
     if script_path.exists():
         script_path.unlink()
 
@@ -567,7 +567,7 @@ async def run_skill(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
 
     ds_name = None
     if request.datasource_id:
@@ -608,7 +608,7 @@ async def get_skill_params(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     params = []
 
     script_content = read_skill_script(folder, "main.py")
@@ -658,7 +658,7 @@ async def run_skill_nl(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
 
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name)
@@ -787,7 +787,7 @@ async def debug_skill_chat(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
@@ -880,7 +880,7 @@ async def summarize_skill_errors(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     errors = read_error_log(folder)
     from app.services import experience as _exp
     positives = _exp.read_positive(folder)
@@ -1269,7 +1269,7 @@ async def clone_skill(
 
     new_id = uuid4()
     new_folder = _get_skill_folder(new_id)
-    old_folder = _get_skill_folder(skill_id)
+    old_folder = _resolve_skill_folder(skill)
 
     if old_folder.exists():
         shutil.copytree(old_folder, new_folder)
@@ -1303,7 +1303,7 @@ async def modify_skill(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     current_md = read_skill_md(folder) or ""
 
     if not current_md:
@@ -1379,7 +1379,7 @@ async def modify_skill_stream(
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
 
-    folder = _get_skill_folder(skill_id)
+    folder = _resolve_skill_folder(skill)
     current_md = read_skill_md(folder) or ""
 
     if not current_md:
