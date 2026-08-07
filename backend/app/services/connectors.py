@@ -56,7 +56,6 @@ class PostgreSQLConnector(BaseConnector):
                 user=self.config.get("user"),
                 password=self.config.get("password"),
             )
-            await self._connection.set_autocommit(True)
             return True
         except Exception as e:
             logger.error(f"PostgreSQL连接失败: {e}")

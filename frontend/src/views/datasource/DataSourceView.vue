@@ -106,7 +106,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="95%" top="2vh" @opened="onBrowseOpened">
+    <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="96%" top="1vh" @opened="onBrowseOpened">
       <div class="browse-layout">
         <div class="browse-sidebar">
           <div class="browse-sidebar-title">
@@ -141,7 +141,7 @@
             </el-tooltip>
             <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
           </div>
-          <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="74vh" style="width: 100%;">
+          <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="80vh" style="width: 100%;">
             <el-table-column
               v-for="col in browseColumns"
               :key="col.name"
@@ -159,9 +159,6 @@
           </div>
         </div>
       </div>
-      <template #footer>
-        <el-button @click="showBrowseDialog = false">关闭</el-button>
-      </template>
     </el-dialog>
 
     <el-dialog v-model="showConnectorManager" title="连接器管理" width="720px">
@@ -711,7 +708,7 @@ async function deleteConnector(c: any) {
 .browse-layout {
   display: flex;
   gap: 12px;
-  min-height: 74vh;
+  min-height: 82vh;
 }
 
 .browse-sidebar {
@@ -720,7 +717,7 @@ async function deleteConnector(c: any) {
   border: 1px solid #e6e6e6;
   border-radius: 6px;
   overflow-y: auto;
-  max-height: 76vh;
+  max-height: 84vh;
 }
 
 .browse-sidebar-title {
