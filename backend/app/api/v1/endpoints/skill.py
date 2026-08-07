@@ -111,6 +111,8 @@ def _resolve_skill_folder(skill: Skill) -> Path:
     """优先用 skill_path 解析实际文件夹（兼容 init_db 导入的技能，其文件夹 UUID ≠ skill ID）"""
     if skill.skill_path:
         p = Path(skill.skill_path)
+        if not p.is_absolute():
+            p = _get_skill_storage() / p
         if p.exists():
             return p
     return _get_skill_folder(skill.id)

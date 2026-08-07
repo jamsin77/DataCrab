@@ -176,6 +176,29 @@ async def _seed_skills_and_pipelines():
         # 1. Seed skills：扫描技能文件夹，DB 中不存在的自动创建记录
         skill_base = Path(settings.SKILL_STORAGE_PATH)
         if skill_base.is_dir():
+            # 预修复：技能文件夹重命名后 DB 中 skill_path 可能指向旧路径，
+            # 按技能名在磁盘上重新查找新文件夹并更新 skill_path（统一为相对文件夹名）
+            _all_skills = (await db.execute(sa_select(Skill))).scalars().all()
+            for skill in _all_skills:
+                sp = skill.skill_path or ""
+                folder = Path(sp).name if sp else ""
+                full_path = skill_base / folder if folder else None
+                if full_path and full_path.is_dir() and (full_path / "SKILL.md").exists():
+                    if sp != folder:  # 绝对路径 → 统一为相对文件夹名
+                        skill.skill_path = folder
+                        logger.info(f"统一技能路径: {skill.name} -> {folder}")
+                    continue
+                # 路径无效，用技能名在磁盘上找新文件夹
+                for candidate in sorted(skill_base.iterdir()):
+                    if not candidate.is_dir() or not (candidate / "SKILL.md").exists():
+                        continue
+                    info = get_skill_info_from_path(candidate)
+                    if info.get("name") == skill.name:
+                        skill.skill_path = candidate.name
+                        logger.info(f"修复技能路径: {skill.name} -> {candidate.name}")
+                        break
+            await db.flush()
+
             existing_names = set()
             result = await db.execute(sa_select(Skill.name))
             existing_names = {r[0] for r in result.fetchall()}
