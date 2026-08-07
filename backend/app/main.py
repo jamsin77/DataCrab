@@ -143,6 +143,14 @@ def _migrate_builtin_flags(connection):
         except Exception as e:
             logger.warning(f"{table}表迁移跳过: {e}")
     try:
+        result = connection.execute(text("PRAGMA table_info(schedules)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "run_mode" not in columns:
+            connection.execute(text("ALTER TABLE schedules ADD COLUMN run_mode VARCHAR(20) DEFAULT 'normal'"))
+            logger.info("schedules表已添加 run_mode 列")
+    except Exception as e:
+        logger.warning(f"schedules表 run_mode 迁移跳过: {e}")
+    try:
         result = connection.execute(text("PRAGMA table_info(table_metadata)"))
         columns = {row[1] for row in result.fetchall()}
         if "schema_hash" not in columns:
