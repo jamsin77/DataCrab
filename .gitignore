@@ -80,6 +80,10 @@ check_*.py
 *.log
 *.err
 dev_*.txt
+*.download
+
+# Nested project copy (accidental clone inside repo)
+/DataCrab/
 
 # Data files
 *.xlsx
