@@ -22,9 +22,18 @@ class LLMConfigRequest(BaseModel):
     provider: str = "openai"
     api_key: Optional[str] = None
     api_base: Optional[str] = None
-    model: str = "gpt-4"
+    model: Optional[str] = None
     embedding_model: str = "text-embedding-ada-002"
     fallback_models: Optional[List[Dict[str, str]]] = None
+
+
+def _provider_default_model(provider: str) -> str:
+    """按 provider 从注册表取推荐深度模型名"""
+    from app.services.llm import _provider_registry
+    info = _provider_registry.get(provider)
+    if info and info.get("default_model"):
+        return info["default_model"]
+    return ""
 
 
 class FallbackModelItem(BaseModel):
@@ -179,12 +188,22 @@ async def update_llm_config(
         if config.api_key and config.api_key.strip():
             api_key_encrypted = encrypt(config.api_key.strip())
 
+        # model 未提供时按 provider 取推荐深度模型（避免默认 gpt-4 写入非 openai provider）
+        eff_model = config.model or _provider_default_model(config.provider)
+        # embedding_model 未提供时按 provider 取默认（避免 text-embedding-ada-002 用于智谱等）
+        eff_embedding = config.embedding_model
+        if not eff_embedding or eff_embedding == "text-embedding-ada-002":
+            from app.services.llm import _PROVIDER_EMBEDDING_MODELS
+            pm = _PROVIDER_EMBEDDING_MODELS.get(config.provider, "")
+            if pm:
+                eff_embedding = pm
+
         if rec:
             rec.provider = config.provider
             rec.api_key_encrypted = api_key_encrypted
             rec.api_base = config.api_base or ""
-            rec.model = config.model
-            rec.embedding_model = config.embedding_model
+            rec.model = eff_model
+            rec.embedding_model = eff_embedding
             rec.fallback_models = fallback_models
         else:
             rec = UserLLMConfig(
@@ -192,8 +211,8 @@ async def update_llm_config(
                 provider=config.provider,
                 api_key_encrypted=api_key_encrypted,
                 api_base=config.api_base or "",
-                model=config.model,
-                embedding_model=config.embedding_model,
+                model=eff_model,
+                embedding_model=eff_embedding,
                 fallback_models=fallback_models,
             )
             db.add(rec)
@@ -223,10 +242,9 @@ async def test_llm_connection(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """测试LLM连接（用传入的配置测试，不依赖当前已保存的配置）"""
+    """测试LLM连接（优先用传入配置，其次用户已保存配置，再次公共 Provider，最后全局）"""
     from app.services.llm import get_provider_api_base, _custom_adapter_cache
-    from app.core.database import async_session
-    from app.models.custom_extension import LLMProvider
+    from app.models.custom_extension import UserLLMConfig, LLMProvider
     from app.core.crypto import decrypt
     from sqlalchemy import select as sa_select
     from openai import AsyncOpenAI
@@ -234,31 +252,39 @@ async def test_llm_connection(
     try:
         body = body or {}
         provider = body.get("provider") or llm_manager.provider or settings.LLM_PROVIDER
-        model = body.get("model") or llm_manager.model or settings.OPENAI_MODEL
 
-        # API Key：优先用传入的，其次从 DB 读取已保存的
+        # 用户已保存的配置（API key / model / api_base 来源之一）
+        user_rec = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
+        user_cfg = user_rec.scalar_one_or_none()
+
+        # model：传入 → 用户已保存 → 全局
+        model = body.get("model")
+        if not model and user_cfg and user_cfg.model:
+            model = user_cfg.model
+        if not model:
+            model = _provider_default_model(provider) or llm_manager.model or settings.OPENAI_MODEL
+
+        # API Key：传入 → 用户已保存（解密）→ 公共 Provider → 全局
         api_key = body.get("api_key") or ""
+        if not api_key and user_cfg and user_cfg.api_key_encrypted:
+            api_key = decrypt(user_cfg.api_key_encrypted)
         if not api_key:
-            async with async_session() as key_session:
-                result = await key_session.execute(
-                    sa_select(LLMProvider).where(LLMProvider.provider_name == provider)
-                )
-                record = result.scalar_one_or_none()
-                if record and record.api_key_encrypted:
-                    api_key = decrypt(record.api_key_encrypted)
+            pub = await db.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == provider))
+            pub_rec = pub.scalar_one_or_none()
+            if pub_rec and pub_rec.api_key_encrypted:
+                api_key = decrypt(pub_rec.api_key_encrypted)
         if not api_key:
             api_key = llm_manager.api_key or settings.OPENAI_API_KEY
 
-        # API Base：优先用传入的，其次查内置/DB
+        # API Base：传入 → 用户已保存 → 公共 Provider → 内置注册表
         api_base = body.get("api_base") or ""
+        if not api_base and user_cfg and user_cfg.api_base:
+            api_base = user_cfg.api_base
         if not api_base:
-            async with async_session() as base_session:
-                result = await base_session.execute(
-                    sa_select(LLMProvider).where(LLMProvider.provider_name == provider)
-                )
-                record = result.scalar_one_or_none()
-                if record and record.api_base:
-                    api_base = record.api_base
+            pub = await db.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == provider))
+            pub_rec = pub.scalar_one_or_none()
+            if pub_rec and pub_rec.api_base:
+                api_base = pub_rec.api_base
         if not api_base:
             api_base = get_provider_api_base(provider) or ""
 

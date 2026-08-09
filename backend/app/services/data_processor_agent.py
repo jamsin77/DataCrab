@@ -1299,9 +1299,9 @@ class DataProcessorAgent(BaseAgent):
         return _json.dumps({"success": True, "message": f"Provider '{display_name}' 已注册，可在模型配置中使用"}, ensure_ascii=False)
 
     async def _handle_get_llm_config(self) -> str:
-        """查询当前 LLM 配置"""
+        """查询当前 LLM 配置（用户配置优先于全局）"""
         import json as _json
-        from app.services.llm import get_all_providers, get_provider_api_base
+        from app.services.llm import get_all_providers, get_provider_api_base, get_user_llm_config
 
         all_providers = []
         for name, info in get_all_providers().items():
@@ -1320,12 +1320,19 @@ class DataProcessorAgent(BaseAgent):
             for m in llm_manager._available_models()
         ]
 
+        # 用户配置优先（API Key 存在 UserLLMConfig 表，不在全局 llm_manager.api_key）
+        user_cfg = get_user_llm_config()
+        cur_provider = (user_cfg or {}).get("provider") or llm_manager.provider
+        cur_model = (user_cfg or {}).get("model") or llm_manager.model
+        cur_api_base = (user_cfg or {}).get("api_base") or llm_manager.api_base or get_provider_api_base(cur_provider) or ""
+        api_key_set = bool((user_cfg or {}).get("api_key") or llm_manager.api_key)
+
         return _json.dumps({
-            "current_provider": llm_manager.provider,
-            "current_model": llm_manager.model,
-            "current_api_base": llm_manager.api_base or get_provider_api_base(llm_manager.provider) or "",
+            "current_provider": cur_provider,
+            "current_model": cur_model,
+            "current_api_base": cur_api_base,
             "available_models": available_models,
-            "api_key_configured": bool(llm_manager.api_key),
+            "api_key_configured": api_key_set,
             "providers": all_providers,
             "hint": "用户要求注册或更新 Provider 时，始终调用 save_llm_adapter 工具。已存在的 Provider 会被刷新更新。所有 Provider 地位平等。用户要求删除 Provider 时，调用 delete_llm_adapter 工具。"
         }, ensure_ascii=False)

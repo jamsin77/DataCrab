@@ -331,7 +331,9 @@ def main(input_data=None, **kwargs):
     matched_count = sum(1 for v in matched.values() if v is not None)
     log("info", f"匹配成功: {matched_count}/{len(source_df)}")
 
-    # 合并逻辑：把被合并行各列信息尽可能都放到备注列
+    # 合并逻辑：把被合并行各列信息用 LLM 组织成通顺文字，放入目标行备注列
+    # 先收集所有需要合并的 (src_idx, tgt_idx) 对及其信息
+    merge_pairs = []  # [(tgt_idx, src_info_str, src_name), ...]
     for src_idx, tgt_idx in matched.items():
         if tgt_idx is not None:
             # 收集源行所有非空列信息
@@ -347,16 +349,70 @@ def main(input_data=None, **kwargs):
                     if not pd.isna(tgt_val) and str(tgt_val).strip() == src_str:
                         continue
                 merge_parts.append(f"{col}: {src_str}")
-
             if merge_parts:
-                # 将所有信息拼接到备注列
-                merge_text = "；".join(merge_parts)
-                existing_remark = target_df.loc[tgt_idx, actual_merge_field]
-                if pd.isna(existing_remark) or str(existing_remark).strip() == "":
-                    target_df.loc[tgt_idx, actual_merge_field] = f"【已归并信息】{merge_text}"
-                else:
-                    target_df.loc[tgt_idx, actual_merge_field] = f"{existing_remark}【已归并信息】{merge_text}"
-                log("info", f"行 {tgt_idx} 备注列已追加归并信息: {merge_text[:80]}...")
+                src_info = "；".join(merge_parts)
+                src_name = str(source_df.loc[src_idx, name_col]).strip() if name_col in source_df.columns else ""
+                merge_pairs.append((tgt_idx, src_info, src_name))
+
+    log("info", f"需要生成归并描述: {len(merge_pairs)} 条")
+
+    # 用 LLM 批量生成通顺文字
+    merge_texts = {}  # tgt_idx -> 通顺描述文字
+    if merge_pairs:
+        chunk_size = llm_batch_size
+        for start in range(0, len(merge_pairs), chunk_size):
+            chunk = merge_pairs[start:start + chunk_size]
+            items_text = "\n".join([
+                f'{i + 1}. 被合并文物名称: "{p[2]}", 主要信息: {p[1]}'
+                for i, p in enumerate(chunk)
+            ])
+
+            prompt = f"""请将以下每条被合并文物的主要信息，组织成通顺、完整的中文描述文字。
+
+要求：
+1. 每条描述应包含该文物的名称、年代、地址、分类等所有可用信息
+2. 语言通顺自然，像一段完整的说明文字
+3. 信息尽量全面，不要遗漏任何字段
+4. 每条描述以"该文物原为"开头，说明其原始信息
+
+数据：
+{items_text}
+
+请以 JSON 格式返回：
+{{"results": [{{"index": 1, "description": "该文物原为XXX，年代为XXX，位于XXX..."}}, ...]}}
+
+只返回 JSON，不要其他内容。"""
+
+            try:
+                result = llm_chat(prompt, temperature=0.3, max_tokens=4000)
+                result = result.strip()
+                if result.startswith("```"):
+                    lines = result.split("\n")
+                    result = "\n".join(lines[1:-1]) if len(lines) > 2 else lines[0].strip("`")
+                parsed = json.loads(result)
+                results = parsed.get("results", [])
+                for r in results:
+                    idx_pos = r.get("index")
+                    desc = r.get("description", "")
+                    if idx_pos is not None and 1 <= idx_pos <= len(chunk):
+                        tgt_idx = chunk[idx_pos - 1][0]
+                        merge_texts[tgt_idx] = desc
+            except Exception as e:
+                log("warn", f"LLM 生成描述失败 (批次 {start}): {e}")
+                # 降级：用原始拼接
+                for p in chunk:
+                    merge_texts[p[0]] = f"【已归并信息】{p[1]}"
+
+            log("info", f"已生成 {start + len(chunk)}/{len(merge_pairs)} 条归并描述")
+
+    # 将生成的描述写入目标行备注列
+    for tgt_idx, desc in merge_texts.items():
+        existing_remark = target_df.loc[tgt_idx, actual_merge_field]
+        if pd.isna(existing_remark) or str(existing_remark).strip() == "":
+            target_df.loc[tgt_idx, actual_merge_field] = f"【已归并信息】{desc}"
+        else:
+            target_df.loc[tgt_idx, actual_merge_field] = f"{existing_remark}【已归并信息】{desc}"
+        log("info", f"行 {tgt_idx} 备注列已追加归并信息: {desc[:80]}...")
 
     output_table = output_table_name or f"{table_name}_merged"
     records = target_df.to_dict(orient="records")

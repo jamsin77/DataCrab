@@ -918,6 +918,41 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-08-07T09:59:17.215572",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'message': '无源数据需要归并', 'count': 5057}"
+    },
+    {
+      "timestamp": "2026-08-07T10:07:13.403457",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5057, 'source_count': 149, 'merged_count': 3, 'final_count': 4908, 'output_table': '国家级重点文物_合并结果'}"
+    },
+    {
+      "timestamp": "2026-08-07T10:16:44.814464",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5296, 'source_count': 239, 'merged_count': 225, 'final_count': 5057, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
+    },
+    {
+      "timestamp": "2026-08-09T09:27:35.668367",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'message': '无源数据需要归并', 'count': 5057}"
+    },
+    {
+      "timestamp": "2026-08-09T09:29:22.942574",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'original_count': 5057, 'source_count': 149, 'merged_count': 3, 'final_count': 4908, 'output_table': 'national_key_cultural_relic_protection_units_merged'}"
     }
   ],
   "lessons": "让我先读取完整的 `main` 函数代码，看看当前列名解析逻辑，然后做出精确修改。",

@@ -413,10 +413,21 @@ class LLMManager:
 
     @property
     def _default(self) -> str:
-        """默认深度模型"""
+        """默认深度模型（用户配置优先，但须在 provider 可用模型列表内，否则回退 provider default_model）"""
         cfg = get_user_llm_config()
         if cfg and cfg.get("model"):
-            return cfg["model"]
+            user_model = cfg["model"]
+            provider = cfg.get("provider", "")
+            info = _provider_registry.get(provider)
+            if info:
+                valid_values = {m["value"] for m in info.get("models", []) if m.get("value")}
+                if valid_values and user_model not in valid_values:
+                    logger.warning(
+                        f"用户配置的模型 {user_model!r} 不在 provider {provider!r} 的可用列表内，"
+                        f"回退到 provider 默认模型 {info.get('default_model')!r}"
+                    )
+                    return info.get("default_model") or user_model
+            return user_model
         return self.model or "gpt-3.5-turbo"
 
     @property

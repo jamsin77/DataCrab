@@ -307,6 +307,45 @@ def extract_image_info(
 
     print(f"源数据读取成功: {len(data)} 条, 列: {source_columns}")
 
+    # ---- 2.5 动态解析列名（适配不同数据源结构）----
+    df_source = pd.DataFrame(data, columns=source_columns) if source_columns else pd.DataFrame(data)
+
+    def _resolve_col(candidates):
+        """尝试多个候选列名，返回第一个匹配的实际列名"""
+        for c in candidates:
+            if not c or c == "*":
+                continue
+            col = resolve_column(df_source, c)
+            if col:
+                return col
+        return None
+
+    # 图片路径列（最关键，必须找到）
+    img_candidates = [image_column, "file_path", "图片", "image", "path", "路径", "照片",
+                      "文件路径", "image_path", "img", "图片路径", "文件", "picture", "photo",
+                      "图片链接", "url", "图片地址"]
+    resolved_image_col = _resolve_col(img_candidates)
+
+    if not resolved_image_col:
+        return {"success": False, "error": f"在源表列 {source_columns} 中找不到图片路径列",
+                "message": "无法确定图片路径列，请通过 image_column 参数指定包含图片路径的列名"}
+
+    log("info", f"图片路径列解析为: {resolved_image_col}")
+
+    # 文件名列（可选，找不到则从路径推导）
+    resolved_name_col = _resolve_col(["file_name", "文件名", "filename", "名称", "name", "title"])
+    if resolved_name_col:
+        log("info", f"文件名列解析为: {resolved_name_col}")
+    else:
+        log("info", "文件名列未找到，将从图片路径推导")
+
+    # 其他元数据列（可选）
+    resolved_ext_col = _resolve_col(["extension", "扩展名", "ext", "格式"])
+    resolved_size_col = _resolve_col(["size_bytes", "文件大小", "size", "大小", "字节"])
+    resolved_size_human_col = _resolve_col(["size_human", "文件大小可读", "大小可读"])
+    resolved_mtime_col = _resolve_col(["modified_time", "修改时间", "mtime", "更新时间"])
+    resolved_dir_col = _resolve_col(["parent_dir", "目录", "dir", "所在目录"])
+
     # ---- 3. 提取所有拼音前缀，批量翻译未知类型 ----
     log("info", "从文件名提取凭证类型...")
     all_pinyins = set()
@@ -317,7 +356,7 @@ def extract_image_info(
             row_dict = dict(row)
         else:
             row_dict = {}
-        file_name = str(row_dict.get("file_name", ""))
+        file_name = str(row_dict.get(resolved_name_col, "")) if resolved_name_col else ""
         prefix = extract_pinyin_prefix(file_name)
         if prefix:
             all_pinyins.add(prefix)
@@ -358,8 +397,11 @@ def extract_image_info(
         else:
             row_dict = {}
 
-        file_name = str(row_dict.get("file_name", ""))
-        file_path = str(row_dict.get("file_path", ""))
+        file_name = str(row_dict.get(resolved_name_col, "")) if resolved_name_col else ""
+        file_path = str(row_dict.get(resolved_image_col, ""))
+        # 如果没有文件名列，从路径推导
+        if not file_name and file_path:
+            file_name = file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if "/" in file_path or "\\" in file_path else file_path
         pinyin_prefix = extract_pinyin_prefix(file_name)
         doc_type_cn = full_map.get(pinyin_prefix, pinyin_prefix if pinyin_prefix else "未知凭证类型")
 
@@ -369,6 +411,8 @@ def extract_image_info(
         review_note = ""
 
         try:
+            if not file_path or file_path == "None":
+                raise ValueError("图片路径为空，无法进行OCR")
             ocr_prompt = f"提取这张{doc_type_cn}图片中的所有文字信息，以JSON格式返回。"
             ocr_result = llm_vision(file_path, ocr_prompt, max_tokens=1000)
             extracted_info = str(ocr_result).strip() if ocr_result else ""
@@ -405,19 +449,19 @@ def extract_image_info(
         # 构建新记录
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
-        record["file_name"] = file_name
+        record["file_name"] = _sanitize_pii(file_name)
         record["file_path"] = file_path
-        record["extension"] = str(row_dict.get("extension", ""))
-        raw_size = row_dict.get("size_bytes", 0)
+        record["extension"] = str(row_dict.get(resolved_ext_col, "")) if resolved_ext_col else ""
+        raw_size = row_dict.get(resolved_size_col, 0) if resolved_size_col else 0
         try:
             record["size_bytes"] = int(raw_size)
         except (ValueError, TypeError):
             record["size_bytes"] = 0
-        record["size_human"] = str(row_dict.get("size_human", ""))
-        record["modified_time"] = str(row_dict.get("modified_time", ""))
-        record["parent_dir"] = str(row_dict.get("parent_dir", ""))
-        record["doc_type"] = doc_type_cn
-        record["doc_type_pinyin"] = pinyin_prefix
+        record["size_human"] = str(row_dict.get(resolved_size_human_col, "")) if resolved_size_human_col else ""
+        record["modified_time"] = str(row_dict.get(resolved_mtime_col, "")) if resolved_mtime_col else ""
+        record["parent_dir"] = _sanitize_pii(str(row_dict.get(resolved_dir_col, ""))) if resolved_dir_col else ""
+        record["doc_type"] = _sanitize_pii(doc_type_cn)
+        record["doc_type_pinyin"] = _sanitize_pii(pinyin_prefix)
         record["extraction_status"] = extraction_status
         record["extracted_info"] = extracted_info
         record["review_note"] = review_note
@@ -570,22 +614,43 @@ def _sanitize_pii(text: str) -> str:
     """对文本中的PII信息进行脱敏处理。
 
     - 手机号: 保留前3后4，中间用**** (如 138****0081)
-    - 银行卡号/账号(16-19位): 仅保留后4位，前面用*号 (如 ************0405)
+    - UUID: 将UUID中的数字替换为*，保留字母部分
+    - 银行卡号/账号(13位及以上连续数字): 仅保留后4位，前面用*号
+    - 带分隔符的银行卡号(如 1234-5678-9012-3456): 脱敏为 ****-****-****-3456
     - 邮箱: 保留首字符与域名 (如 x***@qq.com)
     """
     if not text:
         return text
+    text = str(text)
 
     # 1. 手机号脱敏: 1[3-9]开头共11位数字
     text = re.sub(r'1[3-9]\d{9}', lambda m: m.group()[:3] + '****' + m.group()[-4:], text)
 
-    # 2. 银行卡号/账号脱敏: 16-19位连续数字，仅保留后4位
+    # 2. UUID脱敏: 将UUID中的数字部分替换为*，保留字母部分
+    #    UUID格式: 8-4-4-4-12 hex字符，如 50fc3589-1234-5678-9abc-def012345678
+    def _mask_uuid_digits(m):
+        return re.sub(r'\d', '*', m.group())
+    text = re.sub(
+        r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+        _mask_uuid_digits, text
+    )
+
+    # 3. 带分隔符的银行卡号脱敏: 4-4-4-4 或 4-4-4-4-4 格式 (如 1234-5678-9012-3456 或 1234 5678 9012 3456)
+    def _mask_separated_number(m):
+        digits = re.sub(r'[-\s]', '', m.group())
+        return '****-****-****-' + digits[-4:]
+    text = re.sub(r'\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}([-\s]\d{1,4})?', _mask_separated_number, text)
+
+    # 4. 银行卡号/长数字序列脱敏: 13位及以上连续数字，仅保留后4位
+    #    使用 (?<!\d) 和 (?!\d) 替代 \b，以正确处理下划线等非空白分隔符
     def _mask_long_number(m):
         num = m.group()
+        if len(num) <= 4:
+            return num
         return '*' * (len(num) - 4) + num[-4:]
-    text = re.sub(r'\b\d{16,19}\b', _mask_long_number, text)
+    text = re.sub(r'(?<!\d)\d{13,}(?!\d)', _mask_long_number, text)
 
-    # 3. 邮箱脱敏: 保留首字符与域名
+    # 5. 邮箱脱敏: 保留首字符与域名
     def _mask_email(m):
         email = m.group()
         at_idx = email.index('@')
