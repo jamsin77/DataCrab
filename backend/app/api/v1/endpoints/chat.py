@@ -481,8 +481,11 @@ async def stream_response(
             # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
             await db.commit()
 
-            # 统一路由：始终从 data_processor 开始，RunTime 决定是否 handoff（调试模式自动，主对话靠人判断）
+            # 路由：只读分析类问题走 DataAnalyst，其余走 DataProcessor
             from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason
+            from app.services.chat_router import route_agent
+
+            _agent_name = route_agent(request.content)
 
             runtime = ensure_agent_runtime()
 
@@ -500,14 +503,14 @@ async def stream_response(
 
             message = AgentMessage(
                 from_agent="user",
-                to_agent="data_processor",
+                to_agent=_agent_name,
                 reason=HandoffReason.DELEGATE,
                 payload={"user_message": _user_msg, "content": _user_msg},
                 context=context,
                 trace_id=trace_id,
             )
 
-            agen = runtime.run("data_processor", message, context).__aiter__()
+            agen = runtime.run(_agent_name, message, context).__aiter__()
             while True:
                 if cancel_event.is_set():
                     yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"

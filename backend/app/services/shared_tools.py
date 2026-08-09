@@ -164,6 +164,11 @@ SHARED_TOOL_SCHEMAS: List[Dict[str, Any]] = [
 ]
 
 
+# DataAnalyst 只读工具子集（不含 write_table_data / save_file_to_link）
+_ANALYSIS_TOOL_NAMES = {"query_table_data", "get_table_schema", "list_user_datasources", "execute_sql", "kb_search"}
+ANALYSIS_TOOLS = [t for t in SHARED_TOOL_SCHEMAS if t["function"]["name"] in _ANALYSIS_TOOL_NAMES]
+
+
 # ==================== 工具实现 ====================
 
 async def query_table_data(args: dict, db: AsyncSession, user_id) -> str:

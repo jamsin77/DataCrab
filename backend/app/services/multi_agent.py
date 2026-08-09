@@ -267,18 +267,21 @@ agent_registry = AgentRegistry()
 
 
 def ensure_agent_runtime() -> "AgentRuntime":
-    """幂等注册 DataProcessor + DataInspector，返回 AgentRuntime。
+    """幂等注册 DataProcessor + DataInspector + DataAnalyst，返回 AgentRuntime。
 
     消除 7 处重复的 agent 注册样板代码。
     """
     from app.services.llm import llm_manager
     from app.services.data_processor_agent import DataProcessorAgent
     from app.services.data_inspector_agent import DataInspectorAgent
+    from app.services.data_analyst_agent import DataAnalystAgent
 
     if not agent_registry.get("data_processor"):
         agent_registry.register(DataProcessorAgent())
     if not agent_registry.get("data_inspector"):
         agent_registry.register(DataInspectorAgent())
+    if not agent_registry.get("data_analyst"):
+        agent_registry.register(DataAnalystAgent())
     return AgentRuntime(agent_registry, llm_manager)
 
 
