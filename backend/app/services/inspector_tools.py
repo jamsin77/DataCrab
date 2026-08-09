@@ -31,6 +31,8 @@ class DataInspectorTools:
         connector = get_connector(datasource.type, datasource.connection_config or {})
         try:
             df = await connector.get_table_data(table_name, page=1, page_size=page_size)
+            if use_cache:
+                self._cache[cache_key] = df
             return df
         except Exception as e:
             err_msg = str(e)
@@ -39,13 +41,12 @@ class DataInspectorTools:
                 if resolved and resolved != table_name:
                     logger.info(f"Inspector 表名模糊匹配: '{table_name}' -> '{resolved}'")
                     df = await connector.get_table_data(resolved, page=1, page_size=page_size)
+                    if use_cache:
+                        self._cache[cache_key] = df
                     return df
             raise
         finally:
             await connector.close()
-        if use_cache:
-            self._cache[cache_key] = df
-        return df
 
     async def _resolve_table_name(self, connector, table_name: str) -> str:
         """当目标表名不存在时，从数据源的所有表中查找最相似的表名"""
@@ -1083,6 +1084,11 @@ class DataInspectorTools:
     def format_report(self, results: dict) -> str:
         """格式化检查结果为完整报告（含表格、每条规则详情）"""
         lines = []
+
+        if results.get("error"):
+            lines.append("## ❌ 检查失败\n%s" % results["error"])
+            lines.append("\n（数据加载失败，无法执行检查。请确认数据源和表名是否正确。）")
+            return "\n".join(lines)
 
         # 数据概览
         profile = results.get("profile") or {}

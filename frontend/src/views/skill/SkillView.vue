@@ -602,6 +602,18 @@
                       <el-alert :title="msg.inspectionResult.error" type="warning" :closable="false" />
                     </div>
                   </div>
+                  <div v-if="msg.inspectionReport" class="debug-msg-inspection-report">
+                    <el-collapse model-value="report">
+                      <el-collapse-item name="report">
+                        <template #title>
+                          <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
+                          <span class="collapse-label">数据检查报告</span>
+                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                        </template>
+                        <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
                     <el-tag type="warning" size="small">脚本已更新: {{ msg.scriptUpdated }}</el-tag>
                   </div>
@@ -1647,7 +1659,6 @@ function processDebugSSEEvent(
       break
     case 'inspection_report':
       msg.inspectionReport = data.report
-      msg.content += (msg.content ? '\n\n' : '') + data.report + '\n'
       break
     case 'retry':
       archiveExecutingMsg(msg)
@@ -3467,6 +3478,18 @@ onMounted(() => {
 
   .inspection-error {
     margin-top: 6px;
+  }
+}
+
+.debug-msg-inspection-report {
+  margin-top: 6px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+
+  :deep(.el-collapse) {
+    border-top: none;
+    border-bottom: none;
   }
 }
 

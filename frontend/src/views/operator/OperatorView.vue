@@ -242,6 +242,18 @@
                       </el-collapse>
                     </div>
                   </div>
+                  <div v-if="msg.inspectionReport" class="debug-msg-inspection-report">
+                    <el-collapse model-value="report">
+                      <el-collapse-item name="report">
+                        <template #title>
+                          <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
+                          <span class="collapse-label">数据检查报告</span>
+                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                        </template>
+                        <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
                     <el-tag type="warning" size="small">代码已更新: {{ msg.scriptUpdated }}</el-tag>
                   </div>
@@ -448,7 +460,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, nextTick, watch, type Ref } from 'vue'
-import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh } from '@element-plus/icons-vue'
+import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh, CircleCheck } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
@@ -1447,7 +1459,6 @@ async function handleOpSend() {
             msg.content += `\n\n错误: ${data.content || '未知错误'}`
           } else if (data.type === 'inspection_report') {
             msg.inspectionReport = data.report
-            msg.content += (msg.content ? '\n\n' : '') + data.report + '\n'
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
@@ -1995,6 +2006,18 @@ onMounted(() => {
 
 .debug-msg-script-updated {
   margin-top: 6px;
+}
+
+.debug-msg-inspection-report {
+  margin-top: 6px;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  overflow: hidden;
+
+  :deep(.el-collapse) {
+    border-top: none;
+    border-bottom: none;
+  }
 }
 
 .debug-input-area {
