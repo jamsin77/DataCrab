@@ -207,6 +207,9 @@ class AgentRuntime:
         if not done_result or not context.get("debug_mode"):
             return None
 
+        if agent_name == "data_analyst":
+            return None
+
         if agent_name == "data_processor":
             # Processor 执行成功 → 交 Inspector 检查
             if not done_result.get("execution_success"):

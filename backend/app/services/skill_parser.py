@@ -64,6 +64,7 @@ def get_skill_info_from_path(skill_path: Path) -> Dict[str, Any]:
         info["name"] = parsed.get("name") or skill_path.name
         info["display_name"] = parsed.get("name") or ""
         info["description"] = parsed.get("description") or ""
+        info["skill_type"] = parsed.get("skill_type") or "processing"
 
     scripts_dir = skill_path / "scripts"
     if scripts_dir.is_dir():

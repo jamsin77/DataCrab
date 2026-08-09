@@ -51,7 +51,7 @@
             <el-button size="small" type="primary" @click="openDetail(skill)">
               <el-icon><Edit /></el-icon> 修改
             </el-button>
-            <el-button size="small" type="success" plain @click="openDebug(skill)">
+            <el-button size="small" type="success" plain @click="openDebug(skill)" v-if="!isAnalysisSkill(skill)">
               <el-icon><VideoPlay /></el-icon> 调试
             </el-button>
             <el-button size="small" @click="openCloneDialog(skill)">
@@ -351,7 +351,7 @@
                     <el-button size="small" type="primary" @click="saveScriptContent(script.name)" :loading="savingScript">
                       <el-icon><Check /></el-icon> 保存
                     </el-button>
-                    <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)">
+                    <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)" v-if="!isAnalysisSkill(detailSkill)">
                       <el-icon><VideoPlay /></el-icon> 调试
                     </el-button>
                   </div>
@@ -868,6 +868,11 @@ async function confirmRename() {
 }
 
 // ==================== 下载 ====================
+function isAnalysisSkill(skill: any): boolean {
+  const tags: any[] = skill?.tags || []
+  return tags.some((t: any) => String(t) === 'skill_type:analysis')
+}
+
 function downloadSkill(skill: any) {
   const token = localStorage.getItem('access_token')
   const url = `/api/v1/skills/${skill.id}/download`

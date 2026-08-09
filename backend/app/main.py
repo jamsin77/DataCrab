@@ -223,13 +223,14 @@ async def _seed_skills_and_pipelines():
                     logger.warning(f"跳过 seed 技能文件夹 {folder_name}：SKILL.md 无 front matter 或名称重复")
                     continue
                 _seen_in_this_scan.add(skill_name)
+                _skill_type = info.get("skill_type") or "processing"
                 skill = Skill(
                     name=skill_name,
                     display_name=info.get("display_name") or folder_name,
                     description=info.get("description") or "",
                     skill_path=folder_name,
                     category="seed",
-                    tags=["seed"],
+                    tags=["seed", f"skill_type:{_skill_type}"],
                     visibility="public",
                 )
                 db.add(skill)

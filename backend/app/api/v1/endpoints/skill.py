@@ -59,6 +59,18 @@ from app.models.datasource import DataSource
 router = APIRouter()
 
 
+def _merge_skill_type_tag(front_matter: dict, existing_tags: list = None) -> list:
+    """从 front_matter 提取 skill_type，作为 tag 注入（不新增 DB 列）。
+    返回的 tags 列表包含 skill_type:<value> 标记，便于路由层判断。
+    """
+    tags = list(existing_tags or [])
+    skill_type = (front_matter or {}).get("skill_type") or "processing"
+    _tag = f"skill_type:{skill_type}"
+    tags = [t for t in tags if not str(t).startswith("skill_type:")]
+    tags.append(_tag)
+    return tags
+
+
 async def _build_datasource_info(db: AsyncSession, user_id) -> str:
     """构建当前用户的数据源信息文本，用于注入到 Skill Creator 提示词"""
     from app.services.connectors import get_connector
@@ -386,7 +398,7 @@ async def upload_skill(
             display_name=display_name,
             description=description,
             skill_path=str(folder),
-            tags=parsed.get("front_matter", {}).get("tags", []),
+            tags=_merge_skill_type_tag(parsed.get("front_matter"), parsed.get("front_matter", {}).get("tags", [])),
             category=parsed.get("front_matter", {}).get("category"),
             visibility="public",
             author=current_user.id,
@@ -1163,7 +1175,7 @@ async def generate_skill_endpoint(
         display_name=name,
         description=front_matter.get("description", ""),
         skill_path=str(folder),
-        tags=front_matter.get("tags", ["ai_generated"]),
+        tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
         category=front_matter.get("category", "ai_generated"),
         visibility="private",
         author=current_user.id,
@@ -1237,7 +1249,7 @@ async def generate_skill_stream_endpoint(
             display_name=name,
             description=front_matter.get("description", ""),
             skill_path=str(folder),
-            tags=front_matter.get("tags", ["ai_generated"]),
+            tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
             category=front_matter.get("category", "ai_generated"),
             visibility="private",
             author=current_user.id,

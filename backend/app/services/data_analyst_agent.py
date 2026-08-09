@@ -137,30 +137,40 @@ class DataAnalystAgent(BaseAgent):
         pressure_warned = False
         has_preinjected_data = context.get("has_preinjected_data", False)
 
+        async def _safe_execute(tc):
+            try:
+                func_args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                func_args = {}
+            try:
+                result = await execute_shared_tool(tc["function"]["name"], func_args, db, user_id)
+                return {"tool_call_id": tc["id"], "content": result}
+            except Exception as e:
+                logger.error(f"DataAnalyst 工具异常 {tc['function']['name']}: {e}")
+                return {"tool_call_id": tc["id"], "content": json.dumps({"error": f"工具执行失败: {e}"}, ensure_ascii=False)}
+
+        yield {"type": "model", "content": llm_manager._default}
+
         for i in range(max_iterations):
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            response = await llm_manager.chat_with_tools(
-                messages=local_messages, tools=self.tools, model=llm_manager._default,
-                temperature=0.3
-            )
-            if response is None:
-                yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
-                yield {"type": "done", "result": {"agent": self.name, "content": "模型不可用"}}
-                return
-            if i == 0:
-                yield {"type": "model", "content": llm_manager._default}
-            tool_calls = response.get("tool_calls", [])
-            finish_reason = response.get("finish_reason")
+            content = ""
+            tool_calls = []
 
-            reasoning = response.get("reasoning")
-            if reasoning:
-                yield {"type": "thinking", "content": reasoning}
+            async for event in llm_manager.chat_stream_with_tools_and_thinking(
+                messages=local_messages, tools=self.tools, temperature=0.3,
+                model=llm_manager._default, tool_choice="auto",
+            ):
+                t = event["type"]
+                if t == "thinking":
+                    yield event
+                elif t == "content":
+                    content += event["content"]
+                elif t == "tool_calls":
+                    tool_calls = event["tool_calls"]
 
             if not tool_calls:
-                content = response.get("content", "")
-
                 if not had_any_tool_calls and not has_preinjected_data:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
                     if warn and i < max_iterations - 1:
@@ -190,7 +200,6 @@ class DataAnalystAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            content = response.get("content") or ""
             if content:
                 yield {"type": "content", "content": content}
 
@@ -199,19 +208,6 @@ class DataAnalystAgent(BaseAgent):
                 "content": content,
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
-
-            # 执行工具
-            async def _safe_execute(tc):
-                try:
-                    func_args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    func_args = {}
-                try:
-                    result = await execute_shared_tool(tc["function"]["name"], func_args, db, user_id)
-                    return {"tool_call_id": tc["id"], "content": result}
-                except Exception as e:
-                    logger.error(f"DataAnalyst 工具异常 {tc['function']['name']}: {e}")
-                    return {"tool_call_id": tc["id"], "content": json.dumps({"error": f"工具执行失败: {e}"}, ensure_ascii=False)}
 
             results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
             for r in results:
