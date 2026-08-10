@@ -17,6 +17,36 @@ from app.services.connectors import get_connector
 class DataInspectorTools:
     _cache: dict = {}
 
+    @staticmethod
+    def _extract_samples(df, mask, columns=None, max_samples=5):
+        """从布尔 mask 中提取样本行（行号+值），供检查报告展示明细。
+
+        Args:
+            df: DataFrame
+            mask: 布尔 Series，标记问题行
+            columns: 要展示的列名列表，None 则展示所有列
+            max_samples: 最多提取几条样本
+        Returns:
+            list[dict]: [{"row": 行号(1-based), "values": {列名: 值}}]
+        """
+        import pandas as pd
+        if mask is None or not mask.any():
+            return []
+        problem_indices = df.index[mask][:max_samples]
+        samples = []
+        cols = columns if columns else list(df.columns)[:6]
+        for idx in problem_indices:
+            row_data = {}
+            for col in cols:
+                if col in df.columns:
+                    val = df.loc[idx, col]
+                    if pd.isna(val):
+                        row_data[col] = "(空)"
+                    else:
+                        row_data[str(val)] = None if pd.isna(val) else str(val)[:80]
+            samples.append({"row": int(idx) + 1, "values": {c: str(df.loc[idx, c])[:80] if not pd.isna(df.loc[idx, c]) else "(空)" for c in cols}})
+        return samples
+
     async def _load_data(self, datasource_id: str, table_name: str, db: AsyncSession, page_size: int = 50000, use_cache: bool = True) -> pd.DataFrame:
         cache_key = f"{datasource_id}:{table_name}"
         if use_cache and cache_key in self._cache:
@@ -883,6 +913,7 @@ class DataInspectorTools:
     def _profile_from_df(self, df) -> dict:
         """从 DataFrame 生成数据概览（同步，不加载 DB）"""
         try:
+            import pandas as pd
             real_row_count = len(df)
             profile = {
                 "row_count": real_row_count,
@@ -890,10 +921,13 @@ class DataInspectorTools:
                 "columns": {},
             }
             for col in df.columns:
+                non_null = df[col].dropna()
                 profile["columns"][col] = {
                     "dtype": str(df[col].dtype),
+                    "null_count": int(df[col].isna().sum()),
                     "null_rate": round(float(df[col].isna().mean()), 4),
                     "unique_count": int(df[col].nunique()),
+                    "sample_values": non_null.head(5).tolist() if len(non_null) > 0 else [],
                 }
             return profile
         except Exception as e:
@@ -970,19 +1004,22 @@ class DataInspectorTools:
                     null_rate = df[col].isna().mean()
                     if null_rate > null_thr:
                         _sev = dq_rules.get("DQ-COM-003", {}).get("severity", "warning")
-                        issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _sev, "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行"})
+                        issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _sev, "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行", "samples": self._extract_samples(df, df[col].isna(), [col])})
 
             # 唯一性
             if not quality_dimensions or "uniqueness" in quality_dimensions:
                 _id_cols = [c for c in df.columns if str(c).lower().strip() == "id" or str(c).lower().strip().endswith("_id")]
                 for col in _id_cols:
-                    dup_count = int(df[col].dropna().duplicated().sum())
+                    dup_mask = df[col].dropna().duplicated(keep=False)
+                    dup_count = int(dup_mask.sum())
                     if dup_count > 0:
-                        issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-001", "column": col, "severity": "critical", "description": f"主键列 '{col}' 存在 {dup_count} 个重复值", "suggestion": "去重或修正主键生成逻辑"})
-                dupe_count = total - len(df.drop_duplicates())
+                        dup_vals = df.loc[dup_mask.index[dup_mask], col]
+                        issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-001", "column": col, "severity": "critical", "description": f"主键列 '{col}' 存在 {dup_count} 个重复值", "suggestion": "去重或修正主键生成逻辑", "samples": [{"row": int(idx)+1, "values": {col: str(v)[:80]}} for idx, v in dup_vals.head(5).items()]})
+                dupe_mask = df.duplicated(keep=False)
+                dupe_count = int(dupe_mask.sum())
                 dupe_rate = dupe_count / total if total else 0
                 if dupe_count > 0 and dupe_rate > dupe_thr:
-                    issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-003", "severity": "error", "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）", "suggestion": "建议执行去重操作"})
+                    issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-003", "severity": "error", "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）", "suggestion": "建议执行去重操作", "samples": self._extract_samples(df, dupe_mask)})
 
             # 有效性
             if not quality_dimensions or "validity" in quality_dimensions:
@@ -994,9 +1031,10 @@ class DataInspectorTools:
                             iqr = q3 - q1
                             if iqr > 0:
                                 lower, upper = q1 - 3 * iqr, q3 + 3 * iqr
-                                outlier_count = ((non_null < lower) | (non_null > upper)).sum()
+                                outlier_mask = (df[col] < lower) | (df[col] > upper)
+                                outlier_count = int(outlier_mask.sum())
                                 if outlier_count > 0 and outlier_count / len(non_null) > 0.01:
-                                    issues.append({"dimension": "validity", "rule_id": "DQ-VAL-004", "column": col, "severity": "warning", "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法）", "suggestion": "建议检查极值是否合理"})
+                                    issues.append({"dimension": "validity", "rule_id": "DQ-VAL-004", "column": col, "severity": "warning", "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法，范围[{lower:.2f}, {upper:.2f}]）", "suggestion": "建议检查极值是否合理", "samples": self._extract_samples(df, outlier_mask, [col])})
 
             # 一致性
             if not quality_dimensions or "consistency" in quality_dimensions:
@@ -1008,7 +1046,7 @@ class DataInspectorTools:
                         e = pd.to_datetime(df[e_col], errors="coerce")
                         invalid = s.notna() & e.notna() & (e < s)
                         if invalid.any():
-                            issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": "error", "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录"})
+                            issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": "error", "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录", "samples": self._extract_samples(df, invalid, [s_col, e_col])})
 
             return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
@@ -1082,7 +1120,7 @@ class DataInspectorTools:
         }
 
     def format_report(self, results: dict) -> str:
-        """格式化检查结果为完整报告（含表格、每条规则详情）"""
+        """格式化检查结果为完整报告（含表格、每条规则详情、样本数据）"""
         lines = []
 
         if results.get("error"):
@@ -1100,13 +1138,16 @@ class DataInspectorTools:
             lines.append("## 数据概览\n总行数: %d, 总列数: %d\n" % (row_count, col_count))
             cols = profile.get("columns", {})
             if cols:
-                lines.append("| 列名 | 类型 | 空值率 | 唯一值数 |")
-                lines.append("|------|------|--------|----------|")
+                lines.append("| 列名 | 类型 | 空值数 | 空值率 | 唯一值数 | 样本值 |")
+                lines.append("|------|------|--------|--------|----------|--------|")
                 for name, info in cols.items():
                     dtype = info.get("dtype", "")
+                    null_count = info.get("null_count", 0)
                     null_rate = info.get("null_rate", 0)
                     unique = info.get("unique_count", 0)
-                    lines.append("| %s | %s | %.1f%% | %d |" % (name, dtype, null_rate * 100, unique))
+                    samples = info.get("sample_values", [])
+                    sample_str = ", ".join(str(s)[:30] for s in samples[:3]) if samples else ""
+                    lines.append("| %s | %s | %d | %.1f%% | %d | %s |" % (name, dtype, null_count, null_rate * 100, unique, sample_str))
 
         # 三项检查
         for dim, label in [("standards", "标准检查"), ("quality", "质量检查"), ("security", "安全检查")]:
@@ -1119,15 +1160,26 @@ class DataInspectorTools:
                 error_count = sum(1 for i in issues if i.get("severity") in ("error", "critical", "fatal"))
                 warning_count = sum(1 for i in issues if i.get("severity") == "warning")
                 lines.append("\n## %s\n❌ %d 个问题（%d error/critical, %d warning）:\n" % (label, len(issues), error_count, warning_count))
-                lines.append("| 序号 | 规则ID | 严重等级 | 列名 | 问题描述 | 修复建议 |")
-                lines.append("|------|--------|----------|------|----------|----------|")
                 for idx, issue in enumerate(issues, 1):
                     sev = issue.get("severity", "warning")
                     rule_id = issue.get("rule_id", "")
                     col = issue.get("column", "")
                     desc = issue.get("description", "")
                     sug = issue.get("suggestion", "")
-                    lines.append("| %d | %s | %s | %s | %s | %s |" % (idx, rule_id, sev, col, desc, sug))
+                    lines.append("### %d. [%s] %s" % (idx, sev.upper(), desc))
+                    if rule_id:
+                        lines.append("- 规则ID: %s" % rule_id)
+                    if col:
+                        lines.append("- 列名: %s" % col)
+                    if sug:
+                        lines.append("- 修复建议: %s" % sug)
+                    samples = issue.get("samples", [])
+                    if samples:
+                        lines.append("- 问题样本（行号→值）:")
+                        for s in samples:
+                            vals = ", ".join("%s=%s" % (k, v) for k, v in s.get("values", {}).items())
+                            lines.append("  - 第%d行: %s" % (s.get("row", 0), vals))
+                    lines.append("")
 
         return "\n".join(lines)
 

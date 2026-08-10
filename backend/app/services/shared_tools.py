@@ -91,7 +91,7 @@ SHARED_TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_user_datasources",
-            "description": "列出用户已连接的数据源，包括名称、类型、表列表。注意：会逐个连接数据源获取表列表，数据源多时较慢",
+            "description": "列出用户所有可用的数据源（名称、UUID、类型）。调用此工具获取数据源名称与UUID的映射关系，再用其他工具操作具体数据源。调试模式下可用此工具查找用户提到的数据源名称对应的UUID。",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -268,7 +268,7 @@ async def get_table_schema(args: dict, db: AsyncSession, user_id) -> str:
 
 
 async def list_user_datasources(db: AsyncSession, user_id) -> str:
-    """列出用户数据源。"""
+    """列出用户所有数据源（名称+UUID+类型）。"""
     try:
         result = await db.execute(
             select(DataSource).where(
@@ -277,24 +277,12 @@ async def list_user_datasources(db: AsyncSession, user_id) -> str:
             )
         )
         sources = result.scalars().all()
-        data = []
-        for ds in sources:
-            item = {"id": str(ds.id), "name": ds.name, "type": ds.type}
-            try:
-                connector = get_connector(ds.type, ds.connection_config or {})
-                schema = await connector.get_schema()
-                item["tables"] = [s.get("table_name", "") for s in schema if s.get("table_name")]
-            except Exception as e:
-                logger.warning(f"数据源 '{ds.name}' schema 获取失败: {e}")
-                item["tables"] = []
-                item["error"] = str(e)
-            finally:
-                try:
-                    await connector.close()
-                except Exception:
-                    pass
-            data.append(item)
-        return json.dumps({"datasources": data}, ensure_ascii=False)
+        return json.dumps({
+            "datasources": [
+                {"name": s.name, "id": str(s.id), "type": s.type}
+                for s in sources
+            ]
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

@@ -147,6 +147,8 @@ GREP_SCRIPT_TOOL = {
 }
 
 DEBUG_TOOLS = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
+_LIST_DATASOURCES_TOOL = next(t for t in SHARED_TOOL_SCHEMAS if t["function"]["name"] == "list_user_datasources")
+DEBUG_TOOLS.append(_LIST_DATASOURCES_TOOL)
 
 # 自定义扩展工具（save_connector + save_llm_adapter）
 
@@ -1007,12 +1009,8 @@ class DataProcessorAgent(BaseAgent):
         if name == "run_script":
             script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
             parameters = arguments.get("parameters", {})
-            for key in ["datasource_id", "datasource_name"]:
+            for key in ["datasource_id", "datasource_name", "source_datasource_id", "target_datasource_id"]:
                 parameters.pop(key, None)
-            if not parameters and context.get("debug_last_success_params"):
-                parameters = dict(context["debug_last_success_params"])
-                for key in ["datasource_id", "datasource_name", "datasource", "table_name"]:
-                    parameters.pop(key, None)
             try:
                 if context.get("debug_type") == "operator":
                     # 算子：exec() 沙箱执行
@@ -1064,9 +1062,9 @@ class DataProcessorAgent(BaseAgent):
                     if not folder:
                         return json.dumps({"success": False, "error": "缺少 folder"})
                     from app.services.skill_runner import run_skill_script_streaming_async
-                    ds_id = context.get("debug_datasource_id")
-                    ds_name = context.get("debug_datasource_name")
-                    tbl = context.get("debug_table_name")
+                    ds_id = context.get("debug_source_datasource_id") or context.get("debug_datasource_id")
+                    ds_name = context.get("debug_source_datasource_name") or context.get("debug_datasource_name")
+                    tbl = context.get("debug_source_table_name") or context.get("debug_table_name")
                     # 技能级运行：按 SKILL.md 参数规范校验必选参数（非阻断，仅告警）
                     _param_warning = self._check_required_params(context, parameters)
                     result = None
@@ -1405,28 +1403,41 @@ class DataProcessorAgent(BaseAgent):
         _DEBUG_STATIC_PROMPT_CACHE[cache_key] = prompt
         return prompt
 
-    def build_debug_dynamic_hints(self, context: Dict[str, Any]) -> str:
+    def build_debug_dynamic_hints(self, context: Dict[str, Any], user_message: str = "") -> str:
         """构建调试模式动态提示（注入为 user 消息，不进 system prompt）。
 
-        会话级动态信息：入口函数提示、最近成功参数、本次执行参数、数据源/表上下文。
-        每轮的工具调用结果已在 tool 消息中，不在此重复注入。
+        会话级动态信息：入口函数提示、最近成功参数、本次执行参数、双数据源上下文、
+        所有可用数据源列表（供 LLM 匹配用户提到的名称→UUID）。
         """
         parts = []
         if context.get("debug_function_name") == "_pipeline_entry":
             parts.append("入口函数 _pipeline_entry 参数已固化，直接调 run_script 执行即可，不需要先读脚本")
         last_params = context.get("debug_last_success_params")
         if last_params:
-            parts.append(f"最近成功参数: {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
+            parts.append(f"参考：上次成功执行的参数为 {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}，本次请以用户当前指令的源表、目标表、参数为准")
         debug_params = context.get("debug_parameters")
         if debug_params:
             parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
 
-        ctx = context.get("debug_user_context", {})
-        if ctx:
-            _ds = ctx.get("datasource_name") or ""
-            _tbl = ctx.get("table_name") or ""
-            if _ds or _tbl:
-                parts.append(f"数据源: {_ds}, 表: {_tbl}")
+        # 双数据源上下文（源端 + 目标端）
+        _src_ds = context.get("debug_source_datasource_name", "")
+        _src_tbl = context.get("debug_source_table_name", "")
+        _tgt_ds = context.get("debug_target_datasource_name", "")
+        _tgt_tbl = context.get("debug_target_table_name", "")
+        if _src_ds or _tgt_ds:
+            _ds_lines = []
+            if _src_ds:
+                _ds_lines.append(f"  源数据源: {_src_ds}" + (f", 表: {_src_tbl}" if _src_tbl else ""))
+            if _tgt_ds:
+                _ds_lines.append(f"  目标数据源: {_tgt_ds}" + (f", 表: {_tgt_tbl}" if _tgt_tbl else ""))
+            parts.append("当前技能关联的数据源：\n" + "\n".join(_ds_lines))
+
+        # 注入所有可用数据源列表（名称+UUID），让 LLM 能匹配用户提到的数据源名称
+        _all_ds = context.get("debug_all_datasources") or []
+        if _all_ds:
+            _ds_list = "\n".join(f"  - {d['name']} (UUID: {d['id']}, 类型: {d['type']})" for d in _all_ds)
+            parts.append(f"用户所有可用数据源：\n{_ds_list}\n\n用户指令中提到的数据源名称，请从上述列表中找到对应UUID，再调用工具。")
+
         return "\n\n".join(parts) if parts else ""
 
     async def run_debug(
@@ -1463,7 +1474,8 @@ class DataProcessorAgent(BaseAgent):
                 local_messages.extend(history)
 
         # 动态提示（会话级参数/上下文，拼到用户消息前缀，不进 system prompt 保证字节稳定）
-        _dynamic_hints = self.build_debug_dynamic_hints(context)
+        _user_msg = message.payload.get("user_message", "") if message.payload else ""
+        _dynamic_hints = self.build_debug_dynamic_hints(context, _user_msg)
 
         # 用户消息
         # 消息处理：区分初始用户消息 vs DataInspector 回交的修复请求
@@ -1490,7 +1502,7 @@ class DataProcessorAgent(BaseAgent):
                 fix_prompt += "\n"
             fix_prompt += "\n请分析问题根源，修改脚本修复，修复后重新执行。"
             if _dynamic_hints:
-                fix_prompt = _dynamic_hints + "\n\n" + fix_prompt
+                fix_prompt = fix_prompt + "\n\n" + _dynamic_hints
             local_messages.append({"role": "user", "content": fix_prompt})
             user_msg = fix_prompt
         else:
@@ -1499,7 +1511,7 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "done", "result": {"error": "空消息"}}
                 return
             if _dynamic_hints:
-                user_msg = _dynamic_hints + "\n\n" + user_msg
+                user_msg = user_msg + "\n\n" + _dynamic_hints
             local_messages.append({"role": "user", "content": user_msg})
 
         # 调试模式工具（对齐 OpenCode：5 个工具，职责清晰）
@@ -1507,7 +1519,8 @@ class DataProcessorAgent(BaseAgent):
         # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
         # 4 个工具对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep
         # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
-        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
+        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
+                       _LIST_DATASOURCES_TOOL]
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化，只数 fix 工具
@@ -1730,9 +1743,6 @@ class DataProcessorAgent(BaseAgent):
                     elif tool_name == "query_table_data" and _rd.get("success"):
                         _rows = _rd.get("row_count", 0)
                         _result_lines.append(f"  查询: {_rows} 行")
-                    elif tool_name == "list_user_datasources" and _rd.get("success"):
-                        _cnt = len(_rd.get("datasources", _rd.get("data", [])))
-                        _result_lines.append(f"  数据源: {_cnt} 个")
                 except Exception as e:
                     logger.warning(f"调查工具摘要生成失败(非致命): {e}")
 
@@ -1829,8 +1839,17 @@ class DataProcessorAgent(BaseAgent):
             if _should_handoff:
                 # 保存 local_messages 到 context，供 Inspector 回交时恢复（跨 handoff 上下文持久化）
                 context["_processor_local_messages"] = local_messages
-                ds_id = context.get("debug_output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
-                tbl = _handoff_output_table or context.get("debug_table_name") or context.get("current_table_name", "")
+                # 检查目标：优先 written_tables → 目标数据源 → 源数据源（向后兼容）
+                ds_id = (context.get("debug_output_datasource_id")
+                         or context.get("debug_target_datasource_id")
+                         or context.get("debug_source_datasource_id")
+                         or context.get("debug_datasource_id")
+                         or context.get("current_datasource_id", ""))
+                tbl = (_handoff_output_table
+                       or context.get("debug_target_table_name")
+                       or context.get("debug_source_table_name")
+                       or context.get("debug_table_name")
+                       or context.get("current_table_name", ""))
                 logger.info(f"[run_debug] 执行成功 output_ds={ds_id} output_table={tbl}")
                 if not ds_id or not tbl:
                     yield {"type": "content", "content": f"\n⚠ 执行成功但无法确定检查目标（数据源ID={ds_id or '空'}, 表名={tbl or '空'}），跳过质量检查\n"}

@@ -214,8 +214,17 @@ class AgentRuntime:
             # Processor 执行成功 → 交 Inspector 检查
             if not done_result.get("execution_success"):
                 return None
-            ds_id = done_result.get("output_datasource_id") or context.get("debug_datasource_id") or context.get("current_datasource_id", "")
-            tbl = done_result.get("output_table") or context.get("debug_table_name") or context.get("current_table_name", "")
+            # 检查目标：优先 written_tables → 目标数据源 → 源数据源
+            ds_id = (done_result.get("output_datasource_id")
+                     or context.get("debug_target_datasource_id")
+                     or context.get("debug_source_datasource_id")
+                     or context.get("debug_datasource_id")
+                     or context.get("current_datasource_id", ""))
+            tbl = (done_result.get("output_table")
+                   or context.get("debug_target_table_name")
+                   or context.get("debug_source_table_name")
+                   or context.get("debug_table_name")
+                   or context.get("current_table_name", ""))
             if not ds_id or not tbl:
                 return None
             if context.get("debug_max_inspections", 7) <= 0:
@@ -241,8 +250,14 @@ class AgentRuntime:
             _round = context.get("debug_inspection_round", 0)
             if _round >= context.get("debug_max_inspections", 7):
                 return None
-            ds_id = context.get("current_datasource_id", "") or context.get("debug_datasource_id", "")
-            tbl = context.get("current_table_name", "") or context.get("debug_table_name", "")
+            ds_id = (context.get("debug_target_datasource_id", "")
+                     or context.get("debug_source_datasource_id", "")
+                     or context.get("debug_datasource_id", "")
+                     or context.get("current_datasource_id", ""))
+            tbl = (context.get("debug_target_table_name", "")
+                   or context.get("debug_source_table_name", "")
+                   or context.get("debug_table_name", "")
+                   or context.get("current_table_name", ""))
             return ("data_processor", HandoffReason.FIX_REQUIRED, {
                 "issues": issues,
                 "summary": (done_result.get("content") or "")[:500],
@@ -301,11 +316,19 @@ def build_debug_context(
     last_success_params=None,
     max_rounds: int = 7,
     max_inspections: int = 7,
+    source_datasource_id: str = None,
+    source_datasource_name: str = None,
+    source_table_name: str = None,
+    target_datasource_id: str = None,
+    target_datasource_name: str = None,
+    target_table_name: str = None,
     **extras,
 ) -> Dict[str, Any]:
     """构建调试 context 核心字段 + 类型特定字段（skill/operator/pipeline 共享）。
 
+    source_* / target_*：双数据源（源端+目标端，可能为同一物理数据源）。
     extras 中的键直接合并到 context（如 debug_pipeline_id, debug_skill_md 等）。
+    旧字段 debug_datasource_id/name 和 debug_table_name 保持兼容（向后兼容为源端）。
     """
     context = {
         "debug_mode": True,
@@ -321,8 +344,21 @@ def build_debug_context(
         "debug_user_context": user_context or {},
         "debug_max_rounds": max_rounds,
         "debug_max_inspections": max_inspections,
+        "debug_source_datasource_id": source_datasource_id or "",
+        "debug_source_datasource_name": source_datasource_name or "",
+        "debug_source_table_name": source_table_name or "",
+        "debug_target_datasource_id": target_datasource_id or "",
+        "debug_target_datasource_name": target_datasource_name or "",
+        "debug_target_table_name": target_table_name or "",
     }
     context.update(extras)
+    # 向后兼容：旧字段映射到源端
+    if not context.get("debug_source_datasource_id") and context.get("debug_datasource_id"):
+        context["debug_source_datasource_id"] = context["debug_datasource_id"]
+    if not context.get("debug_source_datasource_name") and context.get("debug_datasource_name"):
+        context["debug_source_datasource_name"] = context["debug_datasource_name"]
+    if not context.get("debug_source_table_name") and context.get("debug_table_name"):
+        context["debug_source_table_name"] = context["debug_table_name"]
     return context
 
 

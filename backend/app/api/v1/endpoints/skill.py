@@ -809,14 +809,38 @@ async def debug_skill_chat(
 
     import json as json_mod
 
-    # 数据源信息
-    ds_name = None
-    if request.datasource_id:
+    # 双数据源：源端 + 目标端（向后兼容：旧 datasource_id/table_name → 源端）
+    src_ds_id = request.source_datasource_id or request.datasource_id
+    src_table = request.source_table_name or request.table_name
+    tgt_ds_id = request.target_datasource_id
+    tgt_table = request.target_table_name
+
+    src_ds_name = None
+    tgt_ds_name = None
+    if src_ds_id:
         from app.models.datasource import DataSource as DSModel
-        ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(request.datasource_id)))
+        ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(src_ds_id)))
         ds_obj = ds_obj_result.scalar_one_or_none()
         if ds_obj:
-            ds_name = ds_obj.name
+            src_ds_name = ds_obj.name
+    if tgt_ds_id:
+        from app.models.datasource import DataSource as DSModel
+        ds_obj_result = await db.execute(select(DSModel).where(DSModel.id == UUID(tgt_ds_id)))
+        ds_obj = ds_obj_result.scalar_one_or_none()
+        if ds_obj:
+            tgt_ds_name = ds_obj.name
+
+    # 加载所有可用数据源列表（供 LLM 匹配名称→UUID）
+    all_ds_list = []
+    try:
+        from app.models.datasource import DataSource as DSModel2
+        ds_all_result = await db.execute(
+            select(DSModel2).where(DSModel2.created_by == current_user.id, DSModel2.is_active == True)
+        )
+        for ds in ds_all_result.scalars().all():
+            all_ds_list.append({"name": ds.name, "id": str(ds.id), "type": ds.type})
+    except Exception:
+        pass
 
     # 提取参数规范
     import re as _re_extract
@@ -862,13 +886,20 @@ async def debug_skill_chat(
         lessons=lessons,
         user_context=request.context,
         last_success_params=last_success_params,
+        source_datasource_id=src_ds_id,
+        source_datasource_name=src_ds_name,
+        source_table_name=src_table,
+        target_datasource_id=tgt_ds_id,
+        target_datasource_name=tgt_ds_name,
+        target_table_name=tgt_table,
         debug_folder=folder,
         debug_skill_md=skill_md_excerpt,
         debug_skill_md_full=skill_md,
         debug_params_section=params_section,
-        debug_datasource_id=request.datasource_id,
-        debug_datasource_name=ds_name,
-        debug_table_name=request.table_name,
+        debug_datasource_id=src_ds_id,
+        debug_datasource_name=src_ds_name,
+        debug_table_name=src_table,
+        debug_all_datasources=all_ds_list,
     )
 
     message = build_debug_message(request.message, context)

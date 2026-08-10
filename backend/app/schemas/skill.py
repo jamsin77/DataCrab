@@ -104,8 +104,12 @@ class SkillDebugChatRequest(BaseModel):
     message: str = Field(..., description="用户调试消息")
     history: list = Field(default_factory=list, description="对话历史 [{role, content}]")
     script_name: str = Field(default="main.py", description="脚本名称")
-    datasource_id: Optional[str] = Field(None, description="数据源ID")
-    table_name: Optional[str] = Field(None, description="表名")
+    datasource_id: Optional[str] = Field(None, description="数据源ID（向后兼容，等同于 source_datasource_id）")
+    table_name: Optional[str] = Field(None, description="表名（向后兼容，等同于 source_table_name）")
+    source_datasource_id: Optional[str] = Field(None, description="源数据源ID")
+    source_table_name: Optional[str] = Field(None, description="源表名")
+    target_datasource_id: Optional[str] = Field(None, description="目标数据源ID")
+    target_table_name: Optional[str] = Field(None, description="目标表名")
     context: Optional[dict] = Field(None, description="左侧执行面板上下文")
 
 

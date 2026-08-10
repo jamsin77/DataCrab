@@ -536,6 +536,16 @@
                       <span>{{ m }}</span>
                     </div>
                   </div>
+                  <el-collapse v-if="msg.stdouts && msg.stdouts.length" model-value="['logs']">
+                    <el-collapse-item name="logs">
+                      <template #title>
+                        <el-icon style="margin-right: 4px;"><Document /></el-icon>
+                        <span class="collapse-label">处理日志</span>
+                        <el-button text size="small" @click.stop="copyText(msg.stdouts.join('\n\n'))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                      </template>
+                      <pre class="debug-stdout-archive">{{ msg.stdouts.join('\n\n') }}</pre>
+                    </el-collapse-item>
+                  </el-collapse>
                   <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
@@ -670,7 +680,7 @@
           <el-tab-pane :label="`历史错误 (${(experienceData.negative || []).length})`">
             <div v-if="(experienceData.negative || []).length" style="max-height:400px;overflow-y:auto">
               <div v-for="(err, i) in experienceData.negative" :key="i" class="exp-error-item">
-                <div class="exp-error-time">{{ err.timestamp }}</div>
+                <div class="exp-error-time">{{ formatTime(err.timestamp) }}</div>
                 <div class="exp-error-msg"><pre>{{ err.error_message }}</pre></div>
                 <div v-if="err.stdout_preview" class="exp-error-stdout"><pre>{{ err.stdout_preview }}</pre></div>
               </div>
@@ -680,7 +690,7 @@
           <el-tab-pane :label="`成功记录 (${(experienceData.positive || []).length})`">
             <div v-if="(experienceData.positive || []).length" style="max-height:400px;overflow-y:auto">
               <div v-for="(pos, i) in experienceData.positive" :key="i" class="exp-positive-item">
-                <div class="exp-error-time">{{ pos.timestamp }}</div>
+                <div class="exp-error-time">{{ formatTime(pos.timestamp) }}</div>
                 <div class="exp-error-msg">{{ pos.result_summary }}</div>
               </div>
             </div>
@@ -699,10 +709,12 @@ import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
   Promotion, ChatDotRound, InfoFilled, Share, VideoPause, CircleCheck,
+  Document,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
+import { formatTime, timePrefix } from '@/utils/time'
 
 const router = useRouter()
 const skills = ref<any[]>([])
@@ -1500,8 +1512,7 @@ let debugAbortController: AbortController | null = null
 const skillPinnedToBottom = ref(true)
 
 function formatMsgTime(ts?: string): string {
-  if (!ts) return ''
-  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return '' }
+  return formatTime(ts)
 }
 
 function copyText(text: string) {
@@ -1540,8 +1551,7 @@ function onSkillListScroll() {
 // 执行流式：在消息列表中开一条 live 助手消息，返回其索引
 function startExecMessage(userText: string, initialExecutingMsg?: string): number {
   debugMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
-  const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  debugMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, executingMsgs: initialExecutingMsg ? [`[${timeStr}] ${initialExecutingMsg}`] : [], created_at: new Date().toISOString() })
+  debugMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, executingMsgs: initialExecutingMsg ? [`[${timePrefix()}] ${initialExecutingMsg}`] : [], created_at: new Date().toISOString() })
   nextTick(() => scrollSkillDebugToBottom(true))
   return debugMessages.value.length - 1
 }
@@ -1621,9 +1631,8 @@ function processDebugSSEEvent(
       msg.llmContent = (msg.llmContent || '') + data.content
       break
     case 'tool_action': {
-      // 工具调用显示卡片（不进 llmContent）
       msg.toolActions = msg.toolActions || []
-      const _taTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const _taTime = timePrefix()
       for (const act of (data.actions || [])) {
         const icon = act.icon || ''
         const script = act.script || 'main.py'
@@ -1638,8 +1647,7 @@ function processDebugSSEEvent(
       break
     }
     case 'tool_summary': {
-      // 工具结果摘要（不进 llmContent）
-      const _tsTime = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const _tsTime = timePrefix()
       for (const s of (data.summaries || [])) {
         msg.content += (msg.content ? '\n' : '') + `[${_tsTime}] ${s}`
       }
@@ -2255,9 +2263,11 @@ async function handleRunSkillNL() {
         message: userQuery + '\n\n（只执行不修改代码，直接用当前脚本运行）',
         history,
         script_name: debugScriptName.value,
-        datasource_id: cmdExampleDsName.value
-          ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
-          : undefined,
+        datasource_id: userQuery.includes('数据源')
+          ? undefined
+          : (cmdExampleDsName.value
+            ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
+            : undefined),
         table_name: cmdExampleTableName.value || undefined,
         context: {
           exec_tab: 'nl',
@@ -3313,6 +3323,17 @@ onMounted(() => {
     color: #67c23a;
     font-size: 14px;
   }
+}
+
+.debug-stdout-archive {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #909399;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
 }
 
 .debug-msg-content {
