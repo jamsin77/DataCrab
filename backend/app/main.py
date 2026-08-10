@@ -366,6 +366,25 @@ app.add_middleware(
 # 注册API路由
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+# SPA 静态文件托管（桌面部署用——前端构建到 frontend/dist，由后端统一提供服务）
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path as _Path
+
+_frontend_dist = _Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if _frontend_dist.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dist / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        """SPA fallback：所有非API路由返回 index.html"""
+        if full_path.startswith(("api/", "health")):
+            return {"detail": "Not Found"}
+        file_path = _frontend_dist / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_frontend_dist / "index.html"))
+
 
 @app.get("/health")
 async def health_check():
