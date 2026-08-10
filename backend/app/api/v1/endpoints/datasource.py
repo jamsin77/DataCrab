@@ -42,7 +42,7 @@ from app.schemas.datasource import (
     QualityAnalysisResponse,
     _SENSITIVE_KEYS,
 )
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, verify_internal_token
 
 router = APIRouter()
 
@@ -450,7 +450,7 @@ async def get_table_quality(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/data")
+@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/data", dependencies=[Depends(verify_internal_token)])
 async def internal_get_table_data(
     datasource_id: UUID,
     table_name: str,
@@ -482,7 +482,7 @@ async def internal_get_table_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/internal/datasources/{datasource_id}/schema")
+@router.get("/internal/datasources/{datasource_id}/schema", dependencies=[Depends(verify_internal_token)])
 async def internal_get_schema(
     datasource_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -501,14 +501,14 @@ async def internal_get_schema(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/internal/datasources")
+@router.get("/internal/datasources", dependencies=[Depends(verify_internal_token)])
 async def internal_list_datasources(db: AsyncSession = Depends(get_db)):
     """内部列出数据源（无认证，仅供技能执行器子进程本机调用）"""
     result = await db.execute(select(DataSource).where(DataSource.is_active == True))
     return [{"id": str(s.id), "name": s.name, "type": s.type} for s in result.scalars().all()]
 
 
-@router.post("/internal/datasources/{datasource_id}/tables/{table_name}/data")
+@router.post("/internal/datasources/{datasource_id}/tables/{table_name}/data", dependencies=[Depends(verify_internal_token)])
 async def internal_write_table_data(
     datasource_id: UUID,
     table_name: str,
@@ -562,7 +562,7 @@ async def internal_write_table_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/internal/llm/chat")
+@router.post("/internal/llm/chat", dependencies=[Depends(verify_internal_token)])
 async def internal_llm_chat(body: dict):
     """内部 LLM 对话端点（无认证，仅供技能执行器子进程本机调用）。
     通过 user_id 加载用户级 LLM 配置（含私有 API Key），确保技能脚本中的
@@ -591,7 +591,7 @@ async def internal_llm_chat(body: dict):
         reset_user_llm_config()
 
 
-@router.post("/internal/llm/vision")
+@router.post("/internal/llm/vision", dependencies=[Depends(verify_internal_token)])
 async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
     """内部 LLM 视觉端点（无认证，仅供技能执行器子进程本机调用）。
     读取图片 → base64 编码 → 发送给视觉大模型 → 返回文本。"""
@@ -679,7 +679,7 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
 
 # ==================== 内部视频处理端点 ====================
 
-@router.post("/internal/video/info")
+@router.post("/internal/video/info", dependencies=[Depends(verify_internal_token)])
 async def internal_video_info(body: dict, db: AsyncSession = Depends(get_db)):
     """内部视频信息提取端点（无认证，仅供技能执行器子进程本机调用）。
     提取视频元数据：时长、分辨率、帧率、编码等。"""
@@ -710,7 +710,7 @@ async def internal_video_info(body: dict, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/internal/video/keyframes")
+@router.post("/internal/video/keyframes", dependencies=[Depends(verify_internal_token)])
 async def internal_video_keyframes(body: dict, db: AsyncSession = Depends(get_db)):
     """内部视频关键帧抽取端点（无认证，仅供技能执行器子进程本机调用）。
     抽取关键帧为 JPEG 图片，返回帧列表（含时间戳和图片路径）。"""
@@ -752,7 +752,7 @@ async def internal_video_keyframes(body: dict, db: AsyncSession = Depends(get_db
         logger.error(f"内部视频关键帧抽取异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/internal/datasources/{datasource_id}/sql")
+@router.post("/internal/datasources/{datasource_id}/sql", dependencies=[Depends(verify_internal_token)])
 async def internal_execute_sql(
     datasource_id: UUID,
     body: dict,
@@ -788,7 +788,7 @@ async def internal_execute_sql(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/internal/datasources/{datasource_id}/tables")
+@router.get("/internal/datasources/{datasource_id}/tables", dependencies=[Depends(verify_internal_token)])
 async def internal_list_tables(
     datasource_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -807,7 +807,7 @@ async def internal_list_tables(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/chunks")
+@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/chunks", dependencies=[Depends(verify_internal_token)])
 async def internal_iter_table_data(
     datasource_id: UUID,
     table_name: str,
@@ -898,7 +898,7 @@ async def _collect_allowed_dirs(db: AsyncSession, user_id) -> list[str]:
     return allowed
 
 
-@router.get("/internal/file-links")
+@router.get("/internal/file-links", dependencies=[Depends(verify_internal_token)])
 async def internal_list_file_links(
     user_id: str = Query(...),
     db: AsyncSession = Depends(get_db),
@@ -915,7 +915,7 @@ async def internal_list_file_links(
     ]
 
 
-@router.post("/internal/files/read")
+@router.post("/internal/files/read", dependencies=[Depends(verify_internal_token)])
 async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
     """内部文件读取端点（无认证，仅供技能执行器子进程本机调用）。
     自动检测格式：txt/md/log/py/json/csv/xlsx → 对应解析"""
@@ -961,7 +961,7 @@ async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"读取文件失败: {e}")
 
 
-@router.post("/internal/files/write")
+@router.post("/internal/files/write", dependencies=[Depends(verify_internal_token)])
 async def internal_write_file(body: dict, db: AsyncSession = Depends(get_db)):
     """内部文件写入端点（无认证，仅供技能执行器子进程本机调用）。
     自动检测格式：txt/json/csv → 对应序列化"""

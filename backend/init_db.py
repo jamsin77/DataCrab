@@ -5,7 +5,7 @@
 
 功能:
   1. 创建所有数据库表
-  2. 创建初始管理员用户 (admin / datacrab)
+  2. 创建初始管理员用户 (admin / 随机强密码，可用 ADMIN_INITIAL_PASSWORD 指定)
   3. 从磁盘扫描并导入技能到数据库
   4. 从 manifest.json 导入算子到数据库
 """
@@ -13,6 +13,7 @@
 import asyncio
 import json
 import os
+import secrets
 import sys
 import uuid
 from pathlib import Path
@@ -51,7 +52,7 @@ async def init_database():
 
     await engine.dispose()
     print("\n" + "=" * 50)
-    print("初始化完成! 默认账号: admin / datacrab")
+    print("初始化完成! 管理员账号已创建，密码见上方输出")
     print("=" * 50)
 
 
@@ -61,11 +62,12 @@ async def create_admin(db):
         print("[2/4] 管理员用户已存在，跳过")
         return
 
+    admin_password = os.environ.get("ADMIN_INITIAL_PASSWORD") or secrets.token_urlsafe(12)
     admin = User(
         id=uuid.uuid4(),
         username="admin",
         email="admin@datacrab.local",
-        password_hash=get_password_hash("datacrab"),
+        password_hash=get_password_hash(admin_password),
         display_name="管理员",
         is_active=True,
         is_superuser=True,
@@ -81,7 +83,7 @@ async def create_admin(db):
     )
     db.add(role)
     admin.roles.append(role)
-    print("[2/4] 管理员用户已创建 (admin / datacrab)")
+    print(f"[2/4] 管理员用户已创建 (admin / {admin_password})")
 
 
 async def import_skills(db):

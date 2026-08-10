@@ -14,7 +14,7 @@ KB_CHROMA_DIR = os.path.join(_BACKEND_DIR, "data", "kb_chroma")
 os.makedirs(KB_DOC_DIR, exist_ok=True)
 os.makedirs(KB_CHROMA_DIR, exist_ok=True)
 
-KB_COLLECTION = "datacrab_kb"
+KB_COLLECTION = "datacow_kb"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 80
 

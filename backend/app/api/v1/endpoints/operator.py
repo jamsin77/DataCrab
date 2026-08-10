@@ -38,7 +38,7 @@ from app.services.llm import llm_manager, init_user_llm_context
 from app.services import experience
 from app.services.sandbox_ns import build_operator_namespace as _build_operator_namespace, run_async_in_thread as _run_async_in_thread
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, verify_internal_token
 
 
 async def _system_prompt_with_lessons(db: AsyncSession, current_user: User) -> str:
@@ -1312,7 +1312,7 @@ async def summarize_operator_experience(
 # ============================================================
 # 内部端点：供技能沙箱子进程调用算子（无认证，本机调用）
 # ============================================================
-@router.post("/internal/execute")
+@router.post("/internal/execute", dependencies=[Depends(verify_internal_token)])
 async def internal_execute_operator(body: dict, db: AsyncSession = Depends(get_db)):
     """内部算子执行端点（无认证，仅供技能执行器子进程本机调用）。
     根据算子名称或 ID 加载脚本并执行，返回结果。"""

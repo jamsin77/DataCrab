@@ -3,12 +3,13 @@
 from typing import AsyncGenerator
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import decode_token
 from app.models.user import User
 
@@ -58,6 +59,18 @@ async def get_current_user(
         )
 
     return user
+
+
+async def verify_internal_token(
+    x_internal_token: str = Header(default=""),
+) -> bool:
+    """内部接口令牌校验，防止公网直接访问技能沙箱专用通道。"""
+    if not settings.INTERNAL_API_TOKEN or x_internal_token != settings.INTERNAL_API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="内部接口禁止公网访问",
+        )
+    return True
 
 
 async def get_current_active_superuser(

@@ -37,8 +37,8 @@
       </el-form>
       <div class="register-link">
         还没有账号？
-        <el-link type="primary" @click="showRegister = true">注册</el-link>
-        <span class="divider">|</span>
+        <el-link v-if="registrationEnabled" type="primary" @click="showRegister = true">注册</el-link>
+        <span v-if="registrationEnabled" class="divider">|</span>
         <el-link type="primary" @click="showReset = true">忘记密码</el-link>
       </div>
       <div v-if="version" class="login-version">v{{ version }}</div>
@@ -100,9 +100,16 @@ const router = useRouter()
 const authStore = useAuthStore()
 const versionStore = useVersionStore()
 const version = ref('')
+const registrationEnabled = ref(false)
 
 onMounted(async () => {
   version.value = await versionStore.loadVersion()
+  try {
+    const cfg = await authApi.getPublicConfig()
+    registrationEnabled.value = cfg.registration_enabled
+  } catch {
+    registrationEnabled.value = false
+  }
 })
 
 const formRef = ref<FormInstance>()

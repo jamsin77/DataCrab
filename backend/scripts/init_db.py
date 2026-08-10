@@ -1,6 +1,8 @@
 """数据库初始化脚本 - 创建初始数据"""
 
 import asyncio
+import os
+import secrets
 from sqlalchemy import select
 from app.core.database import async_session, engine, Base
 from app.models.user import User, Role
@@ -38,11 +40,12 @@ async def init_db():
         session.add(user_role)
         await session.flush()
 
-        # 创建管理员用户
+        # 创建管理员用户（默认随机强密码，可用 ADMIN_INITIAL_PASSWORD 指定）
+        admin_password = os.environ.get("ADMIN_INITIAL_PASSWORD") or secrets.token_urlsafe(12)
         admin = User(
             username="admin",
             email="admin@datacrab.com",
-            password_hash=get_password_hash("admin123"),
+            password_hash=get_password_hash(admin_password),
             display_name="管理员",
             is_superuser=True,
             is_active=True,
@@ -52,7 +55,7 @@ async def init_db():
 
         await session.commit()
         print("初始数据创建完成")
-        print("管理员账号: admin / admin123")
+        print(f"管理员账号: admin / {admin_password}")
 
 
 if __name__ == "__main__":

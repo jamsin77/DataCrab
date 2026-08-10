@@ -1,5 +1,6 @@
 """Alembic环境配置"""
 
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -19,7 +20,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline():
-    url = settings.DATABASE_URL
+    url = os.environ.get("DATABASE_URL") or settings.DATABASE_URL
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -31,8 +32,9 @@ def run_migrations_offline():
 
 
 def run_migrations_online():
+    database_url = os.environ.get("DATABASE_URL") or settings.DATABASE_URL
     connectable = engine_from_config(
-        {"sqlalchemy.url": settings.DATABASE_URL},
+        {"sqlalchemy.url": database_url},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

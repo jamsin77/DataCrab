@@ -25,8 +25,18 @@ from app.schemas.auth import (
     ResetPasswordRequest,
 )
 from app.api.deps import get_current_user
+from app.core.config import settings
 
 router = APIRouter()
+
+
+@router.get("/config")
+async def get_public_config():
+    """公开配置：前端据此决定是否展示注册入口。"""
+    return {
+        "app_name": settings.APP_NAME,
+        "registration_enabled": settings.ENABLE_REGISTRATION,
+    }
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -35,6 +45,11 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     """用户注册"""
+    if not settings.ENABLE_REGISTRATION:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="注册已关闭，请联系管理员创建账号",
+        )
     # 检查用户名是否已存在
     result = await db.execute(select(User).where(User.username == request.username))
     if result.scalar_one_or_none():

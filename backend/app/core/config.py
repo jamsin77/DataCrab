@@ -1,5 +1,7 @@
 """应用配置模块"""
 
+import os as _os
+import secrets as _secrets
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -12,9 +14,11 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
+    # 公网默认关闭注册，管理员通过后台创建账号
+    ENABLE_REGISTRATION: bool = False
 
     # 数据库配置
-    DATABASE_URL: str = "sqlite+aiosqlite:///./datacrab.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./datacow.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
 
@@ -23,7 +27,9 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: Optional[str] = None
 
     # JWT配置
-    JWT_SECRET_KEY: str = "datacrab-secret-key-change-in-production"
+    JWT_SECRET_KEY: str = ""
+    # 内部接口令牌：技能沙箱子进程调用后端时通过 X-Internal-Token 校验
+    INTERNAL_API_TOKEN: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7天
@@ -81,6 +87,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if not settings.JWT_SECRET_KEY:
+    if settings.DEBUG:
+        settings.JWT_SECRET_KEY = _secrets.token_urlsafe(48)
+    else:
+        raise RuntimeError("JWT_SECRET_KEY must be set in production")
+
+if not settings.INTERNAL_API_TOKEN:
+    settings.INTERNAL_API_TOKEN = _secrets.token_urlsafe(32)
+_os.environ.setdefault("INTERNAL_API_TOKEN", settings.INTERNAL_API_TOKEN)
 
 import os as _os
 if not _os.path.isabs(settings.SKILL_STORAGE_PATH):

@@ -18,6 +18,11 @@ export interface TokenResponse {
   token_type: string
 }
 
+export interface PublicConfig {
+  app_name: string
+  registration_enabled: boolean
+}
+
 export interface UserInfo {
   id: string
   username: string
@@ -29,6 +34,10 @@ export interface UserInfo {
 }
 
 export const authApi = {
+  getPublicConfig(): Promise<PublicConfig> {
+    return api.get('/auth/config')
+  },
+
   login(data: LoginRequest): Promise<TokenResponse> {
     return api.post('/auth/login', data)
   },
