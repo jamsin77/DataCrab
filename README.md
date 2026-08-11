@@ -356,3 +356,19 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 10. **AI 调试助手**：Chat 风格交互式调试（4 工具对齐 OpenCode），AI 推理过程可视化，执行失败自动反馈错误堆栈给 AI 修复（Loop Engineering 实践）
 11. **Prefix Cache 优化**：system prompt 进程级 memoize + datasource_context 移出 system → user message，字节稳定命中 GLM context cache，input 成本降 30%+
 12. **Docker 一键部署**：前端多阶段构建 nginx 托管 + SSE 长连接支持 + 数据卷持久化
+
+---
+
+## 📈 更新信息
+
+### 2026-08-10
+
+| 类别 | 更新内容 |
+| --- | --- |
+| 安全加固 | P0 公网安全加固 8 项全部到位，包括默认密钥与口令替换、关闭公开注册、内部接口鉴权、基础设施端口不暴露、HTTPS 与安全头、接口限流、备份脚本、服务器加固脚本 |
+| 新智能体 | 新增 DataAnalyst 数据分析智能体，提供只读查询、统计与洞察独立路由，并支持流式输出与前端调试 |
+| 上游同步 | 完成第三次上游同步（13 个提交），覆盖 DataAnalystAgent、技能端点修复、Inspector 报告、SystemPrompt 精简等 |
+| Agent 迭代 | 调试工具精简为 4 个，Inspector 报告独立事件展示，前端复制按钮与版本号动态生成上线 |
+| 部署完善 | 前端多阶段构建、nginx 托管、SSE 长连接支持与数据卷持久化完善 |
+
+> 💡 **提示：** 完整迭代记录见 [AGENTS.md](AGENTS.md)，最新提交见 [f08a74d](https://github.com/jamsin77/DataCrab/commit/f08a74d5f85554e9d86bcd9e2933e9f1d605fd54)。
