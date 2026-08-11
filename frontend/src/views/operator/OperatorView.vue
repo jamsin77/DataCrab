@@ -464,14 +464,14 @@ import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicSt
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
+import { formatTime } from '@/utils/time'
 
 const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string) {
   return md.render(text || '')
 }
 function formatMsgTime(ts?: string): string {
-  if (!ts) return ''
-  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return '' }
+  return formatTime(ts)
 }
 
 function copyText(text: string) {

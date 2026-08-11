@@ -15,7 +15,7 @@ from app.core.version import get_version
 # 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
 settings.APP_VERSION = get_version()
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", ""), rotation="1 MB")
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", ""), rotation="1 MB")
 
 
 @asynccontextmanager
@@ -165,6 +165,28 @@ def _migrate_builtin_flags(connection):
             logger.info("table_metadata表已添加 data_updated_at 列")
     except Exception as e:
         logger.warning(f"table_metadata表迁移跳过: {e}")
+
+    # user_llm_configs / llm_providers 加 vision_model / default_vision_model / default_embedding_model 列
+    try:
+        result = connection.execute(text("PRAGMA table_info(user_llm_configs)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "vision_model" not in columns:
+            connection.execute(text("ALTER TABLE user_llm_configs ADD COLUMN vision_model VARCHAR(100)"))
+            logger.info("user_llm_configs表已添加 vision_model 列")
+    except Exception as e:
+        logger.warning(f"user_llm_configs表迁移跳过: {e}")
+
+    try:
+        result = connection.execute(text("PRAGMA table_info(llm_providers)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "default_vision_model" not in columns:
+            connection.execute(text("ALTER TABLE llm_providers ADD COLUMN default_vision_model VARCHAR(100)"))
+            logger.info("llm_providers表已添加 default_vision_model 列")
+        if "default_embedding_model" not in columns:
+            connection.execute(text("ALTER TABLE llm_providers ADD COLUMN default_embedding_model VARCHAR(100)"))
+            logger.info("llm_providers表已添加 default_embedding_model 列")
+    except Exception as e:
+        logger.warning(f"llm_providers表迁移跳过: {e}")
 
 
 async def _seed_skills_and_pipelines():

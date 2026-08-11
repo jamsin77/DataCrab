@@ -598,7 +598,7 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
     import base64
     from pathlib import Path
     from app.models.filelink import FileLink
-    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
+    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config, get_user_llm_config, _PROVIDER_VISION_MODELS
 
     user_id = body.get("user_id")
     user_id = UUID(str(user_id)) if user_id else None
@@ -644,11 +644,13 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
             await init_user_llm_context(user_id)
         await llm_manager.initialize()
 
-        # 视觉模型：文本模型不支持图片，按 provider 选视觉模型
-        from app.services.llm import _PROVIDER_VISION_MODELS
-        _vision_model = _PROVIDER_VISION_MODELS.get(llm_manager.provider, "")
+        # 视觉模型：读用户配置的 vision_model
+        _user_cfg = get_user_llm_config()
+        if not _user_cfg:
+            raise HTTPException(status_code=400, detail="未配置 LLM Provider，请在配置页面设置")
+        _vision_model = llm_manager._eff_vision_model(_user_cfg.get("provider", ""))
         if not _vision_model:
-            raise HTTPException(status_code=400, detail=f"Provider {llm_manager.provider} 未配置视觉模型")
+            raise HTTPException(status_code=400, detail="当前 Provider 未配置视觉模型，请在配置页面设置")
 
         system_prompt = body.get("system_prompt")
         messages = []
@@ -662,7 +664,8 @@ async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
             ],
         })
 
-        resp = await llm_manager._client.chat.completions.create(
+        _client = llm_manager._client_for(_user_cfg)
+        resp = await _client.chat.completions.create(
             model=_vision_model,
             messages=messages,
             temperature=body.get("temperature", 0.3),

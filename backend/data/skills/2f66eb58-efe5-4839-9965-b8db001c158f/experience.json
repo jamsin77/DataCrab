@@ -2319,6 +2319,20 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units'"
+    },
+    {
+      "timestamp": "2026-08-10T10:58:36.781439",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '时代', '地址', '备注', '标识', '时间戳', '地级市'], 'target_table': '全国重点文物保护单位合并', 'table_remark': None, 'column_remarks': {}}"
+    },
+    {
+      "timestamp": "2026-08-10T11:01:36.303643",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5057, 'columns': ['批次', '分类', '名称', '时代', '地址', '备注', '编号', '时间戳', '地级市'], 'target_table': '全国重点文物保护单位合并', 'table_remark': None, 'column_remarks': {}}"
     }
   ],
   "lessons": "",

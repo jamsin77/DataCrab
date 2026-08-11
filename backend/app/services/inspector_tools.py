@@ -14,6 +14,34 @@ from app.models.datasource import DataSource
 from app.services.connectors import get_connector
 
 
+def _load_quality_rules() -> Dict[str, Dict]:
+    """解析 data_quality_rules.md 为 {rule_id: rule_dict}，失败返回空 dict。"""
+    try:
+        from app.services.standards_parser import parse_quality_rules
+        return {r["id"]: r for r in parse_quality_rules()}
+    except Exception:
+        return {}
+
+
+def _load_security_rules() -> Dict[str, Dict]:
+    """解析 data_security_rules.md 为 {rule_id: rule_dict}，失败返回空 dict。"""
+    try:
+        from app.services.standards_parser import parse_security_rules
+        return {r["id"]: r for r in parse_security_rules()}
+    except Exception:
+        return {}
+
+
+def _dq_severity(rule_id: str, default: str = "warning") -> str:
+    """从数据质量规则库读取 severity，失败回退 default。"""
+    return _load_quality_rules().get(rule_id, {}).get("severity", default)
+
+
+def _sec_severity(rule_id: str, default: str = "warning") -> str:
+    """从数据安全规则库读取 severity，失败回退 default。"""
+    return _load_security_rules().get(rule_id, {}).get("severity", default)
+
+
 class DataInspectorTools:
     _cache: dict = {}
 
@@ -153,6 +181,7 @@ class DataInspectorTools:
 
             # 命名规范（DQ-VAL-001 / naming_convention）
             if not standard_rules or "naming_convention" in standard_rules:
+                _sev = _dq_severity("DQ-VAL-001", "warning")
                 for col in df.columns:
                     if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
                         suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
@@ -160,13 +189,14 @@ class DataInspectorTools:
                             "dimension": "naming_convention",
                             "rule_id": "DQ-VAL-001",
                             "column": col,
-                            "severity": "warning",
+                            "severity": _sev,
                             "description": f"列名 '{col}' 不符合 snake_case 命名规范",
                             "suggestion": f"建议重命名为 '{suggestion}'",
                         })
 
             # 类型一致性
             if not standard_rules or "type_consistency" in standard_rules:
+                _sev = _dq_severity("DQ-CON-003", "warning")
                 for col in df.columns:
                     non_null = df[col].dropna()
                     if len(non_null) > 0:
@@ -176,13 +206,14 @@ class DataInspectorTools:
                                 "dimension": "type_consistency",
                                 "rule_id": "DQ-CON-003",
                                 "column": col,
-                                "severity": "warning",
+                                "severity": _sev,
                                 "description": f"列 '{col}' 存在混合类型（{types}种）",
                                 "suggestion": "建议统一数据类型",
                             })
 
             # 编码检查
             if not standard_rules or "encoding_check" in standard_rules:
+                _sev = _dq_severity("DQ-VAL-001", "warning")
                 for col in df.columns:
                     if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
                         sample = df[col].dropna().head(100).astype(str)
@@ -192,7 +223,7 @@ class DataInspectorTools:
                                 "dimension": "encoding_check",
                                 "rule_id": "DQ-VAL-001",
                                 "column": col,
-                                "severity": "warning",
+                                "severity": _sev,
                                 "description": f"列 '{col}' 疑似包含乱码字符（{garbled.sum()}条）",
                                 "suggestion": "建议检查编码格式并转换",
                             })
@@ -288,7 +319,7 @@ class DataInspectorTools:
                                     "standard_id": sid,
                                     "rule_id": "DQ-VAL-003",
                                     "column": col,
-                                    "severity": "warning",
+                                    "severity": _dq_severity("DQ-VAL-003", "warning"),
                                     "description": f"列 '{col}' 不符合 {sid}: {desc}",
                                     "suggestion": f"按 {sid} 约束修正",
                                 })
@@ -302,14 +333,14 @@ class DataInspectorTools:
                     if cl in ("longitude", "lng", "lon") and ((non_null < -180) | (non_null > 180)).any():
                         issues.append({
                             "dimension": "numeric_constraint", "standard_id": "STD-LOC-004",
-                            "rule_id": "DQ-VAL-003", "column": col, "severity": "warning",
+                            "rule_id": "DQ-VAL-003", "column": col, "severity": _dq_severity("DQ-VAL-003", "warning"),
                             "description": f"列 '{col}' 经度超出范围(-180~180)",
                             "suggestion": "修正经度值",
                         })
                     elif cl in ("latitude", "lat") and ((non_null < -90) | (non_null > 90)).any():
                         issues.append({
                             "dimension": "numeric_constraint", "standard_id": "STD-LOC-004",
-                            "rule_id": "DQ-VAL-003", "column": col, "severity": "warning",
+                            "rule_id": "DQ-VAL-003", "column": col, "severity": _dq_severity("DQ-VAL-003", "warning"),
                             "description": f"列 '{col}' 纬度超出范围(-90~90)",
                             "suggestion": "修正纬度值",
                         })
@@ -327,13 +358,14 @@ class DataInspectorTools:
                     if invalid.any():
                         issues.append({
                             "dimension": "numeric_constraint", "standard_id": "STD-TIME-003",
-                            "rule_id": "DQ-VAL-003", "column": col, "severity": "warning",
+                            "rule_id": "DQ-VAL-003", "column": col, "severity": _dq_severity("DQ-VAL-003", "warning"),
                             "description": f"列 '{col}' 有 {int(invalid.sum())} 条不符合 Unix 时间戳范围",
                             "suggestion": "检查时间戳值是否合理(1970~2100)",
                         })
 
             # 地址检查（STD-LOC-001）
             if not standard_rules or "address_check" in (standard_rules or []):
+                _sev = _dq_severity("DQ-VAL-003", "warning")
                 for col in match_columns(columns, ["address", "addr", "detail_address"]):
                     non_null = df[col].dropna().astype(str)
                     if len(non_null) == 0:
@@ -342,7 +374,7 @@ class DataInspectorTools:
                     if len(short) > 0:
                         issues.append({
                             "dimension": "address_check", "standard_id": "STD-LOC-001",
-                            "rule_id": "DQ-VAL-003", "column": col, "severity": "warning",
+                            "rule_id": "DQ-VAL-003", "column": col, "severity": _sev,
                             "description": f"列 '{col}' 有 {len(short)} 条地址长度不足5字符",
                             "suggestion": "补全地址信息",
                         })
@@ -350,7 +382,7 @@ class DataInspectorTools:
                     if has_newline > 0:
                         issues.append({
                             "dimension": "address_check", "standard_id": "STD-LOC-001",
-                            "rule_id": "DQ-VAL-003", "column": col, "severity": "warning",
+                            "rule_id": "DQ-VAL-003", "column": col, "severity": _sev,
                             "description": f"列 '{col}' 有 {has_newline} 条地址含换行符",
                             "suggestion": "去除换行符",
                         })
@@ -380,7 +412,7 @@ class DataInspectorTools:
                         issues.append({
                             "dimension": "time_range_check", "standard_id": "STD-TIME-004",
                             "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}",
-                            "severity": "error",
+                            "severity": _dq_severity("DQ-CON-001", "error"),
                             "description": f"列 '{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条",
                             "suggestion": "修正结束时间早于开始时间的记录",
                         })
@@ -399,12 +431,7 @@ class DataInspectorTools:
             df = await self._load_data(datasource_id, table_name, db)
             total = len(df)
 
-            # 解析数据质量库 MD，用其中的阈值驱动检查
-            try:
-                from app.services.standards_parser import parse_quality_rules
-                dq_rules = {r["id"]: r for r in parse_quality_rules()}
-            except Exception:
-                dq_rules = {}
+            dq_rules = _load_quality_rules()
 
             def _thr(rid: str, default: float) -> float:
                 r = dq_rules.get(rid)
@@ -423,12 +450,11 @@ class DataInspectorTools:
                         _null_mask = _null_mask | (df[col].astype(str).str.strip() == "")
                     null_rate = _null_mask.mean()
                     if null_rate > null_thr:
-                        _sev = dq_rules.get("DQ-COM-003", {}).get("severity", "warning")
                         issues.append({
                             "dimension": "completeness",
                             "rule_id": "DQ-COM-003",
                             "column": col,
-                            "severity": _sev,
+                            "severity": _dq_severity("DQ-COM-003", "warning"),
                             "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）",
                             "suggestion": "建议填充默认值或删除空值行",
                         })
@@ -445,7 +471,7 @@ class DataInspectorTools:
                             "dimension": "uniqueness",
                             "rule_id": "DQ-UNI-001",
                             "column": col,
-                            "severity": "critical",
+                            "severity": _dq_severity("DQ-UNI-001", "error"),
                             "description": f"主键列 '{col}' 存在 {dup_count} 个重复值",
                             "suggestion": "去重或修正主键生成逻辑",
                         })
@@ -457,7 +483,7 @@ class DataInspectorTools:
                     issues.append({
                         "dimension": "uniqueness",
                         "rule_id": "DQ-UNI-003",
-                        "severity": "error",
+                        "severity": _dq_severity("DQ-UNI-003", "warning"),
                         "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）",
                         "suggestion": "建议执行去重操作",
                     })
@@ -480,7 +506,7 @@ class DataInspectorTools:
                                         "dimension": "validity",
                                         "rule_id": "DQ-VAL-004",
                                         "column": col,
-                                        "severity": "warning",
+                                        "severity": _dq_severity("DQ-VAL-004", "warning"),
                                         "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（{outlier_rate:.1%}，IQR方法）",
                                         "suggestion": "建议检查极值是否合理",
                                     })
@@ -496,7 +522,7 @@ class DataInspectorTools:
                                     "dimension": "consistency",
                                     "rule_id": "DQ-CON-003",
                                     "column": col,
-                                    "severity": "warning",
+                                    "severity": _dq_severity("DQ-CON-003", "warning"),
                                     "description": f"列 '{col}' 值长度差异较大（最短{lengths.min()}，最长{lengths.max()}）",
                                     "suggestion": "建议检查格式是否一致",
                                 })
@@ -518,7 +544,7 @@ class DataInspectorTools:
                                 "dimension": "consistency",
                                 "rule_id": "DQ-CON-001",
                                 "column": f"{s_col}/{e_col}",
-                                "severity": "error",
+                                "severity": _dq_severity("DQ-CON-001", "error"),
                                 "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条",
                                 "suggestion": "修正结束时间早于开始时间的记录",
                             })
@@ -540,7 +566,7 @@ class DataInspectorTools:
                                 "dimension": "consistency",
                                 "rule_id": "DQ-CON-001",
                                 "column": f"{age_col}/{birth_col}",
-                                "severity": "error",
+                                "severity": _dq_severity("DQ-CON-001", "error"),
                                 "description": f"'{age_col}' 与 '{birth_col}' 计算年龄不一致的记录有 {int(mismatch.sum())} 条",
                                 "suggestion": "核对年龄与出生日期",
                             })
@@ -561,7 +587,7 @@ class DataInspectorTools:
                                 "dimension": "completeness",
                                 "rule_id": "DQ-COM-001",
                                 "column": col,
-                                "severity": "error",
+                                "severity": _dq_severity("DQ-COM-001", "error"),
                                 "description": f"必填字段 '{col}' 有 {null_count} 个空值（阈值 0%）",
                                 "suggestion": "补充缺失值或回源补数",
                             })
@@ -577,7 +603,7 @@ class DataInspectorTools:
                             "dimension": "completeness",
                             "rule_id": "DQ-COM-002",
                             "column": col,
-                            "severity": "critical",
+                            "severity": _dq_severity("DQ-COM-002", "error"),
                             "description": f"主键列 '{col}' 有 {null_count} 个空值",
                             "suggestion": "排查 ETL 是否丢失主键或回源补数",
                         })
@@ -596,7 +622,7 @@ class DataInspectorTools:
                                 "dimension": "uniqueness",
                                 "rule_id": "DQ-UNI-002",
                                 "column": col,
-                                "severity": "critical",
+                                "severity": _dq_severity("DQ-UNI-002", "error"),
                                 "description": f"业务键列 '{col}' 存在 {dup_count} 个重复值",
                                 "suggestion": "排查重复产生原因（重跑、Join 膨胀）",
                             })
@@ -624,12 +650,7 @@ class DataInspectorTools:
             tgt_n = len(tgt_df)
             issues = []
 
-            # 解析 ETL 规则阈值
-            try:
-                from app.services.standards_parser import parse_quality_rules
-                dq = {r["id"]: r for r in parse_quality_rules()}
-            except Exception:
-                dq = {}
+            dq = _load_quality_rules()
 
             def _thr(rid: str, default: float) -> float:
                 r = dq.get(rid)
@@ -646,7 +667,7 @@ class DataInspectorTools:
                 issues.append({
                     "dimension": "etl_volume",
                     "rule_id": "DQ-ETL-001",
-                    "severity": "error",
+                    "severity": _dq_severity("DQ-ETL-001", "error"),
                     "description": f"目标表行数 {tgt_n} > 源表 {src_n}×(1+{growth_thr:.0%})，疑似数据膨胀",
                     "suggestion": "检查是否产生笛卡尔积、Join 重复、未去重",
                 })
@@ -656,20 +677,18 @@ class DataInspectorTools:
                 issues.append({
                     "dimension": "etl_volume",
                     "rule_id": "DQ-ETL-002",
-                    "severity": "error",
+                    "severity": _dq_severity("DQ-ETL-002", "error"),
                     "description": f"目标表行数 {tgt_n} < 源表 {src_n}×(1-{shrink_thr:.0%})，疑似数据丢失",
                     "suggestion": "排查过滤条件过严、关联条件错误、丢失记录",
                 })
 
             # DQ-ETL-003 对数（记录数一致）
             if src_n != tgt_n:
-                _diff_rate = abs(src_n - tgt_n) / max(src_n, 1)
-                _sev = "critical" if _diff_rate > 0.1 else "error"
                 issues.append({
                     "dimension": "etl_reconciliation",
                     "rule_id": "DQ-ETL-003",
-                    "severity": _sev,
-                    "description": f"记录数不一致：源 {src_n} ≠ 目标 {tgt_n}（差 {abs(src_n - tgt_n)}，偏差 {_diff_rate:.1%}）",
+                    "severity": _dq_severity("DQ-ETL-003", "error"),
+                    "description": f"记录数不一致：源 {src_n} ≠ 目标 {tgt_n}（差 {abs(src_n - tgt_n)}，偏差 {abs(src_n - tgt_n) / max(src_n, 1):.1%}）",
                     "suggestion": "排查过滤条件、丢失记录、重复写入",
                 })
 
@@ -683,7 +702,7 @@ class DataInspectorTools:
                         issues.append({
                             "dimension": "etl_reconciliation",
                             "rule_id": "DQ-ETL-004",
-                            "severity": "error",
+                            "severity": _dq_severity("DQ-ETL-004", "error"),
                             "description": f"金额汇总不一致：源 {src_sum:.2f} ≠ 目标 {tgt_sum:.2f}（差 {diff:.2f}，阈值 {amount_thr}）",
                             "suggestion": "排查金额精度、丢失记录、重复累加",
                         })
@@ -701,7 +720,7 @@ class DataInspectorTools:
                 issues.append({
                     "dimension": "etl_volume",
                     "rule_id": "DQ-ETL-006",
-                    "severity": "error",
+                    "severity": _dq_severity("DQ-ETL-006", "error"),
                     "description": f"目标/检索结果行数 {tgt_n} > 源总量 {src_n}",
                     "suggestion": "检查 Join 是否笛卡尔积、去重逻辑缺失",
                 })
@@ -715,7 +734,7 @@ class DataInspectorTools:
                         "dimension": "etl_quality",
                         "rule_id": "DQ-ETL-007",
                         "column": col,
-                        "severity": "warning",
+                        "severity": _dq_severity("DQ-ETL-007", "warning"),
                         "description": f"目标表列 '{col}' 空值率 {null_rate:.1%}（阈值 {etl_null_thr:.0%}）",
                         "suggestion": "排查源字段缺失、关联丢失、转换逻辑错误",
                     })
@@ -731,7 +750,7 @@ class DataInspectorTools:
                         "dimension": "etl_quality",
                         "rule_id": "DQ-ETL-008",
                         "column": col,
-                        "severity": "error",
+                        "severity": _dq_severity("DQ-ETL-008", "error"),
                         "description": f"目标表主键 '{col}' 存在 {dup_count} 个重复值",
                         "suggestion": "检查 Join 膨胀、去重逻辑、主键生成",
                     })
@@ -746,7 +765,7 @@ class DataInspectorTools:
                         "dimension": "etl_quality",
                         "rule_id": "DQ-ETL-009",
                         "column": col,
-                        "severity": "warning",
+                        "severity": _dq_severity("DQ-ETL-009", "warning"),
                         "description": f"列 '{col}' 类型不一致：源 {src_dtype} → 目标 {tgt_dtype}",
                         "suggestion": "修正 ETL 类型转换",
                     })
@@ -764,16 +783,12 @@ class DataInspectorTools:
             df = await self._load_data(datasource_id, table_name, db)
 
             # 引用数据安全规则库做正则检测（确定性执行，标注 SEC-xxx）
-            try:
-                from app.services.standards_parser import parse_security_rules
-                sec_rules = parse_security_rules()
-            except Exception:
-                sec_rules = []
+            sec_rules = list(_load_security_rules().values())
 
             # 兜底：若规则库解析失败，用内置 PII 模式
             if not sec_rules:
                 sec_rules = [
-                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "fatal"},
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]
@@ -795,7 +810,7 @@ class DataInspectorTools:
                                 "dimension": "security",
                                 "rule_id": sec["id"],
                                 "column": col,
-                                "severity": sec.get("severity", "critical"),
+                                "severity": sec.get("severity", _sec_severity(sec["id"], "warning")),
                                 "description": f"列 '{col}' 疑似包含 {sec['name']}（{match_count}/{len(sample)} 条样本命中）",
                                 "suggestion": f"按 {sec['id']} 处置建议脱敏/加密",
                             })
@@ -810,7 +825,7 @@ class DataInspectorTools:
                 if full_addr.any():
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-PII-006",
-                        "column": col, "severity": "warning",
+                        "column": col, "severity": _sec_severity("SEC-PII-006", "warning"),
                         "description": f"列 '{col}' 有 {int(full_addr.sum())} 条疑似完整地址明文",
                         "suggestion": "拆分为行政区划+门牌脱敏",
                     })
@@ -822,7 +837,7 @@ class DataInspectorTools:
                 for col in _name_cols:
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-PII-007",
-                        "column": col, "severity": "warning",
+                        "column": col, "severity": _sec_severity("SEC-PII-007", "warning"),
                         "description": f"姓名字段 '{col}' 与强 PII 字段({', '.join(_pii_cols[:3])})同表",
                         "suggestion": "评估是否需脱敏；关联强 PII 时按 critical 处置",
                     })
@@ -833,7 +848,7 @@ class DataInspectorTools:
                 if any(kw in cl for kw in ("salary", "wage", "income", "薪资", "收入", "工资")):
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-BIZ-001",
-                        "column": col, "severity": "error",
+                        "column": col, "severity": _sec_severity("SEC-BIZ-001", "error"),
                         "description": f"列 '{col}' 含薪资/收入数据，需访问控制+脱敏",
                         "suggestion": "按机密级管控；非授权查询禁止返回明文",
                     })
@@ -841,7 +856,7 @@ class DataInspectorTools:
                 if any(kw in cl for kw in ("diagnosis", "medical", "health", "病历", "诊断", "病情")):
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-BIZ-002",
-                        "column": col, "severity": "error",
+                        "column": col, "severity": _sec_severity("SEC-BIZ-002", "error"),
                         "description": f"列 '{col}' 含医疗健康数据，需授权访问",
                         "suggestion": "按机密/秘密级管控；需授权访问",
                     })
@@ -854,7 +869,7 @@ class DataInspectorTools:
                 if len(minors) > 0:
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-BIZ-003",
-                        "column": _age_col, "severity": "critical",
+                        "column": _age_col, "severity": _sec_severity("SEC-BIZ-003", "critical"),
                         "description": f"发现 {len(minors)} 条未成年人记录且关联 PII 字段",
                         "suggestion": "需监护人授权；加强脱敏",
                     })
@@ -880,7 +895,7 @@ class DataInspectorTools:
                     if unmasked_count > 0:
                         issues.append({
                             "dimension": "security", "rule_id": sid,
-                            "column": col, "severity": "error" if sid != "SEC-MASK-003" else "warning",
+                            "column": col, "severity": _sec_severity(sid, "warning"),
                             "description": f"列 '{col}' 有 {unmasked_count} 条未脱敏（期望格式如 {example}）",
                             "suggestion": f"按 {sid} 脱敏规则处理",
                         })
@@ -896,7 +911,7 @@ class DataInspectorTools:
                 if tm and not tm.security_level:
                     issues.append({
                         "dimension": "security", "rule_id": "SEC-CLASS-001",
-                        "severity": "warning",
+                        "severity": _sec_severity("SEC-CLASS-001", "warning"),
                         "description": f"表 '{table_name}' 缺少数据分级标注（public/internal/confidential/secret）",
                         "suggestion": "补充分级元数据；按分级施加访问控制",
                     })
@@ -941,24 +956,27 @@ class DataInspectorTools:
             columns = list(df.columns)
             # 命名规范
             if not standard_rules or "naming_convention" in standard_rules:
+                _sev = _dq_severity("DQ-VAL-001", "warning")
                 for col in df.columns:
                     if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
                         suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
-                        issues.append({"dimension": "naming_convention", "rule_id": "DQ-VAL-001", "column": col, "severity": "warning", "description": f"列名 '{col}' 不符合 snake_case 命名规范", "suggestion": f"建议重命名为 '{suggestion}'"})
+                        issues.append({"dimension": "naming_convention", "rule_id": "DQ-VAL-001", "column": col, "severity": _sev, "description": f"列名 '{col}' 不符合 snake_case 命名规范", "suggestion": f"建议重命名为 '{suggestion}'"})
             # 类型一致性
             if not standard_rules or "type_consistency" in standard_rules:
+                _sev = _dq_severity("DQ-CON-003", "warning")
                 for col in df.columns:
                     non_null = df[col].dropna()
                     if len(non_null) > 0 and non_null.apply(type).nunique() > 1:
-                        issues.append({"dimension": "type_consistency", "rule_id": "DQ-CON-003", "column": col, "severity": "warning", "description": f"列 '{col}' 存在混合类型", "suggestion": "建议统一数据类型"})
+                        issues.append({"dimension": "type_consistency", "rule_id": "DQ-CON-003", "column": col, "severity": _sev, "description": f"列 '{col}' 存在混合类型", "suggestion": "建议统一数据类型"})
             # 编码检查
             if not standard_rules or "encoding_check" in standard_rules:
+                _sev = _dq_severity("DQ-VAL-001", "warning")
                 for col in df.columns:
                     if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
                         sample = df[col].dropna().head(100).astype(str)
                         garbled = sample.str.contains(r'[\ufffd\uffef\u00bf]', na=False, regex=True)
                         if garbled.any():
-                            issues.append({"dimension": "encoding_check", "rule_id": "DQ-VAL-001", "column": col, "severity": "warning", "description": f"列 '{col}' 疑似包含乱码字符（{garbled.sum()}条）", "suggestion": "建议检查编码格式并转换"})
+                            issues.append({"dimension": "encoding_check", "rule_id": "DQ-VAL-001", "column": col, "severity": _sev, "description": f"列 '{col}' 疑似包含乱码字符（{garbled.sum()}条）", "suggestion": "建议检查编码格式并转换"})
             # 引用数据标准库做格式正则检查
             try:
                 from app.services.standards_parser import parse_standards, match_columns
@@ -988,23 +1006,16 @@ class DataInspectorTools:
         try:
             issues = []
             total = len(df)
-            null_thr = 0.05
-            dupe_thr = 0.01
-            try:
-                from app.services.standards_parser import parse_quality_rules
-                dq_rules = {r["id"]: r for r in parse_quality_rules()}
-                null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value", 0.9))
-                dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value", 0.01)
-            except Exception:
-                dq_rules = {}
+            dq_rules = _load_quality_rules()
+            null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value") or 0.9)
+            dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value") or 0.01
 
             # 完整性
             if not quality_dimensions or "completeness" in quality_dimensions:
                 for col in df.columns:
                     null_rate = df[col].isna().mean()
                     if null_rate > null_thr:
-                        _sev = dq_rules.get("DQ-COM-003", {}).get("severity", "warning")
-                        issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _sev, "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行", "samples": self._extract_samples(df, df[col].isna(), [col])})
+                        issues.append({"dimension": "completeness", "rule_id": "DQ-COM-003", "column": col, "severity": _dq_severity("DQ-COM-003", "warning"), "description": f"列 '{col}' 空值率 {null_rate:.1%}（阈值 {null_thr:.0%}）", "suggestion": "建议填充默认值或删除空值行", "samples": self._extract_samples(df, df[col].isna(), [col])})
 
             # 唯一性
             if not quality_dimensions or "uniqueness" in quality_dimensions:
@@ -1014,12 +1025,12 @@ class DataInspectorTools:
                     dup_count = int(dup_mask.sum())
                     if dup_count > 0:
                         dup_vals = df.loc[dup_mask.index[dup_mask], col]
-                        issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-001", "column": col, "severity": "critical", "description": f"主键列 '{col}' 存在 {dup_count} 个重复值", "suggestion": "去重或修正主键生成逻辑", "samples": [{"row": int(idx)+1, "values": {col: str(v)[:80]}} for idx, v in dup_vals.head(5).items()]})
+                        issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-001", "column": col, "severity": _dq_severity("DQ-UNI-001", "error"), "description": f"主键列 '{col}' 存在 {dup_count} 个重复值", "suggestion": "去重或修正主键生成逻辑", "samples": [{"row": int(idx)+1, "values": {col: str(v)[:80]}} for idx, v in dup_vals.head(5).items()]})
                 dupe_mask = df.duplicated(keep=False)
                 dupe_count = int(dupe_mask.sum())
                 dupe_rate = dupe_count / total if total else 0
                 if dupe_count > 0 and dupe_rate > dupe_thr:
-                    issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-003", "severity": "error", "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）", "suggestion": "建议执行去重操作", "samples": self._extract_samples(df, dupe_mask)})
+                    issues.append({"dimension": "uniqueness", "rule_id": "DQ-UNI-003", "severity": _dq_severity("DQ-UNI-003", "warning"), "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）", "suggestion": "建议执行去重操作", "samples": self._extract_samples(df, dupe_mask)})
 
             # 有效性
             if not quality_dimensions or "validity" in quality_dimensions:
@@ -1034,7 +1045,7 @@ class DataInspectorTools:
                                 outlier_mask = (df[col] < lower) | (df[col] > upper)
                                 outlier_count = int(outlier_mask.sum())
                                 if outlier_count > 0 and outlier_count / len(non_null) > 0.01:
-                                    issues.append({"dimension": "validity", "rule_id": "DQ-VAL-004", "column": col, "severity": "warning", "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法，范围[{lower:.2f}, {upper:.2f}]）", "suggestion": "建议检查极值是否合理", "samples": self._extract_samples(df, outlier_mask, [col])})
+                                    issues.append({"dimension": "validity", "rule_id": "DQ-VAL-004", "column": col, "severity": _dq_severity("DQ-VAL-004", "warning"), "description": f"列 '{col}' 存在 {outlier_count} 个异常极值（IQR方法，范围[{lower:.2f}, {upper:.2f}]）", "suggestion": "建议检查极值是否合理", "samples": self._extract_samples(df, outlier_mask, [col])})
 
             # 一致性
             if not quality_dimensions or "consistency" in quality_dimensions:
@@ -1046,7 +1057,7 @@ class DataInspectorTools:
                         e = pd.to_datetime(df[e_col], errors="coerce")
                         invalid = s.notna() & e.notna() & (e < s)
                         if invalid.any():
-                            issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": "error", "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录", "samples": self._extract_samples(df, invalid, [s_col, e_col])})
+                            issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": _dq_severity("DQ-CON-001", "error"), "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录", "samples": self._extract_samples(df, invalid, [s_col, e_col])})
 
             return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
@@ -1065,7 +1076,7 @@ class DataInspectorTools:
                 sec_rules = []
             if not sec_rules:
                 sec_rules = [
-                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "fatal"},
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]
@@ -1082,14 +1093,14 @@ class DataInspectorTools:
                         except re.error:
                             continue
                         if match_count > 0:
-                            issues.append({"dimension": "security", "rule_id": sec["id"], "column": col, "severity": sec.get("severity", "critical"), "description": f"列 '{col}' 疑似包含 {sec['name']}（{match_count}/{len(sample)} 条样本命中）", "suggestion": f"按 {sec['id']} 处置建议脱敏/加密"})
+                            issues.append({"dimension": "security", "rule_id": sec["id"], "column": col, "severity": sec.get("severity", _sec_severity(sec["id"], "warning")), "description": f"列 '{col}' 疑似包含 {sec['name']}（{match_count}/{len(sample)} 条样本命中）", "suggestion": f"按 {sec['id']} 处置建议脱敏/加密"})
             # 薪资/医疗字段
             for col in df.columns:
                 cl = str(col).lower()
                 if any(kw in cl for kw in ("salary", "wage", "income", "薪资", "收入", "工资")):
-                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-001", "column": col, "severity": "error", "description": f"列 '{col}' 含薪资/收入数据，需访问控制+脱敏", "suggestion": "按机密级管控"})
+                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-001", "column": col, "severity": _sec_severity("SEC-BIZ-001", "error"), "description": f"列 '{col}' 含薪资/收入数据，需访问控制+脱敏", "suggestion": "按机密级管控"})
                 if any(kw in cl for kw in ("diagnosis", "medical", "health", "病历", "诊断", "病情")):
-                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-002", "column": col, "severity": "error", "description": f"列 '{col}' 含医疗健康数据，需授权访问", "suggestion": "按机密/秘密级管控"})
+                    issues.append({"dimension": "security", "rule_id": "SEC-BIZ-002", "column": col, "severity": _sec_severity("SEC-BIZ-002", "error"), "description": f"列 '{col}' 含医疗健康数据，需授权访问", "suggestion": "按机密/秘密级管控"})
             return {"dimension": "security", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
             logger.error(f"_check_security_from_df 失败: {e}")
@@ -1150,19 +1161,88 @@ class DataInspectorTools:
                     lines.append("| %s | %s | %d | %.1f%% | %d | %s |" % (name, dtype, null_count, null_rate * 100, unique, sample_str))
 
         # 三项检查
+        _DIM_RULES = {
+            "standards": [
+                ("DQ-VAL-001", "命名规范/编码/格式正则"),
+                ("DQ-CON-003", "类型一致性"),
+                ("DQ-VAL-002", "枚举值合法"),
+                ("DQ-VAL-003", "数值范围/约束"),
+                ("STD-LOC-001", "地址格式"),
+                ("STD-LOC-004", "经纬度范围"),
+                ("STD-TIME-003", "Unix时间戳"),
+                ("STD-TIME-004", "时间范围一致"),
+            ],
+            "quality": [
+                ("DQ-COM-001", "必填字段空值"),
+                ("DQ-COM-002", "主键非空"),
+                ("DQ-COM-003", "关键字段完整率"),
+                ("DQ-UNI-001", "主键唯一"),
+                ("DQ-UNI-002", "业务键唯一"),
+                ("DQ-UNI-003", "整行重复"),
+                ("DQ-VAL-004", "异常值检测"),
+                ("DQ-CON-001", "跨字段逻辑一致"),
+            ],
+            "security": [
+                ("SEC-PII-001", "身份证号明文"),
+                ("SEC-PII-002", "手机号明文"),
+                ("SEC-PII-003", "电子邮箱明文"),
+                ("SEC-PII-004", "银行卡号明文"),
+                ("SEC-PII-006", "完整地址明文"),
+                ("SEC-PII-007", "姓名字段识别"),
+                ("SEC-BIZ-001", "薪资/收入字段"),
+                ("SEC-BIZ-002", "医疗健康字段"),
+                ("SEC-BIZ-003", "未成年人信息"),
+                ("SEC-MASK-001", "手机号脱敏"),
+                ("SEC-MASK-002", "身份证脱敏"),
+                ("SEC-MASK-003", "邮箱脱敏"),
+                ("SEC-MASK-004", "银行卡脱敏"),
+                ("SEC-CLASS-001", "数据分级标注"),
+            ],
+        }
         for dim, label in [("standards", "标准检查"), ("quality", "质量检查"), ("security", "安全检查")]:
             result = results.get(dim) or {}
             issues = result.get("issues", [])
             passed = result.get("passed", len(issues) == 0)
+            all_rules = _DIM_RULES.get(dim, [])
+
+            # 按规则 ID 索引 issues
+            issues_by_rule = {}
+            for issue in issues:
+                rid = issue.get("rule_id") or issue.get("standard_id") or ""
+                issues_by_rule.setdefault(rid, []).append(issue)
+
+            error_count = sum(1 for i in issues if i.get("severity") in ("error", "critical", "fatal"))
+            warning_count = sum(1 for i in issues if i.get("severity") == "warning")
+
             if passed and not issues:
-                lines.append("\n## %s\n✅ 通过" % label)
+                lines.append("\n## %s\n✅ 通过（共 %d 项规则）\n" % (label, len(all_rules)))
             elif issues:
-                error_count = sum(1 for i in issues if i.get("severity") in ("error", "critical", "fatal"))
-                warning_count = sum(1 for i in issues if i.get("severity") == "warning")
                 lines.append("\n## %s\n❌ %d 个问题（%d error/critical, %d warning）:\n" % (label, len(issues), error_count, warning_count))
+
+            # 明细表格：列出该维度检查的所有规则及结果
+            if all_rules:
+                lines.append("| 序号 | 规则ID | 检查项 | 结果 | 说明 |")
+                lines.append("|------|--------|--------|------|------|")
+                for idx, (rid, rname) in enumerate(all_rules, 1):
+                    rule_issues = issues_by_rule.get(rid, [])
+                    if not rule_issues:
+                        lines.append("| %d | %s | %s | ✅ 通过 | - |" % (idx, rid, rname))
+                    else:
+                        for ri_idx, ri in enumerate(rule_issues):
+                            sev = ri.get("severity", "warning")
+                            desc = ri.get("description", "")[:60]
+                            col = ri.get("column", "")
+                            detail = desc + (f"（列: {col}）" if col else "")
+                            mark = {"error": "❌ error", "critical": "❌ critical", "fatal": "⛔ fatal", "warning": "⚠️ warning", "info": "ℹ️ info"}.get(sev, sev)
+                            first_col = str(idx) if ri_idx == 0 else ""
+                            lines.append("| %s | %s | %s | %s | %s |" % (first_col, rid, rname, mark, detail))
+                lines.append("")
+
+            # 有问题时额外列出问题详情（含样本）
+            if issues:
                 for idx, issue in enumerate(issues, 1):
                     sev = issue.get("severity", "warning")
-                    rule_id = issue.get("rule_id", "")
+                    rule_id = issue.get("rule_id") or issue.get("standard_id", "")
                     col = issue.get("column", "")
                     desc = issue.get("description", "")
                     sug = issue.get("suggestion", "")

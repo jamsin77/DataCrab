@@ -54,6 +54,7 @@ _PLATFORM_ERROR_PATTERNS = [
     ("NotImplementedError", "平台限制：该功能未实现"),
     ("'Connection' object has no attribute", "平台限制：数据库连接对象方法缺失，平台代码问题，修改脚本无法解决"),
     ("object has no attribute 'commit'", "平台限制：平台代码调用了不存在的提交方法，修改脚本无法解决"),
+    ("未配置视觉模型", "平台限制：当前 Provider 未配置视觉模型，无法进行 OCR/图片识别。请在 LLM 配置页面添加支持视觉的模型"),
 ]
 
 # 脚本问题关键词（仅用于 LLM 推断辅助，不强制退出）
@@ -765,13 +766,16 @@ async def run_skill_script_async(
         ),
     )
     # 关键词匹配不到（script_error）时，用 LLM 重新推断
+    # OCR/服务调用异常等，跳过 LLM 重分类（不应被误判为环境问题，应保持为 script_error 让系统重试）
     if not result.get("success") and result.get("error_type") == "script_error":
         _err = result.get("error", "")
         if _err:
-            _llm_type = await _llm_classify_error(_err)
-            if _llm_type != "script_error":
-                result["error_type"] = _llm_type
-                logger.info(f"LLM 错误分类: script_error → {_llm_type}")
+            _skip_llm = any(kw in _err for kw in ("OCR", "服务调用异常", "连接超时", "请求失败"))
+            if not _skip_llm:
+                _llm_type = await _llm_classify_error(_err)
+                if _llm_type != "script_error":
+                    result["error_type"] = _llm_type
+                    logger.info(f"LLM 错误分类: script_error → {_llm_type}")
     return result
 
 
@@ -1174,8 +1178,10 @@ async def run_skill_script_by_content_async(
     if not result.get("success") and result.get("error_type") == "script_error":
         _err = result.get("error", "")
         if _err:
-            _llm_type = await _llm_classify_error(_err)
-            if _llm_type != "script_error":
-                result["error_type"] = _llm_type
-                logger.info(f"LLM 错误分类: script_error → {_llm_type}")
+            _skip_llm = any(kw in _err for kw in ("OCR", "服务调用异常", "连接超时", "请求失败"))
+            if not _skip_llm:
+                _llm_type = await _llm_classify_error(_err)
+                if _llm_type != "script_error":
+                    result["error_type"] = _llm_type
+                    logger.info(f"LLM 错误分类: script_error → {_llm_type}")
     return result

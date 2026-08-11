@@ -91,6 +91,7 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
         "api_key": api_key,
         "api_base": rec.api_base or "",
         "model": rec.model or "",
+        "vision_model": rec.vision_model or "",
         "embedding_model": rec.embedding_model or "",
         "fallback_models": fallback,
     }
@@ -186,6 +187,9 @@ _SEED_PROVIDERS = {
         "display_name": "阿里百炼",
         "description": "通义千问，阿里云大模型服务",
         "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "default_model": "qwen3.7-max",
+        "default_vision_model": "qwen-vl-plus",
+        "default_embedding_model": "text-embedding-v3",
         "models": [
             {"label": "Qwen3.7-Max", "value": "qwen3.7-max"},
             {"label": "Qwen3.7-Plus", "value": "qwen3.7-plus"},
@@ -198,6 +202,9 @@ _SEED_PROVIDERS = {
         "display_name": "智谱AI (GLM)",
         "description": "智谱AI GLM 系列大模型",
         "api_base": "https://open.bigmodel.cn/api/paas/v4",
+        "default_model": "glm-5.2",
+        "default_vision_model": "glm-4v-plus",
+        "default_embedding_model": "embedding-3",
         "models": [
             {"label": "GLM-5.2", "value": "glm-5.2"},
             {"label": "GLM-5.1", "value": "glm-5.1"},
@@ -211,6 +218,9 @@ _SEED_PROVIDERS = {
         "display_name": "硅基流动",
         "description": "硅基流动 Model API 平台",
         "api_base": "https://api.siliconflow.cn/v1",
+        "default_model": "deepseek-ai/DeepSeek-V3",
+        "default_vision_model": "Qwen/Qwen2-VL-72B-Instruct",
+        "default_embedding_model": "BAAI/bge-large-zh-v1.5",
         "models": [
             {"label": "DeepSeek-V3", "value": "deepseek-ai/DeepSeek-V3"},
             {"label": "Qwen2.5-72B", "value": "Qwen/Qwen2.5-72B-Instruct"},
@@ -243,6 +253,8 @@ async def load_providers_from_db():
                     api_base=info["api_base"],
                     models=info["models"],
                     default_model=info.get("default_model", ""),
+                    default_vision_model=info.get("default_vision_model", ""),
+                    default_embedding_model=info.get("default_embedding_model", ""),
                     code=None,
                     is_public=True,
                     created_at=_seed_time,
@@ -250,8 +262,12 @@ async def load_providers_from_db():
                 )
                 session.add(record)
             else:
-                # 已存在的内置 Provider 确保标记为公共
+                # 已存在的内置 Provider 确保标记为公共，更新默认模型
                 record.is_public = True
+                if info.get("default_vision_model") and not record.default_vision_model:
+                    record.default_vision_model = info["default_vision_model"]
+                if info.get("default_embedding_model") and not record.default_embedding_model:
+                    record.default_embedding_model = info["default_embedding_model"]
         await session.commit()
 
         # 加载所有 Provider 到内存
@@ -266,6 +282,8 @@ async def load_providers_from_db():
                 "api_base": p.api_base,
                 "models": p.models or [],
                 "default_model": p.default_model,
+                "default_vision_model": p.default_vision_model or "",
+                "default_embedding_model": p.default_embedding_model or "",
                 "code": p.code,
             }
         logger.info(f"已加载 {len(_provider_registry)} 个 Provider: {list(_provider_registry.keys())}")
@@ -386,49 +404,50 @@ def get_custom_adapter_providers() -> List[str]:
     return list(_custom_adapter_cache.keys())
 
 
+def _require_user_cfg() -> Dict[str, Any]:
+    """获取用户 LLM 配置；若未配置则抛出错误。无全局回退。"""
+    cfg = get_user_llm_config()
+    if not cfg:
+        raise RuntimeError("未配置 LLM Provider，请在配置页面设置您的 API Key 和模型")
+    return cfg
+
+
 class LLMManager:
-    """大模型管理器（主模型 + 降级链）"""
+    """大模型管理器（主模型 + 降级链）
+
+    无全局 Provider 概念——所有 LLM 调用必须基于用户配置（contextvar）。
+    若未设置用户配置，抛出 RuntimeError 提示用户在配置页面设置。
+    """
 
     def __init__(self):
-        self.provider = settings.LLM_PROVIDER
-        self.api_key = settings.OPENAI_API_KEY
-        self.api_base = settings.OPENAI_API_BASE
-        self.model = settings.OPENAI_MODEL
-        self.embedding_model = settings.OPENAI_EMBEDDING_MODEL
-        self.fallback_models = _parse_fallback_models(settings.LLM_FALLBACK_MODELS)
-        self._client = None
         self._client_cache: Dict[tuple, Any] = {}
         self._initialized = False
 
     def _available_models(self) -> List[str]:
-        """当前 Provider 可用的文本模型列表"""
-        cfg = get_user_llm_config()
-        provider = cfg.get("provider") if cfg else self.provider
+        """当前用户 Provider 可用的文本模型列表"""
+        cfg = _require_user_cfg()
+        provider = cfg.get("provider", "")
         info = _provider_registry.get(provider)
         if info and info.get("models"):
             return [m["value"] for m in info["models"] if m.get("value")]
-        if cfg and cfg.get("model"):
-            return [cfg["model"]]
-        return [self.model] if self.model else []
+        return [cfg["model"]] if cfg.get("model") else []
 
     @property
     def _default(self) -> str:
-        """默认深度模型（用户配置优先，但须在 provider 可用模型列表内，否则回退 provider default_model）"""
-        cfg = get_user_llm_config()
-        if cfg and cfg.get("model"):
-            user_model = cfg["model"]
-            provider = cfg.get("provider", "")
-            info = _provider_registry.get(provider)
-            if info:
-                valid_values = {m["value"] for m in info.get("models", []) if m.get("value")}
-                if valid_values and user_model not in valid_values:
-                    logger.warning(
-                        f"用户配置的模型 {user_model!r} 不在 provider {provider!r} 的可用列表内，"
-                        f"回退到 provider 默认模型 {info.get('default_model')!r}"
-                    )
-                    return info.get("default_model") or user_model
-            return user_model
-        return self.model or "gpt-3.5-turbo"
+        """默认深度模型（用户配置的模型，须在 provider 可用模型列表内，否则回退 provider default_model）"""
+        cfg = _require_user_cfg()
+        user_model = cfg.get("model", "")
+        provider = cfg.get("provider", "")
+        info = _provider_registry.get(provider)
+        if info:
+            valid_values = {m["value"] for m in info.get("models", []) if m.get("value")}
+            if valid_values and user_model and user_model not in valid_values:
+                logger.warning(
+                    f"用户配置的模型 {user_model!r} 不在 provider {provider!r} 的可用列表内，"
+                    f"回退到 provider 默认模型 {info.get('default_model')!r}"
+                )
+                return info.get("default_model") or user_model
+        return user_model
 
     @property
     def _flash(self) -> str:
@@ -439,10 +458,15 @@ class LLMManager:
         return self._default
 
     def _eff_vision_model(self, provider: str = "") -> str:
-        """根据 provider 选择视觉模型（空字符串=不支持）"""
-        cfg = get_user_llm_config()
-        p = provider or (cfg.get("provider") if cfg else self.provider)
-        return _PROVIDER_VISION_MODELS.get(p, "")
+        """用户配置的视觉模型；未配置则回退 Provider 默认视觉模型；都没有则返回空"""
+        cfg = _require_user_cfg()
+        if cfg.get("vision_model"):
+            return cfg["vision_model"]
+        p = cfg.get("provider", "")
+        info = _provider_registry.get(p)
+        if info:
+            return info.get("default_vision_model", "")
+        return ""
 
     # ---------- 客户端管理 ----------
     def _client_for(self, cfg: Dict[str, str]):
@@ -478,26 +502,15 @@ class LLMManager:
         return client
 
     def _model_configs(self) -> List[Dict[str, str]]:
-        """返回有序模型配置列表（主模型 + 有 key 的降级模型）；用户配置优先"""
-        cfg = get_user_llm_config()
-        if cfg:
-            configs = [{
-                "provider": cfg.get("provider", ""),
-                "api_key": cfg.get("api_key", ""),
-                "api_base": cfg.get("api_base", ""),
-                "model": cfg.get("model", ""),
-            }]
-            for fb in (cfg.get("fallback_models") or []):
-                if fb.get("api_key"):
-                    configs.append(fb)
-            return configs
+        """返回有序模型配置列表（主模型 + 有 key 的降级模型）；基于用户配置"""
+        cfg = _require_user_cfg()
         configs = [{
-            "provider": self.provider,
-            "api_key": self.api_key,
-            "api_base": self.api_base,
-            "model": self.model,
+            "provider": cfg.get("provider", ""),
+            "api_key": cfg.get("api_key", ""),
+            "api_base": cfg.get("api_base", ""),
+            "model": cfg.get("model", ""),
         }]
-        for fb in (self.fallback_models or []):
+        for fb in (cfg.get("fallback_models") or []):
             if fb.get("api_key"):
                 configs.append(fb)
         return configs
@@ -531,39 +544,13 @@ class LLMManager:
                 await asyncio.sleep(delay)
 
     async def initialize(self):
-        """初始化LLM客户端"""
-        if self._initialized and self._client:
-            return
-        try:
-            # 优先使用当前请求用户的配置（contextvar），避免全局无 key 时创建空 client 失败
-            user_cfg = get_user_llm_config()
-            primary = {
-                "provider": (user_cfg or {}).get("provider") or self.provider,
-                "api_key": (user_cfg or {}).get("api_key") or self.api_key,
-                "api_base": (user_cfg or {}).get("api_base") or self.api_base,
-                "model": (user_cfg or {}).get("model") or self.model,
-            }
-            self._client = self._client_for(primary)
-            self._initialized = True
-            fb_desc = f", fallback={[f['provider']+'/'+f['model'] for f in self.fallback_models]}" if self.fallback_models else ""
-            logger.info(f"LLM客户端初始化完成: provider={primary['provider']}, model={primary['model']}{fb_desc}")
-        except Exception as e:
-            logger.error(f"LLM客户端初始化失败: {e}")
-            raise
+        """初始化（无全局客户端，仅标记已初始化；实际客户端由 _client_for 按用户配置动态构建）"""
+        self._initialized = True
 
     async def reinitialize(self, provider: str, api_key: str, api_base: str = None, model: str = None, embedding_model: str = None, fallback_models: List[Dict[str, str]] = None):
-        """使用新配置重新初始化LLM客户端"""
-        self.provider = provider
-        self.api_key = api_key
-        self.api_base = api_base
-        self.model = model or self.model
-        self.embedding_model = embedding_model or self.embedding_model
-        if fallback_models is not None:
-            self.fallback_models = fallback_models
-        # 清空客户端缓存，强制按新配置重建
+        """使用新配置重新初始化（清空客户端缓存，强制按新配置重建）"""
         self._client_cache = {}
-        self._client = None
-        self._initialized = False
+        self._initialized = True
         await self.initialize()
 
     # ---------- 非流式调用（全链路降级） ----------
@@ -951,15 +938,15 @@ class LLMManager:
 
     # ---------- 嵌入 ----------
     def _eff_embedding_model(self, provider: str = "") -> str:
-        """根据 provider 选择 embedding 模型（用户配置优先 → provider 默认 → 全局兜底）"""
-        cfg = get_user_llm_config()
-        if cfg and cfg.get("embedding_model"):
+        """用户配置的 embedding 模型；未配置则回退 Provider 默认"""
+        cfg = _require_user_cfg()
+        if cfg.get("embedding_model"):
             return cfg["embedding_model"]
-        if provider and provider in _PROVIDER_EMBEDDING_MODELS:
-            emb = _PROVIDER_EMBEDDING_MODELS[provider]
-            if emb:
-                return emb
-        return self.embedding_model or settings.OPENAI_EMBEDDING_MODEL
+        p = provider or cfg.get("provider", "")
+        info = _provider_registry.get(p)
+        if info:
+            return info.get("default_embedding_model", "")
+        return ""
 
     async def embed(self, text: str) -> list:
         """生成文本嵌入向量（主模型，失败则降级）"""

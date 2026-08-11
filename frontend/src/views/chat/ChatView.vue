@@ -90,8 +90,20 @@
               
               <!-- 主要内容 -->
               <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
-              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && !msg.executingMsg" class="typing-indicator">
+              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && !msg.executingMsg && !msg.inspectionReport" class="typing-indicator">
                 <span></span><span></span><span></span>
+              </div>
+              <!-- 数据检查报告 -->
+              <div v-if="msg.role === 'assistant' && msg.inspectionReport" class="inspection-report-section">
+                <el-collapse model-value="report">
+                  <el-collapse-item name="report">
+                    <template #title>
+                      <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
+                      <span class="collapse-label">数据检查报告</span>
+                    </template>
+                    <div class="markdown-content" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                  </el-collapse-item>
+                </el-collapse>
               </div>
               <!-- 执行进度 -->
               <div v-if="msg.role === 'assistant' && msg.executingMsg" class="executing-indicator">
@@ -154,7 +166,7 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import api from '@/api/index'
 
@@ -700,6 +712,56 @@ async function handleExportCurrent() {
         padding: 2px 6px;
         border-radius: 4px;
         font-size: 13px;
+      }
+    }
+  }
+}
+
+.inspection-report-section {
+  margin: 8px 0 12px 0;
+  max-width: 92%;
+
+  .collapse-label {
+    font-weight: 500;
+    color: #606266;
+    font-size: 13px;
+  }
+
+  :deep(.el-collapse) {
+    border: 1px solid #e4e7ed;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  :deep(.el-collapse-item__header) {
+    padding: 0 12px;
+    background: #f5f7fa;
+    font-size: 13px;
+  }
+
+  :deep(.el-collapse-item__content) {
+    padding: 12px;
+    background: #fafafa;
+    font-size: 13px;
+    line-height: 1.6;
+
+    .markdown-content {
+      max-width: 100%;
+      width: 100%;
+
+      :deep(table) {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+      }
+
+      :deep(th), :deep(td) {
+        border: 1px solid #dcdfe6;
+        padding: 4px 8px;
+      }
+
+      :deep(th) {
+        background: #f0f0f0;
       }
     }
   }

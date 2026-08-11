@@ -12,7 +12,7 @@ SANDBOX_TOOLS_DOC = """## 脚本内置工具函数（由运行环境自动注入
 - `write_table_data(datasource_id_or_name, table_name, records=[...], data=None, if_table_exists="fail", table_remark="", column_remarks=None)` → dict: 写入数据到数据源
   - records: 行数据列表，每行是 dict（如 [{"id": 1, "name": "张三"}]）
   - data: records 的别名，传 records 或 data 二选一即可
-  - if_table_exists: 写入策略，支持 fail(默认,表不存在则建/已存在则报错) / append(追加) / replace(删表重建) / overwrite(清空+补列) / truncate(同overwrite) / delete_rows(清空不补列) / upsert(按id更新或插入)
+  - if_table_exists: 写入策略，支持 fail(默认,表不存在则建/已存在则报错) / append(追加) / replace(删表重建) / overwrite(清空+补列) / truncate(同overwrite) / delete_rows(清空不补列) / upsert(按id更新或插入) / create_new(表已存在时自动创建新表，表名加 _1, _2 后缀)
   - table_remark: 表备注（中文表名说明，PostgreSQL/MySQL/SQLite 支持）
   - column_remarks: 列备注字典（如 {"id": "编号", "name": "姓名"}，PostgreSQL/MySQL/SQLite 支持）
   - 返回: {"success": bool, "rows_written": int, "message": str}
@@ -169,7 +169,8 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 避免因中英文/近义词不匹配导致 KeyError
 
 ### 数据写入
-- 写入数据时用 `if_table_exists` 参数控制策略：fail/append/replace/overwrite/truncate/delete_rows/upsert
+- 写入数据时用 `if_table_exists` 参数控制策略：fail/append/replace/overwrite/truncate/delete_rows/upsert/create_new
+- create_new: 表已存在时自动创建新表（表名加 _1, _2 后缀），不存在则正常创建
 - 分批写入时，第一批用原策略，后续批次用 append
 - 写入后检查返回值的 `success` 字段，失败时 raise 而不是静默继续
 

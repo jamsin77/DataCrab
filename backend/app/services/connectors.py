@@ -34,7 +34,7 @@ def _mtime_to_utc(path: str) -> Optional[datetime]:
 _UNSAFE_IDENTIFIER_RE = re.compile(r'["\'`;\x00]')
 
 # 平台支持的写入策略（fail-fast：不支持的策略在此拦截，不让连接器 if/elif 链静默 fall-through）
-VALID_WRITE_STRATEGIES = {"fail", "append", "replace", "overwrite", "truncate", "delete_rows", "upsert"}
+VALID_WRITE_STRATEGIES = {"fail", "append", "replace", "overwrite", "truncate", "delete_rows", "upsert", "create_new"}
 
 
 def _validate_identifier(name: str) -> str:
@@ -138,6 +138,7 @@ class PostgreSQLConnector(BaseConnector):
           - truncate:    同 overwrite
           - delete_rows:  DELETE FROM 清空数据（保留表结构，不补列）
           - upsert:      按 id 列做 INSERT ON CONFLICT DO UPDATE（无 id 列则退化为 append）
+          - create_new:  表已存在时自动创建新表（表名加 _1, _2 后缀），不存在则正常创建
         """
         if not self._connection:
             await self.connect()
@@ -154,10 +155,23 @@ class PostgreSQLConnector(BaseConnector):
             # 检查表是否存在 (asyncpg 用 $1 而非 %s, fetchrow 而非 execute+fetchone)
             row = await self._connection.fetchrow("SELECT to_regclass($1)", table)
             table_exists = row and row[0] is not None
+            actual_table = table
 
             if table_exists:
                 if if_table_exists in ("fail",):
                     return {"success": False, "message": f"表 '{table}' 已存在 (if_table_exists=fail)"}
+                elif if_table_exists == "create_new":
+                    # 自动找新表名：表名加 _1, _2, _3 ... 直到不存在
+                    base = table
+                    suffix = 1
+                    while True:
+                        candidate = f"{base}_{suffix}"
+                        r = await self._connection.fetchrow("SELECT to_regclass($1)", candidate)
+                        if not r or r[0] is None:
+                            actual_table = candidate
+                            break
+                        suffix += 1
+                    table = actual_table
                 elif if_table_exists in ("replace",):
                     await self._connection.execute(f'DROP TABLE "{table}"')
                     col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
@@ -178,7 +192,8 @@ class PostgreSQLConnector(BaseConnector):
                     pass  # 在写入阶段用 ON CONFLICT 处理
                 else:
                     pass  # append: 直接追加
-            else:
+
+            if not table_exists or if_table_exists == "create_new":
                 col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
                 await self._connection.execute(f'CREATE TABLE "{table}" ({col_defs})')
 
@@ -211,7 +226,10 @@ class PostgreSQLConnector(BaseConnector):
                         safe_remark = str(remark).replace("'", "''")
                         await self._connection.execute(f'COMMENT ON COLUMN "{table}"."{col_name}" IS \'{safe_remark}\'')
 
-            return {"success": True, "rows_written": len(records)}
+            result = {"success": True, "rows_written": len(records)}
+            if actual_table != table:
+                result["table_name"] = table
+            return result
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -320,7 +338,7 @@ class MySQLConnector(BaseConnector):
         column_remarks: Dict[str, str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """写入数据到 MySQL 表。策略同 PostgreSQL: fail/append/replace/overwrite/truncate/delete_rows/upsert"""
+        """写入数据到 MySQL 表。策略同 PostgreSQL: fail/append/replace/overwrite/truncate/delete_rows/upsert/create_new"""
         if not self._connection:
             await self.connect()
         if not self._connection:
@@ -336,10 +354,22 @@ class MySQLConnector(BaseConnector):
             async with self._connection.cursor() as cur:
                 await cur.execute(f"SHOW TABLES LIKE %s", (table,))
                 table_exists = await cur.fetchone() is not None
+                actual_table = table
 
                 if table_exists:
                     if if_table_exists == "fail":
                         return {"success": False, "message": f"表 '{table}' 已存在 (if_table_exists=fail)"}
+                    elif if_table_exists == "create_new":
+                        base = table
+                        suffix = 1
+                        while True:
+                            candidate = f"{base}_{suffix}"
+                            await cur.execute(f"SHOW TABLES LIKE %s", (candidate,))
+                            if await cur.fetchone() is None:
+                                actual_table = candidate
+                                break
+                            suffix += 1
+                        table = actual_table
                     elif if_table_exists == "replace":
                         await cur.execute(f"DROP TABLE `{table}`")
                         col_defs = ", ".join(f"`{c}` TEXT" for c in columns)
@@ -353,7 +383,8 @@ class MySQLConnector(BaseConnector):
                                 await cur.execute(f"ALTER TABLE `{table}` ADD COLUMN `{col}` TEXT")
                     elif if_table_exists == "delete_rows":
                         await cur.execute(f"DELETE FROM `{table}`")
-                else:
+
+                if not table_exists or if_table_exists == "create_new":
                     col_defs = ", ".join(f"`{c}` TEXT" for c in columns)
                     await cur.execute(f"CREATE TABLE `{table}` ({col_defs})")
 
@@ -376,7 +407,10 @@ class MySQLConnector(BaseConnector):
                     await cur.execute(f"ALTER TABLE `{table}` COMMENT = '{safe_remark}'")
 
             await self._connection.commit()
-            return {"success": True, "rows_written": len(records)}
+            result = {"success": True, "rows_written": len(records)}
+            if actual_table != table:
+                result["table_name"] = table
+            return result
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -427,18 +461,30 @@ class CSVConnector(BaseConnector):
 
     async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         import pandas as pd
+        import os as _os
         file_path = self.config.get("file_path", "")
         strategy = kwargs.get("if_table_exists", "fail")
         try:
-            import os as _os
             if _os.path.exists(file_path) and strategy == "fail":
                 return {"success": False, "message": f"文件已存在: {file_path} (if_table_exists=fail)"}
+            if _os.path.exists(file_path) and strategy == "create_new":
+                base, ext = _os.path.splitext(file_path)
+                suffix = 1
+                while True:
+                    candidate = f"{base}_{suffix}{ext}"
+                    if not _os.path.exists(candidate):
+                        file_path = candidate
+                        break
+                    suffix += 1
             df_new = pd.DataFrame(records)
             if _os.path.exists(file_path) and strategy == "append":
                 df_old = pd.read_csv(file_path)
                 df_new = pd.concat([df_old, df_new], ignore_index=True)
             df_new.to_csv(file_path, index=False, encoding="utf-8-sig")
-            return {"success": True, "rows_written": len(df_new)}
+            result = {"success": True, "rows_written": len(df_new)}
+            if strategy == "create_new":
+                result["file_path"] = file_path
+            return result
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -624,32 +670,57 @@ class ExcelConnector(BaseConnector):
             return {"success": True, "rows_written": len(df_new), "created_new_file": True}
 
         try:
+            xl_check = pd.ExcelFile(file_path)
+            target_sheet_name = sheet_name if isinstance(sheet_name, str) else None
+            actual_sheet = target_sheet_name
+
             if strategy == "fail":
-                target_sheet_name = sheet_name if isinstance(sheet_name, str) else None
-                xl_check = pd.ExcelFile(file_path)
                 if target_sheet_name and target_sheet_name in xl_check.sheet_names:
+                    xl_check.close()
                     return {"success": False, "message": f"Sheet '{target_sheet_name}' 已存在 (if_table_exists=fail)"}
-                xl_check.close()
+            elif strategy == "create_new":
+                if target_sheet_name and target_sheet_name in xl_check.sheet_names:
+                    base = target_sheet_name
+                    suffix = 1
+                    while True:
+                        candidate = f"{base}_{suffix}"
+                        if candidate not in xl_check.sheet_names:
+                            actual_sheet = candidate
+                            break
+                        suffix += 1
+            xl_check.close()
+
             df_new = pd.DataFrame(records)
             xl = pd.ExcelFile(file_path)
             sheets_data = {}
-            target_sheet = sheet_name
-            if isinstance(target_sheet, int) or target_sheet not in xl.sheet_names:
-                target_sheet = xl.sheet_names[target_sheet if isinstance(target_sheet, int) else 0]
-            for s in xl.sheet_names:
-                if s == target_sheet:
-                    if strategy == "append":
-                        df_old = pd.read_excel(xl, sheet_name=s)
-                        sheets_data[s] = pd.concat([df_old, df_new], ignore_index=True)
-                    else:
-                        sheets_data[s] = df_new
-                else:
+            target_sheet = actual_sheet if strategy == "create_new" else (
+                sheet_name if isinstance(sheet_name, str) and sheet_name in xl.sheet_names
+                else xl.sheet_names[sheet_name if isinstance(sheet_name, int) else 0]
+            )
+
+            # 如果 target_sheet 不在已有 sheet 中（create_new 场景），保留所有已有 sheet 并追加新 sheet
+            if strategy == "create_new" and actual_sheet not in xl.sheet_names:
+                for s in xl.sheet_names:
                     sheets_data[s] = pd.read_excel(xl, sheet_name=s)
+                sheets_data[actual_sheet] = df_new
+            else:
+                for s in xl.sheet_names:
+                    if s == target_sheet:
+                        if strategy == "append":
+                            df_old = pd.read_excel(xl, sheet_name=s)
+                            sheets_data[s] = pd.concat([df_old, df_new], ignore_index=True)
+                        else:
+                            sheets_data[s] = df_new
+                    else:
+                        sheets_data[s] = pd.read_excel(xl, sheet_name=s)
             xl.close()
             with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
                 for s, df in sheets_data.items():
                     df.to_excel(writer, sheet_name=s, index=False)
-            return {"success": True, "rows_written": len(df_new)}
+            result = {"success": True, "rows_written": len(df_new)}
+            if strategy == "create_new" and actual_sheet != target_sheet_name:
+                result["sheet_name"] = actual_sheet
+            return result
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -1277,7 +1348,7 @@ class SQLiteConnector(BaseConnector):
         column_remarks: Dict[str, str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
-        """写入数据到 SQLite 表。策略同 PostgreSQL: fail/append/replace/overwrite/truncate/delete_rows/upsert"""
+        """写入数据到 SQLite 表。策略同 PostgreSQL: fail/append/replace/overwrite/truncate/delete_rows/upsert/create_new"""
         if not self._connection:
             await self.connect()
         if not self._connection:
@@ -1295,10 +1366,24 @@ class SQLiteConnector(BaseConnector):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ) as cursor:
                 table_exists = await cursor.fetchone() is not None
+            actual_table = table
 
             if table_exists:
                 if if_table_exists == "fail":
                     return {"success": False, "message": f"表 '{table}' 已存在 (if_table_exists=fail)"}
+                elif if_table_exists == "create_new":
+                    base = table
+                    suffix = 1
+                    while True:
+                        candidate = f"{base}_{suffix}"
+                        async with self._connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (candidate,)
+                        ) as cursor:
+                            if await cursor.fetchone() is None:
+                                actual_table = candidate
+                                break
+                        suffix += 1
+                    table = actual_table
                 elif if_table_exists == "replace":
                     await self._connection.execute(f'DROP TABLE "{table}"')
                     col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
@@ -1313,7 +1398,8 @@ class SQLiteConnector(BaseConnector):
                             await self._connection.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" TEXT')
                 elif if_table_exists == "delete_rows":
                     await self._connection.execute(f'DELETE FROM "{table}"')
-            else:
+
+            if not table_exists or if_table_exists == "create_new":
                 col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
                 await self._connection.execute(f'CREATE TABLE "{table}" ({col_defs})')
 
@@ -1332,7 +1418,10 @@ class SQLiteConnector(BaseConnector):
                 await self._connection.execute(insert_sql, values)
 
             await self._connection.commit()
-            return {"success": True, "rows_written": len(records)}
+            result = {"success": True, "rows_written": len(records)}
+            if actual_table != table:
+                result["table_name"] = table
+            return result
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 

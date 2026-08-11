@@ -560,7 +560,7 @@ class ToolResultCache:
 
     READONLY_TOOLS = frozenset({
         "query_table_data", "get_table_schema",
-        "list_user_datasources", "list_user_file_links",
+        "list_user_file_links",
         "kb_search", "profile_data",
         "check_data_standards", "check_data_quality", "check_data_security",
     })

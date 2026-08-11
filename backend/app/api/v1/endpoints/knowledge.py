@@ -83,6 +83,8 @@ async def upload_document(
     # 提交后异步/同步导入（此处同步执行以简化）
     await db.commit()
 
+    from app.services.llm import init_user_llm_context
+    await init_user_llm_context(current_user.id)
     result = await kb_service.ingest_document(
         str(doc_id), file_path, file_type, file.filename, str(current_user.id)
     )
@@ -158,5 +160,7 @@ async def search_documents(
     top_k = (body or {}).get("top_k", 5) or 5
     if not query:
         raise HTTPException(status_code=400, detail="请输入检索内容")
+    from app.services.llm import init_user_llm_context
+    await init_user_llm_context(current_user.id)
     results = await kb_service.search(query, str(current_user.id), top_k=max(1, min(int(top_k), 20)))
     return {"query": query, "results": results}

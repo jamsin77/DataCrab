@@ -23,7 +23,8 @@ class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     model: Optional[str] = None
-    embedding_model: str = "text-embedding-ada-002"
+    vision_model: str = ""
+    embedding_model: str = ""
     fallback_models: Optional[List[Dict[str, str]]] = None
 
 
@@ -33,6 +34,24 @@ def _provider_default_model(provider: str) -> str:
     info = _provider_registry.get(provider)
     if info and info.get("default_model"):
         return info["default_model"]
+    return ""
+
+
+def _provider_default_vision_model(provider: str) -> str:
+    """按 provider 从注册表取推荐视觉模型名"""
+    from app.services.llm import _provider_registry
+    info = _provider_registry.get(provider)
+    if info:
+        return info.get("default_vision_model", "")
+    return ""
+
+
+def _provider_default_embedding_model(provider: str) -> str:
+    """按 provider 从注册表取推荐 embedding 模型名"""
+    from app.services.llm import _provider_registry
+    info = _provider_registry.get(provider)
+    if info:
+        return info.get("default_embedding_model", "")
     return ""
 
 
@@ -50,6 +69,7 @@ class LLMConfigResponse(BaseModel):
     api_key_set: bool  # 不返回实际key，只返回是否已设置
     api_base: Optional[str] = None
     model: str
+    vision_model: str
     embedding_model: str
     is_configured: bool
     fallback_models: List[FallbackModelItem] = []
@@ -113,6 +133,7 @@ async def get_llm_config(
             provider = rec.provider
             api_base = rec.api_base or ""
             model = rec.model or ""
+            vision_model = rec.vision_model or ""
             embedding_model = rec.embedding_model or ""
             api_key_set = bool(rec.api_key_encrypted)
             fb_items = [
@@ -125,27 +146,21 @@ async def get_llm_config(
                 for f in (rec.fallback_models or [])
             ]
         else:
-            # 用户未配置，回退全局
-            provider = llm_manager.provider or settings.LLM_PROVIDER
-            api_base = llm_manager.api_base or settings.OPENAI_API_BASE
-            model = llm_manager.model or settings.OPENAI_MODEL
-            embedding_model = llm_manager.embedding_model or settings.OPENAI_EMBEDDING_MODEL
-            api_key_set = provider_key_map.get(provider, False)
-            fb_items = [
-                FallbackModelItem(
-                    provider=f.get("provider") or "",
-                    api_base=f.get("api_base"),
-                    model=f.get("model") or "",
-                    api_key_set=provider_key_map.get(f.get("provider", ""), False),
-                )
-                for f in (getattr(llm_manager, "fallback_models", []) or [])
-            ]
+            # 用户未配置
+            provider = ""
+            api_base = ""
+            model = ""
+            vision_model = ""
+            embedding_model = ""
+            api_key_set = False
+            fb_items = []
 
         return LLMConfigResponse(
             provider=provider,
             api_key_set=api_key_set,
             api_base=api_base,
             model=model,
+            vision_model=vision_model,
             embedding_model=embedding_model,
             is_configured=api_key_set,
             fallback_models=fb_items,
@@ -188,21 +203,23 @@ async def update_llm_config(
         if config.api_key and config.api_key.strip():
             api_key_encrypted = encrypt(config.api_key.strip())
 
-        # model 未提供时按 provider 取推荐深度模型（避免默认 gpt-4 写入非 openai provider）
+        # model 未提供时按 provider 取推荐深度模型
         eff_model = config.model or _provider_default_model(config.provider)
-        # embedding_model 未提供时按 provider 取默认（避免 text-embedding-ada-002 用于智谱等）
+        # vision_model 未提供时按 provider 取推荐视觉模型
+        eff_vision = config.vision_model
+        if not eff_vision:
+            eff_vision = _provider_default_vision_model(config.provider)
+        # embedding_model 未提供时按 provider 取推荐 embedding 模型
         eff_embedding = config.embedding_model
-        if not eff_embedding or eff_embedding == "text-embedding-ada-002":
-            from app.services.llm import _PROVIDER_EMBEDDING_MODELS
-            pm = _PROVIDER_EMBEDDING_MODELS.get(config.provider, "")
-            if pm:
-                eff_embedding = pm
+        if not eff_embedding:
+            eff_embedding = _provider_default_embedding_model(config.provider)
 
         if rec:
             rec.provider = config.provider
             rec.api_key_encrypted = api_key_encrypted
             rec.api_base = config.api_base or ""
             rec.model = eff_model
+            rec.vision_model = eff_vision
             rec.embedding_model = eff_embedding
             rec.fallback_models = fallback_models
         else:
@@ -212,6 +229,7 @@ async def update_llm_config(
                 api_key_encrypted=api_key_encrypted,
                 api_base=config.api_base or "",
                 model=eff_model,
+                vision_model=eff_vision,
                 embedding_model=eff_embedding,
                 fallback_models=fallback_models,
             )
@@ -251,20 +269,22 @@ async def test_llm_connection(
 
     try:
         body = body or {}
-        provider = body.get("provider") or llm_manager.provider or settings.LLM_PROVIDER
+        provider = body.get("provider") or ""
 
         # 用户已保存的配置（API key / model / api_base 来源之一）
         user_rec = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
         user_cfg = user_rec.scalar_one_or_none()
+        if not provider and user_cfg:
+            provider = user_cfg.provider or ""
 
-        # model：传入 → 用户已保存 → 全局
+        # model：传入 → 用户已保存 → 公共 Provider 默认
         model = body.get("model")
         if not model and user_cfg and user_cfg.model:
             model = user_cfg.model
         if not model:
-            model = _provider_default_model(provider) or llm_manager.model or settings.OPENAI_MODEL
+            model = _provider_default_model(provider) or ""
 
-        # API Key：传入 → 用户已保存（解密）→ 公共 Provider → 全局
+        # API Key：传入 → 用户已保存（解密）→ 公共 Provider
         api_key = body.get("api_key") or ""
         if not api_key and user_cfg and user_cfg.api_key_encrypted:
             api_key = decrypt(user_cfg.api_key_encrypted)
@@ -273,8 +293,6 @@ async def test_llm_connection(
             pub_rec = pub.scalar_one_or_none()
             if pub_rec and pub_rec.api_key_encrypted:
                 api_key = decrypt(pub_rec.api_key_encrypted)
-        if not api_key:
-            api_key = llm_manager.api_key or settings.OPENAI_API_KEY
 
         # API Base：传入 → 用户已保存 → 公共 Provider → 内置注册表
         api_base = body.get("api_base") or ""

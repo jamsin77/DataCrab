@@ -54,6 +54,40 @@
           </div>
         </el-form-item>
 
+        <el-form-item label="默认模型">
+          <el-select v-model="form.model" placeholder="选择默认模型" style="width: 100%" @change="clearAlerts">
+            <el-option
+              v-for="m in availableModels"
+              :key="m.value"
+              :label="m.label"
+              :value="m.value"
+            />
+          </el-select>
+          <div class="form-tip">
+            <el-text size="small" type="info">
+              对话、调试、分析等场景默认使用的模型
+            </el-text>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="视觉模型">
+          <el-input v-model="form.vision_model" placeholder="如 glm-4v-plus（留空表示不支持图片识别）" style="width: 100%" />
+          <div class="form-tip">
+            <el-text size="small" type="info">
+              OCR/图片识别使用的模型，留空则不支持视觉任务
+            </el-text>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="向量模型">
+          <el-input v-model="form.embedding_model" placeholder="如 embedding-3（留空表示不支持向量化）" style="width: 100%" />
+          <div class="form-tip">
+            <el-text size="small" type="info">
+              知识库向量化使用的模型，留空则不支持向量化
+            </el-text>
+          </div>
+        </el-form-item>
+
         <el-divider content-position="left">备用模型（主模型不可用时自动降级）</el-divider>
 
         <div v-for="(fb, idx) in fallbackModels" :key="idx" class="fallback-item">
@@ -65,6 +99,14 @@
                   :key="p.provider_name"
                   :label="p.display_name"
                   :value="p.provider_name"
+                />
+              </el-select>
+              <el-select v-model="fb.model" placeholder="模型" style="width: 180px">
+                <el-option
+                  v-for="m in (getProviderModels(fb.provider) || [])"
+                  :key="m.value"
+                  :label="m.label"
+                  :value="m.value"
                 />
               </el-select>
               <el-input v-model="fb.api_key" type="password" show-password placeholder="API Key" style="flex: 1" />
@@ -165,11 +207,35 @@ function getProviderApiBase(providerName: string): string {
   return p?.api_base || ''
 }
 
+function getProviderModels(providerName: string): any[] {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.models || []
+}
+
+function getProviderDefaultModel(providerName: string): string {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.default_model || ''
+}
+
+function getProviderDefaultVisionModel(providerName: string): string {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.default_vision_model || ''
+}
+
+function getProviderDefaultEmbeddingModel(providerName: string): string {
+  const p = providers.value.find(p => p.provider_name === providerName)
+  return p?.default_embedding_model || ''
+}
+
+const availableModels = computed(() => getProviderModels(form.value.provider))
+
 const apiBasePlaceholder = computed(() => getProviderApiBase(form.value.provider) || '请填写 API 地址')
 
 function formatCapabilities(row: any): string {
   const caps = []
   if (row.default_model) caps.push('深度')
+  if (row.default_vision_model) caps.push('视觉')
+  if (row.default_embedding_model) caps.push('向量')
   if (row.models && row.models.length > 0) caps.push('文本')
   return caps.join('/') || '-'
 }
@@ -177,6 +243,9 @@ function formatCapabilities(row: any): string {
 function onProviderChange() {
   clearAlerts()
   form.value.api_base = getProviderApiBase(form.value.provider) || ''
+  form.value.model = getProviderDefaultModel(form.value.provider) || ''
+  form.value.vision_model = getProviderDefaultVisionModel(form.value.provider) || ''
+  form.value.embedding_model = getProviderDefaultEmbeddingModel(form.value.provider) || ''
 }
 
 const config = ref({
@@ -190,12 +259,15 @@ const form = ref({
   provider: 'glm',
   api_key: '',
   api_base: '',
+  model: '',
+  vision_model: '',
+  embedding_model: '',
 })
 
 const fallbackModels = ref<any[]>(([]))
 
 function addFallback() {
-  fallbackModels.value.push({ provider: '', api_key: '', api_base: '' })
+  fallbackModels.value.push({ provider: '', model: '', api_key: '', api_base: '' })
 }
 
 const testResult = ref<any>(null)
@@ -230,9 +302,13 @@ async function loadConfig(preserveApiKey = false) {
       provider: res.provider,
       api_key: res.api_key_set ? '' : currentApiKey,
       api_base: res.api_base || '',
+      model: res.model || '',
+      vision_model: res.vision_model || '',
+      embedding_model: res.embedding_model || '',
     }
     fallbackModels.value = (res.fallback_models || []).map((f: any) => ({
       provider: f.provider || '',
+      model: f.model || '',
       api_key: f.api_key || '',
       api_base: f.api_base || '',
     }))
@@ -252,11 +328,19 @@ async function saveConfig() {
       provider: form.value.provider,
       api_key: form.value.api_key,
       api_base: form.value.api_base,
+      model: form.value.model,
+      vision_model: form.value.vision_model || '',
+      embedding_model: form.value.embedding_model || '',
     }
     // 只发送有 provider 的备用模型
     const validFallbacks = fallbackModels.value.filter(f => f.provider)
     if (validFallbacks.length > 0) {
-      payload.fallback_models = validFallbacks
+      payload.fallback_models = validFallbacks.map(f => ({
+        provider: f.provider,
+        model: f.model,
+        api_key: f.api_key,
+        api_base: f.api_base,
+      }))
     }
     const res = await api.post('/config/llm', payload)
     saveResult.value = res

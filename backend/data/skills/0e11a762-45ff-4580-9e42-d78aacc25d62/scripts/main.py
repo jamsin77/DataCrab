@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
 # 常见凭证拼音→中文映射表
@@ -382,13 +383,16 @@ def extract_image_info(
         full_map.update(translated)
         print(f"  LLM 翻译完成: 成功 {len(translated)} 个")
 
-    # ---- 4. 数据加工 + OCR提取关键信息 ----
+    # ---- 4. 数据加工 + OCR提取关键信息（并发处理）----
     log("info", "开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信息...")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     processed_records: List[Dict[str, Any]] = []
     ocr_success_count = 0
     ocr_fail_count = 0
+    platform_warnings = []  # 收集平台错误（LLM/OCR服务异常等），供 RunTime 感知
 
+    # 预处理：解析所有行，构建任务列表
+    tasks = []  # (idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix)
     for idx, row in enumerate(data):
         if isinstance(row, (list, tuple)):
             row_dict = dict(zip(source_columns, row))
@@ -396,34 +400,32 @@ def extract_image_info(
             row_dict = dict(row)
         else:
             row_dict = {}
-
         file_name = str(row_dict.get(resolved_name_col, "")) if resolved_name_col else ""
         file_path = str(row_dict.get(resolved_image_col, ""))
-        # 如果没有文件名列，从路径推导
         if not file_name and file_path:
             file_name = file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if "/" in file_path or "\\" in file_path else file_path
         pinyin_prefix = extract_pinyin_prefix(file_name)
         doc_type_cn = full_map.get(pinyin_prefix, pinyin_prefix if pinyin_prefix else "未知凭证类型")
+        tasks.append((idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix))
 
-        # OCR提取关键信息
+    print(f"  预处理完成，共 {len(tasks)} 条记录，开始并发OCR提取...")
+
+    # 并发OCR处理函数
+    def _ocr_task(idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix):
         extracted_info = ""
         extraction_status = "已提取"
         review_note = ""
-
         try:
             if not file_path or file_path == "None":
                 raise ValueError("图片路径为空，无法进行OCR")
             ocr_prompt = f"提取这张{doc_type_cn}图片中的所有文字信息，以JSON格式返回。"
             ocr_result = llm_vision(file_path, ocr_prompt, max_tokens=1000)
             extracted_info = str(ocr_result).strip() if ocr_result else ""
-
             if extracted_info:
                 extraction_status = "已提取"
-                ocr_success_count += 1
             else:
                 extraction_status = "提取失败"
                 review_note = "OCR返回空结果"
-                ocr_fail_count += 1
         except Exception as e:
             extraction_status = "提取失败"
             err_str = str(e)
@@ -431,22 +433,55 @@ def extract_image_info(
                 code_match = re.search(r"code['\"]:\s*['\"](\d+)['\"]", err_str)
                 error_code = code_match.group(1) if code_match else "未知"
                 review_note = f"OCR服务调用异常（错误码: {error_code}）"
+                platform_warnings.append(f"llm_vision 调用失败（错误码: {error_code}）: {err_str[:200]}")
             else:
                 review_note = f"OCR异常: {err_str[:100]}"
+                platform_warnings.append(f"llm_vision 调用异常: {err_str[:200]}")
             extracted_info = ""
-            ocr_fail_count += 1
 
-        # ---- PII 脱敏处理 ----
+        # PII脱敏
         if extracted_info:
             extracted_info = _sanitize_pii(extracted_info)
 
-        # ---- 数据质量验证与修复 ----
+        # 数据质量验证与修复
         if extracted_info:
             extracted_info, validation_note = _validate_extracted_data(extracted_info)
             if validation_note:
                 review_note = (review_note + "; " + validation_note).strip("; ") if review_note else validation_note
 
-        # 构建新记录
+        return idx, extracted_info, extraction_status, review_note
+
+    # 使用线程池并发执行OCR（I/O密集型，适合ThreadPool）
+    max_workers = 8
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for task in tasks:
+            idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix = task
+            fut = executor.submit(_ocr_task, idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix)
+            futures[fut] = idx
+
+        completed = 0
+        total = len(tasks)
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            try:
+                idx, extracted_info, extraction_status, review_note = fut.result()
+                results_map[idx] = (extracted_info, extraction_status, review_note)
+            except Exception as e:
+                results_map[idx] = ("", "提取失败", f"并发执行异常: {str(e)[:100]}")
+            completed += 1
+            if completed % 5 == 0 or completed == total:
+                print(f"  OCR进度: {completed}/{total} ({completed*100//total}%)")
+
+    # 按原始顺序构建最终记录
+    for idx, file_path, doc_type_cn, row_dict, file_name, pinyin_prefix in tasks:
+        extracted_info, extraction_status, review_note = results_map.get(idx, ("", "提取失败", "未找到结果"))
+        if extraction_status == "已提取":
+            ocr_success_count += 1
+        else:
+            ocr_fail_count += 1
+
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
         record["file_name"] = _sanitize_pii(file_name)
@@ -466,11 +501,7 @@ def extract_image_info(
         record["extracted_info"] = extracted_info
         record["review_note"] = review_note
         record["timestamp"] = now_str
-
         processed_records.append(record)
-
-        if (idx + 1) % 10 == 0:
-            print(f"  已处理 {idx + 1}/{len(data)} 条 (OCR成功: {ocr_success_count}, 失败: {ocr_fail_count})")
 
     print(f"数据加工完成: {len(processed_records)} 条")
     print(f"  OCR成功: {ocr_success_count}, OCR失败: {ocr_fail_count}")
@@ -523,6 +554,7 @@ def extract_image_info(
         "doc_type_distribution": type_dist,
         "write_method": "write_table_data",
         "sample": processed_records[:3],
+        "warnings": platform_warnings if platform_warnings else None,
     }
 
 

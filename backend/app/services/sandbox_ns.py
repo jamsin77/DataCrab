@@ -350,11 +350,14 @@ def build_operator_namespace(current_user_id):
                     # PIL 不可用时回退到原始图片
                     image_data = _b64.b64encode(raw_bytes).decode("utf-8")
 
-                from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
+                from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config, get_user_llm_config
                 if current_user_id:
                     await init_user_llm_context(current_user_id)
                 try:
                     await llm_manager.initialize()
+                    _user_cfg = get_user_llm_config()
+                    if not _user_cfg:
+                        raise RuntimeError("未配置 LLM Provider，请在配置页面设置")
                     messages = []
                     if system_prompt:
                         messages.append({"role": "system", "content": system_prompt})
@@ -365,11 +368,12 @@ def build_operator_namespace(current_user_id):
                             {"type": "text", "text": prompt},
                         ],
                     })
-                    # 视觉模型：按 provider 自动选择，不支持则报环境错误
-                    _vision_model = llm_manager._eff_vision_model()
+                    # 视觉模型：读用户配置的 vision_model
+                    _vision_model = llm_manager._eff_vision_model(_user_cfg.get("provider", ""))
                     if not _vision_model:
-                        raise RuntimeError(f"Provider {llm_manager.provider} 不支持视觉模型，无法处理图片识别任务")
-                    resp = await llm_manager._client.chat.completions.create(
+                        raise RuntimeError("当前 Provider 未配置视觉模型，请在配置页面设置")
+                    _client = llm_manager._client_for(_user_cfg)
+                    resp = await _client.chat.completions.create(
                         model=_vision_model,
                         messages=messages,
                         temperature=temperature,

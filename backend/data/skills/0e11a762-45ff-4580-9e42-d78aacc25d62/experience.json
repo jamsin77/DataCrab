@@ -781,6 +781,36 @@
       "parameters": {},
       "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix', 'llm_chat', 'llm_vision', 'read_file']\n\n所有非下划线开头的全局名称:\n  ALLOWED_IMPORTS\n  Any\n  ArithmeticErro",
       "context_summary": "工具: edit_and_run\nAI输出: "
+    },
+    {
+      "timestamp": "2026-08-10T18:08:14.980645",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'read_file']\n所有非下划线开头的全局名称",
+      "context_summary": "工具: run_script\nAI输出: 用户要求直接运行当前脚本，不修改代码。根据用户指令，解析参数如下：\n\n- **源数据源**: `文物列表`\n- **源表**: `全国重点文物保护单位合并`\n- **目标数据源**: `凭证检索库`\n- **目标表**: 自动生成\n- **图片列**: 所有图片（`*` 让脚本自动发现）\n- **写入策略**: `truncate`（清空再写入）\n\n直接运行：\n\n"
+    },
+    {
+      "timestamp": "2026-08-10T21:13:44.719491",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: 文物列表",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 我来梳理一下用户指令：\n\n- 主任务：从数据源提取图片关键信息到目标库\n- 最后一行明确指定了当前参数：**数据源: 文物列表**，**表: 全国重点文物保护单位合并**\n- 其他参数沿用参考：目标 `凭证检索库`，策略 `truncate`，`image_column` 用 `\"所有图片\"`\n\n直接运行当前脚本，不修改代码：\n\n"
+    },
+    {
+      "timestamp": "2026-08-10T22:22:43.366957",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 用户要求直接执行当前脚本，不修改代码。根据用户指令，参数为：\n\n- 源数据源：**文物列表**\n- 源表：**全国重点文物保护单位合并**\n- 目标数据源：**凭证检索库**\n- 目标表名：自动生成（*）\n- 图片列：自动匹配所有图片列\n- 写入策略：truncate（清空已有数据）\n\n直接运行：\n\n"
     }
   ],
   "positive": [
@@ -2006,6 +2036,90 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260807_111442', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-10T21:44:16.609320",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_214353', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-10T22:56:05.053715",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_225546', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-10T22:59:18.117483",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_225858', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T07:27:18.461362",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_072658', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T15:13:15.264863",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_151256', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:10:53.244948",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_161038', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:17:55.305362",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_161732', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:31:46.288566",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_163131', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:37:54.459217",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_163735', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:43:52.415017",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_164333', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T16:55:18.540945",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_165456', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-11T17:21:15.354991",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_172055', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": "让我先阅读完整的脚本以了解当前的实现，然后对其进行修改以使用 `llm_vision` 进行 OCR。",

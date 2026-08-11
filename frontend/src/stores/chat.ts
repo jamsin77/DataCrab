@@ -132,11 +132,25 @@ export const useChatStore = defineStore('chat', () => {
             msg.executingMsg = event.message || ''
           } else if (event.type === 'round') {
             msg.executingMsg = event.message || `第 ${event.round} 次修改`
+          } else if (event.type === 'inspection_report') {
+            msg.inspectionReport = event.report || ''
           }
         }
       )
       // 流式结束后从 DB 刷新（同步历史，避免 temp ID 残留）
+      // 保留前端临时字段（inspectionReport/reasoning/model），DB 里没有这些字段
+      const _savedReport = messages.value[aiIndex]?.inspectionReport
+      const _savedReasoning = messages.value[aiIndex]?.reasoning
+      const _savedModel = messages.value[aiIndex]?.model
+      const _oldMsgs = messages.value
       messages.value = await chatApi.listMessages(currentSessionId.value!)
+      // 找刷新后的最后一条 assistant 消息，回填临时字段
+      const _lastAssistant = [...messages.value].reverse().find(m => m.role === 'assistant')
+      if (_lastAssistant) {
+        if (_savedReport) _lastAssistant.inspectionReport = _savedReport
+        if (_savedReasoning && !_lastAssistant.reasoning) _lastAssistant.reasoning = _savedReasoning
+        if (_savedModel && !_lastAssistant.model) _lastAssistant.model = _savedModel
+      }
     } catch (e: any) {
       const msg = messages.value[aiIndex]
       if (msg) {

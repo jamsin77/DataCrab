@@ -51,6 +51,32 @@ async def get_agent_config():
     return agent_config.to_dict()
 
 
+def _match_datasource_names(sources, user_message: str):
+    """从用户消息中匹配数据源名称，返回匹配到的数据源列表"""
+    if not user_message:
+        return []
+    msg_lower = user_message.lower()
+    matched = []
+    for ds in sources:
+        ds_name_lower = ds.name.lower()
+        if ds_name_lower in msg_lower:
+            matched.append(ds)
+            continue
+        name_keywords = ds_name_lower.replace('_', ' ').replace('-', ' ').split()
+        if any(kw in msg_lower for kw in name_keywords):
+            matched.append(ds)
+            continue
+    if not matched:
+        for ds in sources:
+            ds_name = ds.name
+            if len(ds_name) >= 3:
+                for i in range(len(ds_name) - 1):
+                    if ds_name[i:i+2] in user_message:
+                        matched.append(ds)
+                        break
+    return matched
+
+
 async def build_datasource_context(
     db: AsyncSession,
     user_id: UUID,
@@ -65,12 +91,16 @@ async def build_datasource_context(
     sources = result.scalars().all()
 
     if not sources:
-        return '\n## 可用数据源\n当前没有配置任何数据源。建议用户先在【数据源管理】页面添加数据源。\n'
+        return '\n## 可用数据源\n当前没有配置任何数据源。建议用户先在【数据源管理】页面添加数据源。\n', "", []
+
+    # 只展示用户消息中提到的数据源，避免无关数据源污染上下文
+    matched_sources = _match_datasource_names(sources, user_message)
+    display_sources = matched_sources if matched_sources else sources
 
     lines = ["\n## 可用数据源（工具的知识库）"]
-    lines.append(f"以下 {len(sources)} 个数据源已配置，可供用户分析：\n")
+    lines.append(f"以下 {len(display_sources)} 个数据源已配置，可供用户分析：\n")
 
-    for ds in sources:
+    for ds in display_sources:
         cfg = ds.connection_config or {}
         lines.append(f"### {ds.name}（类型: {ds.type}, ID: {ds.id}）")
         if ds.type in ("mysql", "postgres"):
@@ -100,16 +130,17 @@ async def build_datasource_context(
 
     # 当用户消息中提到了数据源名称时，自动查询实际数据
     # 预览作为一次性 user message 注入（不进 system prompt），保持 system 字节稳定命中 prefix cache
-    data_previews = await _query_datasource_previews(sources, user_message)
+    data_previews, matched_names = await _query_datasource_previews(display_sources, user_message)
 
-    return "\n".join(lines), data_previews
+    return "\n".join(lines), data_previews, matched_names
 
 
-async def _query_datasource_previews(sources, user_message: str) -> str:
-    """查询用户消息中提到的数据源的实际数据预览"""
+async def _query_datasource_previews(sources, user_message: str):
+    """查询数据源的实际数据预览。sources 已由 _match_datasource_names 过滤。
+    返回 (preview_text, matched_names)"""
     from app.services.connectors import get_connector
-    if not user_message:
-        return ""
+    if not sources or not user_message:
+        return "", []
 
     msg_lower = user_message.lower()
     previews = []
@@ -128,23 +159,7 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
 
     page_size = 100 if want_all else 20
 
-    matched_sources = []
     for ds in sources:
-        ds_name_lower = ds.name.lower()
-        if ds_name_lower in msg_lower:
-            matched_sources.append(ds)
-            continue
-        name_keywords = ds_name_lower.replace('_', ' ').replace('-', ' ').split()
-        if any(kw in msg_lower for kw in name_keywords):
-            matched_sources.append(ds)
-            continue
-
-    if not matched_sources and sources:
-        data_keywords = ['数据', '分析', '统计', '查询', '看看', '查看', 'data', 'analyze']
-        if any(kw in msg_lower for kw in data_keywords):
-            matched_sources = [sources[0]]
-
-    for ds in matched_sources:
 
         # 全局预览上限：多个数据源预览总和不超过 8000 字
         if sum(len(p) for p in previews) >= 8000:
@@ -206,8 +221,9 @@ async def _query_datasource_previews(sources, user_message: str) -> str:
             continue
 
     if previews:
-        return "\n## 实时数据查询结果\n以下是从数据源中查询到的真实数据，请基于这些数据回答用户问题：\n" + "\n".join(previews)
-    return ""
+        matched_names = [ds.name for ds in matched_sources]
+        return "\n## 实时数据查询结果\n以下是从数据源中查询到的真实数据，请基于这些数据回答用户问题：\n" + "\n".join(previews), matched_names
+    return "", []
 
 
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=status.HTTP_201_CREATED)
@@ -471,12 +487,20 @@ async def stream_response(
             history_messages = list(history_result.scalars().all())
             history_messages.reverse()
 
-            datasource_context, data_preview = await build_datasource_context(
+            datasource_context, data_preview, matched_names = await build_datasource_context(
                 db, current_user.id, request.content
             )
 
             # 实时数据预览作为一次性 user message 注入（不进 system，避免破坏 prefix cache）
             _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
+
+            # 缺源数据源检测：用户消息含数据操作关键词但未指定源数据源，提示并停止
+            _OP_KEYWORDS = {"提取", "处理", "清洗", "转换", "写入", "导入", "导出", "加载", "迁移", "合并", "拆分", "去重", "脱敏", "补全", "修复", "分类", "格式化", "标准化", "生成", "创建", "新建"}
+            _has_op = any(kw in request.content for kw in _OP_KEYWORDS)
+            if _has_op and not matched_names:
+                yield {"type": "content", "content": "请指定源数据源名称，例如：从 凭证库 数据源 把图片信息提取出来"}
+                yield {"type": "done", "result": {"agent": "system", "content": "缺少源数据源"}}
+                return
 
             # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
             await db.commit()

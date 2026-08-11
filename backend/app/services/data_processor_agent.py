@@ -340,13 +340,16 @@ def _slim_run_script_result(content: str) -> str:
             _summary_parts = []
             for k in ("total_rows", "classified_column", "target_column",
                        "unique_values_classified", "rows_written", "migrated_rows",
-                       "mode", "categories"):
+                       "mode", "categories", "ocr_success", "ocr_fail"):
                 if k in _inner:
                     _summary_parts.append(f"{k}={_inner[k]}")
             if _summary_parts:
                 slim["result_summary"] = ", ".join(_summary_parts)
             if "categories_found" in _inner:
                 slim["categories_found"] = _inner["categories_found"]
+            # 保留平台警告（llm_vision 调用失败等），供 LLM 知晓部分功能不可用
+            if _inner.get("warnings"):
+                slim["warnings"] = _inner["warnings"]
         if data.get("param_warning"):
             slim["param_warning"] = data["param_warning"]
     else:
@@ -1318,12 +1321,14 @@ class DataProcessorAgent(BaseAgent):
             for m in llm_manager._available_models()
         ]
 
-        # 用户配置优先（API Key 存在 UserLLMConfig 表，不在全局 llm_manager.api_key）
+        # 用户配置（无全局回退）
         user_cfg = get_user_llm_config()
-        cur_provider = (user_cfg or {}).get("provider") or llm_manager.provider
-        cur_model = (user_cfg or {}).get("model") or llm_manager.model
-        cur_api_base = (user_cfg or {}).get("api_base") or llm_manager.api_base or get_provider_api_base(cur_provider) or ""
-        api_key_set = bool((user_cfg or {}).get("api_key") or llm_manager.api_key)
+        if not user_cfg:
+            return _json.dumps({"error": "未配置 LLM Provider，请在配置页面设置"}, ensure_ascii=False)
+        cur_provider = user_cfg.get("provider", "")
+        cur_model = user_cfg.get("model", "")
+        cur_api_base = user_cfg.get("api_base", "") or get_provider_api_base(cur_provider) or ""
+        api_key_set = bool(user_cfg.get("api_key"))
 
         return _json.dumps({
             "current_provider": cur_provider,
@@ -1780,6 +1785,13 @@ class DataProcessorAgent(BaseAgent):
                         context["debug_exec_failures"] = 0
                         _wt = rdata.get("written_tables")
                         logger.info(f"[handoff检查] run_script成功, written_tables={_wt}, inner_result_keys={list(_inner_r.keys()) if _inner_r else 'None'}")
+                        # 平台警告检测：脚本成功但部分功能因平台能力不可用（如 llm_vision 调用失败）
+                        _warnings = (_inner_r.get("warnings") if _inner_r else None) or rdata.get("warnings")
+                        logger.info(f"[platform_issue检查] _inner_r warnings={_inner_r.get('warnings') if _inner_r else 'N/A'}, rdata warnings={rdata.get('warnings')}, _warnings={_warnings}")
+                        if _warnings:
+                            _warn_text = "; ".join(_warnings[:5]) if isinstance(_warnings, list) else str(_warnings)[:500]
+                            yield {"type": "platform_issue", "message": f"执行成功，但存在平台能力问题（修改脚本无法解决）: {_warn_text}"}
+                            logger.info(f"[platform_issue] 脚本成功但有平台警告: {_warn_text[:200]}")
                         if _wt:
                             _handoff_output_table = _wt[-1].get("table_name")
                             context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")

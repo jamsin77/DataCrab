@@ -84,8 +84,7 @@ tags:
 | `truncate` | 同 `overwrite` |
 | `delete_rows` | DELETE 清空数据（保留表结构，不补列） |
 | `upsert` | 按 id 列做 INSERT ON CONFLICT DO UPDATE（无 id 列则退化为 append） |
-| `delete_append` | 删除原有内容后追加新数据 |
-| `update` | 按 id 列更新原有内容，无 id 列则追加 |
+| `create_new` | 表已存在时自动创建新表（表名加 _1, _2 后缀），不存在则正常创建 |
 
 > ⚠️ 使用 `append` 时，源数据的列应与目标表列兼容；使用 `add_columns` 时，仅会新增列，不会修改或删除已有列的数据。
 

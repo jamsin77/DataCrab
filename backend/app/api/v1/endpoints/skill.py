@@ -1169,6 +1169,8 @@ async def generate_skill_endpoint(
 ):
     """Skill Creator：根据自然语言描述生成完整 Skill 包"""
     from app.services.skill_creator import generate_skill, create_skill_on_disk
+    from app.services.llm import init_user_llm_context
+    await init_user_llm_context(current_user.id)
     try:
         ds_info = await _build_datasource_info(db, current_user.id)
         all_lessons = (await _collect_all_lessons(db, current_user.id))[:2000]
@@ -1227,12 +1229,14 @@ async def generate_skill_stream_endpoint(
     """Skill Creator 流式生成：SSE 实时推送生成过程"""
     from fastapi.responses import StreamingResponse
     from app.services.skill_creator import generate_skill_stream, create_skill_on_disk
+    from app.services.llm import init_user_llm_context
     import json
 
     ds_info = await _build_datasource_info(db, current_user.id)
     all_lessons = (await _collect_all_lessons(db, current_user.id))[:2000]
 
     async def event_stream():
+        await init_user_llm_context(current_user.id)
         parsed_data = None
         async for event in generate_skill_stream(request.prompt, datasource_info=ds_info, lessons=all_lessons):
             if event["type"] == "done":

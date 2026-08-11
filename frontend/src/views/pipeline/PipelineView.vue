@@ -504,6 +504,7 @@ import python from 'highlight.js/lib/languages/python'
 import 'highlight.js/styles/vs2015.css'
 import markdownIt from 'markdown-it'
 import FlowNode from './FlowNode.vue'
+import { formatTime } from '@/utils/time'
 
 hljs.registerLanguage('python', python)
 
@@ -512,8 +513,7 @@ function renderMarkdown(text: string): string {
   return md.render(text || '')
 }
 function formatMsgTime(ts?: string): string {
-  if (!ts) return ''
-  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) } catch { return '' }
+  return formatTime(ts)
 }
 
 function copyText(text: string) {
@@ -824,11 +824,6 @@ async function deletePipeline(pl: Pipeline) {
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error('删除失败')
   }
-}
-
-function formatTime(t?: string) {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 // ==================== 调试弹窗（复刻算子调试） ====================

@@ -229,6 +229,7 @@ import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, FolderOpened, Refresh, Setting, Delete } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
+import { formatTime } from '@/utils/time'
 
 const dataSources = ref<any[]>([])
 const showCreateDialog = ref(false)
@@ -529,18 +530,7 @@ async function selectBrowseTable(tableName: string) {
 }
 
 function formatUpdateTime(ts: string): string {
-  try {
-    const d = new Date(ts)
-    if (isNaN(d.getTime())) return ''
-    const now = new Date()
-    const pad = (n: number) => String(n).padStart(2, '0')
-    if (d.getFullYear() === now.getFullYear()) {
-      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-    }
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  } catch {
-    return ''
-  }
+  return formatTime(ts)
 }
 
 async function refreshCurrentTable() {
