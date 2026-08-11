@@ -1,6 +1,56 @@
 # DataCrab - Data Engineering Agent
 
+<p align="center">
+  <img src="docs/social-preview.png" alt="DataCrab Data Engineering Agent" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/stars/jamsin77/DataCrab?style=flat-square&logo=github&label=Stars" alt="GitHub stars">
+  <img src="https://img.shields.io/github/license/jamsin77/DataCrab?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/FastAPI-0.10%2B-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Vue-3.x-42b883?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3">
+  <img src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs welcome">
+</p>
+
 DataCrab is an LLM-powered data engineering agent that delivers a ChatGPT-style conversational data interaction experience. Without writing any code, users can query, clean, transform, analyze, and visualize data through natural-language conversations.
+
+- **Natural language processing**: complete data tasks through conversation, no SQL or code required
+- **Processing + inspection loop**: DataProcessor hands off to DataInspector automatically, with automatic repair when issues are found
+- **Private deployment**: local deployment, multi-model access, and one-click Docker startup
+
+## Core Workflow
+
+_The sequence diagram shows how DataCrab works: the user asks in natural language, DataProcessor executes the task, AgentRuntime hands off to DataInspector, and results are returned after inspection passes_
+
+```mermaid
+sequenceDiagram
+    accTitle: DataCrab Multi-Agent Processing Flow
+    accDescr: User request is dispatched to DataProcessor by AgentRuntime, then automatically handed off to DataInspector, and results are returned after inspection
+
+    participant U as 👤 User
+    participant R as ⚙️ AgentRuntime
+    participant P as 🧠 DataProcessor
+    participant I as 🔍 DataInspector
+
+    U->>R: Ask in natural language
+    R->>P: Dispatch processing task
+    P->>P: Match Skill or operator
+    P->>P: Execute data processing
+    P-->>R: Processing complete
+    R->>I: Auto handoff for inspection
+    I->>I: Data quality and security check
+    alt ✅ Inspection passed
+        I-->>R: Inspection passed
+        R-->>U: Return results and report
+    else ❌ Issues found
+        I-->>R: Quality issues found
+        R->>P: Auto repair
+        P-->>R: Repair complete
+        R-->>U: Return repaired results
+    end
+```
 
 ## Core Philosophy
 
@@ -353,3 +403,19 @@ All API routes are prefixed with `/api/v1/`:
 10. **AI debug assistant**: chat-style interactive debugging (4 tools aligned with OpenCode), with visible AI reasoning; on execution failure, error stack traces are automatically fed back to the AI for repair (Loop Engineering)
 11. **Prefix Cache optimization**: system prompt process-level memoize + datasource_context moved from system to user message, byte-stable to hit GLM context cache, reducing input cost by 30%+
 12. **Docker one-click deployment**: frontend multi-stage build with nginx hosting + SSE long-connection support + data volume persistence
+
+---
+
+## Update Log
+
+### 2026-08-10
+
+| Category | Update |
+| --- | --- |
+| Security hardening | P0 public-network security hardening complete: default secrets replaced, public registration disabled, internal endpoints authenticated, infrastructure ports hidden, HTTPS security headers, rate limiting, backup and server hardening scripts |
+| New agent | Added DataAnalyst read-only analytics agent with query, statistics and insights routes, streaming output and frontend debugging |
+| Upstream sync | Completed third upstream sync (13 commits) covering DataAnalystAgent, skill endpoint fixes, Inspector report, SystemPrompt optimization |
+| Agent iteration | Debug tools reduced to 4, Inspector report as a standalone event, copy button and dynamic version number |
+| Deployment | Docker multi-stage build, nginx hosting, SSE long-connection support, data volume persistence |
+
+> 💡 **Tip:** See [AGENTS.md](AGENTS.md) for full iteration records. Latest commit: [f08a74d](https://github.com/jamsin77/DataCrab/commit/f08a74d5f85554e9d86bcd9e2933e9f1d605fd54).

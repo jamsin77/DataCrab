@@ -1,6 +1,56 @@
 # DataCrab - 数据工程智能体
 
+<p align="center">
+  <img src="docs/social-preview.png" alt="DataCrab 数据工程智能体" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/stars/jamsin77/DataCrab?style=flat-square&logo=github&label=Stars" alt="GitHub stars">
+  <img src="https://img.shields.io/github/license/jamsin77/DataCrab?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/FastAPI-0.10%2B-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Vue-3.x-42b883?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3">
+  <img src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs welcome">
+</p>
+
 DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提供 ChatGPT 风格的对话式数据交互体验。用户无需编写代码，通过自然语言对话即可完成数据的查询、清洗、转换、分析和可视化等操作。
+
+- **自然语言处理**：不用写 SQL 和代码，对话即可完成数据处理
+- **处理 + 检查闭环**：DataProcessor 处理后自动交接 DataInspector 检查，发现问题自动修复
+- **可私有化部署**：支持本地部署、多模型接入和 Docker 一键启动
+
+## 核心流程
+
+_时序图展示 DataCrab 的核心工作方式：用户自然语言提问，DataProcessor 执行处理，AgentRuntime 自动交接 DataInspector 检查，通过后返回结果与报告_
+
+```mermaid
+sequenceDiagram
+    accTitle: DataCrab 多智能体处理流程
+    accDescr: 用户自然语言请求经 AgentRuntime 调度 DataProcessor 处理，RunTime 自动交接 DataInspector 检查，通过后返回结果与报告
+
+    participant U as 👤 用户
+    participant R as ⚙️ AgentRuntime
+    participant P as 🧠 DataProcessor
+    participant I as 🔍 DataInspector
+
+    U->>R: 自然语言提问
+    R->>P: 分派处理任务
+    P->>P: 匹配 Skill 或算子
+    P->>P: 执行数据处理
+    P-->>R: 完成处理
+    R->>I: 自动交接检查
+    I->>I: 数据质量与安全检查
+    alt ✅ 检查通过
+        I-->>R: 检查通过
+        R-->>U: 返回结果与报告
+    else ❌ 发现问题
+        I-->>R: 发现质量问题
+        R->>P: 自动修复
+        P-->>R: 修复完成
+        R-->>U: 返回修复后结果
+    end
+```
 
 ## 核心理念
 
