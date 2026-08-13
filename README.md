@@ -12,7 +12,7 @@ DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提�
 |------|------|------------|
 | **对话即处理** | 用自然语言代替编码，LLM 理解意图、匹配 Skill、生成可执行代码，结果以表格/图表返回 | Conversational Data Processing、Agentic UI |
 | **沉淀即资产** | 每次处理过程自动沉淀为可复用 Skill，逐步构建技能库，越用越聪明 | Skill-based Agent、Compound AI System |
-| **生态即闭环** | Skill 积累形成数据生态，DataProcessor 加工 + DataInspector 检查双智能体协作，从接入到输出闭环 | Multi-Agent Collaboration、Human-in-the-loop |
+| **生态即闭环** | Skill 积累形成数据生态，DataProcessor 加工 + DataInspector 检查 + DataAnalyst 分析三智能体协作，从接入到输出闭环 | Multi-Agent Collaboration、Human-in-the-loop |
 | **Loop 化** | 最终目标：AI 理解需求 → 匹配 Skill → 执行 → 检查 → 自我修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
 
 > **Loop 化**是 DataCrab 的终极目标。正如业界所倡导的 Loop Engineering——不让 AI 只做单步推理，而是让它在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成。DataCrab 的多智能体 Handoff 机制和技能自我进化能力正是这一理念的具体实践。
@@ -37,8 +37,9 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 |--------|------|----------|
 | **DataProcessor**（Orchestrator） | 理解用户意图、修改/执行脚本、调度数据处理、交接检查 | 聊天页面 + 技能/算子/流程调试助手 |
 | **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后 RunTime 自动 handoff |
+| **DataAnalyst** | 只读分析：查询、统计、分布、洞察（不修改数据） | 只读分析类问题（查询/统计/分析），靠 chat_router 关键词路由 |
 
-- **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走 DataProcessor → DataInspector 多智能体流程
+- **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走多智能体流程；主对话经 chat_router 路由判断走 DataAnalyst（只读）或 DataProcessor（修改）
 - **Handoff 由 RunTime 决策**：Agent 不感知 handoff 存在，RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决定是否交接（调试模式自动，主对话靠人判断）
 - **Orchestrator-Worker 粒度**：简单操作（edit_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
 - **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用
@@ -240,7 +241,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，183 条路由）
+│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，约 176 条路由）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
@@ -250,7 +251,7 @@ DataCrab/
 │   │       ├── data_processor_agent.py  # DataProcessor 智能体
 │   │       ├── data_inspector_agent.py  # DataInspector 智能体
 │   │       ├── inspector_tools.py       # 数据检查工具集
-│   │       ├── skill_library.py  # 向量索引 + 语义搜索（磁盘持久化）
+│   │       ├── data_analyst_agent.py  # DataAnalyst 只读分析智能体
 │   │       ├── skill_parser.py   # SKILL.md 解析器
 │   │       ├── skill_runner.py   # 子进程沙盒执行器
 │   │       ├── skill_creator.py  # AI 技能包生成器
@@ -269,7 +270,7 @@ DataCrab/
 │   └── data/skills/           # 技能包磁盘存储
 ├── frontend/                   # 前端应用
 │   ├── src/
-│   │   ├── views/             # 16 个页面组件（11 条路由）
+│   │   ├── views/             # 18 个页面组件（11 条路由）
 │   │   ├── router/            # 路由配置
 │   │   ├── stores/            # Pinia 状态管理
 │   │   ├── api/               # Axios API 客户端
@@ -344,7 +345,7 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 
 ## 架构亮点
 
-1. **多智能体协作闭环**：DataProcessor + DataInspector 双智能体，Handoff 由 RunTime 自动决策（Agent 不感知 handoff），处理+检查形成自愈闭环（Multi-Agent Collaboration）
+1. **多智能体协作闭环**：DataProcessor + DataInspector + DataAnalyst 三智能体，Handoff 由 RunTime 自动决策（Agent 不感知 handoff），处理+检查形成自愈闭环；只读分析走 DataAnalyst 无需 handoff（Multi-Agent Collaboration）
 2. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
 3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析，Skill 即资产可沉淀可复用
 4. **流程 = Python 主函数**：抛弃 DAG 模型，每个流程就是一个可独立运行的 Python 函数

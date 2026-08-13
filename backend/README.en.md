@@ -8,12 +8,12 @@ Process data through conversation, accumulate data-processing Skills, form a dat
 
 - **Conversation as Processing**: the LLM understands intent, matches Skills, and generates executable code
 - **Accumulation as Asset**: processing runs accumulate as reusable Skills that get smarter with use
-- **Ecosystem as Loop**: DataProcessor + DataInspector dual-agent collaboration loop
+- **Ecosystem as Loop**: DataProcessor + DataInspector + DataAnalyst tri-agent collaboration loop
 - **Loop-ification**: AI understands → executes → inspects → self-repairs, with no human intervention (Self-healing Pipeline, Deep Agents)
 
 ## Features
 
-- Conversational data interaction (SSE streaming) + multi-agent collaboration (DataProcessor → DataInspector, Handoff decided by RunTime)
+- Conversational data interaction (SSE streaming) + multi-agent collaboration (DataProcessor → DataInspector, Handoff decided by RunTime; read-only analysis goes to DataAnalyst without handoff)
 - 8 data-source connectors (PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma) + custom connectors (AI-generated code, sandboxed)
 - Full skill/operator/pipeline lifecycle (CRUD + AI generate/debug + self-healing loop + experience library)
 - 7 write-table strategies + scheduling system (Cron/interval/manual + 30s scan worker)

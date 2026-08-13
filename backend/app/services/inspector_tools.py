@@ -632,150 +632,6 @@ class DataInspectorTools:
             logger.error(f"check_data_quality 失败: {e}")
             return {"dimension": "quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    async def check_etl_quality(
-        self,
-        source_datasource_id: str,
-        source_table: str,
-        target_datasource_id: str,
-        target_table: str,
-        db: AsyncSession,
-        amount_column: str = None,
-    ) -> dict:
-        """ETL 过程质量对数检查（确定性执行 DQ-ETL 规则）"""
-        import pandas as pd
-        try:
-            src_df = await self._load_data(source_datasource_id, source_table, db)
-            tgt_df = await self._load_data(target_datasource_id, target_table, db)
-            src_n = len(src_df)
-            tgt_n = len(tgt_df)
-            issues = []
-
-            dq = _load_quality_rules()
-
-            def _thr(rid: str, default: float) -> float:
-                r = dq.get(rid)
-                if r and r.get("threshold_value") is not None:
-                    return r["threshold_value"]
-                return default
-
-            growth_thr = _thr("DQ-ETL-001", 0.05)   # 数据量增加阈值
-            shrink_thr = _thr("DQ-ETL-002", 0.05)   # 数据量减少阈值
-            amount_thr = _thr("DQ-ETL-004", 0.01)   # 金额汇总偏差阈值
-
-            # DQ-ETL-001 数据量不异常增加
-            if tgt_n > src_n * (1 + growth_thr):
-                issues.append({
-                    "dimension": "etl_volume",
-                    "rule_id": "DQ-ETL-001",
-                    "severity": _dq_severity("DQ-ETL-001", "error"),
-                    "description": f"目标表行数 {tgt_n} > 源表 {src_n}×(1+{growth_thr:.0%})，疑似数据膨胀",
-                    "suggestion": "检查是否产生笛卡尔积、Join 重复、未去重",
-                })
-
-            # DQ-ETL-002 数据量不异常减少
-            if tgt_n < src_n * (1 - shrink_thr):
-                issues.append({
-                    "dimension": "etl_volume",
-                    "rule_id": "DQ-ETL-002",
-                    "severity": _dq_severity("DQ-ETL-002", "error"),
-                    "description": f"目标表行数 {tgt_n} < 源表 {src_n}×(1-{shrink_thr:.0%})，疑似数据丢失",
-                    "suggestion": "排查过滤条件过严、关联条件错误、丢失记录",
-                })
-
-            # DQ-ETL-003 对数（记录数一致）
-            if src_n != tgt_n:
-                issues.append({
-                    "dimension": "etl_reconciliation",
-                    "rule_id": "DQ-ETL-003",
-                    "severity": _dq_severity("DQ-ETL-003", "error"),
-                    "description": f"记录数不一致：源 {src_n} ≠ 目标 {tgt_n}（差 {abs(src_n - tgt_n)}，偏差 {abs(src_n - tgt_n) / max(src_n, 1):.1%}）",
-                    "suggestion": "排查过滤条件、丢失记录、重复写入",
-                })
-
-            # DQ-ETL-004 对数（金额汇总一致）
-            if amount_column:
-                if amount_column in src_df.columns and amount_column in tgt_df.columns:
-                    src_sum = pd.to_numeric(src_df[amount_column], errors="coerce").sum()
-                    tgt_sum = pd.to_numeric(tgt_df[amount_column], errors="coerce").sum()
-                    diff = abs(src_sum - tgt_sum)
-                    if diff > amount_thr:
-                        issues.append({
-                            "dimension": "etl_reconciliation",
-                            "rule_id": "DQ-ETL-004",
-                            "severity": _dq_severity("DQ-ETL-004", "error"),
-                            "description": f"金额汇总不一致：源 {src_sum:.2f} ≠ 目标 {tgt_sum:.2f}（差 {diff:.2f}，阈值 {amount_thr}）",
-                            "suggestion": "排查金额精度、丢失记录、重复累加",
-                        })
-                else:
-                    issues.append({
-                        "dimension": "etl_reconciliation",
-                        "rule_id": "DQ-ETL-004",
-                        "severity": "info",
-                        "description": f"金额列 '{amount_column}' 在源/目标表不存在，跳过金额对数",
-                        "suggestion": "确认金额列名",
-                    })
-
-            # DQ-ETL-006 检索结果不超总量（目标行数 ≤ 源行数）
-            if tgt_n > src_n:
-                issues.append({
-                    "dimension": "etl_volume",
-                    "rule_id": "DQ-ETL-006",
-                    "severity": _dq_severity("DQ-ETL-006", "error"),
-                    "description": f"目标/检索结果行数 {tgt_n} > 源总量 {src_n}",
-                    "suggestion": "检查 Join 是否笛卡尔积、去重逻辑缺失",
-                })
-
-            # DQ-ETL-007 目标表字段空值率（阈值 10%）
-            etl_null_thr = _thr("DQ-ETL-007", 0.1)
-            for col in tgt_df.columns:
-                null_rate = tgt_df[col].isna().mean()
-                if null_rate > etl_null_thr:
-                    issues.append({
-                        "dimension": "etl_quality",
-                        "rule_id": "DQ-ETL-007",
-                        "column": col,
-                        "severity": _dq_severity("DQ-ETL-007", "warning"),
-                        "description": f"目标表列 '{col}' 空值率 {null_rate:.1%}（阈值 {etl_null_thr:.0%}）",
-                        "suggestion": "排查源字段缺失、关联丢失、转换逻辑错误",
-                    })
-
-            # DQ-ETL-008 目标表主键唯一性
-            _tgt_pk_cols = [c for c in tgt_df.columns
-                            if str(c).lower().strip() == "id"
-                            or str(c).lower().strip().endswith("_id")]
-            for col in _tgt_pk_cols:
-                dup_count = int(tgt_df[col].dropna().duplicated().sum())
-                if dup_count > 0:
-                    issues.append({
-                        "dimension": "etl_quality",
-                        "rule_id": "DQ-ETL-008",
-                        "column": col,
-                        "severity": _dq_severity("DQ-ETL-008", "error"),
-                        "description": f"目标表主键 '{col}' 存在 {dup_count} 个重复值",
-                        "suggestion": "检查 Join 膨胀、去重逻辑、主键生成",
-                    })
-
-            # DQ-ETL-009 字段类型一致（源→目标同名列 dtype 对比）
-            common_cols = set(src_df.columns) & set(tgt_df.columns)
-            for col in common_cols:
-                src_dtype = str(src_df[col].dtype)
-                tgt_dtype = str(tgt_df[col].dtype)
-                if src_dtype != tgt_dtype:
-                    issues.append({
-                        "dimension": "etl_quality",
-                        "rule_id": "DQ-ETL-009",
-                        "column": col,
-                        "severity": _dq_severity("DQ-ETL-009", "warning"),
-                        "description": f"列 '{col}' 类型不一致：源 {src_dtype} → 目标 {tgt_dtype}",
-                        "suggestion": "修正 ETL 类型转换",
-                    })
-
-            return {"dimension": "etl_quality", "passed": len(issues) == 0, "issues": issues,
-                    "source_rows": src_n, "target_rows": tgt_n}
-        except Exception as e:
-            logger.error(f"check_etl_quality 失败: {e}")
-            return {"dimension": "etl_quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
-
     async def check_data_security(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
         import pandas as pd
         try:
@@ -1149,16 +1005,14 @@ class DataInspectorTools:
             lines.append("## 数据概览\n总行数: %d, 总列数: %d\n" % (row_count, col_count))
             cols = profile.get("columns", {})
             if cols:
-                lines.append("| 列名 | 类型 | 空值数 | 空值率 | 唯一值数 | 样本值 |")
-                lines.append("|------|------|--------|--------|----------|--------|")
+                lines.append("| 列名 | 类型 | 空值数 | 空值率 | 唯一值数 |")
+                lines.append("|------|------|--------|--------|----------|")
                 for name, info in cols.items():
                     dtype = info.get("dtype", "")
                     null_count = info.get("null_count", 0)
                     null_rate = info.get("null_rate", 0)
                     unique = info.get("unique_count", 0)
-                    samples = info.get("sample_values", [])
-                    sample_str = ", ".join(str(s)[:30] for s in samples[:3]) if samples else ""
-                    lines.append("| %s | %s | %d | %.1f%% | %d | %s |" % (name, dtype, null_count, null_rate * 100, unique, sample_str))
+                    lines.append("| %s | %s | %d | %.1f%% | %d |" % (name, dtype, null_count, null_rate * 100, unique))
 
         # 三项检查
         _DIM_RULES = {

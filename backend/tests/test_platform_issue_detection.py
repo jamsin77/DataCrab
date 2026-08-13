@@ -77,24 +77,15 @@ def test_get_platform_capabilities_text():
     print("test_get_platform_capabilities_text: PASSED")
 
 
-def test_is_platform_issue_report():
-    """P5: 平台问题检测"""
-    from app.services.data_processor_agent import _is_platform_issue_report
-
-    # 应该检测为平台问题
-    assert _is_platform_issue_report("这是平台问题，不是脚本问题")
-    assert _is_platform_issue_report("平台能力缺失：Excel连接器不支持创建新文件")
-    assert _is_platform_issue_report("连接器不支持此操作")
-    assert _is_platform_issue_report("沙箱未注入此函数")
-    assert _is_platform_issue_report("修改脚本无法解决此限制")
-
-    # 不应该检测为平台问题
-    assert not _is_platform_issue_report("def migrate_data():")
-    assert not _is_platform_issue_report("NameError: name 'x' is not defined")
-    assert not _is_platform_issue_report("")
-    assert not _is_platform_issue_report("短")
-    assert not _is_platform_issue_report("正在修复脚本中的 bug")
-    print("test_is_platform_issue_report: PASSED")
+def test_non_script_error_exit_by_llm():
+    """P5: LLM 判断为非脚本错误时退出（对齐 OpenCode：LLM 不调工具 = 判断完毕）"""
+    import inspect
+    from app.services.data_processor_agent import DataProcessorAgent
+    source = inspect.getsource(DataProcessorAgent.run_debug)
+    # 不调工具 + 非调查语气 → 直接 give_up（不再依赖关键词匹配，不浪费轮次）
+    assert "_INVESTIGATION_MARKERS" in source, "应该检测调查语气标记"
+    assert "give_up" in source, "检测到非脚本错误应该 give_up 退出"
+    print("test_non_script_error_exit_by_llm: PASSED")
 
 
 def test_debug_tools_registration():
@@ -261,14 +252,14 @@ def test_debug_instructions_has_workflow():
     print("test_debug_instructions_has_workflow: PASSED")
 
 
-def test_run_debug_has_platform_issue_detection():
-    """P5: run_debug 包含 platform_issue 检测"""
+def test_run_debug_has_non_script_error_exit():
+    """P5: run_debug 包含非脚本错误退出（不调工具 + 非调查语气 → give_up）"""
     import inspect
     from app.services.data_processor_agent import DataProcessorAgent
     source = inspect.getsource(DataProcessorAgent.run_debug)
-    assert "platform_issue" in source, "run_debug 应该有 platform_issue 事件"
-    assert "_is_platform_issue_report" in source, "run_debug 应该调用 _is_platform_issue_report"
-    print("test_run_debug_has_platform_issue_detection: PASSED")
+    assert "_INVESTIGATION_MARKERS" in source, "run_debug 应该检测调查语气标记"
+    assert "give_up" in source, "应该有 give_up 退出"
+    print("test_run_debug_has_non_script_error_exit: PASSED")
 
 
 def test_run_debug_has_last_round_warning():
@@ -281,6 +272,37 @@ def test_run_debug_has_last_round_warning():
     print("test_run_debug_has_last_round_warning: PASSED")
 
 
+def test_extract_exception_type():
+    """P0: 从 traceback 提取异常类型名"""
+    from app.services.skill_runner import _extract_exception_type
+
+    # 标准 traceback 最后一行
+    assert _extract_exception_type("Traceback (most recent call last):\n  File main.py, line 42\nKeyError: 'xxx'") == "KeyError"
+    assert _extract_exception_type("ModuleNotFoundError: No module named 'numpy'") == "ModuleNotFoundError"
+    assert _extract_exception_type("PermissionError: [Errno 13] Permission denied") == "PermissionError"
+
+    # 无冒号
+    assert _extract_exception_type("SomeError") == "SomeError"
+
+    # 空串/无内容
+    assert _extract_exception_type("") == ""
+    assert _extract_exception_type("   ") == ""
+
+    # 非异常类型行（不以字母开头）
+    assert _extract_exception_type("123: bad") == ""
+    assert _extract_exception_type("Traceback (most recent call last):") == ""
+
+    # 多行 traceback
+    tb = """Traceback (most recent call last):
+  File "main.py", line 10, in <module>
+    df["col"].sum()
+  File "main.py", line 5, in process
+    return data["missing"]
+KeyError: 'missing'"""
+    assert _extract_exception_type(tb) == "KeyError"
+    print("test_extract_exception_type: PASSED")
+
+
 def pytest_fail(msg):
     raise AssertionError(msg)
 
@@ -288,7 +310,7 @@ def pytest_fail(msg):
 if __name__ == "__main__":
     test_platform_capabilities_structure()
     test_get_platform_capabilities_text()
-    test_is_platform_issue_report()
+    test_non_script_error_exit_by_llm()
     test_debug_tools_registration()
     test_grep_script_platform_scope()
     test_read_script_platform_scope()
@@ -297,6 +319,6 @@ if __name__ == "__main__":
     test_skill_runner_result_has_tool_calls_field()
     test_build_debug_system_prompt_includes_capabilities()
     test_debug_instructions_has_workflow()
-    test_run_debug_has_platform_issue_detection()
+    test_run_debug_has_non_script_error_exit()
     test_run_debug_has_last_round_warning()
     print("\n========== All 13 tests passed! ==========")

@@ -8,7 +8,7 @@
 |------|------|---------|
 | Conversation as Processing | Replace coding with natural language; the LLM understands intent, matches Skills, generates code | Conversational Data Processing, Agentic UI |
 | Accumulation as Asset | Each processing run accumulates as a reusable Skill, getting smarter with use | Skill-based Agent, Compound AI System |
-| Ecosystem as Loop | Accumulated Skills form an ecosystem; dual-agent collaboration loop | Multi-Agent Collaboration |
+| Ecosystem as Loop | Accumulated Skills form an ecosystem; tri-agent collaboration loop | Multi-Agent Collaboration |
 | Loop-ification | AI understands → executes → inspects → self-repairs, no human intervention | Self-healing Pipeline, Full-loop Automation, Deep Agents |
 
 Loop-ification is the ultimate goal: the AI iterates continuously in an "execute → observe → correct" loop until the task is complete. The multi-agent Handoff mechanism and skill self-evolution capability are concrete practices of this philosophy.
@@ -1200,15 +1200,21 @@ Executes Skill scripts in an isolated subprocess, supporting:
   - Data source reference info (dynamically injected via datasource_info, removing hardcoded data source names)
 - create_skill_on_disk(): create the Skill folder structure on disk
 
-##### skill_library.py - Skill Library
-- VectorIndex: numpy-based vector index supporting:
-  - Vector normalization
-  - Cosine similarity search
-  - Vector add/delete/update
-- SkillLibrary: skill library management, including:
-  - Vector index build and search
-  - Built-in skill examples (select, filter, sort, groupby, aggregate, join, fillna, dropna, rename, stats)
-  - Skill registration and retrieval
+##### data_analyst_agent.py - Data Analysis Agent
+- DataAnalystAgent: read-only analysis agent (query/stats/distribution/insights), no data modification
+- 5 read-only tool subset (ANALYSIS_TOOLS): query_table_data/get_table_schema/list_user_datasources/execute_sql/kb_search
+- Independent truncation threshold (ANALYSIS_MAX_TOOL_RESULT_CHARS=30000, 50-row preview)
+- No handoff; chat_router keyword routing decides DataAnalyst vs DataProcessor
+- System prompt process-level memoize (Prefix Cache)
+
+##### prompt_docs.py - Sandbox Function Docs
+- SANDBOX_TOOLS_DOC: 17 sandbox function signatures
+- PLATFORM_CONVENTIONS_DOC: platform conventions (prefer built-in / no extensions / no external API)
+- Injected into generate/debug/NL-inference
+
+##### standards_parser.py - Rule Parser
+- Parse data standards/quality/security rules (valid values / detection logic)
+- parse_security_rules no longer skips regex-less rules
 
 ##### skill_executor.py - Execution Context & Result Data Structures
 - ExecutionContext: execution context (session ID, user ID, variables, DataFrame)
@@ -1855,6 +1861,7 @@ DataCrab borrows Swarm's Handoff simplicity + CrewAI's role division + AutoGen's
 |--------|------|------|----------|----------|----------|
 | **Data Processing Agent** | `DataProcessor` | Understand user intent, generate/modify operators and skills, schedule execution, trace and repair | `query_table_data`, `get_table_schema`, `write_table_data`, `generate_operator`, `generate_skill`, `run_pipeline` | User chat, `DataInspector` | `DataInspector` |
 | **Data Inspection Agent** | `DataInspector` | Inspect processed data for standards, quality, security; record and feed back on errors | `check_data_standards`, `check_data_quality`, `check_data_security`, `profile_data` | `DataProcessor` | `DataProcessor` |
+| **Data Analysis Agent** | `DataAnalyst` | Read-only analysis: query, statistics, distribution, insights (no data modification) | `query_table_data`, `get_table_schema`, `list_user_datasources`, `execute_sql`, `kb_search` | User chat (chat_router routing) | None (no handoff) |
 | *(Future expansion)* | | | | | |
 | Data Governance Agent | `DataGovernor` | Data lineage tracking, metadata enrichment, data catalog management | `trace_lineage`, `enrich_metadata` | Any agent | Any agent |
 | Data Security Agent | `DataSentinel` | Sensitive data identification, masking suggestions, compliance review | `detect_pii`, `suggest_masking`, `audit_compliance` | `DataInspector`, user | `DataProcessor` |
@@ -1899,6 +1906,8 @@ DataCrab borrows Swarm's Handoff simplicity + CrewAI's role division + AutoGen's
 │  └──────────────────────────────────────────────────────────────────┘        │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **DataAnalyst Agent** (implemented): read-only analysis questions (query/stats/analysis) are routed via `chat_router` keywords to `DataAnalystAgent`, using 5 read-only tools (ANALYSIS_TOOLS), no handoff, returns results directly. DataAnalyst sits alongside DataProcessor/DataInspector; the three form the complete multi-agent architecture.
 
 #### 2.7.4 Core Abstractions
 
@@ -4285,14 +4294,6 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | skill_runner empty return | skill_runner.py | 6 tool functions return empty → raise explicit error |
 | VALID_WRITE_STRATEGIES | connectors.py | Validate write strategy at entry, invalid → raise |
 
-**Error-classification exit** (replacing LLM text judgment):
-
-| Change | File | Notes |
-|------|------|------|
-| `_classify_execution_error` L4/L5/L6 | skill_runner.py | L4 env (DLL/ModuleNotFound) / L5 platform-limit (unsupported write strategy/NotImplementedError) / L6 data (table/file not found); L1/L2 script errors continue fixing |
-| run_debug three-level exit | data_processor_agent.py | `any(kw in _err_type for kw in ("env","platform","data"))` → give_up + return; before `_exec_failures` (doesn't consume the 3 budget) |
-| `_is_platform_issue_report` kept as fallback | data_processor_agent.py | Only checked when `not tool_calls` (fallback for LLM concluding without executing); main exit relies on error classification |
-
 **OpenCode debug-display alignment**:
 
 | Change | File | Notes |
@@ -4309,11 +4310,11 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 
 **Other**: personal.md → soul.md full rename; frontend label renames; give_up shows reason (6 places); SSE ping keepalive; execution-failure yield content; NL-inference injects datasource list; extract-image-info / data-etl skill fixes; Excel create_new_file platform-capability → False.
 
-**Relationship to prior rounds**: Rounds 10-13 built editing primitives + debug mode; this round fills in silent-failure audit + OpenCode debug-display alignment + error-classification exit. read_script no-cap aligns OpenCode (guide offset/limit via instructions, not hard limits); error classification replaces LLM text judgment (reliable exit via error-message classification, not keyword matching).
+**Relationship to prior rounds**: Rounds 10-13 built editing primitives + debug mode; this round fills in silent-failure audit + OpenCode debug-display alignment. read_script no-cap aligns OpenCode (guide offset/limit via instructions, not hard limits); error exit relies on platform-signal keyword matching + execution-error count + fix-attempt cap (not error classification, which was removed later).
 
 ### 11.26 Round 15 — Full Rule Implementation + Install Fixes + Asset Packaging + Architecture Cleanup
 
-**Core insight**: Round 14 filled in debug display and error classification, but rule checks were only 39% deterministically implemented (61% relied on LLM subjective judgment or unimplemented); install flow broke in multiple places (poetry-core download timeout / passlib vs bcrypt 4.x conflict / npm run install not installing devDependencies); skills/pipelines/operators couldn't migrate across machines.
+**Core insight**: Round 14 filled in debug display and silent-failure audit, but rule checks were only 39% deterministically implemented (61% relied on LLM subjective judgment or unimplemented); install flow broke in multiple places (poetry-core download timeout / passlib vs bcrypt 4.x conflict / npm run install not installing devDependencies); skills/pipelines/operators couldn't migrate across machines.
 
 **Full rule implementation (31 new deterministic checks)**:
 
@@ -4336,7 +4337,7 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 
 **Architecture cleanup**: removed skill-auto-sync-operator (skill.py, skills and operators now independent); removed sandbox grep function (unused, full removal).
 
-**Relationship to prior rounds**: Round 14 filled in debug display and error classification; this round fills in rule implementation (39%→78% deterministic checks) + fixes install chain (3 blocking bugs) + asset-packaging mechanism. Rules still not deterministically implementable (DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP etc.) remain LLM-prompt judgment.
+**Relationship to prior rounds**: Round 14 filled in debug display and silent-failure audit; this round fills in rule implementation (39%→78% deterministic checks) + fixes install chain (3 blocking bugs) + asset-packaging mechanism. Rules still not deterministically implementable (DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP etc.) remain LLM-prompt judgment.
 
 ### 11.27 Round 16 — Context Compaction + Prefix Cache Stability + SSE Fix + Image Compression + traceback Line-Number Fix
 
@@ -4379,7 +4380,7 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 
 **Relationship to prior rounds**: Round 9's L2 continuation treats "output truncation" (single-turn overlong output); this round treats "context growth" (cross-turn history bloat) — the two are orthogonal, together covering the full long-session lifecycle. Prefix-cache stability extends Round 9's static/dynamic partitioning (system must be byte-stable to hit provider cache). The SSE ping fix resolves the latent bug of `wait_for` cancelling an async generator (previously the generator could corrupt after timeout).
 
-### 11.28 Round 17 — OpenCode Debug Alignment: Tool Simplification + Runtime Auto-Handoff + Vision Models + LLM Error Classification + Backup Models + SSE Fixes
+### 11.28 Round 17 — OpenCode Debug Alignment: Tool Simplification + Runtime Auto-Handoff + Vision Models + Backup Models + SSE Fixes
 
 **Core insight** (vs. OpenCode): Rounds 10–16 established the line-level patch primitive + fix-attempt discipline + context compaction, but debug tools still exposed 7 (edit_and_run/modify_and_run/modify_script/edit_script/run_script/read_script/grep_script) and relied on the LLM actively calling the handoff_to_inspector tool to hand off inspection. Compared to OpenCode's 5-tool model (Grep/Read/Edit/Bash/Task), this round slimmed debug tools to 4 and made handoff runtime-triggered. It also simplified the streaming methods — Round 9's L2/L3/L4 truncation guarantee contract (max_continues / tool_choice=required / frequency_penalty) was high-complexity, low-payoff and was replaced by a simple multi-model degradation chain.
 
@@ -4391,7 +4392,6 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | **Simplified action summary** | data_processor_agent.py | Shows only tool-name icons, no diff/pattern/offset details (less noise) |
 | **Streaming methods simplified to degradation chain** | llm.py | `chat_stream_with_thinking`/`chat_stream_with_tools_and_thinking` removed L2 continuation (max_continues)/L3 force-progress (tool_choice=required)/L4 frequency_penalty; now per-model attempt + CircuitBreaker + transient retry; finish_reason=length returns directly without continuation |
 | **Vision model support** | llm.py + sandbox_ns.py + skill_runner.py | `_PROVIDER_VISION_MODELS` (glm→glm-4v-plus/qwen→qwen-vl-plus etc.); `llm_vision` sandbox function picks model by provider; image compression 1024px+JPEG85; failures prefixed with "platform limitation" |
-| **LLM error classification** | skill_runner.py | `_llm_classify_error`: when keyword match returns script_error, re-classify into 4 categories via LLM (environment/platform/data/script); source file missing→data issue, target file missing→script error |
 | **Backup model (degradation) config** | llm.py + ModelConfigView.vue | `_model_configs` main model + fallback_models; `_degradation_chain`; CircuitBreaker trips after 3 consecutive failures for 60s; frontend restores backup-model management UI |
 | **Inspector removes forced handoff** | data_inspector_agent.py | `_collect_severe_issues` no longer called by run() (dead code); handoff entirely decided by the LLM via the handoff_to_processor tool |
 | **Inspector severity correction** | data_inspector_agent.py | `_correct_severity`: overrides LLM-tampered severity with the tool's original severity |
@@ -4463,7 +4463,7 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | **Chat export** | ChatView.vue + chat.ts | Export conversation as Markdown (with reasoning fold-out, model, timestamp) |
 | **data_updated_at tracking** | datasource.py + metadata.py + connectors.py + models/datasource.py | TableMetadata new `data_updated_at` column (data-source-side real update time) |
 
-**Verification**: `app.main` loads 183 routes; 134 tests pass; no `pick_model`/`run_skill_stream`/`run_skill_nl_stream` residual references.
+**Verification**: `app.main` loads approximately 176 routes; 134 tests pass; no `pick_model`/`run_skill_stream`/`run_skill_nl_stream` residual references.
 
 ### 11.33 Round 22: Debug Chat Streaming + Execution Progress Archiving + Inspector Diagnostic Logs + StuckDetector Tightened + About Page
 
@@ -4490,7 +4490,7 @@ Inspired by Vibe Coding's non-intrusive test-harness pattern: the harness wraps 
 | **Deleted handoff tools** | data_processor_agent.py + data_inspector_agent.py | Both Agents deleted handoff tool schema + `_execute_tool` branches + `run()` `_handoff` signal parsing; Agents are unaware of handoff |
 | **Prefix Cache staticization** | data_processor_agent.py | `build_system_prompt()` process-level memoize; datasource_context moved from system prompt → user message prefix |
 | **skill_runner 3-function merge** | skill_runner.py | `run_skill_script`/`by_content`/`streaming_by_content` merged into `run_skill_script_streaming` (supports skill_path or script_content); net -685 lines |
-| **_stream_execute shared core** | skill_runner.py | Dual-layer timeout (idle no-output + hard cap total) + marker-line parsing + error classification; no longer filters `[WARN]` lines |
+| **_stream_execute shared core** | skill_runner.py | Dual-layer timeout (idle no-output + hard cap total) + marker-line parsing + exception-type extraction (`_extract_exception_type`); no longer filters `[WARN]` lines |
 | **Deleted POST /messages** | chat.py + chat.ts | Deleted non-streaming endpoint (~95 lines) + frontend `sendMessage()` |
 | **StuckDetector simplified** | agent_utils.py | Deleted "investigate-only" detection (`INVESTIGATION_TOOLS`/`FIX_TOOLS` all deleted); only idle detection + total-round cap retained |
 | **Compaction improvements** | agent_utils.py + chat.py | `extract_identifiers_from_messages` enhanced (extracts from tool_calls.arguments); `compact_messages` old-message truncation 500→1000 + summary role system→user |

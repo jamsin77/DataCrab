@@ -144,7 +144,7 @@ def build_operator_namespace(current_user_id):
                     prompt, temperature=temperature, max_tokens=max_tokens
                 )
             except Exception as e:
-                raise RuntimeError(f"平台限制：llm_chat 调用失败 — {e}") from e
+                raise RuntimeError(f"llm_chat 调用失败: {e}") from e
             finally:
                 reset_user_llm_config()
 
@@ -358,30 +358,9 @@ def build_operator_namespace(current_user_id):
                     _user_cfg = get_user_llm_config()
                     if not _user_cfg:
                         raise RuntimeError("未配置 LLM Provider，请在配置页面设置")
-                    messages = []
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
-                            {"type": "text", "text": prompt},
-                        ],
-                    })
-                    # 视觉模型：读用户配置的 vision_model
-                    _vision_model = llm_manager._eff_vision_model(_user_cfg.get("provider", ""))
-                    if not _vision_model:
-                        raise RuntimeError("当前 Provider 未配置视觉模型，请在配置页面设置")
-                    _client = llm_manager._client_for(_user_cfg)
-                    resp = await _client.chat.completions.create(
-                        model=_vision_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                    )
-                    return resp.choices[0].message.content
+                    return await llm_manager.vision(image_data, mime, prompt, system_prompt, temperature, max_tokens)
                 except Exception as e:
-                    raise RuntimeError(f"平台限制：llm_vision 调用失败 — {e}") from e
+                    raise RuntimeError(f"llm_vision 调用失败: {e}") from e
                 finally:
                     reset_user_llm_config()
 

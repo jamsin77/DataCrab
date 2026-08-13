@@ -21,7 +21,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 |------|------|
 | `agent.py` | 单 Agent 服务（AgentService），非流式 /chat 端点使用 |
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 4 工具（edit_script/run_script/read_script/grep_script，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）** |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
 | `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
@@ -31,8 +31,10 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex） |
-| `skill_library.py` | 技能向量索引（numpy + 磁盘持久化：.npy + JSON） |
-| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 错误分类 LLM 推断）** |
+| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
+| `prompt_docs.py` | 沙箱函数文档（SANDBOX_TOOLS_DOC）+ 平台规范文档（PLATFORM_CONVENTIONS_DOC），注入生成/调试/NL 推断三处 |
+| `standards_parser.py` | 数据标准/质量/安全规则解析器（解析合法值/检测逻辑） |
+| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 异常类名提取）** |
 | `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
@@ -42,10 +44,10 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-16 个端点文件、共 183 条路由，主要：
+16 个端点文件、共约 176 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
-- `skill.py` — 技能 CRUD + AI 生成/调试（28 路由，最多）
+- `skill.py` — 技能 CRUD + AI 生成/调试（27 路由，最多）
 - `operator.py` — 算子 CRUD + 执行
 - `datasource.py` — 数据源 + 12 个 `/internal/*` 无认证沙箱端点（SQL/文件 I/O/LLM 对话/视觉/分块读取）
 - `knowledge.py` — 文档知识库 RAG
@@ -88,18 +90,19 @@ cd backend && black app/ && isort app/
 ## 多 Agent 架构
 
 ```
-用户请求 → chat.py/stream
+用户请求 → chat.py/stream → chat_router 路由判断
     ↓
-DataProcessorAgent（统一入口）
-    ├── 处理数据 → runtime 自动交接 → DataInspectorAgent
-    │                   ├── 检查通过 → 返回结果
-    │                   └── 发现问题 → handoff_to_processor → 修复 → 再检查
-    └── 不需要检查 → 直接返回结果
+    ├── 只读分析类（查询/统计/分析）→ DataAnalystAgent → 直接返回结果（无 handoff）
+    └── 数据处理类（清洗/转换/修改）→ DataProcessorAgent（统一入口）
+        ├── 处理数据 → runtime 自动交接 → DataInspectorAgent
+        │                   ├── 检查通过 → 返回结果
+        │                   └── 发现问题 → runtime 回交 DataProcessor → 修复 → 再检查
+        └── 不需要检查 → 直接返回结果
 ```
 
-**调试模式**：DataProcessor 暴露 4 个工具（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；`run_script` 执行成功后 runtime 自动交接 DataInspector（无需 LLM 主动调 handoff 工具）。
+**调试模式**：DataProcessor 暴露 5 个工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode Grep/Read/Edit/Bash）；`run_script` 执行成功后 runtime 自动交接 DataInspector（无需 LLM 主动调 handoff 工具）。
 
-**修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数；错误分级退出（环境/平台/数据问题直接终止，不消耗额度）。
+**修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数；平台信号词命中 → 立即退出（不消耗额度）。
 
 **收敛检测**：动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止并提示用户介入。
 
@@ -141,7 +144,7 @@ DataProcessorAgent（统一入口）
 | Excel 多 sheet 查询修复 | connectors.py | `_resolve_table_name` 最长前缀匹配替代只认 `\|` 的旧方法 |
 | 领域硬编码清除 | chat.py | 删除 ~443 行文物领域硬编码，复杂查询交由 Agent 自主处理 |
 | 预注入数据反幻觉修复 | chat.py + 2 个 agent | `has_preinjected_data` 标记避免 system prompt 已含数据时的误报 |
-| 技能库持久化 | skill_library.py | VectorIndex `save_to_disk`/`load_from_disk`，重启不丢失 |
+| 技能库持久化 | skill_library.py（已移除） | VectorIndex `save_to_disk`/`load_from_disk`，重启不丢失（注：skill_library.py 后续已删除，技能检索改用 skill_parser + skill_creator） |
 | operator.py 调用修复 | operator.py | 算子沙箱改用 `execute_shared_tool` 替代已删除的 `agent_service._query_table_data` |
 | 表枚举修复 | shared_tools.py / skill.py | `get_tables()`→`get_schema()` 提取 table_name |
 | Inspector 回交修复 | data_inspector_agent.py | run() 开头将 payload 值写入 context，修复自修复 Loop 断链 |
@@ -319,7 +322,7 @@ DataProcessorAgent（统一入口）
 
 **与前轮关系**：第十二轮极简 prompt+thinking+上下文定位对齐 OpenCode；本轮正法修改次数设计——3 次执行上限 + 7 次总修改上限，调查不算次数。删 fast model + 删"只调查不修改"检测器让 LLM 自由调查+修复。删 enable_thinking/frequency_penalty/max_tokens 死代码清理。
 
-### 第十四轮（静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出 + 沙箱补全）
+### 第十四轮（静默失败审查 + OpenCode 调试显示对齐 + 沙箱补全）
 
 **核心洞察**：对照 OpenCode 审查 DataCrab 静默失败（6 类）+ 调试提示信息差距。OpenCode 调试流程：Grep 定位行号 → Read(offset/limit) 只读相关行 → Edit(old_string/new_string) 修改。DataCrab 之前 Read 读全文（22828字符）、显示只有字符数摘要、Edit 显示截断 80 字符、错误不分级全靠 LLM 文字判断。
 
@@ -335,14 +338,6 @@ DataProcessorAgent（统一入口）
 | stats except: pass | connectors.py | 2 处 `except: pass` 改为 `logger.warning` |
 | skill_runner 空 return | skill_runner.py | 6 个工具函数 return 空→raise 明确错误 |
 | VALID_WRITE_STRATEGIES | connectors.py | 入口校验写入策略，无效策略直接 raise |
-
-**错误分级退出**（替代 LLM 文字判断）：
-
-| 改进 | 文件 | 说明 |
-|------|------|------|
-| `_classify_execution_error` L4/L5/L6 | skill_runner.py | L4 环境问题（DLL/ModuleNotFound）/ L5 平台限制（不支持写入策略/NotImplementedError）/ L6 数据问题（表/文件不存在）；L1/L2 脚本错误继续修复 |
-| run_debug 三级退出 | data_processor_agent.py | `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` → give_up + return；在 `_exec_failures` 之前（不消耗 3 次额度） |
-| `_is_platform_issue_report` 保留为兜底 | data_processor_agent.py | 仅在 `not tool_calls` 时检查（LLM 不执行下结论的兜底），主要退出靠错误分级 |
 
 **OpenCode 调试显示对齐**：
 
@@ -376,17 +371,17 @@ DataProcessorAgent（统一入口）
 | 前端标签改名 | ConfigView.vue 等 | 性格设定管理/大模型管理/数据标准规则/数据质量规则/数据安全规则 |
 | give_up 显示 reason | SkillView/OperatorView/PipelineView.vue | 6 处显示 `data.reason`（之前只显示固定文案） |
 | SSE ping 保活 | skill.py | run-nl-stream + 直接执行端点加 20 秒 ping |
-| 执行失败 yield content | data_processor_agent.py | 所有执行失败都 yield `❌ 执行失败：{错误}`（之前只有环境问题才显示） |
+| 执行失败 yield content | data_processor_agent.py | 所有执行失败都 yield `❌ 执行失败：{错误}`（之前只有平台信号命中才显示） |
 | NL 推断注入数据源列表 | skill.py | 避免LLM猜错目标数据源 |
 | extract-image-info 修复 | skills/e5be982a | `llm_vision(file_path, prompt)` 直接传路径 |
 | data-etl 修复 | skills/21de3207 | `"create"`→`"fail"`、删死代码、删 import inspect |
 | Excel create_new_file 平台能力 | tool_guidance.py | 改为 False（不支持创建新 Excel 文件） |
 
-**与前轮关系**：第十~十三轮建立编辑原语（edit_and_run/apply_partial_code）+ 调试模式（极简 prompt/thinking/修改尝试正法）；本轮补齐静默失败审查 + OpenCode 调试显示对齐 + 错误分级退出。read_script 无 cap 对齐 OpenCode（靠指令引导 offset/limit，不靠硬限制）；错误分级替代 LLM 文字判断（可靠退出靠错误消息分类，不靠关键词匹配）。
+**与前轮关系**：第十~十三轮建立编辑原语（edit_and_run/apply_partial_code）+ 调试模式（极简 prompt/thinking/修改尝试正法）；本轮补齐静默失败审查 + OpenCode 调试显示对齐。read_script 无 cap 对齐 OpenCode（靠指令引导 offset/limit，不靠硬限制）；错误退出靠平台信号词匹配 + 执行错误计数 + 修改次数上限（不靠错误分级，分级机制后续已删除）。
 
 ### 第十五轮（规则全量实现 + 安装修复 + 资产打包 + 架构清理）
 
-**核心洞察**：第十四轮补齐了调试显示和错误分级，但规则检查只有 39% 有确定性实现（61% 靠 LLM 主观判断或完全没实现）；安装流程多处断裂（poetry-core 下载超时/passlib 与 bcrypt 4.x 冲突/npm run install 不装 devDependencies）；技能/流程/算子无法跨机器迁移。
+**核心洞察**：第十四轮补齐了调试显示和静默失败审查，但规则检查只有 39% 有确定性实现（61% 靠 LLM 主观判断或完全没实现）；安装流程多处断裂（poetry-core 下载超时/passlib 与 bcrypt 4.x 冲突/npm run install 不装 devDependencies）；技能/流程/算子无法跨机器迁移。
 
 **规则全量实现（31 条新增确定性检查）**：
 
@@ -446,7 +441,7 @@ DataProcessorAgent（统一入口）
 | 删除技能自动同步算子 | skill.py | 删除 `_sync_scripts_to_operators` 函数 + 8 处调用 + 2 处删除清理 + Operator import；技能和算子从此独立 |
 | 删除沙箱 grep 函数 | sandbox_ns.py + skill_runner.py + prompt_docs.py + tool_guidance.py + datasource.py | 因无技能使用，全量删除（函数定义/注册/文档/端点） |
 
-**与前轮关系**：第十四轮补齐调试显示和错误分级；本轮补齐规则实现（39%→78% 有确定性检查）+ 修复安装链路（3 个阻断性 bug）+ 资产打包机制。规则仍无法确定性实现的（DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP 等）保持 LLM prompt 判断。
+**与前轮关系**：第十四轮补齐调试显示和静默失败审查；本轮补齐规则实现（39%→78% 有确定性检查）+ 修复安装链路（3 个阻断性 bug）+ 资产打包机制。规则仍无法确定性实现的（DQ-TIM/DQ-ETL-010/DQ-BIZ/SEC-CLASS-002~003/SEC-COMP 等）保持 LLM prompt 判断。
 
 ### 第十六轮（上下文压缩 + Prefix Cache 稳定 + SSE 修复 + 图片压缩 + traceback 行号修正）
 
@@ -497,7 +492,7 @@ DataProcessorAgent（统一入口）
 
 **与前轮关系**：第九轮 L2 续写治理「输出截断」（单轮输出过长）；本轮治理「上下文增长」（跨轮历史膨胀）——两者正交，共同覆盖长会话全生命周期。Prefix Cache 稳定是对第九轮静态/动态分区的延伸（system 字节稳定才能命中 provider 缓存）。SSE ping 修复解决 `wait_for` 取消 async generator 的隐性 bug（之前超时后 generator 可能损坏）。
 
-### 第十七轮（对齐 OpenCode 调试优化——工具精简 + runtime 自动交接 + 视觉模型 + 错误分类 LLM 推断 + 备用模型 + SSE 修复）
+### 第十七轮（对齐 OpenCode 调试优化——工具精简 + runtime 自动交接 + 视觉模型 + 备用模型 + SSE 修复）
 
 **核心洞察**（对照 OpenCode）：第十~十六轮建立了行级补丁原语 + 修改尝试正法 + 上下文压缩，但调试工具仍暴露 7 个（edit_and_run/modify_and_run/modify_script/edit_script/run_script/read_script/grep_script），且依赖 LLM 主动调 handoff_to_inspector 工具交接检查。对照 OpenCode 的 5 工具模型（Grep/Read/Edit/Bash/Task），本轮精简调试工具到 4 个，交接改为 runtime 自动触发。同时简化流式方法——第九轮的 L2/L3/L4 截断保证契约（max_continues 续写 / tool_choice=required / frequency_penalty）复杂度高收益低，改为简单多模型降级链。
 
@@ -510,7 +505,6 @@ DataProcessorAgent（统一入口）
 | **DEBUG_INSTRUCTIONS 工作流** | data_processor_agent.py | 明确 `grep → read(offset,limit) → edit_script → run_script` |
 | **流式方法简化为降级链** | llm.py | `chat_stream_with_thinking`/`chat_stream_with_tools_and_thinking` 删 L2 续写（max_continues）/L3 强制推进（tool_choice=required）/L4 frequency_penalty；改为逐模型尝试 + CircuitBreaker 熔断 + 瞬态重试；finish_reason=length 直接返回不续写 |
 | **视觉模型支持** | llm.py + sandbox_ns.py + skill_runner.py | `_PROVIDER_VISION_MODELS`（glm→glm-4v-plus/qwen→qwen-vl-plus 等）；`llm_vision` 沙箱函数按 provider 选模型；图片压缩 1024px+JPEG85；失败加"平台限制"前缀 |
-| **错误分类 LLM 推断** | skill_runner.py | `_llm_classify_error`：关键词匹配返回 script_error 时用 LLM 重新分 4 类（环境/平台/数据/脚本）；源文件不存在→数据问题，目标文件不存在→脚本错误 |
 | **备用模型（降级）配置** | llm.py + ModelConfigView.vue | `_model_configs` 主模型+fallback_models；`_degradation_chain` 降级链；CircuitBreaker 连续 3 次失败熔断 60s；前端恢复备用模型管理 UI |
 | **Inspector 删强制交接** | data_inspector_agent.py | `_collect_severe_issues` 不再被 run() 调用（死代码）；交接完全由 LLM 通过 handoff_to_processor 工具决定 |
 | **Inspector severity 校正** | data_inspector_agent.py | `_correct_severity`：用工具原始 severity 覆盖 LLM 可能篡改的 severity |
@@ -587,7 +581,7 @@ DataProcessorAgent（统一入口）
 |------|------|------|
 | **模型选择简化** | llm.py + config.py | 删除 `pick_model_async`/`pick_model`（第十八轮 LLM 模型自动选择）；替换为 `_default`（配置的深度模型）+ `_flash`（名称含 flash 的模型，找不到回退默认）属性；所有 chat 方法用 `self._default`；config.py 注释更新 |
 | **skill.py 流式端点精简** | skill.py | 删除 `run_skill_stream` + `run_skill_nl_stream` 两个流式端点（-624 行），功能由非流式端点覆盖 |
-| **data_processor_agent 精简** | data_processor_agent.py | 删除 `_analyze_error`（错误分析，被 skill_runner 的 `_llm_classify_error` 覆盖）+ `_save_session_log`（会话日志）+ `_compress_tool_result`（工具结果压缩）；删除调试循环中的上下文压缩（`should_compact` 检查）；模型选择统一为 `llm_manager._default` |
+| **data_processor_agent 精简** | data_processor_agent.py | 删除 `_analyze_error`（错误分析）+ `_save_session_log`（会话日志）+ `_compress_tool_result`（工具结果压缩）；删除调试循环中的上下文压缩（`should_compact` 检查）；模型选择统一为 `llm_manager._default` |
 | **StuckDetector 增强** | agent_utils.py | 新增"只调查不修改"检测（连续 5 轮只 read/grep 不 edit/run → 提示立即修改）+ 总轮次上限（30 轮 → 提示结束）；INVESTIGATION_TOOLS/FIX_TOOLS 工具分类 |
 | **流式错误恢复** | chat.py | `full_response` 初始化提前到 try 之前；流式响应出错时保存已收到的部分内容 + 错误信息到 DB，避免前端刷新后回复消失 |
 | **对话导出** | ChatView.vue + chat.ts | 导出对话为 Markdown 文件（含推理过程折叠、模型、时间）；侧边栏下拉 + 顶部工具栏双入口 |
@@ -638,7 +632,7 @@ DataProcessorAgent（统一入口）
 | **Prefix Cache 静态化** | data_processor_agent.py | `build_system_prompt()` 进程级 memoize（`_MAIN_STATIC_PROMPT_CACHE`）；datasource_context 移出 system prompt → 注入为 user 消息前缀；system 字节稳定命中 GLM prefix cache |
 | **动态提示分离** | data_processor_agent.py | 新增 `build_debug_dynamic_hints(context)`：入口函数/最近成功参数/本次参数/数据源表上下文 → 注入为 user 消息前缀（不进 system prompt） |
 | **skill_runner 三函数合一** | skill_runner.py | `run_skill_script`/`run_skill_script_by_content`/`run_skill_script_streaming_by_content` 合并为 `run_skill_script_streaming`（支持 `skill_path` 或 `script_content`）；`run_skill_script` 非流式委托流式版丢弃 progress 只取 result；净减 ~685 行 |
-| **_stream_execute 共享核心** | skill_runner.py | 新增 `_stream_execute(proc, timeout, temp_path)`：双层超时（idle 无输出 + hard cap 总时长）+ 标记行解析 + 错误分类；不再过滤 `[WARN]` 行全部透传 |
+| **_stream_execute 共享核心** | skill_runner.py | 新增 `_stream_execute(proc, timeout, temp_path)`：双层超时（idle 无输出 + hard cap 总时长）+ 标记行解析 + 异常类名提取（`_extract_exception_type`）；不再过滤 `[WARN]` 行全部透传 |
 | **删 POST /messages** | chat.py + chat.ts | 删除非流式 `POST /messages` 端点（~95 行）+ 前端 `sendMessage()` 方法 |
 | **StuckDetector 简化** | agent_utils.py | 删除"只调查不修改"检测（`INVESTIGATION_TOOLS`/`FIX_TOOLS`/`investigate_threshold`/`_investigate_count` 全删）；只保留空转检测 + 总轮次上限 |
 | **压缩改进** | agent_utils.py + chat.py | `extract_identifiers_from_messages` 增强（从 tool_calls.arguments 抽取）；`compact_messages` 旧消息截断 500→1000 + tool_calls 摘要列参数 + 摘要 role system→user（避免 system 污染 prefix cache）；`_HISTORY_SUMMARIES` 改 OrderedDict LRU（100 上限） |
@@ -701,7 +695,9 @@ DataProcessorAgent（统一入口）
 
 **与前轮关系**：第十~十一轮建立的行级补丁原语（edit_script/apply_partial_code）在本轮成为唯一修改入口（modify_script 等不再暴露），简化 LLM 工具选择面。第二十三轮 Inspector `check_results` 写入 context 供 RunTime `_extract_issues` 在本轮配合 `inspection_report` 独立事件让前端格式化展示。第二十四轮 llmContent 分离在本轮扩展到 OperatorView/PipelineView。版本号动态生成是对 Prefix Cache 理念的延伸（版本号不稳定不影响 cache，因为版本在 user 侧显示不在 system prompt 中）。
 
-## 待实施：DataAnalystAgent（数据分析智能体）
+## 已实施：DataAnalystAgent（数据分析智能体）
+
+> **状态：已实现**（`backend/app/services/data_analyst_agent.py`，240 行；已在 `multi_agent.py` 的 `ensure_agent_runtime()` 中注册；`_decide_handoff` 对 data_analyst 返回 None）。
 
 ### 定位与边界
 
@@ -786,13 +782,47 @@ skill_type: analysis    # analysis=分析类(DataAnalyst) / processing=处理类
 | compact_messages | 复用，不动 |
 | debug 模式（技能/算子/流程调试） | 不动 |
 
-### 需要新增/修改的文件
+### 实现清单（已完成）
 
-| 文件 | 改动 |
-|---|---|
-| `data_analyst_agent.py`（新增） | DataAnalystAgent 类：`run()` 方法 + 简单信息链 |
-| `multi_agent.py` | 注册 DataAnalyst；路由逻辑（`_decide_handoff` 对 DataAnalyst 返回 None） |
-| `chat.py` | 路由判断：关键词/技能类型 → 选 Agent |
-| `shared_tools.py` | 定义只读工具子集 `ANALYSIS_TOOLS` |
-| `skill_parser.py` | 解析 SKILL.md 的 `skill_type` 字段 |
-| `SkillView.vue` / `ChatView.vue` | 分析类技能不显示调试按钮（只读无需调试） |
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `data_analyst_agent.py` | DataAnalystAgent 类：`run()` 流式方法 + 简单信息链 + `ANALYSIS_MAX_TOOL_RESULT_CHARS=30000` | ✅ 已完成 |
+| `multi_agent.py` | 注册 DataAnalyst；`_decide_handoff` 对 data_analyst 返回 None | ✅ 已完成 |
+| `chat.py` + `chat_router.py` | 路由判断：关键词/技能类型 → 选 Agent | ✅ 已完成 |
+| `shared_tools.py` | 定义只读工具子集 `ANALYSIS_TOOLS`（5 个） | ✅ 已完成 |
+| `skill_parser.py` | 解析 SKILL.md 的 `skill_type` 字段 | ✅ 已完成 |
+| `SkillView.vue` / `ChatView.vue` | 分析类技能不显示调试按钮（只读无需调试） | ✅ 已完成 |
+
+### 第二十六轮（错误分级机制彻底删除——死代码清理 + 文档校正）
+
+**核心洞察**：第十四轮引入"错误分级退出"（`_classify_execution_error` L4/L5/L6 → 环境问题/平台限制/数据问题），第十七轮引入 `_llm_classify_error`（LLM 重分类 4 类）。这两套分级机制在第二十一轮"模型选择简化"时已删 skill_runner 侧函数定义，但 data_processor_agent 侧的消费者代码（行1868-1873 死代码分支 + 行1939-1963 末尾 LLM 分类兜底）+ DEBUG_INSTRUCTIONS 的"错误判断"指令段 + AGENTS.md 多处记录均未同步删除。死代码分支 `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` 永不命中（`_extract_exception_type` 只提取英文异常类名如 `RuntimeError`，不含中文词），末尾 LLM 分类兜底分类后都走 give_up 无分支差异（死逻辑）。
+
+**当前错误处理机制（分级删除后）**：
+1. **平台信号词匹配**（`_PLATFORM_FAILURE_SIGNALS` + `_has_platform_failure_in_warnings`）：warnings/error 文本含信号词 → 立即 `platform_issue` 退出（不消耗修复额度）
+2. **执行错误计数**（`_exec_failures_before_success` ≥ `_MAX_EXEC_FAILURES`=3）：首次成功前连续 3 次执行失败 → `give_up` 退出
+3. **修改次数上限**（`_fix_attempts` ≥ `max_fix_attempts`=7）：总修改次数达 7 次 → `give_up` 退出
+4. **LLM 自主判断**：DEBUG_INSTRUCTIONS 引导"能修就修，修不了就说明原因停止"，不强制分类标签
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删死代码分支** | data_processor_agent.py | 删 `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` 分支（永不命中，`_err_type` 是英文异常类名）；删 `_err_type` 局部变量赋值（无消费者） |
+| **删末尾 LLM 分类兜底** | data_processor_agent.py | 删修改次数用完后的 LLM 分类调用（问 LLM 分 代码问题/平台限制/环境问题 三类，分类后都走 give_up 无分支差异）；简化为直接 `give_up` + `done` |
+| **DEBUG_INSTRUCTIONS 错误判断段删除** | data_processor_agent.py | 删"错误判断"段（教 LLM 按"非脚本错误：xxx"格式输出，但无代码消费此标签）；替换为极简"看 traceback 自主判断：能修就修，修不了就说明原因停止" |
+| **AGENTS.md 记录校正** | AGENTS.md | 第十四轮标题/表格/前轮关系删"错误分级退出"；第十七轮标题/表格删"错误分类 LLM 推断"；skill_runner 职责描述改"错误分类 LLM 推断"→"异常类名提取"；行635 `_stream_execute` 描述改"错误分类"→"异常类名提取" |
+
+**验证**：`app.main` 完整加载 182 路由；`DEBUG_INSTRUCTIONS`/`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings` 导入正常；`_llm_classify_error`/`_classify_execution_error` 函数定义已不存在（grep 全空）。
+
+**与前轮关系**：第十四轮"错误分级退出" + 第十七轮"错误分类 LLM 推断"在本轮彻底删除（代码 + 文档）。当前错误退出靠平台信号词匹配 + 执行错误计数 + 修改次数上限三层兜底，LLM 自主判断修复可行性（不靠分类标签）。`_PLATFORM_FAILURE_SIGNALS` 信号词与 skill_runner 实际 print 措辞不匹配的问题（中文信号词 vs 英文 `failed`）已知，后续可补信号词对齐。
+
+## 现状校正（文档 vs 代码实际）
+
+以下为历史轮次记录与代码实际状态的差异，经代码审查确认的勘误：
+
+| 轮次 | 记录 | 实际代码 |
+|------|------|---------|
+| 第十九轮 | "DB model 删 2 个 Column（LLMProvider.fast_model + UserLLMConfig.fast_model）" | `flash_model` 列仍存在于 `models/custom_extension.py`（line 40, 62）；`llm.py` 仍读取 `rec.flash_model`/`record.flash_model`（line 86, 96, 262, 274-275, 294）。业务代码已不依赖，但 DB 列未删除（向后兼容） |
+| 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()` 实际仍用非流式 `chat_with_tools()`（line 436）；仅 `run_debug()` 用流式 |
+| 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个（4 核心 + `list_user_datasources` 从 SHARED_TOOL_SCHEMAS 提取） |
+| 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数（run_skill_script / run_skill_script_async / run_skill_script_streaming / run_skill_script_streaming_async / run_skill_script_by_content / run_skill_script_by_content_async，含 async 包装器） |
+| 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | `data/seed/operators.json` 不存在（仅 `pipelines.json` 存在） |
+| 路由数 | "183 条路由" | 实际约 176 条路由 |

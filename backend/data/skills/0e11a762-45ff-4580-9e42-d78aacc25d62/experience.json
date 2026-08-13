@@ -811,6 +811,76 @@
       "parameters": {},
       "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
       "context_summary": "工具: run_script\nAI输出: 用户要求直接执行当前脚本，不修改代码。根据用户指令，参数为：\n\n- 源数据源：**文物列表**\n- 源表：**全国重点文物保护单位合并**\n- 目标数据源：**凭证检索库**\n- 目标表名：自动生成（*）\n- 图片列：自动匹配所有图片列\n- 写入策略：truncate（清空已有数据）\n\n直接运行：\n\n"
+    },
+    {
+      "timestamp": "2026-08-12T18:59:25.388661",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: 凭证库",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 凭证库是 generic_file 类型，直接运行脚本。按用户指令：源=凭证库、目标=凭证检索库、清空写入"
+    },
+    {
+      "timestamp": "2026-08-12T18:59:46.861760",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: 39eedc33-4749-4f7f-84ad-38b6066b4dc0",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 凭证库名称匹配有问题，直接用 UUID 试试"
+    },
+    {
+      "timestamp": "2026-08-13T10:56:07.956841",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: 凭证库",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 好的，直接用当前脚本运行。根据用户指令：\n\n- 源：凭证库（generic_file），所有图片\n- 目标：凭证检索库（postgresql），表已存在时清空再写入（truncate）\n- 自动生成 ID（8位零补齐）+ 时间戳列"
+    },
+    {
+      "timestamp": "2026-08-13T10:56:43.628759",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "找不到源数据源: 39eedc33-4749-4f7f-84ad-38b6066b4dc0",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 数据源名称可能未被正确识别，让我尝试用 UUID 直接运行"
+    },
+    {
+      "timestamp": "2026-08-13T17:39:30.975847",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp4xa84kvw.py\", line 114, in _dc_get_datasource_id_by_name\n    with urllib.request.urlopen(url, timeout=10) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 519, in open\n    response ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 用户要求直接运行当前脚本，参数按用户指令来。开始执行：\n\n"
+    },
+    {
+      "timestamp": "2026-08-13T18:40:45.043241",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpvykv0gvk.py\", line 114, in _dc_get_datasource_id_by_name\n    with urllib.request.urlopen(url, timeout=10) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 519, in open\n    response ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 先查凭证库中有哪些表，确定 source_table_name。\n\n"
+    },
+    {
+      "timestamp": "2026-08-13T18:41:04.614911",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp9zdn493g.py\", line 114, in _dc_get_datasource_id_by_name\n    with urllib.request.urlopen(url, timeout=10) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 519, in open\n    response ",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ThreadPoolExecutor', 'ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_keyframes', 'extract_pinyin_prefix', 'extract_video_info', 'llm_chat', 'llm_vision', 'rea",
+      "context_summary": "工具: run_script\nAI输出: 数据源服务暂时超时，这是平台网络问题而非脚本错误。让我重试一下：\n\n"
     }
   ],
   "positive": [
@@ -2120,6 +2190,90 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_172055', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T14:59:13.885226",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_145853', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T15:11:10.862628",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_151046', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T17:09:55.031974",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_170932', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T17:31:48.234654",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_173128', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T17:50:02.159670",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_174941', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T18:04:54.140954",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_180434', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T18:10:42.113199",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_181028', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T18:23:29.229351",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_182310', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-12T19:00:49.295368",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_190031', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-13T11:38:25.518120",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_113804', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-13T17:43:57.879480",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_174337', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-13T18:48:53.168466",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_184740', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": "让我先阅读完整的脚本以了解当前的实现，然后对其进行修改以使用 `llm_vision` 进行 OCR。",

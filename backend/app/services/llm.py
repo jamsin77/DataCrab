@@ -65,32 +65,46 @@ async def init_user_llm_context(user_id) -> Optional[Dict[str, Any]]:
         )
         rec = result.scalar_one_or_none()
 
-    if not rec:
-        set_user_llm_config(None)
-        return None
+        if not rec:
+            set_user_llm_config(None)
+            return None
 
-    api_key = decrypt(rec.api_key_encrypted) if rec.api_key_encrypted else ""
-    if not api_key:
-        set_user_llm_config(None)
-        logger.info(f"init_user_llm_context: 用户 {user_id} 的 LLM 配置无 API key，回退全局配置")
-        return None
-    fallback = []
-    for fb in (rec.fallback_models or []):
-        fb_key = decrypt(fb["api_key_encrypted"]) if fb.get("api_key_encrypted") else ""
-        if not fb_key:
-            continue
-        fallback.append({
-            "provider": fb.get("provider", ""),
-            "api_base": fb.get("api_base", ""),
-            "model": fb.get("model", ""),
-            "api_key": fb_key,
-        })
+        api_key = decrypt(rec.api_key_encrypted) if rec.api_key_encrypted else ""
+        if not api_key:
+            set_user_llm_config(None)
+            logger.info(f"init_user_llm_context: 用户 {user_id} 的 LLM 配置无 API key，回退全局配置")
+            return None
+
+        fallback = []
+        for fb in (rec.fallback_models or []):
+            fb_key = decrypt(fb["api_key_encrypted"]) if fb.get("api_key_encrypted") else ""
+            if not fb_key:
+                fb_provider = fb.get("provider", "")
+                from app.models.custom_extension import LLMProvider
+                pub_result = await session.execute(
+                    sa_select(LLMProvider).where(LLMProvider.provider_name == fb_provider, LLMProvider.is_active == True)
+                )
+                pub_rec = pub_result.scalar_one_or_none()
+                if pub_rec and pub_rec.api_key_encrypted:
+                    fb_key = decrypt(pub_rec.api_key_encrypted)
+                if not fb_key:
+                    continue
+            fallback.append({
+                "provider": fb.get("provider", ""),
+                "api_base": fb.get("api_base", ""),
+                "default_model": fb.get("model", ""),
+                "flash_model": fb.get("flash_model", ""),
+                "vision_model": fb.get("vision_model", ""),
+                "embedding_model": fb.get("embedding_model", ""),
+                "api_key": fb_key,
+            })
 
     cfg = {
         "provider": rec.provider,
         "api_key": api_key,
         "api_base": rec.api_base or "",
-        "model": rec.model or "",
+        "default_model": rec.model or "",
+        "flash_model": rec.flash_model or "",
         "vision_model": rec.vision_model or "",
         "embedding_model": rec.embedding_model or "",
         "fallback_models": fallback,
@@ -161,35 +175,16 @@ async def _stream_with_timeout(stream, first_timeout: float = 120.0, chunk_timeo
 # Provider 注册表：内存缓存，启动时从 DB 加载
 _provider_registry: Dict[str, Dict[str, Any]] = {}
 
-# Provider 默认 embedding 模型映射（避免用 OpenAI 模型名调智谱等 provider）
-_PROVIDER_EMBEDDING_MODELS: Dict[str, str] = {
-    "glm": "embedding-3",
-    "qwen": "text-embedding-v3",
-    "siliconflow": "BAAI/bge-large-zh-v1.5",
-    "openai": "text-embedding-ada-002",
-    "deepseek": "",
-    "moonshot": "",
-}
-
-# 按 provider 选视觉模型（文本模型不支持图片输入）
-_PROVIDER_VISION_MODELS: Dict[str, str] = {
-    "glm": "glm-4v-plus",
-    "qwen": "qwen-vl-plus",
-    "openai": "gpt-4o",
-    "siliconflow": "Qwen/Qwen2-VL-72B-Instruct",
-    "deepseek": "",
-    "moonshot": "",
-}
-
-# 预配置 Provider（启动时 seed 到 DB）
+# 预配置 Provider（启动时 seed 到 DB，仅用于开箱即用，运行时不引用）
 _SEED_PROVIDERS = {
     "qwen": {
         "display_name": "阿里百炼",
         "description": "通义千问，阿里云大模型服务",
         "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "default_model": "qwen3.7-max",
-        "default_vision_model": "qwen-vl-plus",
-        "default_embedding_model": "text-embedding-v3",
+        "flash_model": "qwen3.6-flash",
+        "vision_model": "qwen-vl-plus",
+        "embedding_model": "text-embedding-v3",
         "models": [
             {"label": "Qwen3.7-Max", "value": "qwen3.7-max"},
             {"label": "Qwen3.7-Plus", "value": "qwen3.7-plus"},
@@ -203,8 +198,9 @@ _SEED_PROVIDERS = {
         "description": "智谱AI GLM 系列大模型",
         "api_base": "https://open.bigmodel.cn/api/paas/v4",
         "default_model": "glm-5.2",
-        "default_vision_model": "glm-4v-plus",
-        "default_embedding_model": "embedding-3",
+        "flash_model": "glm-4-flash",
+        "vision_model": "glm-4v-plus",
+        "embedding_model": "embedding-3",
         "models": [
             {"label": "GLM-5.2", "value": "glm-5.2"},
             {"label": "GLM-5.1", "value": "glm-5.1"},
@@ -219,12 +215,31 @@ _SEED_PROVIDERS = {
         "description": "硅基流动 Model API 平台",
         "api_base": "https://api.siliconflow.cn/v1",
         "default_model": "deepseek-ai/DeepSeek-V3",
-        "default_vision_model": "Qwen/Qwen2-VL-72B-Instruct",
-        "default_embedding_model": "BAAI/bge-large-zh-v1.5",
+        "vision_model": "Qwen/Qwen2-VL-72B-Instruct",
+        "embedding_model": "BAAI/bge-large-zh-v1.5",
         "models": [
             {"label": "DeepSeek-V3", "value": "deepseek-ai/DeepSeek-V3"},
             {"label": "Qwen2.5-72B", "value": "Qwen/Qwen2.5-72B-Instruct"},
             {"label": "Qwen2.5-Coder-32B", "value": "Qwen/Qwen2.5-Coder-32B-Instruct"},
+        ],
+    },
+    "volcengine": {
+        "display_name": "火山方舟",
+        "description": "字节跳动火山引擎方舟平台（豆包系列模型）",
+        "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+        "default_model": "doubao-1.5-pro-32k",
+        "flash_model": "doubao-1.5-lite-32k",
+        "vision_model": "doubao-1.5-vision-pro-32k",
+        "embedding_model": "doubao-embedding-text-240715",
+        "models": [
+            {"label": "Doubao-1.5-Pro-32k", "value": "doubao-1.5-pro-32k"},
+            {"label": "Doubao-1.5-Pro-256k", "value": "doubao-1.5-pro-256k"},
+            {"label": "Doubao-1.5-Lite-32k", "value": "doubao-1.5-lite-32k"},
+            {"label": "Doubao-1.5-Vision-Pro-32k", "value": "doubao-1.5-vision-pro-32k"},
+            {"label": "Doubao-Pro-32k", "value": "doubao-pro-32k"},
+            {"label": "Doubao-Pro-128k", "value": "doubao-pro-128k"},
+            {"label": "Doubao-Lite-32k", "value": "doubao-lite-32k"},
+            {"label": "Doubao-Embedding-Text-240715", "value": "doubao-embedding-text-240715"},
         ],
     },
 }
@@ -253,8 +268,9 @@ async def load_providers_from_db():
                     api_base=info["api_base"],
                     models=info["models"],
                     default_model=info.get("default_model", ""),
-                    default_vision_model=info.get("default_vision_model", ""),
-                    default_embedding_model=info.get("default_embedding_model", ""),
+                    flash_model=info.get("flash_model", ""),
+                    vision_model=info.get("vision_model", ""),
+                    embedding_model=info.get("embedding_model", ""),
                     code=None,
                     is_public=True,
                     created_at=_seed_time,
@@ -264,10 +280,12 @@ async def load_providers_from_db():
             else:
                 # 已存在的内置 Provider 确保标记为公共，更新默认模型
                 record.is_public = True
-                if info.get("default_vision_model") and not record.default_vision_model:
-                    record.default_vision_model = info["default_vision_model"]
-                if info.get("default_embedding_model") and not record.default_embedding_model:
-                    record.default_embedding_model = info["default_embedding_model"]
+                if info.get("flash_model") and not record.flash_model:
+                    record.flash_model = info["flash_model"]
+                if info.get("vision_model") and not record.vision_model:
+                    record.vision_model = info["vision_model"]
+                if info.get("embedding_model") and not record.embedding_model:
+                    record.embedding_model = info["embedding_model"]
         await session.commit()
 
         # 加载所有 Provider 到内存
@@ -282,8 +300,9 @@ async def load_providers_from_db():
                 "api_base": p.api_base,
                 "models": p.models or [],
                 "default_model": p.default_model,
-                "default_vision_model": p.default_vision_model or "",
-                "default_embedding_model": p.default_embedding_model or "",
+                "flash_model": p.flash_model or "",
+                "vision_model": p.vision_model or "",
+                "embedding_model": p.embedding_model or "",
                 "code": p.code,
             }
         logger.info(f"已加载 {len(_provider_registry)} 个 Provider: {list(_provider_registry.keys())}")
@@ -430,43 +449,35 @@ class LLMManager:
         info = _provider_registry.get(provider)
         if info and info.get("models"):
             return [m["value"] for m in info["models"] if m.get("value")]
-        return [cfg["model"]] if cfg.get("model") else []
+        return [cfg["default_model"]] if cfg.get("default_model") else []
+
+    def _eff_model(self, model_type: str, cfg: Dict[str, Any] = None) -> str:
+        """统一模型取值（只看用户配置，空就返回空）。
+
+        seed 只用于初始化 DB，运行时不参与。
+        """
+        if cfg is None:
+            cfg = _require_user_cfg()
+        return cfg.get(model_type, "") or ""
 
     @property
     def _default(self) -> str:
-        """默认深度模型（用户配置的模型，须在 provider 可用模型列表内，否则回退 provider default_model）"""
-        cfg = _require_user_cfg()
-        user_model = cfg.get("model", "")
-        provider = cfg.get("provider", "")
-        info = _provider_registry.get(provider)
-        if info:
-            valid_values = {m["value"] for m in info.get("models", []) if m.get("value")}
-            if valid_values and user_model and user_model not in valid_values:
-                logger.warning(
-                    f"用户配置的模型 {user_model!r} 不在 provider {provider!r} 的可用列表内，"
-                    f"回退到 provider 默认模型 {info.get('default_model')!r}"
-                )
-                return info.get("default_model") or user_model
-        return user_model
+        """默认深度模型"""
+        return self._eff_model("default_model")
 
     @property
     def _flash(self) -> str:
-        """快速模型（名称含 flash，找不到则回退默认模型）"""
-        for m in self._available_models():
-            if "flash" in m.lower():
-                return m
-        return self._default
+        """快速模型（未配置则回退默认模型）"""
+        return self._eff_model("flash_model") or self._eff_model("default_model")
 
     def _eff_vision_model(self, provider: str = "") -> str:
-        """用户配置的视觉模型；未配置则回退 Provider 默认视觉模型；都没有则返回空"""
+        """视觉模型（兼容旧签名；优先用 fallback cfg）"""
         cfg = _require_user_cfg()
-        if cfg.get("vision_model"):
-            return cfg["vision_model"]
-        p = cfg.get("provider", "")
-        info = _provider_registry.get(p)
-        if info:
-            return info.get("default_vision_model", "")
-        return ""
+        if provider and provider != cfg.get("provider", ""):
+            for fb in (cfg.get("fallback_models") or []):
+                if fb.get("provider") == provider:
+                    return self._eff_model("vision_model", fb)
+        return self._eff_model("vision_model", cfg)
 
     # ---------- 客户端管理 ----------
     def _client_for(self, cfg: Dict[str, str]):
@@ -502,17 +513,30 @@ class LLMManager:
         return client
 
     def _model_configs(self) -> List[Dict[str, str]]:
-        """返回有序模型配置列表（主模型 + 有 key 的降级模型）；基于用户配置"""
+        """返回有序模型配置列表（主模型 + 有 key 的降级模型）；保留所有模型类型字段供 vision/embedding 等取用"""
         cfg = _require_user_cfg()
         configs = [{
             "provider": cfg.get("provider", ""),
             "api_key": cfg.get("api_key", ""),
             "api_base": cfg.get("api_base", ""),
-            "model": cfg.get("model", ""),
+            "model": self._eff_model("default_model", cfg),
+            "default_model": self._eff_model("default_model", cfg),
+            "flash_model": self._eff_model("flash_model", cfg),
+            "vision_model": self._eff_model("vision_model", cfg),
+            "embedding_model": self._eff_model("embedding_model", cfg),
         }]
         for fb in (cfg.get("fallback_models") or []):
             if fb.get("api_key"):
-                configs.append(fb)
+                configs.append({
+                    "provider": fb.get("provider", ""),
+                    "api_key": fb.get("api_key", ""),
+                    "api_base": fb.get("api_base", ""),
+                    "model": self._eff_model("default_model", fb),
+                    "default_model": self._eff_model("default_model", fb),
+                    "flash_model": self._eff_model("flash_model", fb),
+                    "vision_model": self._eff_model("vision_model", fb),
+                    "embedding_model": self._eff_model("embedding_model", fb),
+                })
         return configs
 
     async def _acreate(self, cfg: Dict[str, str], **kwargs):
@@ -543,6 +567,16 @@ class LLMManager:
                 logger.warning(f"瞬态错误 [{cfg['provider']}/{cfg['model']}]: {e}，{delay}s 后重试 ({attempt+1}/{max_retries})")
                 await asyncio.sleep(delay)
 
+    def _format_chain_error(self, errors: list, task_name: str, hint: str = "") -> RuntimeError:
+        """格式化降级链错误（不吞错误，保留每次尝试的原因）"""
+        if not errors:
+            return RuntimeError(f"{task_name}：无可用LLM模型")
+        lines = [f"{task_name}失败，已尝试 {len(errors)} 个配置："]
+        lines.extend(f"  {err}" for err in errors)
+        if hint:
+            lines.append(f"提示：{hint}")
+        return RuntimeError("\n".join(lines))
+
     async def initialize(self):
         """初始化（无全局客户端，仅标记已初始化；实际客户端由 _client_for 按用户配置动态构建）"""
         self._initialized = True
@@ -568,7 +602,7 @@ class LLMManager:
         if model is None:
             model = self._default
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -582,10 +616,10 @@ class LLMManager:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_with_messages(
         self,
@@ -601,7 +635,7 @@ class LLMManager:
         if model is None:
             model = self._default
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -615,10 +649,10 @@ class LLMManager:
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_with_messages失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_with_tools(
         self,
@@ -632,7 +666,7 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -663,10 +697,10 @@ class LLMManager:
                     "finish_reason": getattr(choice, "finish_reason", None),
                 }
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_with_tools失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     # ---------- 流式调用（创建时降级；开始输出后不重试） ----------
     async def chat_stream(
@@ -679,7 +713,7 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -692,7 +726,7 @@ class LLMManager:
                     stream=True,
                 )
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_stream创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
             try:
@@ -701,10 +735,10 @@ class LLMManager:
                         yield chunk.choices[0].delta.content
                 return
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_stream_with_messages(
         self,
@@ -719,7 +753,7 @@ class LLMManager:
         if model is None:
             model = self._default
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -732,7 +766,7 @@ class LLMManager:
                     stream=True,
                 )
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_stream_with_messages创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
             try:
@@ -741,10 +775,10 @@ class LLMManager:
                         yield chunk.choices[0].delta.content
                 return
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_stream_with_thinking(
         self,
@@ -757,7 +791,7 @@ class LLMManager:
             await self.initialize()
 
         target_model = model or self._default
-        last_err = None
+        errors = []
 
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
@@ -768,7 +802,7 @@ class LLMManager:
                 stream = await self._acreate(cfg, model=actual_model, messages=messages, temperature=temperature, stream=True)
             except Exception as e:
                 _circuit.record_failure(actual_model)
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 连接失败: {e}，尝试备用 Provider")
                 continue
 
@@ -788,11 +822,11 @@ class LLMManager:
                 return
             except Exception as e:
                 _circuit.record_failure(actual_model)
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 流式中断: {e}，尝试备用 Provider")
                 continue
 
-        raise last_err or RuntimeError(f"所有模型均不可用")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_stream_with_tools(
         self,
@@ -805,7 +839,7 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
             try:
@@ -820,7 +854,7 @@ class LLMManager:
                     stream=True,
                 )
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_stream_with_tools创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
                 continue
             try:
@@ -833,10 +867,10 @@ class LLMManager:
                             yield f"data: {json.dumps({'type': 'tool_call', 'id': tc.id, 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}}, ensure_ascii=False)}\n\n"
                 return
             except Exception as e:
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_stream_with_tools_and_thinking(
         self,
@@ -858,7 +892,7 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
+        errors = []
 
         for cfg in self._model_configs():
             actual_model = model or cfg["model"]
@@ -877,7 +911,7 @@ class LLMManager:
                 )
             except Exception as e:
                 _circuit.record_failure(actual_model)
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 连接失败: {e}，尝试备用 Provider")
                 continue
 
@@ -930,47 +964,86 @@ class LLMManager:
 
             except Exception as e:
                 _circuit.record_failure(actual_model)
-                last_err = e
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"模型 {actual_model} 流式中断: {e}，尝试备用 Provider")
                 continue
 
-        raise last_err or RuntimeError("所有模型均不可用")
+        raise self._format_chain_error(errors, "LLM 调用")
 
     # ---------- 嵌入 ----------
     def _eff_embedding_model(self, provider: str = "") -> str:
-        """用户配置的 embedding 模型；未配置则回退 Provider 默认"""
+        """向量模型（兼容旧签名；优先用 fallback cfg）"""
         cfg = _require_user_cfg()
-        if cfg.get("embedding_model"):
-            return cfg["embedding_model"]
-        p = provider or cfg.get("provider", "")
-        info = _provider_registry.get(p)
-        if info:
-            return info.get("default_embedding_model", "")
-        return ""
+        if provider and provider != cfg.get("provider", ""):
+            for fb in (cfg.get("fallback_models") or []):
+                if fb.get("provider") == provider:
+                    return self._eff_model("embedding_model", fb)
+        return self._eff_model("embedding_model", cfg)
 
     async def embed(self, text: str) -> list:
         """生成文本嵌入向量（主模型，失败则降级）"""
         if not self._initialized:
             await self.initialize()
 
-        last_err = None
+        errors = []
         for cfg in self._model_configs():
             try:
                 client = self._client_for(cfg)
-                provider = cfg.get("provider", "")
-                emb_model = self._eff_embedding_model(provider)
+                emb_model = self._eff_model("embedding_model", cfg)
                 if not emb_model:
-                    raise RuntimeError(f"Provider {provider} 不支持嵌入模型，无法处理向量化任务")
+                    raise RuntimeError(f"Provider {cfg.get('provider','')} 不支持嵌入模型，无法处理向量化任务")
                 response = await client.embeddings.create(
                     model=emb_model,
                     input=text,
                 )
                 return response.data[0].embedding
             except Exception as e:
-                last_err = e
-                logger.warning(f"LLM embed失败 [{cfg['provider']}/{cfg['model']}]: {e}，尝试下一个模型")
+                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
+                logger.warning(f"LLM embed失败 [{cfg['provider']}/{cfg.get('model','')}]: {e}，尝试下一个模型")
                 continue
-        raise last_err or RuntimeError("无可用LLM模型")
+        raise self._format_chain_error(errors, "LLM 调用")
+
+    async def vision(self, image_b64: str, mime: str, prompt: str, system_prompt: str = None, temperature: float = 0.3, max_tokens: int = 2000) -> str:
+        """视觉模型调用（主模型，失败则降级到备用 provider 的视觉模型）"""
+        if not self._initialized:
+            await self.initialize()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                {"type": "text", "text": prompt},
+            ],
+        })
+
+        errors = []
+        for cfg in self._model_configs():
+            vis_model = self._eff_model("vision_model", cfg)
+            if not vis_model:
+                logger.warning(f"LLM vision跳过 [{cfg.get('provider','')}]: 视觉模型名未配置（请在 LLM 配置页面填写视觉模型）")
+                errors.append(f"[{cfg.get('provider','')}] 视觉模型名未配置")
+                continue
+            try:
+                client = self._client_for(cfg)
+                logger.info(f"LLM vision调用: provider={cfg['provider']}, model={vis_model}")
+                resp = await client.chat.completions.create(
+                    model=vis_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return resp.choices[0].message.content
+            except Exception as e:
+                errors.append(f"[{cfg['provider']}/{vis_model}] {e}")
+                logger.warning(f"LLM vision失败 [{cfg['provider']}/{vis_model}]: {e}，尝试下一个配置")
+                continue
+        hint = ""
+        if any("content.type" in err or "image_url" in err or "image" in err.lower() for err in errors):
+            hint = "该模型可能不支持图片输入，请确认视觉模型配置正确（如 glm-4v-plus）"
+        raise self._format_chain_error(errors, "LLM vision", hint=hint)
 
     async def generate(
         self,

@@ -1445,10 +1445,10 @@ async function handleOpSend() {
             msg.executingMsg = data.message || '正在执行...'
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
-            msg.runResult = data.result
             const r = data.result || {}
             const inner = typeof r.result === 'object' && r.result ? r.result : {}
             const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
+            msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
             if (failed) {
               const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
               msg.content += `\n❌ 执行失败：${errMsg}\n`

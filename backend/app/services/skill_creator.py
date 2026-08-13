@@ -108,6 +108,44 @@ def main(datasource_name, table_name, output_table=None):
 
     return {"success": True, "count": len(df), "target_table": target}
 ```
+
+### 7. 不要用 try-except 吞掉 llm_chat/llm_vision 的异常
+```python
+# ❌ 错误：吞掉异常，返回 success=True 掩盖平台错误
+try:
+    result = llm_vision(image_path, prompt)
+except Exception as e:
+    warnings.append(f"llm_vision 调用失败: {e}")
+    result = ""  # 空值继续跑
+return {"success": True, "warnings": warnings}  # ← LLM 未配置时 OCR 全空但仍报成功
+
+# ✅ 正确：让异常传播，框架捕获后交给调试助手判断
+result = llm_vision(image_path, prompt)  # 失败时 raise，脚本中止
+
+# ✅ 正确（批量处理允许个别失败）：统计失败率，全失败时 raise
+results = []
+fail_count = 0
+for img in images:
+    try:
+        results.append(llm_vision(img, prompt))
+    except Exception:
+        fail_count += 1
+if fail_count == len(images):
+    raise RuntimeError(f"全部 {len(images)} 个 llm_vision 调用失败，可能 LLM 未配置")
+```
+
+### 8. execute_sql / call_operator 返回 dict，检查 success
+```python
+# ❌ 错误：不检查返回值
+result = execute_sql(ds_id, "SELECT * FROM users")
+df = pd.DataFrame(result["data"])  # 如果 execute_sql 失败，data=[] → 空 DataFrame 静默继续
+
+# ✅ 正确
+result = execute_sql(ds_id, "SELECT * FROM users")
+if not result.get("success"):
+    raise ValueError(f"SQL 执行失败: {result.get('error')}")
+df = pd.DataFrame(result["data"], columns=result["columns"])
+```
 """
 
 

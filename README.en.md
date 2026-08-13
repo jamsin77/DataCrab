@@ -12,7 +12,7 @@ These four stages constitute DataCrab's evolution path—from "humans driving da
 |------|------|------------|
 | **Conversation as Processing** | Replace coding with natural language; the LLM understands intent, matches Skills, generates executable code, and returns results as tables/charts | Conversational Data Processing, Agentic UI |
 | **Accumulation as Asset** | Each processing run is automatically accumulated as a reusable Skill, progressively building a skill library that gets smarter with use | Skill-based Agent, Compound AI System |
-| **Ecosystem as Loop** | Accumulated Skills form a data ecosystem; DataProcessor (processing) + DataInspector (inspection) dual-agent collaboration closes the loop from ingestion to output | Multi-Agent Collaboration, Human-in-the-loop |
+| **Ecosystem as Loop** | Accumulated Skills form a data ecosystem; DataProcessor (processing) + DataInspector (inspection) + DataAnalyst (analysis) tri-agent collaboration closes the loop from ingestion to output | Multi-Agent Collaboration, Human-in-the-loop |
 | **Loop-ification** | The ultimate goal: AI understands requirements → matches Skills → executes → inspects → self-repairs, with no human intervention throughout | Self-healing Pipeline, Full-loop Automation, Deep Agents |
 
 > **Loop-ification** is DataCrab's ultimate goal. As advocated by Loop Engineering in the industry—instead of letting AI do only single-step inference, let it iterate continuously in an "execute → observe → correct" loop until the task is complete. DataCrab's multi-agent Handoff mechanism and skill self-evolution capability are concrete practices of this philosophy.
@@ -37,8 +37,9 @@ DataCrab adopts an **Orchestrator-Worker** multi-agent collaboration architectur
 |--------|------|----------|
 | **DataProcessor** (Orchestrator) | Understands user intent, modifies/executes scripts, schedules data processing, hands off to inspection | Chat page + skill/operator/pipeline debug assistants |
 | **DataInspector** (Worker) | Performs standard, quality, and security inspections on processed data | RunTime auto-handoff after DataProcessor succeeds |
+| **DataAnalyst** | Read-only analysis: query, statistics, distribution, insights (no data modification) | Read-only analysis questions (query/stats/analysis), routed by chat_router keywords |
 
-- **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the DataProcessor → DataInspector multi-agent flow
+- **Unified architecture**: the chat page and all debug pages (skill/operator/pipeline) run the multi-agent flow; main chat routes via chat_router to DataAnalyst (read-only) or DataProcessor (modification)
 - **Handoff decided by RunTime**: Agents are unaware of handoff; RunTime intercepts the `done` event and calls `_decide_handoff()` to decide whether to hand off (auto in debug mode, human judgment in main chat)
 - **Orchestrator-Worker granularity**: simple operations (edit_script / run_script) are DataProcessor tools; complex reasoning (quality inspection) is delegated to the DataInspector agent
 - **Streaming tool calls**: `chat_stream_with_tools_and_thinking()` streams reasoning + tool calls together
@@ -237,7 +238,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, types)
-│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 183 routes)
+│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, ~176 routes)
 │   │   ├── models/            # ORM models (19 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services
@@ -247,7 +248,7 @@ DataCrab/
 │   │       ├── data_processor_agent.py  # DataProcessor agent
 │   │       ├── data_inspector_agent.py  # DataInspector agent
 │   │       ├── inspector_tools.py       # Data inspection toolset
-│   │       ├── skill_library.py  # Vector index + semantic search
+│   │       ├── data_analyst_agent.py  # DataAnalyst read-only analysis agent
 │   │       ├── skill_parser.py   # SKILL.md parser
 │   │       ├── skill_runner.py   # Subprocess sandbox executor
 │   │       ├── skill_creator.py  # AI skill-package generator
@@ -266,7 +267,7 @@ DataCrab/
 │   └── data/skills/           # Skill package on-disk storage
 ├── frontend/                   # Frontend app
 │   ├── src/
-│   │   ├── views/             # 16 page components (11 routes)
+│   │   ├── views/             # 18 page components (11 routes)
 │   │   ├── router/            # Routing config
 │   │   ├── stores/            # Pinia state management
 │   │   ├── api/               # Axios API client
@@ -341,7 +342,7 @@ All API routes are prefixed with `/api/v1/`:
 
 ## Architecture Highlights
 
-1. **Multi-agent collaboration loop**: DataProcessor + DataInspector dual agents; Handoff decided by RunTime (Agents are unaware of handoff), forming a self-healing processing+inspection loop (Multi-Agent Collaboration)
+1. **Multi-agent collaboration loop**: DataProcessor + DataInspector + DataAnalyst tri-agent; Handoff decided by RunTime (Agents are unaware of handoff), forming a self-healing processing+inspection loop; read-only analysis goes to DataAnalyst without handoff (Multi-Agent Collaboration)
 2. **Pluggable connectors**: `BaseConnector` abstract class + registry pattern for easily extending new data source types
 3. **Skill package standard**: structured folder format (SKILL.md + scripts), both human-readable and machine-parseable; Skills are accumulable, reusable assets
 4. **Pipeline = Python main function**: discards the DAG model; each pipeline is a standalone runnable Python function

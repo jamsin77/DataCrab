@@ -23,6 +23,7 @@ class LLMConfigRequest(BaseModel):
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     model: Optional[str] = None
+    flash_model: str = ""
     vision_model: str = ""
     embedding_model: str = ""
     fallback_models: Optional[List[Dict[str, str]]] = None
@@ -37,12 +38,21 @@ def _provider_default_model(provider: str) -> str:
     return ""
 
 
+def _provider_default_flash_model(provider: str) -> str:
+    """按 provider 从注册表取推荐快速模型名"""
+    from app.services.llm import _provider_registry
+    info = _provider_registry.get(provider)
+    if info:
+        return info.get("flash_model", "")
+    return ""
+
+
 def _provider_default_vision_model(provider: str) -> str:
     """按 provider 从注册表取推荐视觉模型名"""
     from app.services.llm import _provider_registry
     info = _provider_registry.get(provider)
     if info:
-        return info.get("default_vision_model", "")
+        return info.get("vision_model", "")
     return ""
 
 
@@ -51,7 +61,7 @@ def _provider_default_embedding_model(provider: str) -> str:
     from app.services.llm import _provider_registry
     info = _provider_registry.get(provider)
     if info:
-        return info.get("default_embedding_model", "")
+        return info.get("embedding_model", "")
     return ""
 
 
@@ -60,6 +70,9 @@ class FallbackModelItem(BaseModel):
     provider: str
     api_base: Optional[str] = None
     model: str = ""
+    flash_model: str = ""
+    vision_model: str = ""
+    embedding_model: str = ""
     api_key_set: bool = False
 
 
@@ -69,6 +82,7 @@ class LLMConfigResponse(BaseModel):
     api_key_set: bool  # 不返回实际key，只返回是否已设置
     api_base: Optional[str] = None
     model: str
+    flash_model: str
     vision_model: str
     embedding_model: str
     is_configured: bool
@@ -133,6 +147,7 @@ async def get_llm_config(
             provider = rec.provider
             api_base = rec.api_base or ""
             model = rec.model or ""
+            flash_model = rec.flash_model or ""
             vision_model = rec.vision_model or ""
             embedding_model = rec.embedding_model or ""
             api_key_set = bool(rec.api_key_encrypted)
@@ -141,6 +156,9 @@ async def get_llm_config(
                     provider=f.get("provider") or "",
                     api_base=f.get("api_base"),
                     model=f.get("model") or "",
+                    flash_model=f.get("flash_model") or "",
+                    vision_model=f.get("vision_model") or "",
+                    embedding_model=f.get("embedding_model") or "",
                     api_key_set=bool(f.get("api_key_encrypted")),
                 )
                 for f in (rec.fallback_models or [])
@@ -150,6 +168,7 @@ async def get_llm_config(
             provider = ""
             api_base = ""
             model = ""
+            flash_model = ""
             vision_model = ""
             embedding_model = ""
             api_key_set = False
@@ -160,6 +179,7 @@ async def get_llm_config(
             api_key_set=api_key_set,
             api_base=api_base,
             model=model,
+            flash_model=flash_model,
             vision_model=vision_model,
             embedding_model=embedding_model,
             is_configured=api_key_set,
@@ -182,6 +202,11 @@ async def update_llm_config(
         from app.models.custom_extension import UserLLMConfig
         from sqlalchemy import select as sa_select
 
+        # upsert 当前用户的配置
+        result = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
+        rec = result.scalar_one_or_none()
+        saved_fallbacks = {f["provider"]: f for f in (rec.fallback_models if rec and rec.fallback_models else []) if f.get("provider")}
+
         # 降级链：每个 fb 的 api_key 加密内联存储
         fallback_models = []
         if config.fallback_models:
@@ -190,35 +215,33 @@ async def update_llm_config(
                     "provider": f.get("provider") or "",
                     "api_base": f.get("api_base"),
                     "model": f.get("model") or "",
+                    "flash_model": f.get("flash_model") or "",
+                    "vision_model": f.get("vision_model") or "",
+                    "embedding_model": f.get("embedding_model") or "",
                 }
                 fb_key = f.get("api_key") or ""
                 if fb_key.strip():
                     fb_item["api_key_encrypted"] = encrypt(fb_key.strip())
+                elif f.get("provider") in saved_fallbacks and saved_fallbacks[f.get("provider")].get("api_key_encrypted"):
+                    fb_item["api_key_encrypted"] = saved_fallbacks[f.get("provider")]["api_key_encrypted"]
                 fallback_models.append(fb_item)
 
-        # upsert 当前用户的配置
-        result = await db.execute(sa_select(UserLLMConfig).where(UserLLMConfig.user_id == current_user.id))
-        rec = result.scalar_one_or_none()
         api_key_encrypted = rec.api_key_encrypted if rec else None
         if config.api_key and config.api_key.strip():
             api_key_encrypted = encrypt(config.api_key.strip())
 
-        # model 未提供时按 provider 取推荐深度模型
-        eff_model = config.model or _provider_default_model(config.provider)
-        # vision_model 未提供时按 provider 取推荐视觉模型
-        eff_vision = config.vision_model
-        if not eff_vision:
-            eff_vision = _provider_default_vision_model(config.provider)
-        # embedding_model 未提供时按 provider 取推荐 embedding 模型
-        eff_embedding = config.embedding_model
-        if not eff_embedding:
-            eff_embedding = _provider_default_embedding_model(config.provider)
+        # 用户传什么存什么（空就存空），不回退 seed
+        eff_model = config.model or ""
+        eff_flash = config.flash_model or ""
+        eff_vision = config.vision_model or ""
+        eff_embedding = config.embedding_model or ""
 
         if rec:
             rec.provider = config.provider
             rec.api_key_encrypted = api_key_encrypted
             rec.api_base = config.api_base or ""
             rec.model = eff_model
+            rec.flash_model = eff_flash
             rec.vision_model = eff_vision
             rec.embedding_model = eff_embedding
             rec.fallback_models = fallback_models
@@ -229,6 +252,7 @@ async def update_llm_config(
                 api_key_encrypted=api_key_encrypted,
                 api_base=config.api_base or "",
                 model=eff_model,
+                flash_model=eff_flash,
                 vision_model=eff_vision,
                 embedding_model=eff_embedding,
                 fallback_models=fallback_models,
@@ -260,7 +284,7 @@ async def test_llm_connection(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """测试LLM连接（优先用传入配置，其次用户已保存配置，再次公共 Provider，最后全局）"""
+    """测试 LLM 连接（主模型 + 备用模型逐个测试，返回每个的结果）"""
     from app.services.llm import get_provider_api_base, _custom_adapter_cache
     from app.models.custom_extension import UserLLMConfig, LLMProvider
     from app.core.crypto import decrypt
@@ -306,52 +330,92 @@ async def test_llm_connection(
         if not api_base:
             api_base = get_provider_api_base(provider) or ""
 
-        if not api_key:
-            return {
-                "success": False,
-                "message": "API Key未设置，请先填写并保存配置",
-            }
+        results = []
 
-        base_url = api_base
-        logger.info(f"测试LLM连接: provider={provider}, model={model}, base_url={base_url}")
+        async def _test_one(label: str, prov: str, mdl: str, key: str, base: str) -> dict:
+            """测试单个模型连接"""
+            if not key:
+                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": "API Key 未设置，请在上方输入框填写"}
+            if not mdl:
+                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": "模型未设置"}
+            try:
+                if prov in _custom_adapter_cache:
+                    adapter_cls = _custom_adapter_cache[prov]
+                    client = adapter_cls(api_key=key, base_url=base, model=mdl)
+                elif prov == "azure":
+                    client = AsyncOpenAI(api_key=key, azure_endpoint=base, api_version="2024-02-15-preview")
+                else:
+                    client = AsyncOpenAI(api_key=key, base_url=base)
+                response = await client.chat.completions.create(
+                    model=mdl,
+                    messages=[{"role": "user", "content": "Hello, this is a test. Reply with 'OK'."}],
+                    max_tokens=10,
+                )
+                text = response.choices[0].message.content or ""
+                return {"label": label, "provider": prov, "model": mdl, "success": True, "message": f"连接成功: {text[:20]}"}
+            except Exception as e:
+                msg = str(e)
+                if "401" in msg or "Authentication" in msg or "身份验证失败" in msg or "invalid api key" in msg.lower():
+                    msg = "API Key 无效或已过期，请检查密钥是否正确"
+                elif "404" in msg or "model" in msg.lower() and "not found" in msg.lower():
+                    msg = f"模型 '{mdl}' 不存在或无权访问，请检查模型名"
+                elif "429" in msg or "rate limit" in msg.lower() or "quota" in msg.lower():
+                    msg = "请求过于频繁或额度已用完，请稍后重试"
+                elif "Connection" in msg or "connect" in msg.lower() or "timeout" in msg.lower() or "timed out" in msg.lower():
+                    msg = f"无法连接到服务（{base}），请检查网络或 API 地址"
+                elif "403" in msg or "forbidden" in msg.lower():
+                    msg = "访问被拒绝，该 API Key 可能无权使用此模型"
+                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": msg}
 
-        # 优先检查自定义适配器
-        if provider in _custom_adapter_cache:
-            adapter_cls = _custom_adapter_cache[provider]
-            client = adapter_cls(api_key=api_key, base_url=base_url, model=model)
-        elif provider == "azure":
-            client = AsyncOpenAI(
-                api_key=api_key,
-                azure_endpoint=base_url,
-                api_version="2024-02-15-preview",
-            )
-        else:
-            client = AsyncOpenAI(
-                api_key=api_key,
-                base_url=base_url,
-            )
+        # 测试主模型
+        results.append(await _test_one("主模型", provider, model, api_key, api_base))
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "Hello, this is a test. Reply with 'OK'."}],
-            max_tokens=10,
-        )
+        # 测试备用模型
+        fallbacks = body.get("fallback_models") or []
+        for i, fb in enumerate(fallbacks):
+            if not fb.get("provider"):
+                continue
+            fb_provider = fb["provider"]
+            fb_model = fb.get("model") or _provider_default_model(fb_provider) or ""
+            # API Key：表单输入 → 用户已保存的 fallback → 公共 Provider
+            fb_key = fb.get("api_key") or ""
+            if not fb_key and user_cfg and user_cfg.fallback_models:
+                for saved_fb in user_cfg.fallback_models:
+                    if saved_fb.get("provider") == fb_provider:
+                        if saved_fb.get("api_key_encrypted"):
+                            fb_key = decrypt(saved_fb["api_key_encrypted"])
+                        break
+            if not fb_key:
+                pub = await db.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == fb_provider))
+                pub_rec = pub.scalar_one_or_none()
+                if pub_rec and pub_rec.api_key_encrypted:
+                    fb_key = decrypt(pub_rec.api_key_encrypted)
+            # API Base：表单输入 → 公共 Provider → 内置注册表
+            fb_base = fb.get("api_base") or ""
+            if not fb_base:
+                pub = await db.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == fb_provider))
+                pub_rec = pub.scalar_one_or_none()
+                if pub_rec and pub_rec.api_base:
+                    fb_base = pub_rec.api_base
+            if not fb_base:
+                fb_base = get_provider_api_base(fb_provider) or ""
 
-        result_text = response.choices[0].message.content or ""
+            results.append(await _test_one(f"备用 {i+1}", fb_provider, fb_model, fb_key, fb_base))
 
-        logger.info(f"LLM测试成功: response={result_text}")
+        success_count = sum(1 for r in results if r["success"])
+        all_success = success_count == len(results)
 
         return {
-            "success": True,
-            "message": f"LLM连接成功 (provider: {provider}, model: {model})",
-            "response_preview": result_text[:50],
+            "success": all_success,
+            "message": f"{success_count}/{len(results)} 个模型连接成功",
+            "results": results,
         }
 
     except Exception as e:
         logger.error(f"LLM测试失败: {e}")
         return {
             "success": False,
-            "message": f"连接失败: {str(e)}",
+            "message": f"测试失败: {str(e)}",
         }
 
 

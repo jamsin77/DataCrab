@@ -182,24 +182,6 @@ DATA_INSPECTOR_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_etl_quality",
-            "description": "ETL过程质量对数检查：数据量不异常增减、记录数/金额汇总对数、检索结果不超总量（引用 DQ-ETL 规则）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "source_datasource_id": {"type": "string", "description": "源数据源ID"},
-                    "source_table": {"type": "string", "description": "源表名"},
-                    "target_datasource_id": {"type": "string", "description": "目标数据源ID"},
-                    "target_table": {"type": "string", "description": "目标表名"},
-                    "amount_column": {"type": "string", "description": "金额列名（可选，用于金额汇总对数）"},
-                },
-                "required": ["source_datasource_id", "source_table", "target_datasource_id", "target_table"],
-            },
-        },
-    },
 ]
 
 class DataInspectorAgent(BaseAgent):
@@ -439,16 +421,6 @@ class DataInspectorAgent(BaseAgent):
             return json.dumps(result, ensure_ascii=False, default=str)
         elif name == "check_data_security":
             result = await inspector_tools.check_data_security(ds_id, tbl, db)
-            return json.dumps(result, ensure_ascii=False, default=str)
-        elif name == "check_etl_quality":
-            result = await inspector_tools.check_etl_quality(
-                arguments["source_datasource_id"],
-                arguments["source_table"],
-                arguments["target_datasource_id"],
-                arguments["target_table"],
-                db,
-                arguments.get("amount_column"),
-            )
             return json.dumps(result, ensure_ascii=False, default=str)
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)

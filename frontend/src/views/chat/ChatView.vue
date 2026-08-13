@@ -134,6 +134,7 @@
             type="textarea"
             :rows="2"
             :autosize="{ minRows: 1, maxRows: 6 }"
+            :disabled="chatStore.isStreaming"
             placeholder="输入消息... (Enter发送, Shift+Enter换行, ↑↓浏览历史)"
             @keydown="handleKeyDown"
           />
@@ -310,6 +311,7 @@ async function handleNewSession() {
 }
 
 async function handleSend() {
+  if (chatStore.isStreaming) return
   if (!inputText.value.trim()) return
   const text = inputText.value
   // 保存到输入历史

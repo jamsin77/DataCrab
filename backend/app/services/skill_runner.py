@@ -32,59 +32,7 @@ def _strip_main_block(script_content: str) -> str:
     return re.sub(pattern, '', script_content, flags=re.DOTALL)
 
 
-# 环境问题关键词（修改脚本无法解决）
-_ENV_ERROR_PATTERNS = [
-    ("PyCapsule_Import", "环境问题：numpy C 扩展损坏，需重装 numpy（pip install --force-reinstall numpy）"),
-    ("DLL load failed", "环境问题：DLL 加载失败，可能是 Python 版本或依赖库不兼容"),
-    ("ImportError: Unable to import required dependency", "环境问题：第三方库安装损坏，需重装对应库"),
-    ("ModuleNotFoundError: No module named 'numpy'", "环境问题：numpy 未安装（pip install numpy）"),
-    ("ModuleNotFoundError: No module named 'pandas'", "环境问题：pandas 未安装（pip install pandas）"),
-    ("Permission denied", "环境问题：文件权限不足"),
-    ("ConnectionRefusedError", "环境问题：网络连接被拒绝，检查服务是否运行"),
-    ("ConnectionError", "环境问题：网络连接失败"),
-    ("OSError: [Errno 28]", "环境问题：磁盘空间不足"),
-]
 
-# 平台限制关键词（修改脚本无法解决，平台功能缺失）
-_PLATFORM_ERROR_PATTERNS = [
-    ("不支持的写入策略", "平台限制：写入策略不支持，修改脚本无法解决"),
-    ("read_file 不支持读取图片", "平台限制：read_file 不支持图片，应直接用 llm_vision"),
-    ("read_file 不支持", "平台限制：read_file 不支持此操作"),
-    ("不支持的数据源类型", "平台限制：不支持此数据源类型"),
-    ("NotImplementedError", "平台限制：该功能未实现"),
-    ("'Connection' object has no attribute", "平台限制：数据库连接对象方法缺失，平台代码问题，修改脚本无法解决"),
-    ("object has no attribute 'commit'", "平台限制：平台代码调用了不存在的提交方法，修改脚本无法解决"),
-    ("未配置视觉模型", "平台限制：当前 Provider 未配置视觉模型，无法进行 OCR/图片识别。请在 LLM 配置页面添加支持视觉的模型"),
-]
-
-# 脚本问题关键词（仅用于 LLM 推断辅助，不强制退出）
-_SCRIPT_ERROR_PATTERNS = [
-    ("KeyError", "script_error"),
-    ("ValueError", "script_error"),
-    ("TypeError", "script_error"),
-    ("AttributeError", "script_error"),
-    ("IndexError", "script_error"),
-    ("SyntaxError", "script_error"),
-    ("NameError", "script_error"),
-    ("FileNotFoundError", "script_error"),
-    ("ZeroDivisionError", "script_error"),
-    ("UnboundLocalError", "script_error"),
-]
-
-
-def _classify_execution_error(error_msg: str) -> str:
-    """分类执行错误，按级别返回：
-    - 环境问题（L4，退出）：PyCapsule/DLL/ModuleNotFound/Permission/Connection
-    - 平台限制（L5，退出）：不支持的策略/功能/数据源类型
-    - script_error（默认，可修复）：其他所有错误（含数据问题，交给 LLM 判断）
-    """
-    for pattern, msg in _ENV_ERROR_PATTERNS:
-        if pattern in error_msg:
-            return msg
-    for pattern, msg in _PLATFORM_ERROR_PATTERNS:
-        if pattern in error_msg:
-            return msg
-    return "script_error"  # 默认按脚本问题处理，交给 LLM 判断
 
 
 import re as _re
@@ -109,6 +57,28 @@ def _fix_traceback_lines(error_msg: str, preamble_lines: int) -> str:
 
     # 匹配 traceback 中的 "line 123" 模式
     return _re.sub(r'(line\s+)(\d+)', _replace_line, error_msg)
+
+
+def _extract_exception_type(error_msg: str) -> str:
+    """从 Python traceback 提取异常类型名（最后一行）。
+
+    traceback 最后一行格式：ExceptionType: message 或 ExceptionType
+    返回空串表示提取失败（按脚本错误处理，让 LLM 修复）。
+    """
+    if not error_msg:
+        return ""
+    lines = [l.strip() for l in error_msg.strip().splitlines() if l.strip()]
+    if not lines:
+        return ""
+    last = lines[-1]
+    exc_type = last.split(":", 1)[0].strip()
+    if not exc_type:
+        return ""
+    if not (exc_type[0].isalpha() or exc_type[0] == "_"):
+        return ""
+    if not exc_type[1:].replace("_", "").isalnum():
+        return ""
+    return exc_type
 
 
 SKILL_RUNNER_TEMPLATE = """
@@ -226,13 +196,12 @@ def _dc_get_datasource_id_by_name(name):
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             sources = json.loads(resp.read().decode("utf-8"))
-        for s in sources:
-            if s.get("name") == name:
-                return s.get("id")
-        return None
     except Exception as e:
-        print(f"[SkillRunner] resolve datasource failed: {{e}}")
-        return None
+        raise RuntimeError(f"非脚本错误：数据源服务不可达（{{e}}）")
+    for s in sources:
+        if s.get("name") == name:
+            return s.get("id")
+    return None
 
 def get_table_data(datasource_id, table_name, limit=1000, offset=0):
     import re as _re
@@ -536,8 +505,9 @@ def call_operator(operator_name, **params):
         return {{"success": False, "error": str(e)}}
 
 def resolve_column(df, name):
-    # 按 name 解析 DataFrame 实际列名（精确 → 忽略大小写 → 模糊 → 翻译匹配）。找不到返回 None。
+    # 按 name 解析 DataFrame 实际列名（精确 → 忽略大小写 → 模糊匹配）。找不到返回 None。
     # 用于用户提到的列名与实际列名不一致（中英文/近义词）场景：如用户说"价格"但实际列是 price。
+    # 不用 LLM 翻译匹配——非确定性（换模型结果变）+ 破坏候选优先级（不精确候选抢先返回）
     import difflib
     cols = list(df.columns)
     name_s = str(name).strip()
@@ -555,18 +525,6 @@ def resolve_column(df, name):
     _m = difflib.get_close_matches(name_s, _str_cols, n=1, cutoff=0.6)
     if _m:
         return _m[0]
-    # 4. 翻译匹配：用 llm_chat 从实际列名里选语义最相近的（中英文/跨语言场景）
-    try:
-        _hint = ", ".join(_str_cols)
-        _ans = llm_chat("数据表实际列名列表：[" + _hint + "]。用户想处理的列名是：" + name_s + "。请从列表中选出语义最相近的一个列名，只输出列名本身，不要解释。若都不相近，输出 __NONE__。").strip()
-        if _ans and _ans != "__NONE__" and _ans in cols:
-            return _ans
-        # 翻译结果再模糊一次（防 LLM 返回带引号/空格）
-        _m2 = difflib.get_close_matches(_ans, _str_cols, n=1, cutoff=0.6)
-        if _m2:
-            return _m2[0]
-    except Exception as _e:
-        print("[SkillRunner] resolve_column translate failed: " + str(_e))
     return None
 
 # Tool call log — 记录每个平台工具调用的结果，供调试 agent 判断错误来源
@@ -696,48 +654,6 @@ def run_skill_script(
     return {"success": False, "error": "执行无结果返回", "stdout": "", "execution_time_ms": 0}
 
 
-async def _llm_classify_error(error_msg: str) -> str:
-    """用 LLM 推断错误类型，返回分类结果。
-    分类：环境问题 / 平台限制 / 数据问题 / 脚本错误
-    """
-    from app.services.llm import llm_manager
-    await llm_manager.initialize()
-    
-    prompt = f"""分析以下技能执行错误，判断属于哪一类（只输出分类名，不要解释）：
-
-1. 环境问题：Python 环境缺失（numpy/pandas 没装、DLL 损坏、权限不足、网络不通）
-2. 平台限制：DataCrab 平台功能缺失（不支持的写入策略、不支持的文件操作、NotImplementedError）
-3. 数据问题：用户数据配置问题（源数据源/源表/源文件不存在、路径不在授权目录）
-4. 脚本错误：脚本身代码 bug（KeyError/TypeError/逻辑错误/参数传错），可通过修改脚本修复
-
-关键区分：
-- 源文件/源表不存在 → 数据问题（用户数据缺失）
-- 目标文件/目标表不存在 → 脚本错误（脚本应处理创建）
-- 文件存在但参数传错 → 脚本错误
-- 平台不支持某功能 → 平台限制
-
-错误信息：
-{error_msg[:2000]}
-
-只输出分类名（环境问题/平台限制/数据问题/脚本错误），不要其他内容。"""
-
-    try:
-        messages = [{"role": "user", "content": prompt}]
-        response = await llm_manager.chat_with_messages(messages, temperature=0.0, max_tokens=50)
-        result = response.strip()
-        if "环境" in result:
-            return "环境问题：LLM 判定为环境问题"
-        elif "平台" in result:
-            return "平台限制：LLM 判定为平台限制"
-        elif "数据" in result:
-            return "数据问题：LLM 判定为数据问题"
-        else:
-            return "script_error"
-    except Exception as e:
-        logger.warning(f"LLM 错误分类失败，回退到 script_error: {e}")
-        return "script_error"
-
-
 async def run_skill_script_async(
     skill_path: Path,
     script_name: str = "main.py",
@@ -765,17 +681,6 @@ async def run_skill_script_async(
             user_id=user_id,
         ),
     )
-    # 关键词匹配不到（script_error）时，用 LLM 重新推断
-    # OCR/服务调用异常等，跳过 LLM 重分类（不应被误判为环境问题，应保持为 script_error 让系统重试）
-    if not result.get("success") and result.get("error_type") == "script_error":
-        _err = result.get("error", "")
-        if _err:
-            _skip_llm = any(kw in _err for kw in ("OCR", "服务调用异常", "连接超时", "请求失败"))
-            if not _skip_llm:
-                _llm_type = await _llm_classify_error(_err)
-                if _llm_type != "script_error":
-                    result["error_type"] = _llm_type
-                    logger.info(f"LLM 错误分类: script_error → {_llm_type}")
     return result
 
 
@@ -830,6 +735,7 @@ def _stream_execute(proc, timeout: int, temp_path: str):
       防止脚本无限续命。
     """
     stdout_lines = []
+    tool_failures = []  # 收集 [SkillRunner] xxx failed 行（脚本 try-except 吞异常时仍可检测）
     result = None
     written_tables = None
     tool_call_log = None
@@ -913,6 +819,8 @@ def _stream_execute(proc, timeout: int, temp_path: str):
             if is_marker:
                 continue
             stdout_lines.append(line)
+            if "[SkillRunner]" in line and "failed" in line.lower():
+                tool_failures.append(line)
             yield {"type": "progress", "message": line}
 
         if not _timed_out:
@@ -944,7 +852,7 @@ def _stream_execute(proc, timeout: int, temp_path: str):
                 error_msg = stderr.strip() or "\n".join(stdout_lines)[-500:] or "脚本执行失败（无错误输出）"
                 _preamble_lines = SKILL_RUNNER_TEMPLATE[:SKILL_RUNNER_TEMPLATE.find("# __SCRIPT_CONTENT__")].count("\n")
                 error_msg = _fix_traceback_lines(error_msg, _preamble_lines)
-                error_type = _classify_execution_error(error_msg)
+                error_type = _extract_exception_type(error_msg)
             else:
                 error_msg = None
 
@@ -959,6 +867,7 @@ def _stream_execute(proc, timeout: int, temp_path: str):
             "result": result,
             "written_tables": written_tables,
             "tool_calls": tool_call_log or [],
+            "tool_failures": tool_failures,
             "sandbox": {
                 "injected_functions": [
                     "get_table_data", "query_table_data", "write_table_data", "execute_sql",
@@ -1175,13 +1084,4 @@ async def run_skill_script_by_content_async(
             entry_function=entry_function,
         ),
     )
-    if not result.get("success") and result.get("error_type") == "script_error":
-        _err = result.get("error", "")
-        if _err:
-            _skip_llm = any(kw in _err for kw in ("OCR", "服务调用异常", "连接超时", "请求失败"))
-            if not _skip_llm:
-                _llm_type = await _llm_classify_error(_err)
-                if _llm_type != "script_error":
-                    result["error_type"] = _llm_type
-                    logger.info(f"LLM 错误分类: script_error → {_llm_type}")
     return result

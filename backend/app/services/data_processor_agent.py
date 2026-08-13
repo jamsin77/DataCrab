@@ -248,26 +248,11 @@ _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.m
 _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
 
-_PLATFORM_ISSUE_SIGNALS = [
-    "平台问题", "平台能力缺失", "平台不支持", "平台限制",
-    "不是脚本问题", "修改脚本无法解决", "无法绕过", "平台 bug",
-    "连接器不支持", "连接器无法", "沙箱不支持", "沙箱未注入",
-    "platform issue", "connector does not support",
-]
-
-def _is_platform_issue_report(content: str) -> bool:
-    """检测 agent 输出是否明确判定为平台问题（而非脚本问题）。
-    排除疑问句（"是不是"/"是否"/"让我看看"等），避免调查阶段误触发。"""
-    if not content or len(content) < 4:
-        return False
-    # 疑问/调查句式 → 不是结论，不触发
-    _investigation_markers = ["是不是", "是否", "让我看看", "让我检查", "看一下", "检查一下", "确认一下", "需要确认"]
-    if any(m in content for m in _investigation_markers):
-        return False
-    return any(sig in content for sig in _PLATFORM_ISSUE_SIGNALS)
-
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。总共 {max_rounds} 次修改机会，执行错误最多 {max_exec_failures} 次。
 推理过程用中文。
+
+## 错误处理（对齐 OpenCode）
+收到执行错误后，看 traceback 自主判断：能修就修，修不了就说明原因停止。不要反复尝试同一个修改。
 
 ## 平台规范
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，优先使用内置函数，不要在脚本中安装数据库扩展、不要直接调用外部 API
@@ -313,12 +298,27 @@ def _compute_diff_summary(old_code: str, new_code: str) -> list:
     return changed[:30]
 
 
-def _slim_run_script_result(content: str) -> str:
-    """精简 run_script 工具结果用于 LLM tool 消息（对齐 OpenCode Bash：只留关键信息）。
+_PLATFORM_FAILURE_SIGNALS = ("llm_vision 调用失败", "llm_vision 失败", "llm_chat 调用失败", "llm_chat 失败",
+                              "llm_chat 不可用", "llm_vision 不可用", "api key 未配置", "api_key 未配置",
+                              "模型未配置", "llm 未配置", "认证失败", "权限不足", "连接拒绝", "连接超时",
+                              "llm_vision failed", "llm_chat failed", "extract_video_info failed",
+                              "extract_keyframes failed", "路径不在授权目录")
 
-    成功：只留 success + result_summary + written_tables
-    失败：只留 success + error + error_type
-    删除：stdout（已通过 progress 事件推给前端）、完整 result dict、execution_time_ms
+
+def _has_platform_failure_in_warnings(warn_text: str) -> bool:
+    """检测 warnings 文本中是否包含平台错误信号（如 llm_vision 调用失败、LLM 未配置等）。"""
+    if not warn_text:
+        return False
+    _lower = warn_text.lower()
+    return any(sig in _lower or sig in warn_text for sig in _PLATFORM_FAILURE_SIGNALS)
+
+
+def _slim_run_script_result(content: str) -> str:
+    """构建 run_script 工具结果用于 LLM tool 消息（对齐 OpenCode Bash：完整传递错误信息）。
+
+    成功：传完整 result dict + written_tables + warnings
+    失败：传完整 error（不截断）+ error_type + warnings
+    删除：stdout（已通过 progress 事件推给前端）、sandbox 元信息、execution_time_ms
     """
     try:
         data = json.loads(content)
@@ -328,36 +328,57 @@ def _slim_run_script_result(content: str) -> str:
         return truncate_tool_result(content)
     slim = {}
     _inner = data.get("result") if isinstance(data.get("result"), dict) else {}
+    _warnings = (_inner.get("warnings") if _inner else None) or data.get("warnings") or []
+    _tool_failures = data.get("tool_failures") or []
+    # tool_failures 合并到 warnings 文本（脚本 try-except 吞异常时，skill_runner 的 print 仍被收集）
+    if _tool_failures and isinstance(_tool_failures, list):
+        _warnings = list(_warnings) + list(_tool_failures)
+    _warn_text = ""
+    if _warnings:
+        _warn_text = "; ".join(_warnings[:5]) if isinstance(_warnings, list) else str(_warnings)[:500]
+    _has_platform_error = _has_platform_failure_in_warnings(_warn_text)
     _is_fail = (not data.get("success")
                 or ("success" in _inner and not _inner["success"])
                 or (data.get("error") and str(data.get("error")).strip())
-                or (_inner.get("error") and str(_inner.get("error")).strip()))
+                or (_inner.get("error") and str(_inner.get("error")).strip())
+                or _has_platform_error)
     if not _is_fail:
         slim["success"] = True
         if data.get("written_tables"):
             slim["written_tables"] = data["written_tables"]
         if _inner:
-            _summary_parts = []
-            for k in ("total_rows", "classified_column", "target_column",
-                       "unique_values_classified", "rows_written", "migrated_rows",
-                       "mode", "categories", "ocr_success", "ocr_fail"):
-                if k in _inner:
-                    _summary_parts.append(f"{k}={_inner[k]}")
-            if _summary_parts:
-                slim["result_summary"] = ", ".join(_summary_parts)
-            if "categories_found" in _inner:
-                slim["categories_found"] = _inner["categories_found"]
-            # 保留平台警告（llm_vision 调用失败等），供 LLM 知晓部分功能不可用
-            if _inner.get("warnings"):
-                slim["warnings"] = _inner["warnings"]
+            _inner_json = json.dumps(_inner, ensure_ascii=False, default=str)
+            if len(_inner_json) <= 2000:
+                slim["result"] = _inner
+            else:
+                _summary_parts = []
+                for k in ("total_rows", "classified_column", "target_column",
+                           "unique_values_classified", "rows_written", "migrated_rows",
+                           "mode", "categories", "ocr_success", "ocr_fail",
+                           "output_table", "target_table"):
+                    if k in _inner:
+                        _summary_parts.append(f"{k}={_inner[k]}")
+                if _summary_parts:
+                    slim["result_summary"] = ", ".join(_summary_parts)
+                slim["result_truncated"] = True
+        if _warnings:
+            slim["warnings"] = _warnings
+        if _tool_failures:
+            slim["tool_failures"] = _tool_failures
         if data.get("param_warning"):
             slim["param_warning"] = data["param_warning"]
     else:
         slim["success"] = False
-        slim["error"] = str(data.get("error") or _inner.get("error") or "未知错误")[:500]
+        slim["error"] = str(data.get("error") or _inner.get("error") or "未知错误")
         _err_type = data.get("error_type") or _inner.get("error_type") or ""
         if _err_type:
             slim["error_type"] = _err_type
+        if _warnings:
+            slim["warnings"] = _warnings
+        if _tool_failures:
+            slim["tool_failures"] = _tool_failures
+        if data.get("param_warning"):
+            slim["param_warning"] = data["param_warning"]
     return json.dumps(slim, ensure_ascii=False, default=str)
 
 
@@ -1100,8 +1121,10 @@ class DataProcessorAgent(BaseAgent):
                     logger.info(f"debug run_script (skill): success={not _failed}")
                     return json.dumps(result, ensure_ascii=False, default=str)
             except Exception as e:
-                logger.warning(f"run_script 失败: {e}")
-                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                import traceback as _tb
+                _err = _tb.format_exc()
+                logger.warning(f"run_script 失败: {_err[:500]}")
+                return json.dumps({"success": False, "error": _err, "error_type": type(e).__name__}, ensure_ascii=False)
 
         # ---- 自定义扩展工具 ----
         if name == "save_connector":
@@ -1537,6 +1560,8 @@ class DataProcessorAgent(BaseAgent):
         _handoff_output_table = None
         script_name = context.get("debug_script_name", "main.py")
         _stuck = StuckDetector(max_total_rounds=40)
+        _last_round_had_fix = False
+        _tool_call_meta: Dict[str, tuple] = {}
 
         logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
@@ -1544,6 +1569,18 @@ class DataProcessorAgent(BaseAgent):
 
         while _fix_attempts < max_fix_attempts:
             _total_llm_calls += 1
+
+            # 已消费工具结果清理：上一轮调了 edit_script/run_script → 更早的 read/grep 结果已过时
+            if _last_round_had_fix:
+                for _mi in range(len(local_messages)):
+                    _m = local_messages[_mi]
+                    if _m.get("role") == "tool" and isinstance(_m.get("content"), str):
+                        _tc_id = _m.get("tool_call_id", "")
+                        _tc_info = _tool_call_meta.get(_tc_id)
+                        if _tc_info and _tc_info[0] in ("read_script", "grep_script"):
+                            local_messages[_mi] = {**_m, "content": f"[已归档] {_tc_info[0]}: {_tc_info[1]}"}
+                _last_round_had_fix = False
+                _tool_call_meta.clear()
 
             # 上下文压缩（对齐 OpenCode compaction：摘要旧消息 + 保留近期原文 + 标识符保护）
             # system prompt 在初始化时构建一次，字节稳定命中 prefix cache，不每轮重建
@@ -1591,6 +1628,8 @@ class DataProcessorAgent(BaseAgent):
             _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
             _has_edit = tool_calls and any(tc["function"]["name"] == "edit_script" for tc in tool_calls)
             if _has_fix:
+                _last_round_had_fix = True
+            if _has_fix:
                 _fix_attempts += 1
                 context["debug_total_rounds"] = _fix_attempts
                 _action = "modify" if _has_edit else "execute"
@@ -1631,20 +1670,18 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "tool_action", "actions": _actions}
 
             if not tool_calls:
-                if _is_platform_issue_report(content):
-                    yield {"type": "platform_issue", "message": content}
-                    yield {"type": "done", "result": {"agent": self.name, "content": content, "platform_issue": True}}
-                    return
-                _idle_hint = _stuck.record_idle()
-                if _idle_hint and "总轮次上限" in _idle_hint:
-                    yield {"type": "give_up", "reason": _idle_hint}
-                    yield {"type": "done", "result": {"agent": self.name, "content": content or _idle_hint}}
-                    return
-                if not _idle_hint:
-                    _idle_hint = "你还没有修改或执行脚本。请用 read_script/grep_script 定位问题，然后用 edit_script 修改、run_script 执行。"
-                local_messages.append({"role": "assistant", "content": content})
-                local_messages.append({"role": "user", "content": _idle_hint})
-                continue
+                # LLM 无工具调用（对齐 OpenCode：LLM 不调工具 = 判断完毕）
+                _INVESTIGATION_MARKERS = ("是不是", "是否", "让我看看", "让我检查",
+                                          "看一下", "检查一下", "确认一下", "需要确认")
+                _is_investigation = bool(content) and any(m in content for m in _INVESTIGATION_MARKERS)
+                if _is_investigation:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": "请使用可用工具执行实际操作（read_script/grep_script 定位问题，edit_script 修改，run_script 执行）。"})
+                    continue
+                # 非调查语气的不调工具 → 判断完毕，直接退出
+                yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
+                yield {"type": "done", "result": {"agent": self.name, "content": content or "未执行工具操作"}}
+                return
 
             # StuckDetector：记录工具调用，检测卡死模式
             _stuck_hint = None
@@ -1692,6 +1729,12 @@ class DataProcessorAgent(BaseAgent):
                 # tool 消息精简（对齐 OpenCode：tool result 只留关键信息，不塞 stdout/整脚本）
                 if tool_name in ("read_script", "grep_script"):
                     _tool_content = r["content"]
+                    try:
+                        _rd_meta = json.loads(r["content"])
+                        _meta_desc = _rd_meta.get("function") or _rd_meta.get("pattern") or _rd_meta.get("file") or ""
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, _meta_desc[:60])
+                    except Exception:
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, "")
                 elif tool_name == "run_script":
                     _tool_content = _slim_run_script_result(r["content"])
                 else:
@@ -1773,10 +1816,18 @@ class DataProcessorAgent(BaseAgent):
                         continue
                     yield {"type": "run_result", "result": rdata}
                     _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
+                    _warnings_r = (_inner_r.get("warnings") if _inner_r else None) or rdata.get("warnings") or []
+                    _tool_failures_r = rdata.get("tool_failures") or []
+                    if _tool_failures_r and isinstance(_tool_failures_r, list):
+                        _warnings_r = list(_warnings_r) + list(_tool_failures_r)
+                    _warn_text_r = ""
+                    if _warnings_r:
+                        _warn_text_r = "; ".join(_warnings_r[:5]) if isinstance(_warnings_r, list) else str(_warnings_r)[:500]
                     _is_fail = (not rdata.get("success")
                                 or ("success" in _inner_r and not _inner_r["success"])
                                 or (rdata.get("error") and str(rdata.get("error")).strip())
-                                or (_inner_r.get("error") and str(_inner_r.get("error")).strip()))
+                                or (_inner_r.get("error") and str(_inner_r.get("error")).strip())
+                                or _has_platform_failure_in_warnings(_warn_text_r))
                     if not _is_fail:
                         _should_handoff = True
                         _execution_succeeded = True
@@ -1785,13 +1836,6 @@ class DataProcessorAgent(BaseAgent):
                         context["debug_exec_failures"] = 0
                         _wt = rdata.get("written_tables")
                         logger.info(f"[handoff检查] run_script成功, written_tables={_wt}, inner_result_keys={list(_inner_r.keys()) if _inner_r else 'None'}")
-                        # 平台警告检测：脚本成功但部分功能因平台能力不可用（如 llm_vision 调用失败）
-                        _warnings = (_inner_r.get("warnings") if _inner_r else None) or rdata.get("warnings")
-                        logger.info(f"[platform_issue检查] _inner_r warnings={_inner_r.get('warnings') if _inner_r else 'N/A'}, rdata warnings={rdata.get('warnings')}, _warnings={_warnings}")
-                        if _warnings:
-                            _warn_text = "; ".join(_warnings[:5]) if isinstance(_warnings, list) else str(_warnings)[:500]
-                            yield {"type": "platform_issue", "message": f"执行成功，但存在平台能力问题（修改脚本无法解决）: {_warn_text}"}
-                            logger.info(f"[platform_issue] 脚本成功但有平台警告: {_warn_text[:200]}")
                         if _wt:
                             _handoff_output_table = _wt[-1].get("table_name")
                             context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
@@ -1809,16 +1853,19 @@ class DataProcessorAgent(BaseAgent):
                                 logger.warning(f"记录正例失败(非致命): {e}")
                     else:
                         _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
-                        _err_type = rdata.get("error_type") or _inner_r.get("error_type") or ""
-                        if _err_type and any(kw in _err_type for kw in ("环境问题", "平台限制")):
-                            yield {"type": "give_up", "reason": _err_type}
-                            yield {"type": "done", "result": {"agent": self.name, "content": _err_type}}
+                        # 平台错误信号 → 立即退出（修改脚本无法解决）
+                        if _has_platform_failure_in_warnings(_warn_text_r) or _has_platform_failure_in_warnings(_err_msg):
+                            _reason = f"平台能力缺失：{_err_msg[:500] or _warn_text_r[:500]}"
+                            yield {"type": "platform_issue", "message": _reason}
+                            yield {"type": "done", "result": {"agent": self.name, "content": _reason}}
                             return
+                        # 执行错误计数：首次成功前连续失败达上限 → give_up
                         if not _execution_succeeded:
                             _exec_failures_before_success += 1
                             context["debug_exec_failures"] = _exec_failures_before_success
                             if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
-                                yield {"type": "give_up", "reason": f"连续 {_exec_failures_before_success} 次执行失败，无法自动修复"}
+                                _reason = f"连续 {_exec_failures_before_success} 次执行失败：{_err_msg[:300]}"
+                                yield {"type": "give_up", "reason": _reason}
                                 yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
                                 return
                         folder = context.get("debug_folder")
@@ -1877,28 +1924,7 @@ class DataProcessorAgent(BaseAgent):
 
 
 
-        # 修改次数用完 → 让 LLM 判断是代码问题还是平台问题
-        _classify_msg = (
-            f"经过 {_fix_attempts} 次修改尝试（上限 {max_fix_attempts} 次），脚本仍然无法通过检查。\n"
-            f"最后的错误信息：{content[:500] if content else '无'}\n\n"
-            "请判断这个错误属于以下哪类，一句话说明原因：\n"
-            "1. 代码问题（可以通过修改脚本修复）\n"
-            "2. 平台限制（如连接器不支持某功能、数据源类型限制等，修改脚本无法解决）\n"
-            "3. 环境问题（如数据源不可达、权限不足、文件不存在等）\n"
-            "只回答分类和原因，不要输出代码。"
-        )
-        local_messages.append({"role": "user", "content": _classify_msg})
-        _classification = ""
-        try:
-            async for _evt in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.1,
-                model=llm_manager._flash, tool_choice="auto",
-            ):
-                if _evt.get("type") == "content":
-                    _classification += _evt.get("content", "")
-                    yield _evt
-        except Exception:
-            pass
-
-        yield {"type": "give_up", "reason": _classification[:1000] if _classification else f"已达到最大修改次数（{_fix_attempts}次）"}
-        yield {"type": "done", "result": {"agent": self.name, "content": _classification or content or "调试失败"}}
+        # 修改次数用完 → give_up
+        _reason = f"已达到最大修改次数（{_fix_attempts}次），最后错误：{content[:500] if content else '无'}"
+        yield {"type": "give_up", "reason": _reason}
+        yield {"type": "done", "result": {"agent": self.name, "content": content or "调试失败"}}

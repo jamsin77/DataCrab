@@ -157,28 +157,6 @@ async def inspect_data(
     return results
 
 
-@router.post("/inspect-etl")
-async def inspect_etl_quality(
-    request: EtlInspectRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """ETL 过程质量对数检查（数据量波动 / 记录数·金额对数 / 检索不超总量）"""
-    try:
-        result = await inspector_tools.check_etl_quality(
-            request.source_datasource_id,
-            request.source_table,
-            request.target_datasource_id,
-            request.target_table,
-            db,
-            request.amount_column,
-        )
-        return result
-    except Exception as e:
-        logger.error(f"inspect_etl_quality 失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/events/{trace_id}", response_model=list[AgentEventResponse])
 async def get_agent_events(
     trace_id: str,

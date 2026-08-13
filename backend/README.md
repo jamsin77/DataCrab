@@ -8,12 +8,12 @@ DataCrab 数据工程智能体后端服务
 
 - **对话即处理**：LLM 理解意图、匹配 Skill、生成可执行代码
 - **沉淀即资产**：处理过程沉淀为可复用 Skill，越用越聪明
-- **生态即闭环**：DataProcessor + DataInspector 双智能体协作闭环
+- **生态即闭环**：DataProcessor + DataInspector + DataAnalyst 三智能体协作闭环
 - **Loop 化**：AI 理解→执行→检查→自修复，全程无人干预（Self-healing Pipeline、Deep Agents）
 
 ## 功能特性
 
-- 对话式数据交互（SSE 流式）+ 多智能体协作（DataProcessor → DataInspector，Handoff 由 RunTime 决策）
+- 对话式数据交互（SSE 流式）+ 多智能体协作（DataProcessor → DataInspector，Handoff 由 RunTime 决策；只读分析走 DataAnalyst 无需 handoff）
 - 8 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载）
 - 技能/算子/流程全生命周期（CRUD + AI 生成/调试 + 自愈循环 + 经验库）
 - 7 种写表策略 + 调度系统（Cron/间隔/手动 + 30s 定时扫描器）
