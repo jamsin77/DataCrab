@@ -485,7 +485,7 @@ def extract_image_info(
         record: Dict[str, Any] = {}
         record["id"] = f"{idx + 1:08d}"
         record["file_name"] = _sanitize_pii(file_name)
-        record["file_path"] = file_path
+        record["file_path"] = _sanitize_pii(file_path)
         record["extension"] = str(row_dict.get(resolved_ext_col, "")) if resolved_ext_col else ""
         raw_size = row_dict.get(resolved_size_col, 0) if resolved_size_col else 0
         try:

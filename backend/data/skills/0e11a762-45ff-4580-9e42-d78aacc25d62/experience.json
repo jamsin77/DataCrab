@@ -2108,179 +2108,43 @@
       "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260807_111442', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-10T21:44:16.609320",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_214353', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+"result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260814_105402', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-10T22:56:05.053715",
+      "timestamp": "2026-08-11T07:45:43.840161",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_225546', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+      "result_summary": "{'success': True, 'total_rows': 8, 'target_table': 'credential_ocr_results_20260811_074341', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-10T22:59:18.117483",
+      "timestamp": "2026-08-11T08:49:31.833299",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260810_225858', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+      "result_summary": "{'success': True, 'total_rows': 8, 'target_table': 'credential_ocr_results_20260811_084857', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-11T07:27:18.461362",
+      "timestamp": "2026-08-11T09:06:42.458386",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_072658', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+      "result_summary": "{'success': True, 'total_rows': 8, 'target_table': 'credential_ocr_results_20260811_090603', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-11T15:13:15.264863",
+      "timestamp": "2026-08-11T09:32:05.904181",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_151256', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+      "result_summary": "{'success': True, 'total_rows': 8, 'target_table': 'credential_ocr_results_20260811_093119', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     },
     {
-      "timestamp": "2026-08-11T16:10:53.244948",
+      "timestamp": "2026-08-11T09:33:57.643640",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_161038', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T16:17:55.305362",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_161732', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T16:31:46.288566",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_163131', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T16:37:54.459217",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_163735', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T16:43:52.415017",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_164333', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T16:55:18.540945",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_165456', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-11T17:21:15.354991",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260811_172055', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T14:59:13.885226",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_145853', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T15:11:10.862628",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_151046', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T17:09:55.031974",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_170932', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T17:31:48.234654",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_173128', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T17:50:02.159670",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_174941', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T18:04:54.140954",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_180434', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T18:10:42.113199",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_181028', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T18:23:29.229351",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_182310', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-12T19:00:49.295368",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260812_190031', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-13T11:38:25.518120",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_113804', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-13T17:43:57.879480",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_174337', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-13T18:48:53.168466",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260813_184740', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
-    },
-    {
-      "timestamp": "2026-08-14T10:54:28.307029",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260814_105402', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+      "result_summary": "{'success': True, 'total_rows': 8, 'target_table': 'credential_ocr_results_20260811_093319', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    }
     }
   ],
   "lessons": "让我先阅读完整的脚本以了解当前的实现，然后对其进行修改以使用 `llm_vision` 进行 OCR。",
