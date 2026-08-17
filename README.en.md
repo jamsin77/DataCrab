@@ -238,7 +238,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI entry
 │   │   ├── core/              # Core config (database, security, types)
-│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, ~176 routes)
+│   │   ├── api/v1/endpoints/  # API endpoints (16 endpoint files, 182 routes)
 │   │   ├── models/            # ORM models (19 model classes, 10 files)
 │   │   ├── schemas/           # Pydantic request/response schemas
 │   │   └── services/          # Business-logic services

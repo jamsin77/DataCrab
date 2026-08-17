@@ -241,7 +241,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，约 176 条路由）
+│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，182 条路由）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务

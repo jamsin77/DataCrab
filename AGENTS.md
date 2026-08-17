@@ -19,32 +19,43 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 ### 核心服务层（`backend/app/services/`）
 | 文件 | 职责 |
 |------|------|
-| `agent.py` | 单 Agent 服务（AgentService），非流式 /chat 端点使用 |
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
+| `agent_config.py` | Agent 配置管理（加载 soul.md 人格、构建各 Agent system prompt 静态段） |
+| `chat_router.py` | 对话路由器——按关键词/技能 skill_type 判断用户消息走 DataAnalyst（只读）或 DataProcessor（修改，默认兜底） |
 | `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
+| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
 | `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
+| `inspector_tools.py` | 确定性数据检查工具（pandas/regex），31 条 STD/DQ/SEC 规则实现 + `format_report` 表格化 |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
 | `tool_guidance.py` | **工具诚实能力表——主对话/调试模式拆分（`get_tool_guidance(debug=)`），主对话不注入调试工具表** |
 | `llm.py` | LLM 管理器（`_default`/`_flash` 模型属性 + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选） |
-| `chat.py`（endpoints） | 对话 API：**仅流式端点（非流式 POST /messages 已删）**、上下文压缩（LRU 缓存）、统一路由、数据预览注入 user message |
+| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 异常类名提取）** |
+| `skill_creator.py` | AI 生成完整 Skill 包（SKILL.md + scripts，从自然语言描述生成） |
+| `skill_parser.py` | SKILL.md 解析器（YAML front matter + Markdown 内容，含 skill_type 字段） |
+| `operator_parser.py` | **Python 脚本 AST 解析（提取算子函数签名/docstring）+ 行级补丁原语 `apply_patch`（对齐 OpenCode edit）+ `apply_partial_code`（函数级合并，保 import/常量/其他函数）** |
+| `operators.py` | 算子基类与内置算子 |
+| `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
+| `pipeline_builder.py` | Pipeline Builder——从 Skill 机械转换流程（保留调试好的脚本不重新生成，解析函数签名+参数说明） |
+| `pipeline_executor.py` | Pipeline Executor——复用 skill_runner 子进程沙箱执行流程主函数 |
+| `connectors.py` | 8 种数据源连接器实现（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
+| `datasource.py` | **数据源连接器基类 `BaseConnector`（抽象契约：connect/test_connection/get_schema/get_table_data/get_table_stats/close）** |
+| `compute_backend.py` | **计算后端抽象层——分离「算什么」和「在哪里算」（`compute_map`，local multiprocessing 可插拔，预留 ray/dask 分布式）** |
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
-| `inspector_tools.py` | 确定性数据检查工具（pandas/regex） |
-| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
 | `prompt_docs.py` | 沙箱函数文档（SANDBOX_TOOLS_DOC）+ 平台规范文档（PLATFORM_CONVENTIONS_DOC），注入生成/调试/NL 推断三处 |
 | `standards_parser.py` | 数据标准/质量/安全规则解析器（解析合法值/检测逻辑） |
-| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 异常类名提取）** |
-| `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
-| `skill_executor.py` | 执行上下文与结果数据结构（ExecutionContext / ExecutionResult，供 nl_data_processor 使用） |
-| `connectors.py` | 数据源连接器（8 种：PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
+| `permission_service.py` | RBAC 权限管理服务（用户/角色/权限，view/use/manage 三级） |
+| `kb_service.py` | 文档知识库服务（解析+切片+嵌入+ChromaDB 存取+语义检索） |
 | `video_utils.py` | **视频处理工具：`probe_video`（元数据提取，ffprobe 优先回退 opencv）+ `extract_keyframes`（关键帧抽取，ffmpeg 场景检测优先回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85** |
 | `soul.md` | 助手人格定义（原 personal.md，rename 对齐「灵魂」语义）；安全红线已移至 DATA_PROCESSOR_INSTRUCTIONS |
 | `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
 
+> 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
+
 ### API 端点（`backend/app/api/v1/endpoints/`）
-16 个端点文件、共约 176 条路由，主要：
+16 个端点文件、共 182 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（27 路由，最多）
@@ -695,105 +706,37 @@ cd backend && black app/ && isort app/
 
 **与前轮关系**：第十~十一轮建立的行级补丁原语（edit_script/apply_partial_code）在本轮成为唯一修改入口（modify_script 等不再暴露），简化 LLM 工具选择面。第二十三轮 Inspector `check_results` 写入 context 供 RunTime `_extract_issues` 在本轮配合 `inspection_report` 独立事件让前端格式化展示。第二十四轮 llmContent 分离在本轮扩展到 OperatorView/PipelineView。版本号动态生成是对 Prefix Cache 理念的延伸（版本号不稳定不影响 cache，因为版本在 user 侧显示不在 system prompt 中）。
 
-## 已实施：DataAnalystAgent（数据分析智能体）
+### 第二十六轮（DataAnalystAgent 集成——只读分析智能体落地）
 
-> **状态：已实现**（`backend/app/services/data_analyst_agent.py`，240 行；已在 `multi_agent.py` 的 `ensure_agent_runtime()` 中注册；`_decide_handoff` 对 data_analyst 返回 None）。
+**核心洞察**：DataProcessor 同时承担「修改数据」与「只读分析」两类请求，导致分析类问题也走复杂信息链（handoff + 修改计数 + 压缩 + 自愈），既浪费 token 又让 LLM 困惑。按 Orchestrator-Worker 原则拆分职责：只读分析（查询/统计/分布/洞察）由独立 DataAnalystAgent 承担，简单线性信息链、无 handoff、无修改计数；修改类请求仍走 DataProcessor + DataInspector 自愈闭环。三者并列为完整多智能体架构。
 
-### 定位与边界
-
-| 维度 | DataAnalyst（新） | DataProcessor（现有） |
+| 智能体 | 职责 | 触发场景 |
 |---|---|---|
-| 职责 | 只读分析：查询、统计、分布、洞察 | 修改数据/脚本：清洗、转换、分类、ETL |
-| 判断 | 结果对错靠人判断 | 自动检查（Inspector）+ 自愈修复 |
-| Handoff | 无 | → DataInspector |
-| 信息链 | 简单线性（system + user + tool + 结论） | 复杂（跨 handoff 持久化 + 修改计数 + 压缩） |
-| 技能 | 分析类技能（只读查询） | 处理类技能（修改数据） |
+| **DataProcessor** | 修改数据/脚本：清洗、转换、分类、ETL | 修改类请求（默认兜底） |
+| **DataInspector** | 对加工后数据做标准/质量/安全检查 | DataProcessor 执行成功后 RunTime 自动 handoff |
+| **DataAnalyst** | 只读分析：查询、统计、分布、洞察（不修改数据） | 只读分析类问题，chat_router 关键词路由 |
 
 **边界规则**：是否修改数据/脚本。只查不改 → DataAnalyst；要修改 → DataProcessor。
 
-### 触发与路由
-
-`chat.py` 路由层判断走哪个 Agent：
+**触发与路由**（`chat.py` + `chat_router.py`）：
 - **关键词路由**：含"查询/统计/分析/分布/多少/查看/列出"且不含"清洗/转换/修改/处理/分类/写入"→ DataAnalyst
-- **技能路由**：用户指定技能时，按技能类型（`skill_type` 字段）分派——分析类技能走 DataAnalyst
+- **技能路由**：用户指定技能时，按技能类型（`skill_type` 字段）分派——分析类技能（`analysis`）走 DataAnalyst，处理类技能（`processing`，默认）走 DataProcessor
 - **默认兜底**：无法判断时走 DataProcessor（保持现有行为不变）
 
-### 工具集
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **DataAnalystAgent 类** | data_analyst_agent.py（新增，488 行） | `run()` 流式方法 + 简单线性信息链（system + user + tool + 结论，无跨 handoff 持久化、无修改计数、无 StuckDetector 修改检测，保留空转检测 + 总轮次上限）；`run_debug()` 分析技能调试复用 DataProcessor 调试循环；上下文压缩保留（`should_compact` / `compact_messages`）；独立截断阈值 `ANALYSIS_MAX_TOOL_RESULT_CHARS=30000` / `ANALYSIS_MAX_PREVIEW_ROWS=50`；system prompt 进程级 memoize（Prefix Cache） |
+| **只读工具子集** | shared_tools.py | 定义 `ANALYSIS_TOOLS`（5 个：query_table_data/get_table_schema/list_user_datasources/execute_sql/kb_search，从 SHARED_TOOL_SCHEMAS 提取）；不暴露 write_table_data / save_file_to_link / 调试工具（edit_script/run_script 等） |
+| **注册 + 不参与 handoff** | multi_agent.py | `ensure_agent_runtime()` 注册 DataAnalystAgent（line 287-302）；`_decide_handoff` 对 data_analyst 返回 None（line 210）—— DataAnalyst 不参与 handoff |
+| **路由判断** | chat.py + chat_router.py | 关键词路由 + 技能 skill_type 路由 → 选 Agent |
+| **skill_type 字段** | skill_parser.py | 解析 SKILL.md front matter 的 `skill_type`（analysis=分析类 / processing=处理类，默认 processing 保持兼容） |
+| **前端调试按钮** | SkillView.vue / ChatView.vue | 分析类技能不显示调试按钮（只读无需调试） |
 
-只读工具子集（从 `shared_tools.py` 复用，不新增）：
-- `query_table_data` — 查询表数据（支持 limit/offset 分页）
-- `get_table_schema` — 获取表结构
-- `list_user_datasources` — 列出数据源
-- `execute_sql` — 执行原生 SQL（分析场景常用）
-- `kb_search` — 知识库搜索
+**流式输出**：`thinking`（推理过程）/ `content`（分析结论）/ `tool_action`（工具调用显示，复用 debug 分离设计）/ `tool_summary`（工具结果摘要）/ `done`（结束，无 handoff）；**不发** `round`/`inspecting`/`retry`/`give_up`/`platform_issue`。
 
-**不暴露**：`write_table_data`、`save_file_to_link`、调试工具（edit_script/run_script 等）。
+**与前轮关系**：本轮是职责拆分类改动（Orchestrator-Worker），不改 DataProcessor `run()`/`run_debug()` / DataInspector / multi_agent runtime handoff / ConvergenceGuard / experience 正反例 / compact_messages / debug 模式。DataAnalyst 不修改数据故无正反例经验采集。
 
-### 信息链设计
-
-```
-system: 分析指令 + 工具签名 + 反幻觉（standard 级）
-user: "查文物库 remark 不空的记录"
-assistant: {content: "我来查", tool_calls: [execute_sql]}
-tool: {content: "149 行..."}                    ← 工具结果
-assistant: {content: "共149条，分布如下..."}     ← 分析结论
-→ done（无 handoff）
-```
-
-- 单轮或多轮工具调用（查一次不够再查，LLM 自主决定）
-- 无修改尝试计数器
-- 无跨 handoff 持久化
-- 无 StuckDetector 修改检测（保留空转检测 + 总轮次上限）
-- 上下文压缩保留（`should_compact` / `compact_messages`）
-
-### 流式输出
-
-- `thinking` 事件（推理过程）
-- `content` 事件（分析结论）
-- `tool_action` 事件（工具调用显示，复用 debug 的分离设计）
-- `tool_summary` 事件（工具结果摘要）
-- `done` 事件（结束，无 handoff）
-- **不发**：`round`/`inspecting`/`retry`/`give_up`/`platform_issue`
-
-### 技能归属
-
-SKILL.md 新增 `skill_type` 字段（front matter）：
-```yaml
-skill_type: analysis    # analysis=分析类(DataAnalyst) / processing=处理类(DataProcessor)
-```
-现有技能默认 `processing`（保持兼容）。新建分析类技能时 AI 自动标注 `analysis`。
-
-### 工具结果截断策略（分析场景）
-
-分析场景需要看更多数据，当前 `MAX_TOOL_RESULT_CHARS = 8000` + 只留 5 行太激进。
-- DataAnalyst 用更大的阈值：`ANALYSIS_MAX_TOOL_RESULT_CHARS = 30000`，`ANALYSIS_MAX_PREVIEW_ROWS = 50`
-- 截断时追加提示："共 149 行，已显示前 50 行。用 offset=50 获取后续数据"
-- 不修改 `truncate_tool_result` 本身（DataProcessor 保持 8000），DataAnalyst 用独立截断参数
-
-### 不影响的现有机制
-
-| 机制 | 影响 |
-|---|---|
-| DataProcessor `run()` / `run_debug()` | 不动 |
-| DataInspector | 不动 |
-| multi_agent runtime handoff | 不动（DataAnalyst 不参与 handoff） |
-| ConvergenceGuard | 不动 |
-| experience 正反例 | 不动（DataAnalyst 不修改没有正反例） |
-| compact_messages | 复用，不动 |
-| debug 模式（技能/算子/流程调试） | 不动 |
-
-### 实现清单（已完成）
-
-| 文件 | 改动 | 状态 |
-|---|---|---|
-| `data_analyst_agent.py` | DataAnalystAgent 类：`run()` 流式方法 + 简单信息链 + `ANALYSIS_MAX_TOOL_RESULT_CHARS=30000` | ✅ 已完成 |
-| `multi_agent.py` | 注册 DataAnalyst；`_decide_handoff` 对 data_analyst 返回 None | ✅ 已完成 |
-| `chat.py` + `chat_router.py` | 路由判断：关键词/技能类型 → 选 Agent | ✅ 已完成 |
-| `shared_tools.py` | 定义只读工具子集 `ANALYSIS_TOOLS`（5 个） | ✅ 已完成 |
-| `skill_parser.py` | 解析 SKILL.md 的 `skill_type` 字段 | ✅ 已完成 |
-| `SkillView.vue` / `ChatView.vue` | 分析类技能不显示调试按钮（只读无需调试） | ✅ 已完成 |
-
-### 第二十六轮（错误分级机制彻底删除——死代码清理 + 文档校正）
+### 第二十七轮（错误分级机制彻底删除——死代码清理 + 文档校正）
 
 **核心洞察**：第十四轮引入"错误分级退出"（`_classify_execution_error` L4/L5/L6 → 环境问题/平台限制/数据问题），第十七轮引入 `_llm_classify_error`（LLM 重分类 4 类）。这两套分级机制在第二十一轮"模型选择简化"时已删 skill_runner 侧函数定义，但 data_processor_agent 侧的消费者代码（行1868-1873 死代码分支 + 行1939-1963 末尾 LLM 分类兜底）+ DEBUG_INSTRUCTIONS 的"错误判断"指令段 + AGENTS.md 多处记录均未同步删除。死代码分支 `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` 永不命中（`_extract_exception_type` 只提取英文异常类名如 `RuntimeError`，不含中文词），末尾 LLM 分类兜底分类后都走 give_up 无分支差异（死逻辑）。
 
@@ -816,13 +759,13 @@ skill_type: analysis    # analysis=分析类(DataAnalyst) / processing=处理类
 
 ## 现状校正（文档 vs 代码实际）
 
-以下为历史轮次记录与代码实际状态的差异，经代码审查确认的勘误：
+以下为历史轮次记录与代码实际状态的差异，经代码审查确认的勘误（行号以当前代码为准）：
 
 | 轮次 | 记录 | 实际代码 |
 |------|------|---------|
-| 第十九轮 | "DB model 删 2 个 Column（LLMProvider.fast_model + UserLLMConfig.fast_model）" | `flash_model` 列仍存在于 `models/custom_extension.py`（line 40, 62）；`llm.py` 仍读取 `rec.flash_model`/`record.flash_model`（line 86, 96, 262, 274-275, 294）。业务代码已不依赖，但 DB 列未删除（向后兼容） |
-| 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()` 实际仍用非流式 `chat_with_tools()`（line 436）；仅 `run_debug()` 用流式 |
-| 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个（4 核心 + `list_user_datasources` 从 SHARED_TOOL_SCHEMAS 提取） |
-| 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数（run_skill_script / run_skill_script_async / run_skill_script_streaming / run_skill_script_streaming_async / run_skill_script_by_content / run_skill_script_by_content_async，含 async 包装器） |
-| 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | `data/seed/operators.json` 不存在（仅 `pipelines.json` 存在） |
-| 路由数 | "183 条路由" | 实际约 176 条路由 |
+| 第十九轮 | "DB model 删 2 个 Column（LLMProvider.fast_model + UserLLMConfig.fast_model）" | `flash_model` 列仍存在于 `models/custom_extension.py`（line 40, 62）；`llm.py` 仍读写 `flash_model`（line 96/107/271/283-284/303/471/524/536 等 12 处，含 `_flash` 属性 line 471）。业务路径用 `_default`/`_flash` 属性间接消费，DB 列未删除（向后兼容） |
+| 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()`（line 469）实际仍用非流式 `chat_with_tools()`（line 533）；仅 `run_debug()`（line 1551）用流式 `chat_stream_with_tools_and_thinking`（line 1690） |
+| 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个：`DEBUG_TOOLS`（line 149）含 4 核心（edit_script/run_script/read_script/grep_script）+ 第 151 行追加 `list_user_datasources`（从 SHARED_TOOL_SCHEMAS 提取） |
+| 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数：`run_skill_script`（631）/`run_skill_script_async`（659）/`run_skill_script_streaming`（898）/`run_skill_script_streaming_async`（995）/`run_skill_script_by_content`（1043）/`run_skill_script_by_content_async`（1066），含 async 包装器 |
+| 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | `data/seed/operators.json` 不存在（仅 `pipelines.json` 存在）；`main.py` line 306-312 仍含 seed operators 逻辑但因文件缺失触发时静默跳过 |
+| 路由数 | 第二十一轮记录"183 条路由" | 实际 182 条路由（`len(app.routes)` 含 methods） |
