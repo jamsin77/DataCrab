@@ -11,6 +11,7 @@ import logging
 import argparse
 import json
 import sys
+import re
 
 
 def setup_logging(output_log: Optional[str] = None):
@@ -79,7 +80,8 @@ def write_table_data_back(datasource: str, table_name: str, df: pd.DataFrame, lo
         result = write_func(
             datasource_id=datasource,
             table_name=table_name,
-            data=records
+            data=records,
+            if_table_exists="overwrite"
         )
         return result
     except Exception as e:
@@ -93,6 +95,9 @@ def clean_data(df: pd.DataFrame, primary_key: str, cleaning_options: Dict[str, b
     remove_empty = cleaning_options.get('remove_empty', True)
     remove_all_empty = cleaning_options.get('remove_all_empty', True)
     deduplicate = cleaning_options.get('deduplicate', True)
+    
+    # 将空字符串视为空值（CSV 读取后空单元格可能是 "" 而非 NaN）
+    df = df.replace('', pd.NA)
     
     # 删除所有列均为空值的行
     if remove_all_empty:
@@ -113,6 +118,82 @@ def clean_data(df: pd.DataFrame, primary_key: str, cleaning_options: Dict[str, b
         logger.info(f"删除重复行: {before - len(df)} 行")
     
     logger.info(f"总处理结果: 原始 {initial_count} 行 -> 清洗后 {len(df)} 行")
+    return df
+
+
+def format_phone_column(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    """将手机号列从 float64 格式化为 11 位数字字符串（STD-TEL-001）"""
+    # 使用 resolve_column 查找手机号列
+    phone_col = None
+    for candidate in ['phone', 'phone_number', 'tel', 'mobile', '手机号', '电话', '手机']:
+        resolved = resolve_column(df, candidate)
+        if resolved:
+            phone_col = resolved
+            break
+
+    if phone_col is None:
+        logger.info("未检测到手机号列，跳过格式化")
+        return df
+
+    logger.info(f"格式化手机号列: {phone_col} (类型: {df[phone_col].dtype})")
+
+    def _format_phone(val):
+        if pd.isna(val):
+            return val
+        try:
+            # float64 → int → string
+            if isinstance(val, float):
+                s = str(int(val))
+            else:
+                s = str(val).strip().replace(' ', '').replace('-', '')
+            # 确保是纯数字且长度为 11
+            if s.isdigit() and len(s) == 11:
+                return s
+            elif s.isdigit() and len(s) < 11:
+                logger.warning(f"手机号位数不足 11 位，保留原值: {val}")
+                return s
+            else:
+                logger.warning(f"无法识别的手机号格式，保留原值: {val}")
+                return str(val)
+        except Exception:
+            return str(val)
+
+    df[phone_col] = df[phone_col].apply(_format_phone)
+    logger.info(f"手机号格式化完成: {df[phone_col].dtype}")
+    return df
+
+
+def mask_email_column(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    """对邮箱列进行脱敏处理（SEC-PII-003）：保留首尾字符，中间用 *** 替换"""
+    email_col = None
+    for candidate in ['email', 'mail', 'e_mail', '邮箱', '电子邮件', '电子邮箱']:
+        resolved = resolve_column(df, candidate)
+        if resolved:
+            email_col = resolved
+            break
+
+    if email_col is None:
+        logger.info("未检测到邮箱列，跳过脱敏")
+        return df
+
+    logger.info(f"脱敏邮箱列: {email_col}")
+
+    def _mask_email(val):
+        if pd.isna(val):
+            return val
+        s = str(val).strip()
+        if '@' not in s:
+            return s
+        local, domain = s.split('@', 1)
+        if len(local) <= 2:
+            masked_local = local[0] + '***' if len(local) == 1 else local[0] + '***' + local[-1]
+        else:
+            masked_local = local[0] + '***' + local[-1]
+        return f"{masked_local}@{domain}"
+
+    masked_count = df[email_col].notna().sum()
+    df[email_col] = df[email_col].apply(_mask_email)
+    logger.info(f"邮箱脱敏完成: {masked_count} 条")
     return df
 
 
@@ -158,12 +239,19 @@ def main(datasource: str = None, table_names: List[str] = None, primary_key: str
                 pk = df.columns[0]
                 logger.info(f"未指定主键，使用第一列 '{pk}' 作为主键")
             
-            # 执行清洗
+# 执行清洗
             df_cleaned = clean_data(df, pk, cleaning_options, logger)
-            
+
+            # 执行格式化：手机号标准化 + 邮箱脱敏
+            df_cleaned = format_phone_column(df_cleaned, logger)
+            df_cleaned = mask_email_column(df_cleaned, logger)
+
             # 写回原表
             write_result = write_table_data_back(datasource, table_name, df_cleaned, logger)
             logger.info(f"写入结果: {write_result}")
+            
+            if isinstance(write_result, dict) and not write_result.get('success', True):
+                raise Exception(f"写入失败: {write_result.get('message', write_result)}")
             
             results['tables_processed'].append({
                 'table': table_name,

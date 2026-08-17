@@ -20,10 +20,20 @@ skill-name/
 name: skill-name              # 英文短横线命名，体现核心功能
 description: 技能描述
 version: "1.0.0"
+skill_type: processing         # 技能类型：processing=数据处理 / analysis=数据分析
 tags:
   - 标签1
   - 标签2
 ---
+
+### skill_type 判定规则（必须填写）
+
+| 类型 | 适用场景 | 对应 Agent | 特征 |
+|------|----------|-----------|------|
+| `processing` | 清洗、转换、修改、写入数据 | DataProcessor | 会修改数据/写表 |
+| `analysis` | 查询、统计、分析、可视化、生成报告 | DataAnalyst | 只读不改，输出结论/图表 |
+
+**判定标准**：技能执行后是否修改了源数据。只查不改用 `analysis`，要修改用 `processing`。无法判断时默认 `processing`。
 
 # 技能标题
 

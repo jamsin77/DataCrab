@@ -28,9 +28,11 @@ api.interceptors.response.use(
     if (error.response) {
       const { status, data } = error.response
       if (status === 401) {
-        // 登录接口的401直接返回错误，不尝试刷新token
-        const isLoginRequest = error.config.url?.includes('/auth/login') || error.config.url?.includes('/auth/register')
-        if (isLoginRequest) {
+        // 登录/注册/重置密码接口的401直接返回错误，不尝试刷新token
+        const isAuthRequest = error.config.url?.includes('/auth/login') 
+          || error.config.url?.includes('/auth/register')
+          || error.config.url?.includes('/auth/reset-password')
+        if (isAuthRequest) {
           return Promise.reject(error)
         }
         // Token过期，尝试刷新

@@ -378,6 +378,7 @@ async def stream_agent_events_sse(
     message: "AgentMessage",
     context: Dict[str, Any],
     user_id=None,
+    agent_name: str = "data_processor",
 ) -> AsyncGenerator[str, None]:
     """SSE 流式推送 AgentRuntime 事件（3 个 debug-chat 端点共享）。
 
@@ -391,7 +392,7 @@ async def stream_agent_events_sse(
         from app.services.llm import init_user_llm_context
         await init_user_llm_context(user_id)
 
-    runtime_gen = runtime.run("data_processor", message, context)
+    runtime_gen = runtime.run(agent_name, message, context)
 
     _inspector_active = False
     _inspector_summary = ""

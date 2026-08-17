@@ -268,6 +268,24 @@ async def update_skill(
     for key, value in update_data.items():
         setattr(skill, key, value)
 
+    # tags 变更时同步 skill_type 到 SKILL.md front matter
+    if "tags" in update_data:
+        new_type = "processing"
+        for t in (update_data.get("tags") or []):
+            if str(t).startswith("skill_type:"):
+                new_type = str(t).split(":", 1)[1]
+                break
+        folder = _resolve_skill_folder(skill)
+        md_path = folder / "SKILL.md"
+        if md_path.exists():
+            md_content = md_path.read_text(encoding="utf-8")
+            parsed = parse_skill_md(md_content)
+            fm = dict(parsed.get("front_matter") or {})
+            if fm.get("skill_type") != new_type:
+                fm["skill_type"] = new_type
+                from app.services.skill_parser import build_skill_md
+                md_path.write_text(build_skill_md(fm, parsed.get("body", "")), encoding="utf-8")
+
     await db.flush()
     await db.refresh(skill)
     return _build_detail(skill)
@@ -483,10 +501,12 @@ async def update_skill_md(
     write_skill_md(folder, request.content)
 
     parsed = parse_skill_md(request.content)
-    if parsed.get("name"):
-        skill.display_name = parsed["name"]
-    if parsed.get("description"):
-        skill.description = parsed["description"]
+    fm = parsed.get("front_matter", {})
+    if fm.get("name"):
+        skill.display_name = fm["name"]
+    if fm.get("description"):
+        skill.description = fm["description"]
+    skill.tags = _merge_skill_type_tag(fm, list(skill.tags or []))
 
     await db.flush()
     await db.refresh(skill)
@@ -904,8 +924,12 @@ async def debug_skill_chat(
 
     message = build_debug_message(request.message, context)
 
+    # 按技能类型路由：分析类 → data_analyst，处理类 → data_processor
+    _is_analysis = any(str(t) == "skill_type:analysis" for t in (skill.tags or []))
+    _agent_name = "data_analyst" if _is_analysis else "data_processor"
+
     return StreamingResponse(
-        stream_agent_events_sse(runtime, message, context, user_id=current_user.id),
+        stream_agent_events_sse(runtime, message, context, user_id=current_user.id, agent_name=_agent_name),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

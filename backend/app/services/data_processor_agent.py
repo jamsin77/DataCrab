@@ -313,6 +313,93 @@ def _has_platform_failure_in_warnings(warn_text: str) -> bool:
     return any(sig in _lower or sig in warn_text for sig in _PLATFORM_FAILURE_SIGNALS)
 
 
+def classify_execution_result(rdata: dict) -> dict:
+    """分类 run_script 执行结果：成功 / 平台问题 / 脚本问题。
+
+    供 DataProcessorAgent.run_debug 和 DataAnalystAgent.run_debug 复用，
+    消除三处重复的 _inner_r / _warnings_r / _is_fail 判断逻辑。
+
+    Returns:
+        {
+            "is_fail": bool,            # 是否失败
+            "is_platform_issue": bool,  # 是否平台问题（修改脚本无法解决）
+            "err_msg": str,             # 错误信息（失败时）
+            "warn_text": str,           # warnings 文本（含 tool_failures 合并）
+            "warnings": list,           # 原始 warnings list（含 tool_failures 合并）
+            "tool_failures": list,      # 原始 tool_failures list
+            "inner_result": dict,       # 内部 result dict
+        }
+    """
+    _inner = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
+    _warnings = (_inner.get("warnings") if _inner else None) or rdata.get("warnings") or []
+    _tool_failures = rdata.get("tool_failures") or []
+    if _tool_failures and isinstance(_tool_failures, list):
+        _warnings = list(_warnings) + list(_tool_failures)
+    _warn_text = ""
+    if _warnings:
+        _warn_text = "; ".join(_warnings[:5]) if isinstance(_warnings, list) else str(_warnings)[:500]
+
+    _is_fail = (not rdata.get("success")
+                or ("success" in _inner and not _inner["success"])
+                or (rdata.get("error") and str(rdata.get("error")).strip())
+                or (_inner.get("error") and str(_inner.get("error")).strip())
+                or _has_platform_failure_in_warnings(_warn_text))
+
+    _err_msg = str(rdata.get("error") or _inner.get("error") or "") if _is_fail else ""
+    _is_platform = (_has_platform_failure_in_warnings(_warn_text)
+                    or _has_platform_failure_in_warnings(_err_msg))
+
+    return {
+        "is_fail": _is_fail,
+        "is_platform_issue": _is_platform,
+        "err_msg": _err_msg,
+        "warn_text": _warn_text,
+        "warnings": _warnings,
+        "tool_failures": _tool_failures,
+        "inner_result": _inner,
+    }
+
+
+def _build_platform_reason(err_msg: str, warn_text: str) -> str:
+    """构造平台能力缺失的退出原因 — 两个 Agent 共用"""
+    return f"平台能力缺失：{err_msg[:500] or warn_text[:500]}"
+
+
+def _build_give_up_reason(count: int, err_msg: str) -> str:
+    """构造执行错误上限的退出原因 — 两个 Agent 共用"""
+    return f"连续 {count} 次执行失败：{err_msg[:300]}"
+
+
+def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
+                     content: str = "", tool_name: str = "") -> None:
+    """记录执行反例到经验库 — 两个 Agent 共用
+
+    Args:
+        folder: 经验库目录（debug_folder）
+        err_msg: 错误信息
+        rdata: run_script 返回的完整结果 dict
+        script_name: 脚本名
+        content: 本轮 LLM 输出文本（Processor 传，用于 context_summary）
+        tool_name: 触发工具名（Processor 传，用于 context_summary）
+    """
+    if not folder or not err_msg:
+        return
+    try:
+        from app.services import experience as _exp
+        _kwargs = dict(
+            source="debug-chat",
+            error_type="execution_error",
+            error_message=err_msg,
+            stdout=rdata.get("stdout", ""),
+            script_name=script_name,
+        )
+        if content or tool_name:
+            _kwargs["context_summary"] = f"工具: {tool_name}\nAI输出: {content[:200]}"
+        _exp.append_negative(folder, **_kwargs)
+    except Exception as e:
+        logger.warning(f"记录反例失败(非致命): {e}")
+
+
 def _slim_run_script_result(content: str) -> str:
     """构建 run_script 工具结果用于 LLM tool 消息（对齐 OpenCode Bash：完整传递错误信息）。
 
@@ -327,22 +414,11 @@ def _slim_run_script_result(content: str) -> str:
     if not isinstance(data, dict):
         return truncate_tool_result(content)
     slim = {}
-    _inner = data.get("result") if isinstance(data.get("result"), dict) else {}
-    _warnings = (_inner.get("warnings") if _inner else None) or data.get("warnings") or []
-    _tool_failures = data.get("tool_failures") or []
-    # tool_failures 合并到 warnings 文本（脚本 try-except 吞异常时，skill_runner 的 print 仍被收集）
-    if _tool_failures and isinstance(_tool_failures, list):
-        _warnings = list(_warnings) + list(_tool_failures)
-    _warn_text = ""
-    if _warnings:
-        _warn_text = "; ".join(_warnings[:5]) if isinstance(_warnings, list) else str(_warnings)[:500]
-    _has_platform_error = _has_platform_failure_in_warnings(_warn_text)
-    _is_fail = (not data.get("success")
-                or ("success" in _inner and not _inner["success"])
-                or (data.get("error") and str(data.get("error")).strip())
-                or (_inner.get("error") and str(_inner.get("error")).strip())
-                or _has_platform_error)
-    if not _is_fail:
+    _cls = classify_execution_result(data)
+    _inner = _cls["inner_result"]
+    _warnings = _cls["warnings"]
+    _tool_failures = _cls["tool_failures"]
+    if not _cls["is_fail"]:
         slim["success"] = True
         if data.get("written_tables"):
             slim["written_tables"] = data["written_tables"]
@@ -1078,6 +1154,7 @@ class DataProcessorAgent(BaseAgent):
                         context["debug_last_success_params"] = parameters
                     else:
                         _err = str(result.get("error") or _inner.get("error") or "")
+                        logger.info(f"debug run_script (pipeline): success=False, error={_err[:500]}")
                     logger.info(f"debug run_script (pipeline): success={not _failed}")
                     return json.dumps(result, ensure_ascii=False, default=str)
                 else:
@@ -1118,7 +1195,10 @@ class DataProcessorAgent(BaseAgent):
                                or (_inner.get("error") and str(_inner.get("error")).strip()))
                     if not _failed:
                         context["debug_last_success_params"] = parameters
-                    logger.info(f"debug run_script (skill): success={not _failed}")
+                    else:
+                        _err = str(result.get("error") or _inner.get("error") or "")
+                        _err_type = result.get("error_type") or _inner.get("error_type") or ""
+                        logger.info(f"debug run_script (skill): success=False, error_type={_err_type}, error={repr(_err[:800])}")
                     return json.dumps(result, ensure_ascii=False, default=str)
             except Exception as e:
                 import traceback as _tb
@@ -1489,7 +1569,7 @@ class DataProcessorAgent(BaseAgent):
 
         await llm_manager.initialize()
 
-        # 跨 handoff 上下文持久化：Inspector 回交时恢复之前的工具调用历史
+        # 跨 Agent 上下文持久化：Inspector 回交时恢复之前的工具调用历史
         # （对齐 OpenCode 连续消息链——LLM 知道自己之前改了什么代码）
         _saved_messages = context.get("_processor_local_messages")
         if _saved_messages and message.reason == HandoffReason.FIX_REQUIRED:
@@ -1544,20 +1624,18 @@ class DataProcessorAgent(BaseAgent):
 
         # 调试模式工具（对齐 OpenCode：5 个工具，职责清晰）
         # read_script=Read, grep_script=Grep, edit_script=Edit, run_script=Bash
-        # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
+        # 交接不在工具里——执行成功后 RunTime 自动交接 DataInspector
         # 4 个工具对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep
-        # handoff 不在工具里——执行成功后 runtime 自动交接 DataInspector
         debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
                        _LIST_DATASOURCES_TOOL]
 
         max_fix_attempts = context.get("debug_max_rounds", 7)
-        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 handoff 持久化，只数 fix 工具
+        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 Agent 持久化，只数 fix 工具
         _total_llm_calls = 0  # 仅用于日志
         _MAX_EXEC_FAILURES = context.get("debug_max_exec_failures", 3)  # 首次执行成功前连续执行失败上限（可配置）
         _exec_failures_before_success = context.get("debug_exec_failures", 0)
         _execution_succeeded = context.get("debug_execution_succeeded", False)
-        _should_handoff = False
-        _handoff_output_table = None
+        _just_succeeded = False
         script_name = context.get("debug_script_name", "main.py")
         _stuck = StuckDetector(max_total_rounds=40)
         _last_round_had_fix = False
@@ -1815,34 +1893,24 @@ class DataProcessorAgent(BaseAgent):
                         yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n原始内容: {r['content'][:500]}\n"}
                         continue
                     yield {"type": "run_result", "result": rdata}
-                    _inner_r = rdata.get("result") if isinstance(rdata.get("result"), dict) else {}
-                    _warnings_r = (_inner_r.get("warnings") if _inner_r else None) or rdata.get("warnings") or []
-                    _tool_failures_r = rdata.get("tool_failures") or []
-                    if _tool_failures_r and isinstance(_tool_failures_r, list):
-                        _warnings_r = list(_warnings_r) + list(_tool_failures_r)
-                    _warn_text_r = ""
-                    if _warnings_r:
-                        _warn_text_r = "; ".join(_warnings_r[:5]) if isinstance(_warnings_r, list) else str(_warnings_r)[:500]
-                    _is_fail = (not rdata.get("success")
-                                or ("success" in _inner_r and not _inner_r["success"])
-                                or (rdata.get("error") and str(rdata.get("error")).strip())
-                                or (_inner_r.get("error") and str(_inner_r.get("error")).strip())
-                                or _has_platform_failure_in_warnings(_warn_text_r))
-                    if not _is_fail:
-                        _should_handoff = True
+                    _cls = classify_execution_result(rdata)
+                    _inner_r = _cls["inner_result"]
+                    _warn_text_r = _cls["warn_text"]
+                    if not _cls["is_fail"]:
+                        _just_succeeded = True
                         _execution_succeeded = True
                         context["debug_execution_succeeded"] = True
                         _exec_failures_before_success = 0
                         context["debug_exec_failures"] = 0
                         _wt = rdata.get("written_tables")
-                        logger.info(f"[handoff检查] run_script成功, written_tables={_wt}, inner_result_keys={list(_inner_r.keys()) if _inner_r else 'None'}")
+                        logger.info(f"[run_debug] run_script成功, written_tables={_wt}, inner_result_keys={list(_inner_r.keys()) if _inner_r else 'None'}")
                         if _wt:
-                            _handoff_output_table = _wt[-1].get("table_name")
+                            context["debug_output_table"] = _wt[-1].get("table_name")
                             context["debug_output_datasource_id"] = _wt[-1].get("datasource_id")
-                        else:
-                            _handoff_output_table = _inner_r.get("output_table") if _inner_r else None
-                        context["debug_output_table"] = _handoff_output_table
-                        logger.info(f"[handoff检查] _handoff_output_table={_handoff_output_table}, debug_output_datasource_id={context.get('debug_output_datasource_id')}")
+                        elif _inner_r:
+                            _output_tbl = _inner_r.get("output_table")
+                            if _output_tbl:
+                                context["debug_output_table"] = _output_tbl
                         folder = context.get("debug_folder")
                         if folder:
                             try:
@@ -1852,10 +1920,10 @@ class DataProcessorAgent(BaseAgent):
                             except Exception as e:
                                 logger.warning(f"记录正例失败(非致命): {e}")
                     else:
-                        _err_msg = str(rdata.get("error") or _inner_r.get("error") or "")
+                        _err_msg = _cls["err_msg"]
                         # 平台错误信号 → 立即退出（修改脚本无法解决）
-                        if _has_platform_failure_in_warnings(_warn_text_r) or _has_platform_failure_in_warnings(_err_msg):
-                            _reason = f"平台能力缺失：{_err_msg[:500] or _warn_text_r[:500]}"
+                        if _cls["is_platform_issue"]:
+                            _reason = _build_platform_reason(_err_msg, _warn_text_r)
                             yield {"type": "platform_issue", "message": _reason}
                             yield {"type": "done", "result": {"agent": self.name, "content": _reason}}
                             return
@@ -1864,17 +1932,14 @@ class DataProcessorAgent(BaseAgent):
                             _exec_failures_before_success += 1
                             context["debug_exec_failures"] = _exec_failures_before_success
                             if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
-                                _reason = f"连续 {_exec_failures_before_success} 次执行失败：{_err_msg[:300]}"
+                                _reason = _build_give_up_reason(_exec_failures_before_success, _err_msg)
                                 yield {"type": "give_up", "reason": _reason}
                                 yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
                                 return
-                        folder = context.get("debug_folder")
-                        if folder and _err_msg:
-                            try:
-                                from app.services import experience as _exp
-                                _exp.append_negative(folder, source="debug-chat", error_type="execution_error", error_message=_err_msg, stdout=rdata.get("stdout", ""), script_name=script_name, context_summary=f"工具: {tool_name}\nAI输出: {content[:200]}")
-                            except Exception as e:
-                                logger.warning(f"记录反例失败(非致命): {e}")
+                        _record_negative(
+                            context.get("debug_folder"), _err_msg, rdata,
+                            script_name, content=content, tool_name=tool_name,
+                        )
 
 
 
@@ -1894,31 +1959,15 @@ class DataProcessorAgent(BaseAgent):
             if _stuck_hint:
                 local_messages.append({"role": "user", "content": _stuck_hint})
 
-            # 执行成功 → done 带执行结果，RunTime 决定是否 handoff Inspector
-            if _should_handoff:
-                # 保存 local_messages 到 context，供 Inspector 回交时恢复（跨 handoff 上下文持久化）
+            # 执行成功 → done 带执行结果，RunTime 决定是否交接 Inspector
+            if _just_succeeded:
+                # 保存 local_messages 到 context，供 Inspector 回交时恢复（跨 Agent 上下文持久化）
                 context["_processor_local_messages"] = local_messages
-                # 检查目标：优先 written_tables → 目标数据源 → 源数据源（向后兼容）
-                ds_id = (context.get("debug_output_datasource_id")
-                         or context.get("debug_target_datasource_id")
-                         or context.get("debug_source_datasource_id")
-                         or context.get("debug_datasource_id")
-                         or context.get("current_datasource_id", ""))
-                tbl = (_handoff_output_table
-                       or context.get("debug_target_table_name")
-                       or context.get("debug_source_table_name")
-                       or context.get("debug_table_name")
-                       or context.get("current_table_name", ""))
-                logger.info(f"[run_debug] 执行成功 output_ds={ds_id} output_table={tbl}")
-                if not ds_id or not tbl:
-                    yield {"type": "content", "content": f"\n⚠ 执行成功但无法确定检查目标（数据源ID={ds_id or '空'}, 表名={tbl or '空'}），跳过质量检查\n"}
-                    yield {"type": "done", "result": {"agent": self.name, "content": "执行成功，但无法启动质量检查：目标表信息缺失", "success": True}}
-                    return
                 yield {"type": "done", "result": {
                     "agent": self.name, "content": "执行成功", "success": True,
                     "execution_success": True,
-                    "output_datasource_id": ds_id,
-                    "output_table": tbl,
+                    "output_datasource_id": context.get("debug_output_datasource_id", ""),
+                    "output_table": context.get("debug_output_table", ""),
                 }}
                 return
 

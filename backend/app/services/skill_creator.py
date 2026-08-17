@@ -174,6 +174,7 @@ SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab
 ---
 name: skill-name
 description: 技能描述
+skill_type: processing    # processing=数据处理 / analysis=数据分析（只查不改用 analysis）
 ---
 ```
 
@@ -186,6 +187,7 @@ description: 技能描述
 name: filter-by-dynasty
 description: 按朝代筛选文物数据，支持单朝代和多朝代筛选
 version: "1.0.0"
+skill_type: processing
 tags:
   - 筛选
   - 文物
@@ -312,10 +314,12 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 {ds_section}
 {lessons_section}
 请输出：
-1. SKILL.md（包含 YAML front matter + Markdown 内容）
+1. SKILL.md（包含 YAML front matter + Markdown 内容，front matter 必须包含 skill_type 字段）
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
+
+**skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
 使用以下格式输出：
 
@@ -437,10 +441,12 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 {ds_section}
 {lessons_section}
 请输出：
-1. SKILL.md（包含 YAML front matter + Markdown 内容）
+1. SKILL.md（包含 YAML front matter + Markdown 内容，front matter 必须包含 skill_type 字段）
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
+
+**skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
 使用以下格式输出：
 

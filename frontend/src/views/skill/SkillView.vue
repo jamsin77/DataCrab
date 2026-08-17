@@ -16,9 +16,6 @@
           <el-option label="创建时间" value="created" />
           <el-option label="修改时间" value="updated" />
         </el-select>
-        <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
-          <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-        </el-select>
         <el-input
           v-model="searchQuery"
           placeholder="搜索技能"
@@ -29,46 +26,57 @@
       </div>
     </div>
 
-    <div class="op-grid">
-      <el-card v-for="skill in filteredSkills" :key="skill.id" class="skill-card" shadow="hover">
-        <template #header>
-          <div class="card-header">
-            <span class="skill-name">{{ skill.display_name || skill.name }}</span>
-            <el-tag size="small" :type="categoryColor(skill.category)">{{ skill.category || '未分类' }}</el-tag>
-          </div>
-        </template>
-        <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
+    <div class="skill-sections">
+      <div v-for="section in skillSections" :key="section.type" class="skill-section">
+        <div class="section-header">
+          <span class="section-title">
+            <el-icon><component :is="section.icon" /></el-icon>
+            {{ section.title }}
+          </span>
+          <el-tag size="small" :type="section.tagType" round>{{ section.list.length }} 个</el-tag>
+        </div>
+        <div class="op-grid">
+          <el-card v-for="skill in section.list" :key="skill.id" class="skill-card" shadow="hover">
+            <template #header>
+              <div class="card-header">
+                <span class="skill-name">{{ skill.display_name || skill.name }}</span>
+                <el-tag size="small" :type="section.tagType">{{ section.type === 'analysis' ? '数据分析' : '数据处理' }}</el-tag>
+              </div>
+            </template>
+            <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
 
-        <div class="skill-meta">
-          <el-tag v-if="skill.scripts?.length" size="small" effect="plain">
-            {{ skill.scripts.length }} 个脚本
-          </el-tag>
-          <el-tag v-if="skill.version" size="small" effect="plain">v{{ skill.version }}</el-tag>
+            <div class="skill-meta">
+              <el-tag v-if="skill.scripts?.length" size="small" effect="plain">
+                {{ skill.scripts.length }} 个脚本
+              </el-tag>
+              <el-tag v-if="skill.version" size="small" effect="plain">v{{ skill.version }}</el-tag>
+            </div>
+
+            <div class="skill-actions">
+              <div class="skill-actions-row">
+                <el-button size="small" type="primary" @click="openDetail(skill)">
+                  <el-icon><Edit /></el-icon> 修改
+                </el-button>
+                <el-button size="small" type="success" plain @click="openDebug(skill)">
+                  <el-icon><VideoPlay /></el-icon> 调试
+                </el-button>
+                <el-button size="small" @click="openCloneDialog(skill)">
+                  <el-icon><CopyDocument /></el-icon> 另存
+                </el-button>
+                <el-button size="small" @click="downloadSkill(skill)">
+                  <el-icon><Download /></el-icon> 下载
+                </el-button>
+                <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
+                  <el-icon><Delete /></el-icon> 删除
+                </el-button>
+              </div>
+            </div>
+          </el-card>
         </div>
 
-        <div class="skill-actions">
-          <div class="skill-actions-row">
-            <el-button size="small" type="primary" @click="openDetail(skill)">
-              <el-icon><Edit /></el-icon> 修改
-            </el-button>
-            <el-button size="small" type="success" plain @click="openDebug(skill)" v-if="!isAnalysisSkill(skill)">
-              <el-icon><VideoPlay /></el-icon> 调试
-            </el-button>
-            <el-button size="small" @click="openCloneDialog(skill)">
-              <el-icon><CopyDocument /></el-icon> 另存
-            </el-button>
-            <el-button size="small" @click="downloadSkill(skill)">
-              <el-icon><Download /></el-icon> 下载
-            </el-button>
-            <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
-              <el-icon><Delete /></el-icon> 删除
-            </el-button>
-          </div>
-        </div>
-      </el-card>
+        <el-empty v-if="section.list.length === 0" :description="`暂无${section.title}`" />
+      </div>
     </div>
-
-    <el-empty v-if="filteredSkills.length === 0" description="暂无技能，请导入 SKILL 包" />
 
     <!-- ==================== 另存为对话框 ==================== -->
     <el-dialog v-model="showCloneDialog" title="另存为" width="450px" @closed="cloneName = ''; cloneTarget = null">
@@ -351,7 +359,7 @@
                     <el-button size="small" type="primary" @click="saveScriptContent(script.name)" :loading="savingScript">
                       <el-icon><Check /></el-icon> 保存
                     </el-button>
-                    <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)" v-if="!isAnalysisSkill(detailSkill)">
+                    <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)">
                       <el-icon><VideoPlay /></el-icon> 调试
                     </el-button>
                   </div>
@@ -365,8 +373,20 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item label="名称">{{ detailSkill.name }}</el-descriptions-item>
               <el-descriptions-item label="显示名">{{ detailSkill.display_name }}</el-descriptions-item>
-              <el-descriptions-item label="分类">
-                <el-tag size="small" :type="categoryColor(detailSkill.category)">{{ detailSkill.category || '-' }}</el-tag>
+              <el-descriptions-item label="类型">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <el-tag size="small" :type="isAnalysisSkill(detailSkill) ? 'success' : 'primary'">{{ isAnalysisSkill(detailSkill) ? '数据分析' : '数据处理' }}</el-tag>
+                  <el-select
+                    v-model="skillTypeEdit"
+                    size="small"
+                    style="width:130px"
+                    @change="saveSkillType"
+                    :loading="savingType"
+                  >
+                    <el-option label="数据处理" value="processing" />
+                    <el-option label="数据分析" value="analysis" />
+                  </el-select>
+                </div>
               </el-descriptions-item>
               <el-descriptions-item label="版本">v{{ detailSkill.version }}</el-descriptions-item>
               <el-descriptions-item label="可见性">{{ detailSkill.visibility }}</el-descriptions-item>
@@ -709,7 +729,7 @@ import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
   Promotion, ChatDotRound, InfoFilled, Share, VideoPause, CircleCheck,
-  Document,
+  Document, DataLine, DataAnalysis,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -718,8 +738,6 @@ import { formatTime, timePrefix } from '@/utils/time'
 
 const router = useRouter()
 const skills = ref<any[]>([])
-const categories = ref<string[]>([])
-const filterCategory = ref('')
 const searchQuery = ref('')
 const sortBy = ref('created')
 const agentName = ref('DC')
@@ -735,22 +753,23 @@ async function loadAgentConfig() {
   }
 }
 
-const filteredSkills = computed(() => {
-  let list = skills.value
-  if (filterCategory.value) {
-    list = list.filter((o: any) => o.category === filterCategory.value)
-  }
-  if (searchQuery.value) {
-    const q = searchQuery.value.toLowerCase()
-    list = list.filter(
-      (o: any) =>
-        (o.name || '').toLowerCase().includes(q) ||
-        (o.display_name || '').toLowerCase().includes(q) ||
-        (o.description || '').toLowerCase().includes(q)
-    )
-  }
-  return list
-})
+function applySearch(list: any[]) {
+  if (!searchQuery.value) return list
+  const q = searchQuery.value.toLowerCase()
+  return list.filter(
+    (o: any) =>
+      (o.name || '').toLowerCase().includes(q) ||
+      (o.display_name || '').toLowerCase().includes(q) ||
+      (o.description || '').toLowerCase().includes(q)
+  )
+}
+
+const processingSkills = computed(() => applySearch(skills.value.filter((s: any) => !isAnalysisSkill(s))))
+const analysisSkills = computed(() => applySearch(skills.value.filter((s: any) => isAnalysisSkill(s))))
+const skillSections = computed(() => [
+  { type: 'processing', title: '数据处理技能', icon: DataLine, tagType: 'primary', list: processingSkills.value },
+  { type: 'analysis', title: '数据分析技能', icon: DataAnalysis, tagType: 'success', list: analysisSkills.value },
+])
 
 const datasources = ref<any[]>([])
 
@@ -758,7 +777,6 @@ const datasources = ref<any[]>([])
 async function loadSkills() {
   try {
     skills.value = await api.get(`/skills?sort_by=${sortBy.value}`)
-    categories.value = await api.get('/skills/categories')
   } catch (e: any) {
     ElMessage.error('加载技能失败')
   }
@@ -770,19 +788,6 @@ async function loadDatasources() {
   } catch (e: any) {
     /* ignore */
   }
-}
-
-function categoryColor(cat: string) {
-  const map: Record<string, string> = {
-    transform: 'primary',
-    aggregate: 'success',
-    join: 'warning',
-    clean: 'info',
-    analysis: 'danger',
-    data_processing: '',
-    ai_generated: 'success',
-  }
-  return map[cat] || ''
 }
 
 function truncateMarkdown(src: string): string {
@@ -1250,6 +1255,9 @@ const expandedScript = ref('')
 const scriptContents = reactive<Record<string, string>>({})
 const savingScript = ref(false)
 
+const skillTypeEdit = ref('processing')
+const savingType = ref(false)
+
 function openDetail(skill: any) {
   detailSkill.value = skill
   mdEditContent.value = skill.skill_md || ''
@@ -1257,6 +1265,7 @@ function openDetail(skill: any) {
   modifyError.value = ''
   modifyMessages.value = []
   detailTab.value = 'md'
+  skillTypeEdit.value = isAnalysisSkill(skill) ? 'analysis' : 'processing'
 
   Object.keys(scriptContents).forEach(k => delete scriptContents[k])
   expandedScript.value = ''
@@ -1265,6 +1274,26 @@ function openDetail(skill: any) {
   }
 
   detailDrawer.value = true
+}
+
+async function saveSkillType() {
+  if (!detailSkill.value) return
+  savingType.value = true
+  try {
+    const newType = skillTypeEdit.value
+    const tags = (detailSkill.value.tags || []).filter((t: string) => !String(t).startsWith('skill_type:'))
+    tags.push(`skill_type:${newType}`)
+    const updated = await api.put(`/skills/${detailSkill.value.id}`, { tags })
+    detailSkill.value = { ...detailSkill.value, ...updated }
+    const idx = skills.value.findIndex((s: any) => s.id === updated.id)
+    if (idx >= 0) skills.value[idx] = { ...skills.value[idx], ...updated }
+    ElMessage.success(`已切换为${newType === 'analysis' ? '数据分析' : '数据处理'}技能`)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+    skillTypeEdit.value = isAnalysisSkill(detailSkill.value) ? 'analysis' : 'processing'
+  } finally {
+    savingType.value = false
+  }
 }
 
 async function handleModifySkill() {
@@ -2633,6 +2662,31 @@ onMounted(() => {
     gap: 12px;
     align-items: center;
     flex-wrap: wrap;
+  }
+}
+
+.skill-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.skill-section {
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--el-border-color-lighter);
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--el-text-color-primary);
+    }
   }
 }
 

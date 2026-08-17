@@ -6,6 +6,12 @@
 与 DataProcessor 的边界：
 - 只查不改 → DataAnalyst
 - 要修改数据/脚本 → DataProcessor
+
+调试模式（run_debug）：分析技能调试时由 DataAnalystAgent 控制，简化循环——
+- 3 次执行错误上限（无 Inspector handoff，无修改次数限制）
+- 执行成功即返回结果（不交接 Inspector 检查）
+- 无转流程
+- 工具复用 DataProcessor 的调试工具（edit_script/run_script/read_script/grep_script）
 """
 
 import json
@@ -31,6 +37,7 @@ from app.services.agent_utils import (
     get_anti_hallucination_section,
 )
 from app.services.tool_guidance import get_tool_guidance
+from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
 
 # 分析场景更大的截断阈值（需要看更多数据做分析）
 ANALYSIS_MAX_TOOL_RESULT_CHARS = 30000
@@ -98,6 +105,12 @@ class DataAnalystAgent(BaseAgent):
         message: AgentMessage,
         context: Dict[str, Any],
     ) -> AsyncGenerator[Dict, None]:
+        # 调试模式：分派到 run_debug()，走简化循环（3 次错误上限，无 Inspector）
+        if context.get("debug_mode"):
+            async for event in self.run_debug(message, context):
+                yield event
+            return
+
         db: AsyncSession = context.get("db")
         user_id = context.get("user_id")
 
@@ -238,3 +251,344 @@ class DataAnalystAgent(BaseAgent):
         prompt = f"{persona_block}{self.instructions}\n{tool_guidance}{anti_hallucination}"
         _MAIN_STATIC_PROMPT_CACHE = prompt
         return prompt
+
+    # ==================== 调试模式 ====================
+
+    _DEBUG_PROMPT_CACHE: Optional[str] = None
+
+    ANALYSIS_DEBUG_INSTRUCTIONS = """你是 DataCrab 数据分析调试助手。执行错误最多 {max_exec_failures} 次。
+推理过程用中文。
+
+## 定位
+数据分析技能只读不写——执行后不修改源数据。你的任务是运行分析脚本，查看结果。
+
+## 工作流（对齐 OpenCode）
+1. 用 read_script/grep_script 查看脚本（如需理解逻辑）
+2. 用 run_script 执行脚本，查看结果
+3. 如果执行出错：用 edit_script 修复 bug，再 run_script 验证
+4. 执行成功即可返回分析结果
+
+## 与数据处理调试的区别
+- 无 Inspector 质量检查（分析不改数据，无需检查）
+- 无修改次数限制（只有执行错误上限 {max_exec_failures} 次）
+- 执行成功即结束
+
+## 错误处理
+看 traceback 自主判断：能修就修，修不了就说明原因停止。
+"""
+
+    def build_debug_system_prompt(self, context: Dict[str, Any]) -> str:
+        if DataAnalystAgent._DEBUG_PROMPT_CACHE is not None:
+            return DataAnalystAgent._DEBUG_PROMPT_CACHE
+        max_exec_failures = context.get("debug_max_exec_failures", 3)
+        prompt = self.ANALYSIS_DEBUG_INSTRUCTIONS.replace("{max_exec_failures}", str(max_exec_failures))
+        prompt += "\n\n" + SANDBOX_TOOLS_DOC
+        prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
+        DataAnalystAgent._DEBUG_PROMPT_CACHE = prompt
+        return prompt
+
+    def build_debug_dynamic_hints(self, context: Dict[str, Any], user_message: str = "") -> str:
+        """动态提示（注入为 user 消息前缀，不进 system prompt 保证字节稳定）"""
+        parts = []
+        last_params = context.get("debug_last_success_params")
+        if last_params:
+            parts.append(f"参考：上次成功执行的参数为 {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
+        debug_params = context.get("debug_parameters")
+        if debug_params:
+            parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
+        _src_ds = context.get("debug_source_datasource_name", "")
+        _src_tbl = context.get("debug_source_table_name", "")
+        if _src_ds:
+            parts.append(f"数据源: {_src_ds}" + (f", 表: {_src_tbl}" if _src_tbl else ""))
+        _all_ds = context.get("debug_all_datasources") or []
+        if _all_ds:
+            _ds_list = "\n".join(f"  - {d['name']} (UUID: {d['id']}, 类型: {d['type']})" for d in _all_ds)
+            parts.append(f"用户所有可用数据源：\n{_ds_list}")
+        return "\n\n".join(parts) if parts else ""
+
+    _tool_executor = None
+
+    @classmethod
+    def _get_tool_executor(cls):
+        """复用 DataProcessorAgent 的工具执行逻辑（edit_script/run_script/read_script/grep_script）"""
+        if cls._tool_executor is None:
+            from app.services.data_processor_agent import DataProcessorAgent
+            cls._tool_executor = DataProcessorAgent()
+        return cls._tool_executor
+
+    async def run_debug(
+        self,
+        message: AgentMessage,
+        context: Dict[str, Any],
+    ) -> AsyncGenerator[Dict, None]:
+        """分析技能调试模式：简化循环——3 次执行错误上限，无 Inspector，无转流程。
+
+        与 DataProcessor.run_debug 的区别：
+        - 无 Inspector handoff（执行成功直接返回）
+        - 无修改次数上限（只有执行错误上限 3 次）
+        - 无 ConvergenceGuard
+        - 无跨 handoff 上下文持久化
+        """
+        db: AsyncSession = context.get("db")
+        user_id = context.get("user_id")
+        if not db or not user_id:
+            yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
+            return
+
+        await llm_manager.initialize()
+
+        # 导入调试工具 schema + 辅助函数（复用 DataProcessor 的）
+        from app.services.data_processor_agent import (
+            EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
+            _LIST_DATASOURCES_TOOL, _slim_run_script_result,
+            _has_platform_failure_in_warnings, classify_execution_result,
+            _build_platform_reason, _build_give_up_reason, _record_negative,
+        )
+        from app.services.prompt_docs import SAFETY_RULES_DOC
+
+        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL, _LIST_DATASOURCES_TOOL]
+        executor = self._get_tool_executor()
+
+        system_prompt = self.build_debug_system_prompt(context)
+        local_messages = [{"role": "system", "content": system_prompt}]
+
+        history = context.get("history", [])
+        if history:
+            local_messages.extend(history)
+
+        _user_msg = message.payload.get("user_message", "") if message.payload else ""
+        if not _user_msg:
+            yield {"type": "done", "result": {"error": "空消息"}}
+            return
+        _dynamic_hints = self.build_debug_dynamic_hints(context, _user_msg)
+        if _dynamic_hints:
+            _user_msg = _user_msg + "\n\n" + _dynamic_hints
+        local_messages.append({"role": "user", "content": _user_msg})
+
+        _MAX_EXEC_FAILURES = context.get("debug_max_exec_failures", 3)
+        _exec_failures = 0
+        _stuck = StuckDetector(max_total_rounds=15)
+        _tool_call_meta: Dict[str, tuple] = {}
+        _last_round_had_fix = False
+
+        yield {"type": "model", "content": llm_manager._default}
+
+        while _exec_failures < _MAX_EXEC_FAILURES:
+            # 已消费工具结果清理
+            if _last_round_had_fix:
+                for _mi in range(len(local_messages)):
+                    _m = local_messages[_mi]
+                    if _m.get("role") == "tool" and isinstance(_m.get("content"), str):
+                        _tc_id = _m.get("tool_call_id", "")
+                        _tc_info = _tool_call_meta.get(_tc_id)
+                        if _tc_info and _tc_info[0] in ("read_script", "grep_script"):
+                            local_messages[_mi] = {**_m, "content": f"[已归档] {_tc_info[0]}: {_tc_info[1]}"}
+                _last_round_had_fix = False
+                _tool_call_meta.clear()
+
+            if should_compact(local_messages):
+                local_messages = await compact_messages(local_messages, llm_manager)
+
+            content = ""
+            tool_calls = []
+
+            async for event in llm_manager.chat_stream_with_tools_and_thinking(
+                messages=local_messages, tools=debug_tools, temperature=0.1,
+                model=llm_manager._default, tool_choice="auto",
+            ):
+                t = event["type"]
+                if t == "thinking":
+                    yield event
+                elif t == "content":
+                    content += event["content"]
+                    yield event
+                elif t == "tool_calls":
+                    tool_calls = event["tool_calls"]
+
+            if not tool_calls:
+                if content:
+                    yield {"type": "content", "content": content}
+                yield {"type": "done", "result": {"agent": self.name, "content": content or "未执行工具操作"}}
+                return
+
+            _has_fix = any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
+            if _has_fix:
+                _last_round_had_fix = True
+
+            # 工具调用显示
+            _script_name = context.get("debug_script_name", "main.py")
+            _actions = []
+            for tc in tool_calls:
+                _name = tc["function"]["name"]
+                _icon = {"read_script": "📖", "grep_script": "🔍", "edit_script": "✏️", "run_script": "▶️"}.get(_name, "")
+                _act = {"tool": _name, "icon": _icon, "script": _script_name}
+                try:
+                    _args = json.loads(tc["function"]["arguments"])
+                    if _name == "read_script":
+                        _offset = _args.get("offset", 0)
+                        _limit = _args.get("limit", 0)
+                        if _offset and _limit:
+                            _act["detail"] = f"L{_offset}-L{_offset + _limit - 1}"
+                    elif _name == "grep_script":
+                        _pattern = _args.get("pattern", "")
+                        if _pattern:
+                            _act["detail"] = f'"{_pattern[:40]}"'
+                    elif _name == "edit_script":
+                        _old = _args.get("old_string", "")
+                        _new = _args.get("new_string", "")
+                        if _old or _new:
+                            _diff_lines = [f"- {l}" for l in _old.splitlines()[:20]]
+                            _diff_lines += [f"+ {l}" for l in _new.splitlines()[:20]]
+                            _act["diff"] = "\n".join(_diff_lines)
+                except Exception:
+                    pass
+                _actions.append(_act)
+            yield {"type": "tool_action", "actions": _actions}
+
+            # StuckDetector
+            _stuck_hint = None
+            for tc in tool_calls:
+                try:
+                    _args = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    _args = {}
+                _hint = _stuck.record_tool_call(tc["function"]["name"], _args)
+                if _hint:
+                    _stuck_hint = _hint
+                    break
+            if _stuck_hint and "总轮次上限" in _stuck_hint:
+                yield {"type": "give_up", "reason": _stuck_hint}
+                yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
+                return
+
+            local_messages.append({
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
+            })
+
+            for tc in tool_calls:
+                if tc["function"]["name"] == "run_script":
+                    yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
+                    break
+
+            # 执行工具（复用 DataProcessorAgent 的执行逻辑）
+            async for _prog_evt in executor._execute_tools_with_progress(tool_calls, db, user_id, context):
+                yield _prog_evt
+            results = context.pop("_last_tool_results", [])
+
+            # 工具结果摘要
+            _result_lines = []
+            for r in results:
+                tool_name = ""
+                for tc in tool_calls:
+                    if tc["id"] == r["tool_call_id"]:
+                        tool_name = tc["function"]["name"]
+                        break
+
+                # tool 消息精简
+                if tool_name in ("read_script", "grep_script"):
+                    _tool_content = r["content"]
+                    try:
+                        _rd_meta = json.loads(r["content"])
+                        _meta_desc = _rd_meta.get("function") or _rd_meta.get("pattern") or _rd_meta.get("file") or ""
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, _meta_desc[:60])
+                    except Exception:
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, "")
+                elif tool_name == "run_script":
+                    _tool_content = _slim_run_script_result(r["content"])
+                    logger.info(f"[Analyst-debug] run_script tool_content for LLM: {repr(_tool_content[:1500])}")
+                else:
+                    _tool_content = truncate_tool_result(r["content"])
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _tool_content})
+
+                # 调查工具结果显示
+                try:
+                    _rd = json.loads(r["content"])
+                    if tool_name == "grep_script" and _rd.get("success"):
+                        _cnt = _rd.get("total_matches", 0)
+                        _matches = _rd.get("matches", [])
+                        _pattern = _rd.get("pattern", "")
+                        if _cnt == 0:
+                            _result_lines.append(f'  🔍 搜索 "{_pattern[:30]}" → 无匹配')
+                        else:
+                            _glines = [f'  🔍 搜索 "{_pattern[:30]}" → {_cnt} 个匹配:']
+                            for _m in _matches[:10]:
+                                for _sl in _m.get("snippet", "").split("\n"):
+                                    _sl = _sl.strip()
+                                    if _sl.startswith(">>"):
+                                        _glines.append(f"  {_sl}")
+                            if _cnt > 10:
+                                _glines.append(f"  ...（共 {_cnt} 个）")
+                            _result_lines.append("\n".join(_glines))
+                    elif tool_name == "read_script" and _rd.get("success"):
+                        _total = _rd.get("total_lines", 0)
+                        _func = _rd.get("function", "")
+                        _result_lines.append(f"  ✓ 已读取 {_func or ''} 共{_total}行".rstrip())
+                except Exception:
+                    pass
+
+                if tool_name == "edit_script":
+                    try:
+                        rdata = json.loads(r["content"])
+                    except json.JSONDecodeError:
+                        continue
+                    _mdata = rdata.get("modify", rdata)
+                    if _mdata.get("success"):
+                        yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                        if _mdata.get("skill_md_updated"):
+                            yield {"type": "skill_md_updated"}
+
+                if tool_name == "run_script":
+                    try:
+                        rdata = json.loads(r["content"])
+                    except json.JSONDecodeError as e:
+                        yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n"}
+                        continue
+                    yield {"type": "run_result", "result": rdata}
+
+                    _cls = classify_execution_result(rdata)
+                    _inner_r = _cls["inner_result"]
+                    _warn_text_r = _cls["warn_text"]
+
+                    if not _cls["is_fail"]:
+                        # 执行成功 → 直接返回（无 Inspector handoff）
+                        yield {"type": "done", "result": {
+                            "agent": self.name, "content": content or "执行成功", "success": True,
+                            "execution_success": True,
+                        }}
+                        return
+                    else:
+                        _err_msg = _cls["err_msg"]
+                        # 平台错误信号 → 立即退出
+                        if _cls["is_platform_issue"]:
+                            _reason = _build_platform_reason(_err_msg, _warn_text_r)
+                            yield {"type": "platform_issue", "message": _reason}
+                            yield {"type": "done", "result": {"agent": self.name, "content": _reason}}
+                            return
+                        # 执行错误计数
+                        _exec_failures += 1
+                        if _exec_failures >= _MAX_EXEC_FAILURES:
+                            _reason = _build_give_up_reason(_exec_failures, _err_msg)
+                            yield {"type": "give_up", "reason": _reason}
+                            yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
+                            return
+                        # 还有重试机会 → yield round 事件
+                        yield {"type": "round", "round": _exec_failures, "action": "execute"}
+
+                        _record_negative(
+                            context.get("debug_folder"), _err_msg, rdata,
+                            context.get("debug_script_name", "main.py"),
+                        )
+
+            # yield 调查工具结果摘要
+            if _result_lines:
+                yield {"type": "tool_summary", "summaries": _result_lines}
+
+            # StuckDetector 干预
+            if _stuck_hint:
+                local_messages.append({"role": "user", "content": _stuck_hint})
+
+        # 执行错误次数用完
+        yield {"type": "give_up", "reason": f"连续 {_exec_failures} 次执行失败"}
+        yield {"type": "done", "result": {"agent": self.name, "content": "执行失败"}}

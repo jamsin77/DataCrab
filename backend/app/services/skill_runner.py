@@ -603,6 +603,8 @@ if __name__ == "__main__":
         import sys as _sys
         _argv = _build_argv_from_params(params)
         _sys.argv = _argv
+        for _k, _v in params.items():
+            globals()[_k] = _v
         main()
     else:
         result = {function_name}(input_data, **params) if input_data is not None else {function_name}(**params)

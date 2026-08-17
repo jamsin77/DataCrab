@@ -1,0 +1,96 @@
+{
+  "negative": [
+    {
+      "timestamp": "2026-08-14T16:20:14.248792",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplwg5ah03.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplwg5ah03.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplwg5ah03.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T16:20:52.542719",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc00pixll.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc00pixll.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc00pixll.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T16:49:16.660165",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpaj53amfs.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpaj53amfs.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpaj53amfs.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T16:49:32.168781",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp54dbhzz2.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp54dbhzz2.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp54dbhzz2.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T17:27:53.251590",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgn7b5t01.py\", line 114, in _dc_get_datasource_id_by_name\n    with urllib.request.urlopen(url, timeout=10) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 216, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Program Files\\Python311\\Lib\\urllib\\request.py\", line 6, in open\n    response = ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T17:41:58.496295",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_d8n75md.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_d8n75md.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_d8n75md.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T17:42:26.079419",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_ltxsth0.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_ltxsth0.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp_ltxsth0.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T17:43:47.412725",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplhham5zv.py\", line 218, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplhham5zv.py\", line 193, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmplhham5zv.py\", line 124, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    },
+    {
+      "timestamp": "2026-08-14T17:45:58.362187",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyr0voj9_.py\", line 219, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyr0voj9_.py\", line 194, in main\n    return table_stats(\n           ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyr0voj9_.py\", line 122, in table_stats\n   ",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
+    }
+  ],
+  "positive": [],
+  "lessons": ""
+}

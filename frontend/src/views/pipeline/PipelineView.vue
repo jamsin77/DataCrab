@@ -18,59 +18,70 @@
       </div>
     </div>
 
-    <div class="op-grid" v-if="pipelines.length">
-      <el-card v-for="pl in pipelines" :key="pl.id" class="operator-card" shadow="hover">
-        <template #header>
-          <div class="card-header">
-            <span class="op-name">{{ pl.display_name || pl.name }}</span>
-            <el-tag size="small" type="primary">{{ pl.entry_function || 'main' }}</el-tag>
-          </div>
-        </template>
-        <p class="op-desc">{{ pl.description || '暂无描述' }}</p>
-        <div class="op-meta">
-          <el-tag v-if="pl.is_builtin" size="small" type="warning" effect="dark">内置</el-tag>
-          <el-tag v-if="pl.skill_calls?.length" size="small" type="info" effect="plain">
-            调用 {{ pl.skill_calls.length }} 个 Skill
-          </el-tag>
-          <el-tag v-else size="small" type="info" effect="plain">无 Skill 依赖</el-tag>
-          <el-tag v-if="pl.source_skill_id" size="small" type="warning" effect="plain">从 Skill 生成</el-tag>
+    <div class="pipeline-sections">
+      <div v-for="section in pipelineSections" :key="section.type" class="pipeline-section">
+        <div class="section-header">
+          <span class="section-title">
+            <el-icon><component :is="section.icon" /></el-icon>
+            {{ section.title }}
+          </span>
+          <el-tag size="small" :type="section.tagType" round>{{ section.list.length }} 个</el-tag>
         </div>
-        <div v-if="pl.parameters?.some((p: any) => p.default !== undefined)" class="op-params">
-          <el-tag
-            v-for="p in pl.parameters.filter((p: any) => p.default !== undefined)"
-            :key="p.name"
-            size="small"
-            type="success"
-            effect="plain"
-          >
-            {{ p.name }}={{ formatParamValue(p.default) }}
-          </el-tag>
+        <div class="op-grid" v-if="section.list.length">
+          <el-card v-for="pl in section.list" :key="pl.id" class="operator-card" shadow="hover">
+            <template #header>
+              <div class="card-header">
+                <span class="op-name">{{ pl.display_name || pl.name }}</span>
+                <el-tag size="small" :type="section.tagType">{{ section.type === 'analysis' ? '数据分析' : '数据处理' }}</el-tag>
+              </div>
+            </template>
+            <p class="op-desc">{{ pl.description || '暂无描述' }}</p>
+            <div class="op-meta">
+              <el-tag v-if="pl.is_builtin" size="small" type="warning" effect="dark">内置</el-tag>
+              <el-tag v-if="pl.skill_calls?.length" size="small" type="info" effect="plain">
+                调用 {{ pl.skill_calls.length }} 个 Skill
+              </el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">无 Skill 依赖</el-tag>
+              <el-tag v-if="pl.source_skill_id" size="small" type="warning" effect="plain">从 Skill 生成</el-tag>
+            </div>
+            <div v-if="pl.parameters?.some((p: any) => p.default !== undefined)" class="op-params">
+              <el-tag
+                v-for="p in pl.parameters.filter((p: any) => p.default !== undefined)"
+                :key="p.name"
+                size="small"
+                type="success"
+                effect="plain"
+              >
+                {{ p.name }}={{ formatParamValue(p.default) }}
+              </el-tag>
+            </div>
+            <div class="op-actions">
+              <div class="op-actions-row">
+                <el-button v-if="!pl.is_builtin" size="small" type="primary" @click="viewCode(pl)">
+                  <el-icon><Document /></el-icon> 查看
+                </el-button>
+                <el-button v-if="!pl.is_builtin" size="small" type="success" plain @click="openDebug(pl)">
+                  <el-icon><VideoPlay /></el-icon> 调试
+                </el-button>
+                <el-button v-if="!pl.is_builtin" size="small" @click="clonePipeline(pl)">
+                  <el-icon><CopyDocument /></el-icon> 另存
+                </el-button>
+                <el-button v-if="!pl.is_builtin" size="small" @click="downloadPipeline(pl)">
+                  <el-icon><Download /></el-icon> 导出
+                </el-button>
+                <el-button v-if="pl.is_builtin" size="small" type="info" plain disabled>
+                  <el-icon><Tools /></el-icon> 内置流程
+                </el-button>
+                <el-button v-if="!pl.is_builtin" size="small" type="danger" plain @click="deletePipeline(pl)">
+                  <el-icon><Delete /></el-icon> 删除
+                </el-button>
+              </div>
+            </div>
+          </el-card>
         </div>
-        <div class="op-actions">
-          <div class="op-actions-row">
-            <el-button v-if="!pl.is_builtin" size="small" type="primary" @click="viewCode(pl)">
-              <el-icon><Document /></el-icon> 查看
-            </el-button>
-            <el-button v-if="!pl.is_builtin" size="small" type="success" plain @click="openDebug(pl)">
-              <el-icon><VideoPlay /></el-icon> 调试
-            </el-button>
-            <el-button v-if="!pl.is_builtin" size="small" @click="clonePipeline(pl)">
-              <el-icon><CopyDocument /></el-icon> 另存
-            </el-button>
-            <el-button v-if="!pl.is_builtin" size="small" @click="downloadPipeline(pl)">
-              <el-icon><Download /></el-icon> 导出
-            </el-button>
-            <el-button v-if="pl.is_builtin" size="small" type="info" plain disabled>
-              <el-icon><Tools /></el-icon> 内置流程
-            </el-button>
-            <el-button v-if="!pl.is_builtin" size="small" type="danger" plain @click="deletePipeline(pl)">
-              <el-icon><Delete /></el-icon> 删除
-            </el-button>
-          </div>
-        </div>
-      </el-card>
+        <el-empty v-else :description="`暂无${section.title}`" />
+      </div>
     </div>
-    <el-empty v-else description="暂无流程" />
 
     <!-- 导入流程对话框 -->
     <el-dialog v-model="showImportDialog" title="导入流程" width="480px">
@@ -493,6 +504,7 @@ import {
   Search, VideoPlay, Document, CopyDocument,
   Delete, Download, CaretRight, ChatDotRound, Promotion, VideoPause, Refresh,
   UploadFilled, Loading, Clock, Plus, Tools, CircleCheck,
+  DataLine, DataAnalysis,
 } from '@element-plus/icons-vue'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -568,6 +580,29 @@ interface DebugMessage {
 
 const pipelines = ref<Pipeline[]>([])
 const searchText = ref('')
+
+function isAnalysisPipeline(pl: any): boolean {
+  const tags: any[] = pl?.tags || []
+  return tags.some((t: any) => String(t) === 'skill_type:analysis')
+}
+
+function applySearch(list: any[]) {
+  if (!searchText.value) return list
+  const q = searchText.value.toLowerCase()
+  return list.filter(
+    (pl: any) =>
+      (pl.name || '').toLowerCase().includes(q) ||
+      (pl.display_name || '').toLowerCase().includes(q) ||
+      (pl.description || '').toLowerCase().includes(q)
+  )
+}
+
+const processingPipelines = computed(() => applySearch(pipelines.value.filter((pl: any) => !isAnalysisPipeline(pl))))
+const analysisPipelines = computed(() => applySearch(pipelines.value.filter((pl: any) => isAnalysisPipeline(pl))))
+const pipelineSections = computed(() => [
+  { type: 'processing', title: '数据处理流程', icon: DataLine, tagType: 'primary', list: processingPipelines.value },
+  { type: 'analysis', title: '数据分析流程', icon: DataAnalysis, tagType: 'success', list: analysisPipelines.value },
+])
 const showImportDialog = ref(false)
 const importing = ref(false)
 const showCodeDrawer = ref(false)
@@ -1409,6 +1444,31 @@ onMounted(() => {
 
   .toolbar-left { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   .toolbar-right { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+}
+
+.pipeline-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.pipeline-section {
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--el-border-color-lighter);
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--el-text-color-primary);
+    }
+  }
 }
 
 .op-grid {

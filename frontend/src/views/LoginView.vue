@@ -39,7 +39,7 @@
         还没有账号？
         <el-link type="primary" @click="showRegister = true">注册</el-link>
         <span class="divider">|</span>
-        <el-link type="primary" @click="showReset = true">忘记密码</el-link>
+        <el-link type="primary" @click="showReset = true">修改密码</el-link>
       </div>
       <div v-if="version" class="login-version">v{{ version }}</div>
     </div>
@@ -63,8 +63,8 @@
       </template>
     </el-dialog>
 
-    <!-- 重置密码对话框 -->
-    <el-dialog v-model="showReset" title="重置密码" width="400px">
+    <!-- 修改密码对话框 -->
+    <el-dialog v-model="showReset" title="修改密码" width="400px">
       <el-form ref="resetFormRef" :model="resetForm" :rules="resetRules">
         <el-form-item prop="username" label="用户名">
           <el-input v-model="resetForm.username" />
@@ -81,7 +81,7 @@
       </el-form>
       <template #footer>
         <el-button @click="showReset = false">取消</el-button>
-        <el-button type="primary" :loading="resetLoading" @click="handleReset">确认重置</el-button>
+        <el-button type="primary" :loading="resetLoading" @click="handleReset">确认修改</el-button>
       </template>
     </el-dialog>
   </div>
@@ -196,14 +196,14 @@ async function handleReset() {
   resetLoading.value = true
   try {
     await authApi.resetPassword(resetForm.username, resetForm.old_password, resetForm.new_password)
-    ElMessage.success('密码重置成功，请用新密码登录')
+    ElMessage.success('密码修改成功，请用新密码登录')
     showReset.value = false
     resetForm.username = ''
     resetForm.old_password = ''
     resetForm.new_password = ''
     resetForm.confirm_password = ''
   } catch (e: any) {
-    ElMessage.error(extractError(e) || '重置失败')
+    ElMessage.error(extractError(e) || '修改失败')
   } finally {
     resetLoading.value = false
   }
