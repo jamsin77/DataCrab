@@ -186,23 +186,32 @@ def _migrate_builtin_flags(connection):
     try:
         result = connection.execute(text("PRAGMA table_info(llm_providers)"))
         columns = {row[1] for row in result.fetchall()}
-        # 旧列名 → 新列名迁移（default_flash_model → flash_model 等）
-        if "default_flash_model" in columns and "flash_model" not in columns:
+        # flash_model / vision_model / embedding_model 列：无条件添加缺失列（新数据库无旧列也要加）
+        if "flash_model" not in columns:
             connection.execute(text("ALTER TABLE llm_providers ADD COLUMN flash_model VARCHAR(100)"))
-            connection.execute(text("UPDATE llm_providers SET flash_model = default_flash_model WHERE flash_model IS NULL AND default_flash_model IS NOT NULL"))
-            logger.info("llm_providers表 flash_model 列已从 default_flash_model 迁移")
-        elif "fast_model" in columns and "flash_model" not in columns:
-            connection.execute(text("ALTER TABLE llm_providers ADD COLUMN flash_model VARCHAR(100)"))
-            connection.execute(text("UPDATE llm_providers SET flash_model = fast_model WHERE flash_model IS NULL AND fast_model IS NOT NULL"))
-            logger.info("llm_providers表 flash_model 列已从 fast_model 迁移")
-        if "default_vision_model" in columns and "vision_model" not in columns:
+            # 旧列名数据迁移（default_flash_model → flash_model / fast_model → flash_model）
+            if "default_flash_model" in columns:
+                connection.execute(text("UPDATE llm_providers SET flash_model = default_flash_model WHERE flash_model IS NULL AND default_flash_model IS NOT NULL"))
+                logger.info("llm_providers表 flash_model 列已从 default_flash_model 迁移")
+            elif "fast_model" in columns:
+                connection.execute(text("UPDATE llm_providers SET flash_model = fast_model WHERE flash_model IS NULL AND fast_model IS NOT NULL"))
+                logger.info("llm_providers表 flash_model 列已从 fast_model 迁移")
+            else:
+                logger.info("llm_providers表已添加 flash_model 列")
+        if "vision_model" not in columns:
             connection.execute(text("ALTER TABLE llm_providers ADD COLUMN vision_model VARCHAR(100)"))
-            connection.execute(text("UPDATE llm_providers SET vision_model = default_vision_model WHERE vision_model IS NULL AND default_vision_model IS NOT NULL"))
-            logger.info("llm_providers表 vision_model 列已从 default_vision_model 迁移")
-        if "default_embedding_model" in columns and "embedding_model" not in columns:
+            if "default_vision_model" in columns:
+                connection.execute(text("UPDATE llm_providers SET vision_model = default_vision_model WHERE vision_model IS NULL AND default_vision_model IS NOT NULL"))
+                logger.info("llm_providers表 vision_model 列已从 default_vision_model 迁移")
+            else:
+                logger.info("llm_providers表已添加 vision_model 列")
+        if "embedding_model" not in columns:
             connection.execute(text("ALTER TABLE llm_providers ADD COLUMN embedding_model VARCHAR(100)"))
-            connection.execute(text("UPDATE llm_providers SET embedding_model = default_embedding_model WHERE embedding_model IS NULL AND default_embedding_model IS NOT NULL"))
-            logger.info("llm_providers表 embedding_model 列已从 default_embedding_model 迁移")
+            if "default_embedding_model" in columns:
+                connection.execute(text("UPDATE llm_providers SET embedding_model = default_embedding_model WHERE embedding_model IS NULL AND default_embedding_model IS NOT NULL"))
+                logger.info("llm_providers表 embedding_model 列已从 default_embedding_model 迁移")
+            else:
+                logger.info("llm_providers表已添加 embedding_model 列")
     except Exception as e:
         logger.warning(f"llm_providers表迁移跳过: {e}")
 
