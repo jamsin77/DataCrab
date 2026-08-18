@@ -35,6 +35,7 @@ def parse_skill_md(content: str) -> Dict[str, Any]:
         "body": body.strip(),
         "name": front_matter.get("name", ""),
         "description": front_matter.get("description", ""),
+        "skill_type": front_matter.get("skill_type") or "processing",
     }
 
 

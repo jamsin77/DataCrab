@@ -55,7 +55,7 @@
             <el-divider />
             <p style="font-weight: bold; margin-bottom: 8px">导入结果</p>
             <el-tag v-for="(v, k) in importResult" :key="k" :type="v.skipped ? 'warning' : 'success'" style="margin: 2px">
-              {{ typeLabel(k) }}：导入 {{ v.imported }} / 跳过 {{ v.skipped }}
+              {{ typeLabel(k) }}：导入 {{ v.imported }}{{ v.updated ? ` / 更新 ${v.updated}` : '' }} / 跳过 {{ v.skipped }}
             </el-tag>
             <el-alert type="warning" :closable="false" show-icon style="margin-top: 12px" v-if="importTypes.includes('llm_config')">
               LLM Provider 已导入，但 API Key 未导入。请到「大模型管理」为各 Provider 填写 API Key。

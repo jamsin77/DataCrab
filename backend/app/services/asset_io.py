@@ -237,10 +237,13 @@ async def build_export_zip(types: List[str], db: AsyncSession, user_id=None) -> 
 # ============ 导入 ============
 
 async def import_skills(zf: zipfile.ZipFile, db: AsyncSession, overwrite: bool = False) -> Dict:
-    """导入技能：解压到 data/skills/，启动时自动 seed"""
+    """导入技能：解压到 data/skills/，并同步 skill_type 到 DB（已存在则更新 tags）"""
+    from app.models.skill import Skill
+    from app.services.skill_parser import get_skill_info_from_path
+
     skill_base = Path(settings.SKILL_STORAGE_PATH)
     skill_base.mkdir(parents=True, exist_ok=True)
-    imported, skipped = 0, 0
+    imported, skipped, updated = 0, 0, 0
     skill_folders = set()
     for name in zf.namelist():
         if not name.startswith("skills/") or name.endswith("/"):
@@ -264,7 +267,23 @@ async def import_skills(zf: zipfile.ZipFile, db: AsyncSession, overwrite: bool =
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(zf.read(name))
         imported += 1
-    return {"imported": imported, "skipped": skipped}
+        # 同步 skill_type 到 DB（按 skill_path 文件夹名匹配）
+        info = get_skill_info_from_path(target)
+        new_type = info.get("skill_type") or "processing"
+        skill_name = info.get("name") or folder_name
+        result = await db.execute(select(Skill).where(Skill.skill_path == folder_name))
+        existing_skill = result.scalar_one_or_none()
+        if existing_skill:
+            existing_tags = [t for t in (existing_skill.tags or []) if not (isinstance(t, str) and t.startswith("skill_type:"))]
+            existing_tags.append(f"skill_type:{new_type}")
+            existing_skill.tags = existing_tags
+            if info.get("display_name"):
+                existing_skill.display_name = info["display_name"]
+            if info.get("description") is not None:
+                existing_skill.description = info["description"]
+            updated += 1
+    await db.flush()
+    return {"imported": imported, "skipped": skipped, "updated": updated}
 
 
 async def import_operators(data: List[Dict], db: AsyncSession, overwrite: bool = False) -> Dict:
