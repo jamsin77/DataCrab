@@ -4,9 +4,6 @@ import type { AxiosInstance, AxiosResponse } from 'axios'
 const api: AxiosInstance = axios.create({
   baseURL: '/api/v1',
   timeout: 120000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
 })
 
 // 请求拦截器

@@ -102,6 +102,13 @@ function typeLabel(k: string): string {
   return m[k] || k
 }
 
+function extractErr(e: any): string {
+  const detail = e?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ')
+  return e?.message || '未知错误'
+}
+
 async function doExport() {
   exporting.value = true
   try {
@@ -115,7 +122,7 @@ async function doExport() {
     URL.revokeObjectURL(url)
     ElMessage.success('导出成功')
   } catch (e: any) {
-    ElMessage.error('导出失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('导出失败: ' + extractErr(e))
   } finally {
     exporting.value = false
   }
@@ -135,7 +142,7 @@ async function onFileSelected(file: File) {
       importTypes.value = Object.keys(previewManifest.value.counts)
     }
   } catch (e: any) {
-    ElMessage.error('读取 zip 失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('读取 zip 失败: ' + extractErr(e))
   }
   return false // 阻止自动上传
 }
@@ -153,7 +160,7 @@ async function doImport() {
     ElMessage.success('导入完成')
     loadCounts()
   } catch (e: any) {
-    ElMessage.error('导入失败: ' + (e.response?.data?.detail || e.message))
+    ElMessage.error('导入失败: ' + extractErr(e))
   } finally {
     importing.value = false
   }

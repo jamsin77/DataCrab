@@ -3,9 +3,10 @@
 API Key / 密码 不导出，导入后用户手动填。
 """
 import json
+import zipfile
 from typing import List
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -74,7 +75,14 @@ async def import_preview(
 ):
     """上传 zip 后预览：显示 manifest（各类型数量），不执行导入。"""
     zip_bytes = await file.read()
-    manifest = await read_zip_manifest(zip_bytes)
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=422, detail="请上传 .zip 文件")
+    try:
+        manifest = await read_zip_manifest(zip_bytes)
+    except (zipfile.BadZipFile, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
+    if not manifest:
+        raise HTTPException(status_code=422, detail="zip 中缺少 manifest.json，可能不是 DataCrab 导出的资产包")
     return manifest
 
 
@@ -88,7 +96,12 @@ async def import_assets(
 ):
     """导入 zip 资产。types 是逗号分隔的资产类型，可选择只导入部分。"""
     zip_bytes = await file.read()
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=422, detail="请上传 .zip 文件")
     type_list = [t.strip() for t in types.split(",") if t.strip()]
-    result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite)
+    try:
+        result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite)
+    except (zipfile.BadZipFile, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
     await db.commit()
     return result
