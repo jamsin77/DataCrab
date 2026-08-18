@@ -149,7 +149,7 @@ async def upload_operator(
         function_name=func_name,
         tags=[],
         visibility="private",
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(operator)
     await db.flush()
@@ -323,7 +323,7 @@ async def create_operator(
         code_template=request.code_template,
         tags=request.tags,
         visibility=request.visibility,
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(operator)
     await db.flush()
@@ -345,7 +345,7 @@ async def list_operators(
     shared_ids = await get_accessible_resource_ids(db, current_user.id, "operator")
     query = select(Operator).where(
         or_(
-            Operator.author == current_user.id,
+            Operator.created_by == current_user.id,
             Operator.visibility == "public",
             Operator.id.in_(shared_ids) if shared_ids else False,
         )
@@ -450,7 +450,7 @@ async def clone_operator(
         function_name=operator.function_name,
         tags=[*((operator.tags or []))],
         visibility=operator.visibility,
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(clone)
     await db.flush()
@@ -651,17 +651,17 @@ async def check_similar_operators(
     items = []
     for op, score, reason in matched:
         can_use = (
-            op.author == current_user.id
+            op.created_by == current_user.id
             or op.visibility == "public"
             or op.id in shared_ids
         )
         owner_name = None
         owner_email = None
-        if not can_use and op.author:
-            if op.author not in owner_cache:
-                user_result = await db.execute(select(User).where(User.id == op.author))
-                owner_cache[op.author] = user_result.scalar_one_or_none()
-            owner = owner_cache[op.author]
+        if not can_use and op.created_by:
+            if op.created_by not in owner_cache:
+                user_result = await db.execute(select(User).where(User.id == op.created_by))
+                owner_cache[op.created_by] = user_result.scalar_one_or_none()
+            owner = owner_cache[op.created_by]
             if owner:
                 owner_name = owner.display_name or owner.username
                 owner_email = owner.email
@@ -740,7 +740,7 @@ async def generate_operator(
         function_name=func_name,
         tags=["ai_generated"],
         visibility="private",
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(operator)
     await db.flush()
@@ -954,7 +954,7 @@ async def generate_operator_stream(
                 function_name=func_name,
                 tags=["ai_generated"],
                 visibility="private",
-                author=current_user.id,
+                created_by=current_user.id,
             )
             db.add(operator)
             await db.flush()

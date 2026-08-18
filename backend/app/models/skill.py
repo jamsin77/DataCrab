@@ -25,7 +25,7 @@ class Skill(Base):
     category = Column(String(50), index=True)
 
     version = Column(String(20), default="1.0.0")
-    author = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     visibility = Column(String(20), index=True)
 
     usage_count = Column(Integer, default=0)

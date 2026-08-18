@@ -174,7 +174,7 @@ async def list_skills(
     shared_ids = await get_accessible_resource_ids(db, current_user.id, "skill")
     query = select(Skill).where(
         or_(
-            Skill.author == current_user.id,
+            Skill.created_by == current_user.id,
             Skill.visibility == "public",
             Skill.id.in_(shared_ids) if shared_ids else False,
         )
@@ -239,7 +239,7 @@ async def create_skill(
         tags=request.tags,
         category=request.category,
         visibility=request.visibility or "public",
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(skill)
     await db.flush()
@@ -419,7 +419,7 @@ async def upload_skill(
             tags=_merge_skill_type_tag(parsed.get("front_matter"), parsed.get("front_matter", {}).get("tags", [])),
             category=parsed.get("front_matter", {}).get("category"),
             visibility="public",
-            author=current_user.id,
+            created_by=current_user.id,
         )
         db.add(skill)
         await db.flush()
@@ -1236,17 +1236,17 @@ async def check_similar_skills(
     items = []
     for skill, score, reason in matched:
         can_use = (
-            skill.author == current_user.id
+            skill.created_by == current_user.id
             or skill.visibility == "public"
             or skill.id in shared_ids
         )
         owner_name = None
         owner_email = None
-        if not can_use and skill.author:
-            if skill.author not in owner_cache:
-                user_result = await db.execute(select(User).where(User.id == skill.author))
-                owner_cache[skill.author] = user_result.scalar_one_or_none()
-            owner = owner_cache[skill.author]
+        if not can_use and skill.created_by:
+            if skill.created_by not in owner_cache:
+                user_result = await db.execute(select(User).where(User.id == skill.created_by))
+                owner_cache[skill.created_by] = user_result.scalar_one_or_none()
+            owner = owner_cache[skill.created_by]
             if owner:
                 owner_name = owner.display_name or owner.username
                 owner_email = owner.email
@@ -1316,7 +1316,7 @@ async def generate_skill_endpoint(
         tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
         category=front_matter.get("category", "ai_generated"),
         visibility="private",
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(skill)
     await db.flush()
@@ -1393,7 +1393,7 @@ async def generate_skill_stream_endpoint(
             tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
             category=front_matter.get("category", "ai_generated"),
             visibility="private",
-            author=current_user.id,
+            created_by=current_user.id,
         )
         db.add(skill)
         await db.flush()
@@ -1436,7 +1436,7 @@ async def clone_skill(
         tags=[*(skill.tags or [])],
         category=skill.category,
         visibility=skill.visibility,
-        author=current_user.id,
+        created_by=current_user.id,
     )
     db.add(clone)
     await db.flush()

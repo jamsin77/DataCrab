@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(_migrate_skills)
         await conn.run_sync(_migrate_custom_extensions)
         await conn.run_sync(_migrate_builtin_flags)
+        await conn.run_sync(_migrate_author_to_created_by)
     logger.info("数据库表已创建")
     await _seed_skills_and_pipelines()
     await _load_custom_extensions()
@@ -214,6 +215,24 @@ def _migrate_builtin_flags(connection):
                 logger.info("llm_providers表已添加 embedding_model 列")
     except Exception as e:
         logger.warning(f"llm_providers表迁移跳过: {e}")
+
+
+def _migrate_author_to_created_by(connection):
+    """skills/operators 表 author 列 → created_by 列（SQLite 不支持 rename，走 add+update）"""
+    from sqlalchemy import text
+    for table in ("skills", "operators"):
+        try:
+            result = connection.execute(text(f"PRAGMA table_info({table})"))
+            columns = {row[1] for row in result.fetchall()}
+            if "author" not in columns:
+                continue  # 全新库，模型已定义 created_by，无需迁移
+            if "created_by" not in columns:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN created_by VARCHAR(32)"))
+            connection.execute(text(f"UPDATE {table} SET created_by = author WHERE created_by IS NULL"))
+            connection.execute(text(f"ALTER TABLE {table} DROP COLUMN author"))
+            logger.info(f"{table}表 author 列已迁移为 created_by")
+        except Exception as e:
+            logger.warning(f"{table}表 author→created_by 迁移跳过: {e}")
 
 
 async def _seed_skills_and_pipelines():

@@ -179,7 +179,7 @@ async def collect_all_lessons(db, user_id) -> str:
     try:
         from app.models.operator import Operator
         from sqlalchemy import select
-        res = await db.execute(select(Operator).where(Operator.author == user_id))
+        res = await db.execute(select(Operator).where(Operator.created_by == user_id))
         for op in res.scalars():
             ls = read_lessons(operator_experience_dir(op.id))
             if ls:
@@ -191,7 +191,7 @@ async def collect_all_lessons(db, user_id) -> str:
         from app.models.skill import Skill
         from sqlalchemy import select
         skill_base = Path(settings.SKILL_STORAGE_PATH)
-        res = await db.execute(select(Skill).where(Skill.author == user_id))
+        res = await db.execute(select(Skill).where(Skill.created_by == user_id))
         for s in res.scalars():
             sp = skill_base / str(s.id)
             ls = read_lessons(sp)
@@ -245,7 +245,7 @@ async def distill_cross_patterns(db, user_id) -> str:
     try:
         from app.models.operator import Operator
         from sqlalchemy import select
-        res = await db.execute(select(Operator).where(Operator.author == user_id))
+        res = await db.execute(select(Operator).where(Operator.created_by == user_id))
         for op in res.scalars():
             ls = read_lessons(operator_experience_dir(op.id))
             if ls:
@@ -257,7 +257,7 @@ async def distill_cross_patterns(db, user_id) -> str:
         from sqlalchemy import select
         from app.core.config import settings
         skill_base = Path(settings.SKILL_STORAGE_PATH)
-        res = await db.execute(select(Skill).where(Skill.author == user_id))
+        res = await db.execute(select(Skill).where(Skill.created_by == user_id))
         for s in res.scalars():
             sp = skill_base / str(s.id)
             ls = read_lessons(sp)
