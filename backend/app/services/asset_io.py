@@ -154,7 +154,57 @@ async def export_rules(zf: zipfile.ZipFile, db: AsyncSession) -> int:
     return len(data)
 
 
-async def build_export_zip(types: List[str], db: AsyncSession) -> bytes:
+async def export_schedules(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
+    """导出调度：当前用户创建的调度 → schedules.json（task_target_id 换成 task_target_name 跨机器稳定）"""
+    from app.models.schedule import Schedule
+    from app.models.pipeline import Pipeline
+    from app.models.operator import Operator
+    from app.models.skill import Skill
+
+    # 构建 (task_type, task_target_id) → name 映射
+    pipelines = (await db.execute(select(Pipeline))).scalars().all()
+    operators = (await db.execute(select(Operator))).scalars().all()
+    skills = (await db.execute(select(Skill))).scalars().all()
+    id2name: Dict = {}
+    for p in pipelines:
+        id2name[("pipeline", str(p.id))] = p.name
+    for o in operators:
+        id2name[("operator", str(o.id))] = o.name
+    for s in skills:
+        id2name[("skill", str(s.id))] = s.name
+
+    # 只导出当前用户创建的调度（内置调度 created_by 为空，不导出）
+    q = select(Schedule)
+    if user_id is not None:
+        q = q.where(Schedule.created_by == user_id)
+    schedules = (await db.execute(q)).scalars().all()
+    data = []
+    for sch in schedules:
+        target_name = id2name.get((sch.task_type, str(sch.task_target_id)), "")
+        data.append({
+            "name": sch.name,
+            "description": sch.description or "",
+            "task_type": sch.task_type,
+            "task_target_name": target_name,
+            "task_params": sch.task_params or {},
+            "schedule_type": sch.schedule_type,
+            "cron_expression": sch.cron_expression,
+            "timezone": sch.timezone or "UTC",
+            "interval_seconds": sch.interval_seconds,
+            "event_config": sch.event_config or {},
+            "max_retries": sch.max_retries if sch.max_retries is not None else 3,
+            "retry_interval": sch.retry_interval if sch.retry_interval is not None else 60,
+            "timeout": sch.timeout if sch.timeout is not None else 3600,
+            "concurrent_runs": sch.concurrent_runs if sch.concurrent_runs is not None else 1,
+            "run_mode": sch.run_mode or "normal",
+            "status": sch.status or "active",
+            "is_builtin": bool(sch.is_builtin),
+        })
+    zf.writestr("schedules.json", json.dumps(data, ensure_ascii=False, indent=2))
+    return len(data)
+
+
+async def build_export_zip(types: List[str], db: AsyncSession, user_id=None) -> bytes:
     """构建导出 zip，返回字节流。types 指定要导出的资产类型。"""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -177,6 +227,8 @@ async def build_export_zip(types: List[str], db: AsyncSession) -> bytes:
             manifest["counts"]["custom_extensions"] = await export_custom_extensions(zf, db)
         if "rules" in types:
             manifest["counts"]["rules"] = await export_rules(zf, db)
+        if "schedules" in types:
+            manifest["counts"]["schedules"] = await export_schedules(zf, db, user_id)
         manifest["elapsed_ms"] = round((datetime.utcnow() - t0).total_seconds() * 1000, 2)
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return buf.getvalue()
@@ -363,6 +415,70 @@ async def import_rules(data: Dict, db: AsyncSession) -> Dict:
     return {"imported": imported, "skipped": 0}
 
 
+async def import_schedules(data: List[Dict], db: AsyncSession, user_id, overwrite: bool = False) -> Dict:
+    """导入调度：JSON → DB（task_target_name 反查 task_target_id，按 name 去重）
+    放在最后导入：依赖 skills/operators/pipelines 已先导入。
+    """
+    from app.models.schedule import Schedule
+    from app.models.pipeline import Pipeline
+    from app.models.operator import Operator
+    from app.models.skill import Skill
+    from uuid import uuid4
+
+    # 构建 name → id 映射（按 task_type 分表）
+    pipelines = (await db.execute(select(Pipeline))).scalars().all()
+    operators = (await db.execute(select(Operator))).scalars().all()
+    skills = (await db.execute(select(Skill))).scalars().all()
+    name2id = {
+        "pipeline": {p.name: str(p.id) for p in pipelines},
+        "operator": {o.name: str(o.id) for o in operators},
+        "skill": {s.name: str(s.id) for s in skills},
+    }
+
+    existing = (await db.execute(select(Schedule.name).where(Schedule.created_by == user_id))).scalars().all()
+    existing_names = set(existing)
+    imported, skipped, unresolved = 0, 0, 0
+    for sch in data:
+        name = sch.get("name", "")
+        if not name or name in existing_names:
+            skipped += 1
+            continue
+        task_type = sch.get("task_type", "")
+        task_target_name = sch.get("task_target_name", "")
+        task_target_id = name2id.get(task_type, {}).get(task_target_name)
+        if not task_target_id:
+            # 目标资产未导入或不存在，跳过该调度
+            unresolved += 1
+            skipped += 1
+            continue
+        schedule = Schedule(
+            id=uuid4(),
+            name=name,
+            description=sch.get("description") or "",
+            task_type=task_type,
+            task_target_id=task_target_id,
+            task_params=sch.get("task_params") or {},
+            schedule_type=sch.get("schedule_type") or "manual",
+            cron_expression=sch.get("cron_expression"),
+            timezone=sch.get("timezone") or "UTC",
+            interval_seconds=sch.get("interval_seconds"),
+            event_config=sch.get("event_config") or {},
+            max_retries=sch.get("max_retries", 3),
+            retry_interval=sch.get("retry_interval", 60),
+            timeout=sch.get("timeout", 3600),
+            concurrent_runs=sch.get("concurrent_runs", 1),
+            run_mode=sch.get("run_mode", "normal"),
+            status=sch.get("status", "active"),
+            is_builtin=sch.get("is_builtin", False),
+            created_by=user_id,
+        )
+        db.add(schedule)
+        existing_names.add(name)
+        imported += 1
+    await db.flush()
+    return {"imported": imported, "skipped": skipped, "unresolved": unresolved}
+
+
 async def read_zip_manifest(zip_bytes: bytes) -> Dict:
     """读取 zip 里的 manifest.json（导入前预览用）"""
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
@@ -394,6 +510,9 @@ async def import_from_zip(zip_bytes: bytes, types: List[str], db: AsyncSession, 
         if "rules" in types and "rules.json" in zf.namelist():
             data = json.loads(zf.read("rules.json"))
             result["rules"] = await import_rules(data, db)
+        if "schedules" in types and "schedules.json" in zf.namelist():
+            data = json.loads(zf.read("schedules.json"))
+            result["schedules"] = await import_schedules(data, db, user_id, overwrite)
     finally:
         zf.close()
     return result

@@ -19,6 +19,7 @@
             <el-checkbox label="llm_config">LLM 配置（{{ counts.llm_config }} 个 Provider）</el-checkbox>
             <el-checkbox label="custom_extensions">自定义连接器（{{ counts.custom_extensions }} 个）</el-checkbox>
             <el-checkbox label="rules">数据规则（{{ counts.rules }} 项）</el-checkbox>
+            <el-checkbox label="schedules">调度（{{ counts.schedules }} 个，仅当前用户）</el-checkbox>
           </el-checkbox-group>
           <el-button type="primary" :loading="exporting" :disabled="!exportTypes.length" @click="doExport" style="margin-top: 16px">
             导出 zip
@@ -79,7 +80,7 @@ const overwrite = ref(false)
 const previewManifest = ref<any>(null)
 const importResult = ref<any>(null)
 const selectedFile = ref<File | null>(null)
-const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, rules: 0 })
+const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, rules: 0, schedules: 0 })
 
 onMounted(() => {
   loadCounts()
@@ -97,7 +98,7 @@ async function loadCounts() {
 function typeLabel(k: string): string {
   const m: Record<string, string> = {
     skills: '技能', operators: '算子', pipelines: '流程',
-    llm_config: 'LLM 配置', custom_extensions: '连接器', rules: '数据规则',
+    llm_config: 'LLM 配置', custom_extensions: '连接器', rules: '数据规则', schedules: '调度',
   }
   return m[k] || k
 }

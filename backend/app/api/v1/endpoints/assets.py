@@ -20,7 +20,7 @@ from app.services.asset_io import build_export_zip, import_from_zip, read_zip_ma
 router = APIRouter()
 
 
-SUPPORTED_TYPES = ["skills", "operators", "pipelines", "llm_config", "custom_extensions", "rules"]
+SUPPORTED_TYPES = ["skills", "operators", "pipelines", "llm_config", "custom_extensions", "rules", "schedules"]
 
 
 class ExportRequest(BaseModel):
@@ -38,6 +38,7 @@ async def asset_counts(
     from app.models.operator import Operator
     from app.models.pipeline import Pipeline
     from app.models.custom_extension import LLMProvider, CustomConnector
+    from app.models.schedule import Schedule
     from pathlib import Path
 
     counts = {}
@@ -48,6 +49,7 @@ async def asset_counts(
     counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.is_active == True))).scalar() or 0
     rules_dir = Path(settings.SKILL_STORAGE_PATH).parent / "rules"
     counts["rules"] = sum(1 for n in ("data_standards", "data_quality", "data_security") if (rules_dir / f"{n}.md").exists())
+    counts["schedules"] = (await db.execute(select(func.count()).select_from(Schedule).where(Schedule.created_by == current_user.id))).scalar() or 0
     return counts
 
 
@@ -57,8 +59,8 @@ async def export_assets(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """导出选中资产为 zip。API Key 不导出。"""
-    zip_bytes = await build_export_zip(req.types, db)
+    """导出选中资产为 zip。API Key 不导出。调度只导出当前用户创建的。"""
+    zip_bytes = await build_export_zip(req.types, db, current_user.id)
     ts = __import__("datetime").datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     filename = f"datacrab_assets_{ts}.zip"
     return StreamingResponse(
