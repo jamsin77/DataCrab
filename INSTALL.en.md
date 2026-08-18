@@ -4,10 +4,15 @@
 
 | Tool | Version |
 |------|---------|
-| Python | 3.11+ |
+| Python | 3.11+ (must include sqlite3 module; official installers do by default) |
 | Node.js | 18+ |
 | npm | 9+ |
 | Git | 2.0+ |
+
+> **Python notes**:
+> - Windows: install 3.11+ from [python.org](https://www.python.org/downloads/), check "Add Python to PATH". The install script auto-detects via `py` launcher.
+> - Linux: if system Python is below 3.11 (e.g. CentOS default 3.6), install 3.11+ and ensure `python3` points to it.
+> - If you see `No module named '_sqlite3'`: Python was built without sqlite. Install `sqlite-devel` (RHEL) or `libsqlite3-dev` (Debian) then rebuild Python.
 
 ## 1. Clone
 
@@ -22,15 +27,22 @@ cd data-crab
 npm install
 ```
 
-This automatically installs:
-- Root tools (concurrently, for starting frontend + backend together)
-- Frontend npm dependencies
-- Backend Python core dependencies
+This automatically:
+- Installs root tools (concurrently, for starting frontend + backend together)
+- Installs frontend npm dependencies (`frontend/`)
+- **Detects Python 3.11+ and sqlite3 module**, then runs `python -m pip install -e ./backend` to install backend deps
+
+> If backend dependency install fails, run manually:
+> ```bash
+> python -m pip install -e ./backend
+> # or core deps only
+> python -m pip install -r ./backend/requirements.txt
+> ```
 
 > **Optional**:
 > - Knowledge base RAG or OBS storage:
 >   ```bash
->   pip install -e ./backend[all]
+>   python -m pip install -e ./backend[all]
 >   ```
 > - Video processing (keyframe scene detection): install [ffmpeg](https://ffmpeg.org/download.html) and add to PATH. Falls back to opencv interval extraction if not installed.
 
@@ -69,12 +81,12 @@ Terminal shows color-tagged logs:
 
 | Command | Description |
 |---------|-------------|
-| `npm install` | Install all dependencies (root + frontend + backend) |
+| `npm install` | Install all dependencies (root + frontend + backend, with Python env check) |
 | `npm run dev` | Start dev environment (frontend + backend) |
 | `npm run dev:backend` | Start backend only (hot reload) |
 | `npm run dev:frontend` | Start frontend only |
 | `npm run build:frontend` | Build frontend production bundle |
-| `pip install -e ./backend[all]` | Install optional dependencies (KB + OBS) |
+| `python -m pip install -e ./backend[all]` | Install optional dependencies (KB + OBS) |
 
 ## Docker Deployment
 

@@ -4,10 +4,15 @@
 
 | 工具 | 版本要求 |
 |------|---------|
-| Python | 3.11+ |
+| Python | 3.11+（需包含 sqlite3 模块，官方安装包默认含） |
 | Node.js | 18+ |
 | npm | 9+ |
 | Git | 2.0+ |
+
+> **Python 说明**：
+> - Windows：从 [python.org](https://www.python.org/downloads/) 安装 3.11+，安装时勾选 "Add Python to PATH"。脚本会自动通过 `py` 启动器查找。
+> - Linux：系统自带 Python 若低于 3.11（如 CentOS 默认 3.6），请安装 3.11+ 并确保 `python3` 指向它。
+> - 若报 `No module named '_sqlite3'`：Python 编译时未启用 sqlite，需先装 `sqlite-devel`（RHEL 系）或 `libsqlite3-dev`（Debian 系）再重编译 Python。
 
 ## 1. 克隆项目
 
@@ -22,15 +27,22 @@ cd data-crab
 npm install
 ```
 
-这会自动安装：
-- 根目录工具（concurrently，用于同时启动前后端）
-- 前端 npm 依赖
-- 后端 Python 核心依赖
+这会自动：
+- 安装根目录工具（concurrently，用于同时启动前后端）
+- 安装前端 npm 依赖（`frontend/`）
+- **检测 Python 3.11+ 与 sqlite3 模块**，通过后用 `python -m pip install -e ./backend` 安装后端依赖
+
+> 若后端依赖安装失败，可手动执行：
+> ```bash
+> python -m pip install -e ./backend
+> # 或仅核心依赖
+> python -m pip install -r ./backend/requirements.txt
+> ```
 
 > **可选依赖**：
 > - 文档知识库 RAG 或 OBS 对象存储：
 >   ```bash
->   pip install -e ./backend[all]
+>   python -m pip install -e ./backend[all]
 >   ```
 > - 视频处理（关键帧场景检测）：安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入 PATH。未安装时自动回退 opencv 等间隔抽帧。
 
@@ -69,12 +81,12 @@ npm run dev
 
 | 命令 | 说明 |
 |------|------|
-| `npm install` | 安装全部依赖（根目录 + 前端 + 后端） |
+| `npm install` | 安装全部依赖（根目录 + 前端 + 后端，含 Python 环境检测） |
 | `npm run dev` | 启动开发环境（前后端同时） |
 | `npm run dev:backend` | 仅启动后端（热重载） |
 | `npm run dev:frontend` | 仅启动前端 |
 | `npm run build:frontend` | 构建前端生产包 |
-| `pip install -e ./backend[all]` | 安装可选依赖（知识库 + OBS） |
+| `python -m pip install -e ./backend[all]` | 安装可选依赖（知识库 + OBS） |
 
 ## Docker 部署
 

@@ -215,7 +215,7 @@ async def build_datasource_context(
     db: AsyncSession,
     user_id: UUID,
     user_message: str = "",
-) -> str:
+) -> tuple:
     result = await db.execute(
         select(DataSource).where(
             DataSource.is_active == True,
