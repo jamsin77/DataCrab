@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # 数据库配置
+    # 默认相对路径相对于 backend/ 目录；生产环境可设置绝对路径或 PG 连接串
     DATABASE_URL: str = "sqlite+aiosqlite:///./datacrab.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
@@ -75,6 +76,12 @@ class Settings(BaseSettings):
 settings = Settings()
 
 import os as _os
+_backend_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 if not _os.path.isabs(settings.SKILL_STORAGE_PATH):
-    _backend_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     settings.SKILL_STORAGE_PATH = _os.path.join(_backend_dir, settings.SKILL_STORAGE_PATH)
+
+# SQLite 相对路径锚定到 backend/ 目录，避免因启动 cwd 不同而读到错误的数据库文件
+if settings.DATABASE_URL.startswith("sqlite+aiosqlite:///./"):
+    _sqlite_path = settings.DATABASE_URL[len("sqlite+aiosqlite:///./"):]
+    if not _os.path.isabs(_sqlite_path):
+        settings.DATABASE_URL = "sqlite+aiosqlite:///" + _os.path.join(_backend_dir, _sqlite_path)
