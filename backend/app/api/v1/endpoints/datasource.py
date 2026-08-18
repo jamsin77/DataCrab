@@ -122,7 +122,7 @@ async def list_datasources(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取数据源列表"""
+    """获取数据源列表（虚拟数据源「聊天上传数据」始终排第一位）"""
     shared_ids = await get_accessible_resource_ids(db, current_user.id, "datasource")
     query = select(DataSource).where(
         DataSource.is_active == True,
@@ -135,7 +135,20 @@ async def list_datasources(
         query = query.where(DataSource.type == datasource_type)
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
-    return result.scalars().all()
+    all_ds = list(result.scalars().all())
+    # 虚拟数据源排第一，其余按 created_at desc
+    all_ds.sort(key=lambda ds: (0 if getattr(ds, "is_virtual", False) else 1,
+                                -(ds.created_at.timestamp() if ds.created_at else 0)))
+    return all_ds
+
+
+def _reject_virtual(datasource, action: str):
+    """虚拟数据源受保护，禁止修改/删除/测试/同步"""
+    if getattr(datasource, "is_virtual", False):
+        raise HTTPException(
+            status_code=status_code.HTTP_403_FORBIDDEN,
+            detail=f"虚拟数据源「{datasource.name}」受保护，不可{action}",
+        )
 
 
 @router.get("/{datasource_id}", response_model=DataSourceResponse)
@@ -169,6 +182,8 @@ async def update_datasource(
     datasource = result.scalar_one_or_none()
     if not datasource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+
+    _reject_virtual(datasource, "修改")
 
     update_data = request.model_dump(exclude_unset=True)
 
@@ -209,6 +224,7 @@ async def delete_datasource(
     datasource = result.scalar_one_or_none()
     if not datasource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+    _reject_virtual(datasource, "删除")
     datasource.is_active = False
     await db.flush()
 
@@ -224,6 +240,8 @@ async def test_connection(
     datasource = result.scalar_one_or_none()
     if not datasource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+
+    _reject_virtual(datasource, "测试")
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})

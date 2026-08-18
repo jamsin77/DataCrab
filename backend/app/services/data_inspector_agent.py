@@ -215,6 +215,18 @@ class DataInspectorAgent(BaseAgent):
         context["current_datasource_id"] = message.payload.get("datasource_id", "")
         context["current_table_name"] = message.payload.get("table_name", "")
 
+        # 加载技能专属规则（如有 skill_path 且存在 rules.md）
+        skill_rules = None
+        _skill_path = context.get("debug_skill_path") or message.payload.get("skill_path")
+        if _skill_path:
+            try:
+                from app.services.standards_parser import parse_skill_rules
+                skill_rules = parse_skill_rules(_skill_path)
+                if not (skill_rules.get("std") or skill_rules.get("dq") or skill_rules.get("sec")):
+                    skill_rules = None  # 全空则不传，避免无谓循环
+            except Exception as e:
+                logger.warning(f"加载技能规则失败(非致命): {e}")
+
         await llm_manager.initialize()
 
         system_prompt = self.build_system_prompt(context)
@@ -230,7 +242,7 @@ class DataInspectorAgent(BaseAgent):
             # 预执行所有检查（加载数据1次 → 4项检查 → 紧凑报告）
             yield {"type": "inspecting", "message": "正在执行数据质量检查..."}
             from app.services.inspector_tools import inspector_tools
-            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db, skill_rules=skill_rules)
             context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 
@@ -250,7 +262,7 @@ class DataInspectorAgent(BaseAgent):
             # 复查：重新预执行（清缓存，加载最新数据）
             yield {"type": "inspecting", "message": "正在复查数据质量..."}
             from app.services.inspector_tools import inspector_tools
-            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db)
+            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db, skill_rules=skill_rules)
             context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 

@@ -7,7 +7,7 @@ from collections import OrderedDict
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -51,8 +51,150 @@ async def get_agent_config():
     return agent_config.to_dict()
 
 
+# 聊天附件上传
+_UPLOAD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "data", "uploads",
+)
+_MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
+_ALLOWED_EXCEL_EXTS = {".xlsx", ".xls"}
+_VIRTUAL_DS_NAME = "聊天上传数据"  # 所有聊天上传的 Excel 归一到此虚拟数据源
+_VIRTUAL_DS_SOURCE_TAG = "chat_upload_virtual"  # tech_metadata.source 标记
+
+
+@router.post("/upload")
+async def upload_attachment(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """上传 Excel 附件 → 归入「聊天上传数据」虚拟数据源 → 返回元信息。
+
+    限制：仅 .xlsx/.xls，单文件 ≤ 5MB。
+    设计：所有上传文件归一到同一个虚拟数据源（mode=files）。
+          同名文件上传加时间戳后缀（不覆盖），路径互不相同 → 保留多版本。
+          ExcelConnector._resolve_table_name 用最长前缀匹配把 table_name 解析为 (file_path, sheet_name)。
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+    from app.models.datasource import DataSource
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="未提供文件名")
+    filename = os.path.basename(file.filename)  # 防路径穿越
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _ALLOWED_EXCEL_EXTS:
+        raise HTTPException(status_code=400, detail=f"仅支持 Excel 文件 (.xlsx/.xls)，当前后缀: {ext or '无'}")
+
+    content = await file.read()
+    if len(content) > _MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=400, detail=f"文件大小超过 5MB 限制（当前 {len(content)/1024/1024:.1f}MB)")
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 同名文件加时间戳后缀，保留多版本不覆盖
+    # 销售数据.xlsx → 销售数据_20260817_152630.xlsx → 表名前缀 销售数据_20260817_152630
+    base = os.path.splitext(filename)[0]
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    saved_filename = f"{base}_{ts}{ext}"
+    user_dir = os.path.join(_UPLOAD_DIR, str(current_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+    file_path = os.path.join(user_dir, saved_filename)
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # 解析 Excel sheet 名 + 首个 sheet 的列名
+    try:
+        import pandas as pd
+        xls = pd.ExcelFile(file_path)
+        sheet_names = list(xls.sheet_names)
+        first_df = pd.read_excel(file_path, sheet_name=sheet_names[0], nrows=5)
+        columns = [str(c) for c in first_df.columns]
+    except Exception as e:
+        logger.warning(f"Excel 解析失败 [{filename}]: {e}")
+        raise HTTPException(status_code=400, detail=f"Excel 解析失败: {e}")
+
+    table_name_prefix = os.path.splitext(saved_filename)[0]  # 表名前缀 = basename without extension
+
+    # 查找或创建虚拟数据源
+    result = await db.execute(
+        select(DataSource).where(
+            DataSource.name == _VIRTUAL_DS_NAME,
+            DataSource.created_by == current_user.id,
+            DataSource.is_active == True,
+        )
+    )
+    datasource = result.scalars().first()
+
+    file_meta = {
+        "original_filename": filename,
+        "saved_filename": saved_filename,
+        "file_path": file_path,
+        "size_bytes": len(content),
+        "sheets": sheet_names,
+        "columns": columns,
+        "table_name_prefix": table_name_prefix,
+        "uploaded_at": ts,
+    }
+
+    if datasource is None:
+        # 首次上传：创建虚拟数据源
+        datasource = DataSource(
+            name=_VIRTUAL_DS_NAME,
+            type="excel",
+            connection_config={"mode": "files", "file_paths": [file_path]},
+            tech_metadata={
+                "source": _VIRTUAL_DS_SOURCE_TAG,
+                "files": [file_meta],
+            },
+            created_by=current_user.id,
+        )
+        db.add(datasource)
+        await db.flush()
+
+        # 自动创建 FileLink，授权沙箱访问上传目录
+        from app.api.v1.endpoints.datasource import _auto_create_file_link
+        await _auto_create_file_link(db, datasource, current_user.id)
+    else:
+        # 已有虚拟数据源：追加新文件路径（路径不同=新版本）
+        cfg = dict(datasource.connection_config or {})
+        cfg.setdefault("mode", "files")
+        file_paths = list(cfg.get("file_paths", []))
+        file_paths.append(file_path)  # 时间戳不同路径必不同
+        cfg["file_paths"] = file_paths
+        datasource.connection_config = cfg
+        flag_modified(datasource, "connection_config")
+
+        tech = dict(datasource.tech_metadata or {})
+        files_meta = list(tech.get("files", []))
+        files_meta.append(file_meta)
+        tech["files"] = files_meta
+        datasource.tech_metadata = tech
+        flag_modified(datasource, "tech_metadata")
+        await db.flush()
+
+    await db.commit()
+
+    logger.info(f"聊天附件上传成功: {filename} -> {saved_filename} (虚拟数据源 {datasource.id}, prefix={table_name_prefix}, sheets={sheet_names})")
+
+    return {
+        "datasource_id": str(datasource.id),
+        "name": _VIRTUAL_DS_NAME,
+        "filename": filename,
+        "table_name_prefix": table_name_prefix,
+        "size_bytes": len(content),
+        "sheets": sheet_names,
+        "columns": columns,
+    }
+
+
 def _match_datasource_names(sources, user_message: str):
-    """从用户消息中匹配数据源名称，返回匹配到的数据源列表"""
+    """从用户消息中匹配数据源名称，返回匹配到的数据源列表。
+
+    匹配规则（从严不扩大范围）：
+    1. 数据源名完整出现在用户消息中（精确匹配）
+    2. 英文名按 _/- 拆分后所有关键词都出现（全匹配）
+    不做宽松兜底（如 2 字组合），避免"数据"等常见词误匹配所有数据源。
+    """
     if not user_message:
         return []
     msg_lower = user_message.lower()
@@ -63,17 +205,9 @@ def _match_datasource_names(sources, user_message: str):
             matched.append(ds)
             continue
         name_keywords = ds_name_lower.replace('_', ' ').replace('-', ' ').split()
-        if any(kw in msg_lower for kw in name_keywords):
+        if name_keywords and all(kw in msg_lower for kw in name_keywords):
             matched.append(ds)
             continue
-    if not matched:
-        for ds in sources:
-            ds_name = ds.name
-            if len(ds_name) >= 3:
-                for i in range(len(ds_name) - 1):
-                    if ds_name[i:i+2] in user_message:
-                        matched.append(ds)
-                        break
     return matched
 
 
@@ -93,10 +227,27 @@ async def build_datasource_context(
     if not sources:
         return '\n## 可用数据源\n当前没有配置任何数据源。建议用户先在【数据源管理】页面添加数据源。\n', "", []
 
-    # 只展示用户消息中提到的数据源，避免无关数据源污染上下文
     matched_sources = _match_datasource_names(sources, user_message)
-    display_sources = matched_sources if matched_sources else sources
 
+    # 匹配到多个时，取消息中最后提到的数据源（"最近一次提到的才是分析的"）
+    if len(matched_sources) > 1:
+        def _last_pos(ds):
+            return user_message.lower().rfind(ds.name.lower())
+        matched_sources.sort(key=_last_pos, reverse=True)
+        matched_sources = [matched_sources[0]]
+
+    # 未匹配到：只列名不预览，提示 Agent 问用户要分析哪个数据源
+    if not matched_sources:
+        lines = ["\n## 可用数据源"]
+        lines.append(f"用户已配置 {len(sources)} 个数据源：")
+        for ds in sources:
+            lines.append(f"- {ds.name}（类型: {ds.type}, ID: {ds.id}）")
+        lines.append("")
+        lines.append("> 用户消息未明确提到任何数据源名。请先确认用户要分析哪个数据源，再调用工具查询，不要自行猜测。")
+        return "\n".join(lines), "", []
+
+    # 匹配到：展示详情 + 预览数据
+    display_sources = matched_sources
     lines = ["\n## 可用数据源（工具的知识库）"]
     lines.append(f"以下 {len(display_sources)} 个数据源已配置，可供用户分析：\n")
 
@@ -128,7 +279,6 @@ async def build_datasource_context(
 
         lines.append("")
 
-    # 当用户消息中提到了数据源名称时，自动查询实际数据
     # 预览作为一次性 user message 注入（不进 system prompt），保持 system 字节稳定命中 prefix cache
     data_previews, matched_names = await _query_datasource_previews(display_sources, user_message)
 
@@ -221,7 +371,7 @@ async def _query_datasource_previews(sources, user_message: str):
             continue
 
     if previews:
-        matched_names = [ds.name for ds in matched_sources]
+        matched_names = [ds.name for ds in sources]
         return "\n## 实时数据查询结果\n以下是从数据源中查询到的真实数据，请基于这些数据回答用户问题：\n" + "\n".join(previews), matched_names
     return "", []
 
@@ -487,12 +637,64 @@ async def stream_response(
             history_messages = list(history_result.scalars().all())
             history_messages.reverse()
 
-            datasource_context, data_preview, matched_names = await build_datasource_context(
-                db, current_user.id, request.content
-            )
+            # 优先处理附件：用户上传了数据文件 → 直接用虚拟数据源，不推断
+            # 无附件时才走文本推断（build_datasource_context）
+            datasource_context = ""
+            data_preview = ""
+            matched_names = []
+            _user_msg = request.content
+            _attachment_matched = False
 
-            # 实时数据预览作为一次性 user message 注入（不进 system，避免破坏 prefix cache）
-            _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
+            if request.attachments:
+                from app.models.datasource import DataSource as _DS
+                att_result = await db.execute(
+                    select(_DS).where(
+                        _DS.name == _VIRTUAL_DS_NAME,
+                        _DS.created_by == current_user.id,
+                        _DS.is_active == True,
+                    )
+                )
+                virtual_ds = att_result.scalars().first()
+                if virtual_ds:
+                    _tech = virtual_ds.tech_metadata or {}
+                    _all_files = _tech.get("files", [])
+                    _att_files = [f for f in _all_files if f.get("original_filename") in request.attachments]
+                    if _att_files:
+                        att_lines = [
+                            f"【本次对话附件】用户上传了以下文件到「{_VIRTUAL_DS_NAME}」数据源，请用以下工具按 datasource_id 查询：",
+                            f"数据源名: {_VIRTUAL_DS_NAME}",
+                            f"datasource_id: {virtual_ds.id}",
+                            f"数据源类型: excel（文件型，非 DB）",
+                            "",
+                            "可用工具：",
+                            "- query_table_data: 分页拉数据（page/page_size，默认100行）",
+                            "- get_table_schema: 查看表结构",
+                            "- execute_sql: 用 DuckDB 在内存跑 SQL（支持 SELECT/WHERE/GROUP BY/JOIN，"
+                            "  统计/聚合优先用此工具，比翻页拉数据再算高效）",
+                            "",
+                            "本次上传文件：",
+                        ]
+                        for _f in _att_files:
+                            _prefix = _f.get("table_name_prefix", "")
+                            _sheets = _f.get("sheets") or []
+                            att_lines.append(f"- 文件: {_f.get('original_filename', '')}")
+                            att_lines.append(f"  表名前缀: {_prefix}")
+                            if _sheets:
+                                att_lines.append(f"  工作表(sheets): {', '.join(_sheets)}")
+                                att_lines.append(f"  完整表名: {_prefix}_{_sheets[0]}（其余工作表类似，前缀_工作表名）")
+                                _example_tbl = f'{_prefix}_{_sheets[0]}'
+                                att_lines.append(f"  SQL 示例: execute_sql(datasource_id=\"{virtual_ds.id}\", sql=\"SELECT COUNT(*) FROM \\\"{_example_tbl}\\\"\")")
+                        att_lines.append("如未指定具体工作表，默认查询第一个工作表。")
+                        _user_msg = "\n".join(att_lines) + f"\n\n---\n\n{request.content}"
+                        matched_names = [_VIRTUAL_DS_NAME]
+                        _attachment_matched = True
+
+            # 无附件或附件未匹配到文件时，才推断数据源
+            if not _attachment_matched:
+                datasource_context, data_preview, matched_names = await build_datasource_context(
+                    db, current_user.id, request.content
+                )
+                _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
 
             # 缺源数据源检测：用户消息含数据操作关键词但未指定源数据源，提示并停止
             _OP_KEYWORDS = {"提取", "处理", "清洗", "转换", "写入", "导入", "导出", "加载", "迁移", "合并", "拆分", "去重", "脱敏", "补全", "修复", "分类", "格式化", "标准化", "生成", "创建", "新建"}
@@ -556,7 +758,7 @@ async def stream_response(
                     break
 
                 if event.get("type") == "agent_switch":
-                    yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'reason': event['reason']}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'display_name': event.get('display_name',''), 'reason': event['reason'], 'reason_display': event.get('reason_display','')}, ensure_ascii=False)}\n\n"
                 elif event.get("type") == "content":
                     content = event.get("content", "")
                     full_response += content

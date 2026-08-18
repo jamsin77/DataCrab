@@ -804,8 +804,12 @@ class DataInspectorTools:
         except Exception as e:
             return {"error": str(e)}
 
-    def _check_standards_from_df(self, df, standard_rules=None) -> dict:
-        """从 DataFrame 执行标准检查（同步，不加载 DB）"""
+    def _check_standards_from_df(self, df, standard_rules=None, skill_rules=None) -> dict:
+        """从 DataFrame 执行标准检查（同步，不加载 DB）
+
+        Args:
+            skill_rules: 技能专属规则 {"std":[...], "dq":[...], "sec":[...]}，合并到全局规则之外执行
+        """
         import pandas as pd
         try:
             issues = []
@@ -851,13 +855,38 @@ class DataInspectorTools:
                             pass
             except Exception as e:
                 logger.warning(f"标准库格式检查失败: {e}")
+            # 技能专属标准规则（前缀 SKILL-STD-）
+            if skill_rules and skill_rules.get("std"):
+                try:
+                    from app.services.standards_parser import match_columns as _mc
+                    for std in skill_rules["std"]:
+                        if not std.get("regex"):
+                            continue
+                        matched = _mc(columns, std.get("fields", []))
+                        for col in matched:
+                            non_null = df[col].dropna().astype(str)
+                            if len(non_null) == 0:
+                                continue
+                            try:
+                                invalid = ~non_null.str.match(std["regex"])
+                                invalid_count = int(invalid.sum())
+                                if invalid_count > 0:
+                                    issues.append({"dimension": "standard_format", "standard_id": std["id"], "rule_id": "DQ-VAL-001", "column": col, "severity": std.get("severity", "warning"), "description": f"列 '{col}' 有 {invalid_count}/{len(non_null)} 条不符合技能规则 {std['id']} {std['name']}", "suggestion": f"按 {std['id']} 格式修正"})
+                            except re.error:
+                                pass
+                except Exception as e:
+                    logger.warning(f"技能标准规则检查失败: {e}")
             return {"dimension": "standards", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
             logger.error(f"_check_standards_from_df 失败: {e}")
             return {"dimension": "standards", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    def _check_quality_from_df(self, df, quality_dimensions=None) -> dict:
-        """从 DataFrame 执行质量检查（同步，不加载 DB）"""
+    def _check_quality_from_df(self, df, quality_dimensions=None, skill_rules=None) -> dict:
+        """从 DataFrame 执行质量检查（同步，不加载 DB）
+
+        Args:
+            skill_rules: 技能专属规则，合并执行 skill_rules["dq"] 中带 regex 的规则
+        """
         import pandas as pd
         try:
             issues = []
@@ -915,13 +944,50 @@ class DataInspectorTools:
                         if invalid.any():
                             issues.append({"dimension": "consistency", "rule_id": "DQ-CON-001", "column": f"{s_col}/{e_col}", "severity": _dq_severity("DQ-CON-001", "error"), "description": f"'{e_col}' 早于 '{s_col}' 的记录有 {int(invalid.sum())} 条", "suggestion": "修正结束时间早于开始时间的记录", "samples": self._extract_samples(df, invalid, [s_col, e_col])})
 
+            # 技能专属质量规则（前缀 SKILL-DQ-）：带 regex 的按格式检查，带 legal_values 的按枚举检查
+            if skill_rules and skill_rules.get("dq"):
+                from app.services.standards_parser import match_columns as _mc
+                for rule in skill_rules["dq"]:
+                    rid = rule.get("id", "")
+                    fields = rule.get("fields") or rule.get("scope_fields") or []
+                    matched = _mc(list(df.columns), fields) if fields else []
+                    # 枚举合法值检查
+                    legal = rule.get("legal_values")
+                    if legal:
+                        for col in matched:
+                            non_null = df[col].dropna().astype(str)
+                            if len(non_null) == 0:
+                                continue
+                            illegal = ~non_null.isin(legal)
+                            illegal_count = int(illegal.sum())
+                            if illegal_count > 0:
+                                issues.append({"dimension": "validity", "rule_id": rid, "column": col, "severity": rule.get("severity", "warning"), "description": f"列 '{col}' 有 {illegal_count}/{len(non_null)} 条不符合技能规则 {rid} {rule.get('name','')} 合法值", "suggestion": f"按 {rid} 修正为合法值"})
+                    # 正则格式检查
+                    regex = rule.get("regex")
+                    if regex:
+                        for col in matched:
+                            non_null = df[col].dropna().astype(str)
+                            if len(non_null) == 0:
+                                continue
+                            try:
+                                invalid = ~non_null.str.match(regex)
+                                invalid_count = int(invalid.sum())
+                                if invalid_count > 0:
+                                    issues.append({"dimension": "validity", "rule_id": rid, "column": col, "severity": rule.get("severity", "warning"), "description": f"列 '{col}' 有 {invalid_count}/{len(non_null)} 条不符合技能规则 {rid} {rule.get('name','')}", "suggestion": f"按 {rid} 格式修正"})
+                            except re.error:
+                                pass
+
             return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
             logger.error(f"_check_quality_from_df 失败: {e}")
             return {"dimension": "quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    def _check_security_from_df(self, df) -> dict:
-        """从 DataFrame 执行安全检查（同步，不加载 DB）"""
+    def _check_security_from_df(self, df, skill_rules=None) -> dict:
+        """从 DataFrame 执行安全检查（同步，不加载 DB）
+
+        Args:
+            skill_rules: 技能专属规则，合并执行 skill_rules["sec"] 中带 regex 的规则
+        """
         import pandas as pd
         try:
             issues = []
@@ -936,6 +1002,9 @@ class DataInspectorTools:
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]
+            # 合并技能专属安全规则
+            if skill_rules and skill_rules.get("sec"):
+                sec_rules = list(sec_rules) + list(skill_rules["sec"])
             for col in df.columns:
                 if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == 'object':
                     sample = df[col].dropna().head(200).astype(str)
@@ -962,8 +1031,12 @@ class DataInspectorTools:
             logger.error(f"_check_security_from_df 失败: {e}")
             return {"dimension": "security", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
-        """预执行入口：加载数据1次 → 跑4项检查 → 返回紧凑报告"""
+    async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession, skill_rules=None) -> dict:
+        """预执行入口：加载数据1次 → 跑4项检查 → 返回紧凑报告
+
+        Args:
+            skill_rules: 技能专属规则 {"std":[...],"dq":[...],"sec":[...]}，合并到全局规则之外执行
+        """
         # 清缓存（复查时需要最新数据）
         cache_key = f"{datasource_id}:{table_name}"
         self._cache.pop(cache_key, None)
@@ -975,9 +1048,9 @@ class DataInspectorTools:
 
         # 同步检查（纯 pandas，共享同一 DataFrame）
         profile = self._profile_from_df(df)
-        standards = self._check_standards_from_df(df)
-        quality = self._check_quality_from_df(df)
-        security = self._check_security_from_df(df)
+        standards = self._check_standards_from_df(df, skill_rules=skill_rules)
+        quality = self._check_quality_from_df(df, skill_rules=skill_rules)
+        security = self._check_security_from_df(df, skill_rules=skill_rules)
 
         return {
             "profile": profile,

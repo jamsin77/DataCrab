@@ -30,6 +30,12 @@ class DataSource(Base):
     creator = relationship("User", back_populates="data_sources")
     table_metadata = relationship("TableMetadata", back_populates="data_source", lazy="noload")
 
+    @property
+    def is_virtual(self) -> bool:
+        """是否为虚拟数据源（聊天上传数据源，受保护不可修改/删除/测试/同步）"""
+        tech = self.tech_metadata or {}
+        return tech.get("source") == "chat_upload_virtual"
+
 
 class TableMetadata(Base):
     """数据集元数据模型（一个数据源的一张表/文件 = 一条元数据记录）"""

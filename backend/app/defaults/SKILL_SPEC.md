@@ -10,8 +10,45 @@ skill-name/
 ├── scripts/          # 可执行 Python 脚本
 │   └── main.py       # 主入口脚本（必须）
 ├── references/       # 参考资料（可选）
-└── assets/           # 静态资源（可选）
+├── assets/           # 静态资源（可选）
+└── rules.md          # 技能专属规则（可选，数据处理类技能用）
 ```
+
+### rules.md（技能专属规则，可选）
+
+数据处理类技能可在包内放置 `rules.md`，定义该技能**额外**的数据检查规则。DataInspector 在执行全局规则之外，会合并执行这些技能规则。
+
+**编号前缀**（默认，可在 `rules.md` 内自定义）：
+- `SKILL-STD-xxx`：标准类规则（格式正则/合法值），套用全局 STD 检查分支
+- `SKILL-DQ-xxx`：质量类规则（完整性/唯一性/有效性），套用全局 DQ 检查分支
+- `SKILL-SEC-xxx`：安全类规则（PII/敏感字段），套用全局 SEC 检查分支
+
+**规则格式**（与全局规则库一致）：
+
+```markdown
+### SKILL-STD-001 身份证号格式
+- 分类: 个人信息
+- 适用字段: id_card,身份证号
+- 格式正则: ^\d{17}[\dXx]$
+- 严重等级: error
+
+### SKILL-DQ-001 国家级文物编号必填
+- 适用范围: 表
+- 检查逻辑: protection_level='国家级' 时 serial_no 不能为空
+- 阈值: 0
+- 严重等级: critical
+
+### SKILL-SEC-001 修复后手机号必须脱敏
+- 分类: PII
+- 适用范围: phone,mobile
+- 检测正则: ^1\d{10}$
+- 检测逻辑: 未脱敏的手机号明文
+- 严重等级: critical
+```
+
+**合并执行**：inspector_tools 先跑全局规则，再跑技能规则，问题在报告中均列出。技能规则不替换全局规则，是补充检查。
+
+**适用范围**：仅数据处理类技能（`skill_type: processing`）触发 Inspector，需放 `rules.md`；分析类技能只读不触发 Inspector，无需规则。
 
 ## 2. SKILL.md 格式
 

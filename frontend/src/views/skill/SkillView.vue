@@ -403,6 +403,32 @@
               <el-descriptions-item label="更新时间">{{ formatDate(detailSkill.updated_at) }}</el-descriptions-item>
             </el-descriptions>
           </el-tab-pane>
+
+          <el-tab-pane label="检查规则" name="rules">
+            <div class="md-editor-toolbar">
+              <el-radio-group v-model="rulesMode" size="small">
+                <el-radio-button value="preview">预览</el-radio-button>
+                <el-radio-button value="edit">编辑</el-radio-button>
+              </el-radio-group>
+              <el-button size="small" type="primary" :loading="savingRules" @click="saveSkillRules">
+                <el-icon><Check /></el-icon> 保存
+              </el-button>
+              <el-button size="small" @click="resetSkillRules">清空</el-button>
+            </div>
+            <div v-if="rulesMode === 'edit'">
+              <el-input
+                v-model="rulesContent"
+                type="textarea"
+                :autosize="{ minRows: 12, maxRows: 30 }"
+                placeholder="编辑技能专属规则 rules.md（规则编号用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀）"
+                style="font-family: 'Consolas', 'Monaco', monospace; font-size: 13px"
+              />
+            </div>
+            <template v-else>
+              <div v-if="rulesContent" class="markdown-body" v-html="renderMarkdown(rulesContent)"></div>
+              <el-empty v-else description="该技能暂无专属检查规则（将仅执行全局规则）" />
+            </template>
+          </el-tab-pane>
         </el-tabs>
       </div>
     </el-dialog>
@@ -459,7 +485,7 @@
                   </div>
                 </div>
 
-                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" type="textarea" :rows="2" size="small" @keydown="handleCmdKeyDown" />
+                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" type="textarea" :autosize="{ minRows: 6, maxRows: 12 }" size="small" @keydown="handleCmdKeyDown" />
                 <div v-if="cmdParseHint" class="cmd-parse-hint">
                   <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
                 </div>
@@ -555,6 +581,9 @@
                       <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
                       <span>{{ m }}</span>
                     </div>
+                  </div>
+                  <div v-if="msg.flowEvents && msg.flowEvents.length" class="debug-msg-flow-events">
+                    <div v-for="(ev, i) in msg.flowEvents" :key="i" class="flow-event-line">{{ ev }}</div>
                   </div>
                   <el-collapse v-if="msg.stdouts && msg.stdouts.length" model-value="['logs']">
                     <el-collapse-item name="logs">
@@ -1245,6 +1274,10 @@ const detailTab = ref('md')
 const mdEditContent = ref('')
 const mdMode = ref<'preview' | 'edit'>('preview')
 const savingMd = ref(false)
+const rulesContent = ref('')
+const rulesParsed = ref<any>({ std: [], dq: [], sec: [] })
+const rulesMode = ref<'preview' | 'edit'>('preview')
+const savingRules = ref(false)
 const modifyInstruction = ref('')
 const modifying = ref(false)
 const modifyError = ref('')
@@ -1273,7 +1306,55 @@ function openDetail(skill: any) {
     scriptContents[s.name] = ''
   }
 
+  // 加载技能专属规则
+  loadSkillRules(skill.id)
+
   detailDrawer.value = true
+}
+
+async function loadSkillRules(skillId: string) {
+  rulesContent.value = ''
+  rulesParsed.value = { std: [], dq: [], sec: [] }
+  try {
+    const res = await api.get(`/skills/${skillId}/rules`)
+    rulesContent.value = res.data.content || ''
+    rulesParsed.value = res.data.parsed || { std: [], dq: [], sec: [] }
+  } catch (e) {
+    // 静默失败（旧技能无 rules.md）
+  }
+}
+
+async function saveSkillRules() {
+  if (!detailSkill.value) return
+  savingRules.value = true
+  try {
+    await api.put(`/skills/${detailSkill.value.id}/rules`, {
+      content: rulesContent.value,
+    })
+    ElMessage.success('技能规则已保存')
+    // 重新加载解析后的结构
+    await loadSkillRules(detailSkill.value.id)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    savingRules.value = false
+  }
+}
+
+async function resetSkillRules() {
+  if (!detailSkill.value) return
+  try {
+    await ElMessageBox.confirm('确认清空该技能的专属规则？', '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await api.post(`/skills/${detailSkill.value.id}/rules/reset`)
+    ElMessage.success('已清空技能规则')
+    await loadSkillRules(detailSkill.value.id)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '清空失败')
+  }
 }
 
 async function saveSkillType() {
@@ -1692,7 +1773,7 @@ function processDebugSSEEvent(
       break
     case 'inspecting':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+      setExecutingMsg(msg, data.message || '正在执行数据质量检查...')
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -1704,7 +1785,7 @@ function processDebugSSEEvent(
       break
     case 'retry':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n---\n🔄 ${data.message || '开始修复...'}\n`
+      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔄 ${data.message || '开始修复...'}`)
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -1712,12 +1793,12 @@ function processDebugSSEEvent(
       archiveExecutingMsg(msg)
       msg.thinkingOpen = false
       state.thinkingDone = true
-      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
+      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] ─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───`)
       break
     case 'fixing':
       execPhase.value = 'executing'
       archiveExecutingMsg(msg)
-      msg.content += `\n\n🔧 ${data.message || '正在自动修复...'}\n`
+      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔧 ${data.message || '正在自动修复...'}`)
       break
     case 'run_result':
       setThinkingDone()
@@ -2980,7 +3061,7 @@ onMounted(() => {
 }
 
 .debug-left {
-  width: 380px;
+  width: 520px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -3376,6 +3457,19 @@ onMounted(() => {
   .executing-dot {
     color: #67c23a;
     font-size: 14px;
+  }
+}
+
+.debug-msg-flow-events {
+  padding: 6px 0;
+  font-size: 13px;
+  color: #606266;
+
+  .flow-event-line {
+    padding: 3px 0;
+    border-left: 3px solid #409eff;
+    padding-left: 8px;
+    margin: 2px 0;
   }
 }
 

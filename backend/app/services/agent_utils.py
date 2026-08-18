@@ -497,6 +497,103 @@ def get_anti_hallucination_section(level: str = "basic") -> str:
     return _ANTI_HALLUCINATION_SECTIONS.get(level, _ANTI_HALLUCINATION_SECTIONS["basic"])
 
 
+# ==================== 工具调用过程显示（对齐 OpenCode）====================
+
+# 工具图标映射
+_TOOL_ICON_MAP = {
+    "query_table_data": "📊",
+    "get_table_schema": "📋",
+    "execute_sql": "🔍",
+    "list_user_datasources": "📚",
+    "list_user_file_links": "🔗",
+    "save_file_to_link": "💾",
+    "write_table_data": "✍️",
+    "kb_search": "🔎",
+    # Inspector 工具
+    "profile_data": "📈",
+    "check_data_standards": "📐",
+    "check_data_quality": "✅",
+    "check_data_security": "🔒",
+    # 调试工具
+    "read_script": "📖",
+    "grep_script": "🔍",
+    "edit_script": "✏️",
+    "run_script": "▶️",
+    "modify_script": "📝",
+    "modify_and_run": "📝▶️",
+    "edit_and_run": "✏️▶️",
+    # 扩展工具
+    "call_operator": "⚙️",
+    "handoff_to_inspector": "🔁",
+    "handoff_to_processor": "🔁",
+    "get_llm_config": "🤖",
+    "save_llm_adapter": "🤖",
+    "create_llm_provider": "🤖",
+    "update_llm_provider": "🤖",
+    "delete_llm_provider": "🤖",
+}
+
+
+def build_tool_action_event(tool_calls: list) -> Dict[str, Any]:
+    """根据 tool_calls 构造 tool_action 事件，用于前端显示工具调用过程。
+
+    前端显示形如：📊 execute_sql: SELECT 批次, COUNT(*) FROM ...
+    每个 tool_call 一个 _act 条目，actions 列表传给前端逐个显示。
+    """
+    _actions = []
+    for tc in tool_calls:
+        _name = tc["function"]["name"]
+        _icon = _TOOL_ICON_MAP.get(_name, "🔧")
+        _act = {"tool": _name, "icon": _icon}
+        try:
+            _args = json.loads(tc["function"]["arguments"])
+            if _name == "execute_sql":
+                _sql = _args.get("sql", "").strip()
+                # 单行化 + 截断
+                _sql = re.sub(r"\s+", " ", _sql)[:200]
+                if _sql:
+                    _act["detail"] = _sql
+            elif _name == "query_table_data":
+                _tbl = _args.get("table_name", "")
+                _page = _args.get("page", 1)
+                if _tbl:
+                    _act["detail"] = f"表={_tbl}" + (f", 第{_page}页" if _page > 1 else "")
+            elif _name == "get_table_schema":
+                _tbl = _args.get("table_name", "")
+                if _tbl:
+                    _act["detail"] = f"表={_tbl}"
+            elif _name == "kb_search":
+                _q = _args.get("query", "")[:50]
+                if _q:
+                    _act["detail"] = f'"{_q}"'
+            elif _name == "write_table_data":
+                _tbl = _args.get("table_name", "")
+                if _tbl:
+                    _act["detail"] = f"写入表={_tbl}"
+            elif _name == "read_script":
+                _offset = _args.get("offset", 0)
+                _limit = _args.get("limit", 0)
+                if _offset and _limit:
+                    _act["detail"] = f"L{_offset}-L{_offset + _limit - 1}"
+            elif _name == "grep_script":
+                _pattern = _args.get("pattern", "")
+                if _pattern:
+                    _act["detail"] = f'"{_pattern[:40]}"'
+            elif _name == "edit_script":
+                _old = _args.get("old_string", "")
+                _new = _args.get("new_string", "")
+                if _old or _new:
+                    _diff_lines = [f"- {l}" for l in _old.splitlines()[:15]]
+                    _diff_lines += [f"+ {l}" for l in _new.splitlines()[:15]]
+                    _act["diff"] = "\n".join(_diff_lines)
+            elif _name == "run_script":
+                _act["detail"] = "执行脚本"
+        except Exception:
+            pass
+        _actions.append(_act)
+    return {"type": "tool_action", "actions": _actions}
+
+
 # ==================== 搜索饱和检测 ====================
 
 class SearchSaturationDetector:

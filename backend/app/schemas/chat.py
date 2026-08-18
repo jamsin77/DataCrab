@@ -28,6 +28,8 @@ class ChatSessionResponse(BaseModel):
 class ChatMessageCreate(BaseModel):
     session_id: UUID
     content: str
+    # 用户本次对话上传的附件（datasource_id 列表），后端注入到 user message 前缀让 Agent 知道
+    attachments: Optional[List[str]] = None
 
 
 class ChatMessageResponse(BaseModel):

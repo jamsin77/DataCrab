@@ -281,7 +281,32 @@ def filter_by_dynasty(
 
 def main(**params):
     return filter_by_dynasty(**params)
-===SCRIPT_END==="""
+===SCRIPT_END===
+
+（可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀，与全局规则区分：
+
+===RULES_MD===
+### SKILL-STD-001 文物编号格式
+- 适用字段: serial_no,文物编号
+- 格式正则: ^GW-\d{6}$
+- 严重等级: error
+
+### SKILL-DQ-001 国家级文物编号必填
+- 适用字段: serial_no
+- 检查逻辑: protection_level 为"国家级"时 serial_no 不能为空
+- 阈值: 0
+- 严重等级: critical
+
+### SKILL-SEC-001 修复后手机号必须脱敏
+- 分类: PII
+- 适用字段: phone,contact_phone
+- 检测正则: ^1[3-9]\d{9}$
+- 检测逻辑: 未脱敏的明文手机号
+- 严重等级: critical
+===RULES_MD_END===
+
+> rules.md 是可选的：只读分析类技能（skill_type: analysis）不需要；数据处理类技能在需要额外检查（全局规则覆盖不到的）时才输出。无则省略整个 ===RULES_MD=== 段落。
+"""
 
 
 async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = "") -> Dict[str, Any]:
@@ -318,6 +343,7 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
+5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹）
 
 **skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
@@ -332,6 +358,11 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 ===SCRIPT_END===
 
 （如有其他脚本，继续用 ===SCRIPT:文件名.py=== 格式）
+
+（可选，仅数据处理类技能且需额外检查时输出）
+===RULES_MD===
+（rules.md 内容，规则编号用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀）
+===RULES_MD_END===
 """
 
     try:
@@ -356,6 +387,7 @@ def _parse_creator_response(raw: str) -> Dict[str, Any]:
         "skill_md": "",
         "scripts": {},
         "front_matter": {},
+        "rules_md": "",
     }
 
     sections = raw.split("===SKILL_MD===")
@@ -364,6 +396,11 @@ def _parse_creator_response(raw: str) -> Dict[str, Any]:
         result["skill_md"] = md_part
         parsed = parse_skill_md(md_part)
         result["front_matter"] = parsed["front_matter"]
+
+    # 解析可选的 rules.md 段落
+    rules_sections = raw.split("===RULES_MD===")
+    if len(rules_sections) > 1:
+        result["rules_md"] = rules_sections[1].split("===RULES_MD_END===")[0].strip()
 
     lines = raw.split("\n")
     current_script = None
@@ -389,7 +426,7 @@ def _parse_creator_response(raw: str) -> Dict[str, Any]:
     return result
 
 
-def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str]):
+def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str], rules_md: str = ""):
     """在磁盘上创建 Skill 文件夹结构"""
     skill_path.mkdir(parents=True, exist_ok=True)
 
@@ -399,6 +436,10 @@ def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str
     scripts_dir.mkdir(exist_ok=True)
     for filename, content in scripts.items():
         (scripts_dir / filename).write_text(content, encoding="utf-8")
+
+    # 技能专属检查规则（可选）
+    if rules_md and rules_md.strip():
+        (skill_path / "rules.md").write_text(rules_md, encoding="utf-8")
 
     refs_dir = skill_path / "references"
     refs_dir.mkdir(exist_ok=True)
@@ -445,6 +486,7 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
+5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹）
 
 **skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
@@ -459,6 +501,11 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 ===SCRIPT_END===
 
 （如有其他脚本，继续用 ===SCRIPT:文件名.py=== 格式）
+
+（可选，仅数据处理类技能且需额外检查时输出）
+===RULES_MD===
+（rules.md 内容，规则编号用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀）
+===RULES_MD_END===
 """
 
     yield {"type": "status", "message": "正在调用 LLM 生成..."}

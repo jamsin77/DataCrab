@@ -59,6 +59,7 @@ class DataSourceResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_active: bool
+    is_virtual: bool = False  # 是否为虚拟数据源（聊天上传，受保护）
 
     @field_validator("connection_config", mode="before")
     @classmethod

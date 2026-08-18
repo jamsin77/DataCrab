@@ -19,6 +19,16 @@ class HandoffReason(str, Enum):
     DELEGATE = "delegate"
 
 
+# HandoffReason 中文友好显示（用于前端过程日志）
+_HANDOFF_REASON_DISPLAY = {
+    HandoffReason.INSPECT_RESULT.value: "执行完成，自动检查",
+    HandoffReason.FIX_REQUIRED.value: "检查发现问题，需要修复",
+    HandoffReason.FIX_COMPLETED.value: "修复完成，再次检查",
+    HandoffReason.ESCALATE.value: "升级处理",
+    HandoffReason.DELEGATE.value: "委派处理",
+}
+
+
 @dataclass
 class AgentMessage:
     from_agent: str
@@ -156,6 +166,15 @@ class AgentRuntime:
         guard = ConvergenceGuard(threshold=_max_inspections * 2 + 3)
 
         while current_agent and handoff_count < max_handoffs:
+            # 首轮 + handoff 都 yield agent_switch 事件，让前端知道当前是哪个 Agent
+            if handoff_count == 0:
+                yield {
+                    "type": "agent_switch",
+                    "agent": current_agent.name,
+                    "display_name": current_agent.display_name,
+                    "reason": HandoffReason.DELEGATE.value,
+                    "reason_display": f"开始{current_agent.display_name}",
+                }
             _done_result = None
             async for event in current_agent.run(current_message, context):
                 if event.get("type") == "done":
@@ -196,7 +215,15 @@ class AgentRuntime:
                 parent_trace_id=current_message.trace_id,
             )
             handoff_count += 1
-            yield {"type": "agent_switch", "agent": target_name, "reason": reason.value}
+            _target_agent = self.registry.get(target_name)
+            _target_display = _target_agent.display_name if _target_agent else target_name
+            yield {
+                "type": "agent_switch",
+                "agent": target_name,
+                "display_name": _target_display,
+                "reason": reason.value,
+                "reason_display": _HANDOFF_REASON_DISPLAY.get(reason.value, reason.value),
+            }
 
     def _decide_handoff(self, agent_name: str, done_result: Dict, context: Dict) -> tuple:
         """RunTime 层 HandOff 决策：仅调试模式自动交接，主对话靠人判断。
@@ -214,28 +241,28 @@ class AgentRuntime:
             # Processor 执行成功 → 交 Inspector 检查
             if not done_result.get("execution_success"):
                 return None
-            # 检查目标：优先 written_tables → 目标数据源 → 源数据源
-            ds_id = (done_result.get("output_datasource_id")
-                     or context.get("debug_target_datasource_id")
-                     or context.get("debug_source_datasource_id")
-                     or context.get("debug_datasource_id")
-                     or context.get("current_datasource_id", ""))
-            tbl = (done_result.get("output_table")
-                   or context.get("debug_target_table_name")
-                   or context.get("debug_source_table_name")
-                   or context.get("debug_table_name")
-                   or context.get("current_table_name", ""))
+            # 只检查脚本实际写入的表（output_datasource_id / output_table）
+            # 不 fallback 到 debug 参数的源/目标表——避免检查源数据本身的预存问题
+            ds_id = done_result.get("output_datasource_id", "")
+            tbl = done_result.get("output_table", "")
             if not ds_id or not tbl:
                 return None
             if context.get("debug_max_inspections", 7) <= 0:
                 return None
             _round = context.get("debug_inspection_round", 0)
             reason = HandoffReason.FIX_COMPLETED if _round > 0 else HandoffReason.INSPECT_RESULT
-            return ("data_inspector", reason, {
+            _payload = {
                 "datasource_id": ds_id, "table_name": tbl,
                 "operation_description": f"第 {_round} 轮修复后复查" if _round > 0 else "技能调试执行成功，自动交接质量检查",
                 "result_summary": "执行成功",
-            })
+            }
+            # 传递技能路径，供 Inspector 加载技能专属规则
+            if context.get("debug_skill_path"):
+                _payload["skill_path"] = context["debug_skill_path"]
+            # 记录 Inspector 检查目标到 context，供 Inspector→Processor 回交使用
+            context["debug_output_datasource_id"] = ds_id
+            context["debug_output_table"] = tbl
+            return ("data_inspector", reason, _payload)
 
         if agent_name == "data_inspector":
             # Inspector 检查完 → 有 error/critical → 回交 Processor；fatal/warning 靠人判断
@@ -250,14 +277,12 @@ class AgentRuntime:
             _round = context.get("debug_inspection_round", 0)
             if _round >= context.get("debug_max_inspections", 7):
                 return None
-            ds_id = (context.get("debug_target_datasource_id", "")
-                     or context.get("debug_source_datasource_id", "")
-                     or context.get("debug_datasource_id", "")
-                     or context.get("current_datasource_id", ""))
-            tbl = (context.get("debug_target_table_name", "")
-                   or context.get("debug_source_table_name", "")
-                   or context.get("debug_table_name", "")
-                   or context.get("current_table_name", ""))
+            ds_id = (context.get("debug_output_datasource_id", "")
+                     or context.get("debug_target_datasource_id", "")
+                     or context.get("debug_source_datasource_id", ""))
+            tbl = (context.get("debug_output_table", "")
+                   or context.get("debug_target_table_name", "")
+                   or context.get("debug_source_table_name", ""))
             return ("data_processor", HandoffReason.FIX_REQUIRED, {
                 "issues": issues,
                 "summary": (done_result.get("content") or "")[:500],
@@ -414,11 +439,18 @@ async def stream_agent_events_sse(
             logger.info(f"[SSE-DEBUG] event type={t} inspector_active={_inspector_active}")
             if t == "agent_switch":
                 agent = event.get("agent")
+                _reason = event.get("reason")
                 _inspector_active = (agent == "data_inspector")
-                logger.info(f"[SSE-DEBUG] agent_switch to={agent} inspector_active={_inspector_active}")
-                if agent == "data_inspector":
+                logger.info(f"[SSE-DEBUG] agent_switch to={agent} reason={_reason} inspector_active={_inspector_active}")
+                # 临时调试：记录所有 agent_switch 事件到文件
+                import os as _os
+                with open(_os.path.join(_os.path.dirname(__file__), "..", "..", "agent_switch_debug.log"), "a", encoding="utf-8") as _f:
+                    _f.write(f"agent={agent} reason={_reason} handoff_reason_display={event.get('reason_display','')}\n")
+                # 仅在真实 handoff（非首轮 delegate）时合成 inspecting/retry
+                # 首轮 agent_switch（reason=delegate）是「开始 xxx」，不是「执行成功后检查」或「检查发现问题后修复」
+                if agent == "data_inspector" and _reason != HandoffReason.DELEGATE.value:
                     evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
-                elif agent == "data_processor":
+                elif agent == "data_processor" and _reason == HandoffReason.FIX_REQUIRED.value:
                     _retry_round = context.get("debug_inspection_round", 0) + 1
                     evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，开始第 {_retry_round} 次修复..."}
                 else:

@@ -310,6 +310,13 @@ async def sync_datasource_metadata(
     if not ds:
         raise HTTPException(status_code=404, detail="数据源不存在")
 
+    # 虚拟数据源受保护，跳过同步
+    if getattr(ds, "is_virtual", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"虚拟数据源「{ds.name}」受保护，无需同步元数据",
+        )
+
     connector = get_connector(ds.type, ds.connection_config or {})
     synced_count = 0
     current_table_names = set()

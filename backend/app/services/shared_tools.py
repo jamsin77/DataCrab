@@ -145,10 +145,12 @@ SHARED_TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "execute_sql",
             "description": (
-                "在结构化数据源（PostgreSQL/MySQL/SQLite）上执行原生 SQL 查询。"
-                "适用于跨表 JOIN、聚合、窗口函数等 query_table_data 无法完成的复杂查询。"
-                "限制：仅支持 SELECT 语句（只读）；最多返回 1000 行；"
-                "仅 DB 型数据源可用，CSV/Excel 等文件型数据源不支持"
+                "在数据源上执行 SQL 查询（仅 SELECT）。"
+                "DB 型（PostgreSQL/MySQL/SQLite）走原生 SQL；文件型（Excel/CSV）用 DuckDB 在内存里跑 SQL。"
+                "适用于跨表 JOIN、GROUP BY 聚合、窗口函数等 query_table_data 无法完成的复杂查询。"
+                "限制：仅 SELECT；最多返回 1000 行（可调 limit 最大 10000）；"
+                "文件型数据源表名规则：Excel 表名=文件名_工作表名（如 销售数据_Q1），CSV 表名=文件名（不带扩展名）；"
+                "表名含中文/特殊字符时用双引号包裹：SELECT * FROM \"销售数据_Q1\""
             ),
             "parameters": {
                 "type": "object",

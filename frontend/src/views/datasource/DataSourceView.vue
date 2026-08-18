@@ -40,11 +40,11 @@
       <el-table-column label="操作" width="400">
         <template #default="{ row }">
           <div class="table-actions">
-            <el-button size="small" @click="testConnection(row.id)">测试</el-button>
+            <el-button v-if="!row.is_virtual" size="small" @click="testConnection(row.id)">测试</el-button>
             <el-button size="small" @click="browseDataSource(row)">浏览</el-button>
-            <el-button size="small" type="success" @click="syncMetadata(row)" :loading="row._syncing">同步元数据</el-button>
-            <el-button size="small" type="warning" @click="editDataSource(row)">修改</el-button>
-            <el-button size="small" type="danger" @click="deleteDataSource(row.id)">删除</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="success" @click="syncMetadata(row)" :loading="row._syncing">同步元数据</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="warning" @click="editDataSource(row)">修改</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="danger" @click="deleteDataSource(row.id)">删除</el-button>
           </div>
         </template>
       </el-table-column>

@@ -20,7 +20,10 @@ export interface ChatMessage {
   charts: any[] | null
   created_at: string
   executingMsg?: string
+  execLogs?: string[]        // 归档的执行日志（工具调用/智能体切换等，折叠显示）
   inspectionReport?: string
+  agentName?: string  // 当前处理智能体中文名（如"数据分析师"）
+  attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]  // 用户消息附件元信息
 }
 
 export interface StreamEvent {
@@ -64,11 +67,28 @@ export const chatApi = {
     return api.post('/chat/stop', null, { params: { session_id: sessionId } })
   },
 
+  uploadAttachment(file: File): Promise<{
+    datasource_id: string
+    name: string
+    filename: string
+    table_name_prefix: string
+    size_bytes: number
+    sheets: string[]
+    columns: string[]
+  }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/chat/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
   async sendMessageStream(
     sessionId: string,
     content: string,
     signal: AbortSignal,
-    onEvent: (event: StreamEvent) => void
+    onEvent: (event: StreamEvent) => void,
+    attachments?: string[],
   ): Promise<void> {
     const token = localStorage.getItem('access_token')
 
@@ -78,7 +98,7 @@ export const chatApi = {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ session_id: sessionId, content }),
+      body: JSON.stringify({ session_id: sessionId, content, attachments }),
       signal,
     })
 

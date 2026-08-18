@@ -513,6 +513,85 @@ async def update_skill_md(
     return _build_detail(skill)
 
 
+@router.get("/{skill_id}/rules")
+async def get_skill_rules(
+    skill_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取技能专属规则 rules.md 内容"""
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _resolve_skill_folder(skill)
+    rules_path = folder / "rules.md" if folder else None
+    content = ""
+    if rules_path and rules_path.exists():
+        try:
+            content = rules_path.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+    # 解析后的规则列表（方便前端预览结构）
+    from app.services.standards_parser import parse_skill_rules
+    parsed = parse_skill_rules(folder) if folder else {"std": [], "dq": [], "sec": []}
+    return {"content": content, "parsed": parsed}
+
+
+@router.put("/{skill_id}/rules", response_model=SkillDetailResponse)
+async def update_skill_rules(
+    skill_id: UUID,
+    request: SkillDocUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """编辑技能专属规则 rules.md 内容（空内容则删除文件）"""
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _resolve_skill_folder(skill)
+    if not folder:
+        raise HTTPException(status_code=400, detail="技能文件夹不存在")
+    folder.mkdir(parents=True, exist_ok=True)
+    rules_path = folder / "rules.md"
+    content = (request.content or "").strip()
+    if content:
+        rules_path.write_text(content, encoding="utf-8")
+        logger.info(f"技能规则已更新: skill_id={skill_id} by {current_user.username}")
+    else:
+        # 空内容删除文件（等价于"重置"）
+        if rules_path.exists():
+            rules_path.unlink()
+        logger.info(f"技能规则已清空: skill_id={skill_id} by {current_user.username}")
+    await db.refresh(skill)
+    return _build_detail(skill)
+
+
+@router.post("/{skill_id}/rules/reset", response_model=SkillDetailResponse)
+async def reset_skill_rules(
+    skill_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """清空技能专属规则（删除 rules.md）"""
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if not skill:
+        raise HTTPException(status_code=404, detail="技能不存在")
+
+    folder = _resolve_skill_folder(skill)
+    if folder:
+        rules_path = folder / "rules.md"
+        if rules_path.exists():
+            rules_path.unlink()
+        logger.info(f"技能规则已重置: skill_id={skill_id} by {current_user.username}")
+    await db.refresh(skill)
+    return _build_detail(skill)
+
+
 @router.get("/{skill_id}/scripts", response_model=list[SkillScriptInfo])
 async def get_skill_scripts(
     skill_id: UUID,
@@ -913,6 +992,7 @@ async def debug_skill_chat(
         target_datasource_name=tgt_ds_name,
         target_table_name=tgt_table,
         debug_folder=folder,
+        debug_skill_path=folder,
         debug_skill_md=skill_md_excerpt,
         debug_skill_md_full=skill_md,
         debug_params_section=params_section,
@@ -1206,6 +1286,7 @@ async def generate_skill_endpoint(
     skill_md = generated.get("skill_md", "")
     scripts = generated.get("scripts", {})
     front_matter = generated.get("front_matter", {})
+    rules_md = generated.get("rules_md", "")
 
     if not skill_md:
         raise HTTPException(status_code=400, detail="Skill Creator 未生成有效的 SKILL.md")
@@ -1214,7 +1295,7 @@ async def generate_skill_endpoint(
     folder = _get_skill_folder(skill_id)
 
     try:
-        create_skill_on_disk(folder, skill_md, scripts)
+        create_skill_on_disk(folder, skill_md, scripts, rules_md)
     except Exception as e:
         if folder.exists():
             shutil.rmtree(folder)
@@ -1280,6 +1361,7 @@ async def generate_skill_stream_endpoint(
         skill_md = parsed_data.get("skill_md", "")
         scripts = parsed_data.get("scripts", {})
         front_matter = parsed_data.get("front_matter", {})
+        rules_md = parsed_data.get("rules_md", "")
 
         if not skill_md:
             yield f"data: {json.dumps({'type': 'error', 'message': '未生成有效的 SKILL.md'}, ensure_ascii=False)}\n\n"
@@ -1289,7 +1371,7 @@ async def generate_skill_stream_endpoint(
         folder = _get_skill_folder(skill_id)
 
         try:
-            create_skill_on_disk(folder, skill_md, scripts)
+            create_skill_on_disk(folder, skill_md, scripts, rules_md)
         except Exception as e:
             if folder.exists():
                 shutil.rmtree(folder)

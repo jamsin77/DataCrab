@@ -48,7 +48,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]) {
     if (!currentSessionId.value) {
       await createSession()
     }
@@ -62,6 +62,7 @@ export const useChatStore = defineStore('chat', () => {
       table_data: null,
       charts: null,
       created_at: new Date().toISOString(),
+      attachments: attachments && attachments.length ? attachments : undefined,
     }
     messages.value.push(userMessage)
 
@@ -77,6 +78,7 @@ export const useChatStore = defineStore('chat', () => {
       table_data: null,
       charts: null,
       created_at: new Date().toISOString(),
+      execLogs: [],
     }
     messages.value.push(assistantMessage)
     const aiIndex = messages.value.length - 1
@@ -86,6 +88,19 @@ export const useChatStore = defineStore('chat', () => {
     streamingReasoning.value = ''
 
     abortController = new AbortController()
+
+    // 归档执行日志：把当前 executingMsg 推入 execLogs，再清空
+    const archiveExec = (msg: ChatMessage | undefined) => {
+      if (!msg) return
+      if (msg.executingMsg) {
+        if (!msg.execLogs) msg.execLogs = []
+        msg.execLogs.push(msg.executingMsg)
+        msg.executingMsg = ''
+      }
+    }
+
+    // 提取文件名给后端
+    const attFilenames = attachments?.map(a => a.filename)
 
     try {
       await chatApi.sendMessageStream(
@@ -97,12 +112,12 @@ export const useChatStore = defineStore('chat', () => {
           if (!msg) return
 
           if (event.type === 'error') {
-            msg.executingMsg = ''
+            archiveExec(msg)
             msg.content = (msg.content || '') + `\n\n❌ ${event.content || '未知错误'}`
             return
           }
           if (event.type === 'done') {
-            msg.executingMsg = ''
+            archiveExec(msg)
             return
           }
           if (event.type === 'model') {
@@ -123,26 +138,45 @@ export const useChatStore = defineStore('chat', () => {
           } else if (event.type === 'content' && event.content) {
             msg.content = (msg.content || '') + event.content
             streamingContent.value = msg.content
-            msg.executingMsg = ''
+            archiveExec(msg)
           } else if (event.type === 'progress' || event.type === 'executing') {
+            archiveExec(msg)
             msg.executingMsg = event.message || event.content || ''
           } else if (event.type === 'agent_switch') {
-            msg.executingMsg = event.reason || event.message || ''
+            const _name = (event as any).display_name || event.agent || ''
+            const _reason = (event as any).reason_display || event.reason || ''
+            archiveExec(msg)
+            msg.executingMsg = _reason ? `${_name}：${_reason}` : _name
+            msg.agentName = _name
+          } else if (event.type === 'tool_action') {
+            const _actions = (event as any).actions || []
+            const _lines = _actions.map((a: any) => `${a.icon || '🔧'} ${a.tool}${a.detail ? ': ' + a.detail : ''}`)
+            archiveExec(msg)
+            msg.executingMsg = _lines.join(' | ')
+          } else if (event.type === 'tool_summary') {
+            const _summaries = (event as any).summaries || []
+            archiveExec(msg)
+            msg.executingMsg = _summaries.join(' | ')
           } else if (event.type === 'inspecting' || event.type === 'retry') {
+            archiveExec(msg)
             msg.executingMsg = event.message || ''
           } else if (event.type === 'round') {
+            archiveExec(msg)
             msg.executingMsg = event.message || `第 ${event.round} 次修改`
           } else if (event.type === 'inspection_report') {
             msg.inspectionReport = event.report || ''
           }
-        }
+        },
+        attFilenames,
       )
       // 流式结束后从 DB 刷新（同步历史，避免 temp ID 残留）
-      // 保留前端临时字段（inspectionReport/reasoning/model），DB 里没有这些字段
+      // 保留前端临时字段（inspectionReport/reasoning/model/execLogs/attachments），DB 里没有这些字段
       const _savedReport = messages.value[aiIndex]?.inspectionReport
       const _savedReasoning = messages.value[aiIndex]?.reasoning
       const _savedModel = messages.value[aiIndex]?.model
-      const _oldMsgs = messages.value
+      const _savedExecLogs = messages.value[aiIndex]?.execLogs
+      const _savedUserIdx = aiIndex - 1
+      const _savedUserAtts = messages.value[_savedUserIdx]?.attachments
       messages.value = await chatApi.listMessages(currentSessionId.value!)
       // 找刷新后的最后一条 assistant 消息，回填临时字段
       const _lastAssistant = [...messages.value].reverse().find(m => m.role === 'assistant')
@@ -150,13 +184,22 @@ export const useChatStore = defineStore('chat', () => {
         if (_savedReport) _lastAssistant.inspectionReport = _savedReport
         if (_savedReasoning && !_lastAssistant.reasoning) _lastAssistant.reasoning = _savedReasoning
         if (_savedModel && !_lastAssistant.model) _lastAssistant.model = _savedModel
+        if (_savedExecLogs && _savedExecLogs.length) _lastAssistant.execLogs = _savedExecLogs
+      }
+      // 回填用户消息附件
+      const _lastUser = [...messages.value].reverse().find(m => m.role === 'user')
+      if (_lastUser && _savedUserAtts) {
+        _lastUser.attachments = _savedUserAtts
       }
     } catch (e: any) {
       const msg = messages.value[aiIndex]
       if (msg) {
+        archiveExec(msg)
         if (e.name === 'AbortError') {
           if (msg.content) {
             msg.content += '\n\n*[已停止生成]*'
+          } else {
+            msg.content = '*[已停止生成]*'
           }
         } else {
           const errDetail = e.message || String(e)
@@ -165,6 +208,8 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } finally {
+      // 清除转圈指示，但保留 execLogs（折叠显示）
+      messages.value.forEach(m => { m.executingMsg = '' })
       isStreaming.value = false
       abortController = null
     }

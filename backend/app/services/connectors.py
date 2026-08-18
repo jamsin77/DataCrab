@@ -450,8 +450,37 @@ class CSVConnector(BaseConnector):
         return df.iloc[offset:offset + page_size]
 
     async def execute_query(self, query: str) -> pd.DataFrame:
+        """用 DuckDB 在内存里对 CSV 跑 SQL。表名 = 文件 basename（不带扩展名）。
+        多文件模式（mode=files）每个文件注册一张表。
+        SQL 里表名建议用双引号包裹（中文/特殊字符），如 SELECT * FROM "销售数据"。
+        """
         import pandas as pd
-        return pd.DataFrame()
+        try:
+            import duckdb
+        except ImportError:
+            logger.warning("duckdb 未安装，CSV SQL 查询不可用")
+            return pd.DataFrame()
+
+        file_path = self.config.get("file_path", "")
+        file_paths = self.config.get("file_paths", [])
+        files = file_paths or ([file_path] if file_path else [])
+        files = [f for f in files if f and os.path.exists(f)]
+        if not files:
+            return pd.DataFrame()
+
+        con = duckdb.connect()
+        try:
+            for f in files:
+                base = os.path.splitext(os.path.basename(f))[0]
+                df = pd.read_csv(f)
+                con.register(base, df)
+
+            return con.execute(query).fetch_df()
+        except Exception as e:
+            logger.error(f"CSV DuckDB SQL 执行失败: {e} | SQL: {query[:200]}")
+            raise
+        finally:
+            con.close()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
         import pandas as pd
@@ -626,8 +655,40 @@ class ExcelConnector(BaseConnector):
         return df.iloc[offset:offset + page_size]
 
     async def execute_query(self, query: str) -> pd.DataFrame:
+        """用 DuckDB 在内存里对 Excel 跑 SQL。
+        把所有 sheet 注册成 DuckDB 表，表名 = base + "_" + sheet_name（对齐 _resolve_table_name 格式）；
+        第一个 sheet 同时注册为 base 名（精确匹配 base 时返回第一个 sheet）。
+        SQL 里表名建议用双引号包裹（中文/特殊字符），如 SELECT * FROM "test_upload_员工"。
+        """
         import pandas as pd
-        return pd.DataFrame()
+        try:
+            import duckdb
+        except ImportError:
+            logger.warning("duckdb 未安装，Excel SQL 查询不可用")
+            return pd.DataFrame()
+
+        files = self._get_excel_files()
+        if not files:
+            return pd.DataFrame()
+
+        con = duckdb.connect()
+        try:
+            for f in files:
+                base = os.path.splitext(os.path.basename(f))[0]
+                xls = pd.ExcelFile(f)
+                for i, sheet_name in enumerate(xls.sheet_names):
+                    df = pd.read_excel(f, sheet_name=sheet_name)
+                    tbl = f"{base}_{sheet_name}" if sheet_name else base
+                    con.register(tbl, df)
+                    if i == 0:
+                        con.register(base, df)
+
+            return con.execute(query).fetch_df()
+        except Exception as e:
+            logger.error(f"Excel DuckDB SQL 执行失败: {e} | SQL: {query[:200]}")
+            raise
+        finally:
+            con.close()
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
         import pandas as pd

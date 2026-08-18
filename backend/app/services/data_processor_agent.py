@@ -38,6 +38,7 @@ from app.services.agent_utils import (
     build_pressure_warning,
     should_compact,
     compact_messages,
+    build_tool_action_event,
 )
 from app.services.tool_guidance import get_tool_guidance
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
@@ -248,10 +249,13 @@ _SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.m
 _SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
 
 
-DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。总共 {max_rounds} 次修改机会，执行错误最多 {max_exec_failures} 次。
+DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_script 读代码定位问题，用 edit_script 修改，用 run_script 执行验证。
+
+执行错误最多 {max_exec_failures} 次。
 推理过程用中文。
 
 ## 错误处理（对齐 OpenCode）
+VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否正确。不要在没验证的情况下连续修改多次。
 收到执行错误后，看 traceback 自主判断：能修就修，修不了就说明原因停止。不要反复尝试同一个修改。
 
 ## 平台规范
@@ -298,23 +302,8 @@ def _compute_diff_summary(old_code: str, new_code: str) -> list:
     return changed[:30]
 
 
-_PLATFORM_FAILURE_SIGNALS = ("llm_vision 调用失败", "llm_vision 失败", "llm_chat 调用失败", "llm_chat 失败",
-                              "llm_chat 不可用", "llm_vision 不可用", "api key 未配置", "api_key 未配置",
-                              "模型未配置", "llm 未配置", "认证失败", "权限不足", "连接拒绝", "连接超时",
-                              "llm_vision failed", "llm_chat failed", "extract_video_info failed",
-                              "extract_keyframes failed", "路径不在授权目录")
-
-
-def _has_platform_failure_in_warnings(warn_text: str) -> bool:
-    """检测 warnings 文本中是否包含平台错误信号（如 llm_vision 调用失败、LLM 未配置等）。"""
-    if not warn_text:
-        return False
-    _lower = warn_text.lower()
-    return any(sig in _lower or sig in warn_text for sig in _PLATFORM_FAILURE_SIGNALS)
-
-
 def classify_execution_result(rdata: dict) -> dict:
-    """分类 run_script 执行结果：成功 / 平台问题 / 脚本问题。
+    """分类 run_script 执行结果：成功 / 失败（对齐 OpenCode：靠 LLM 看 error 自主判断，不做平台/脚本问题分类）。
 
     供 DataProcessorAgent.run_debug 和 DataAnalystAgent.run_debug 复用，
     消除三处重复的 _inner_r / _warnings_r / _is_fail 判断逻辑。
@@ -322,7 +311,6 @@ def classify_execution_result(rdata: dict) -> dict:
     Returns:
         {
             "is_fail": bool,            # 是否失败
-            "is_platform_issue": bool,  # 是否平台问题（修改脚本无法解决）
             "err_msg": str,             # 错误信息（失败时）
             "warn_text": str,           # warnings 文本（含 tool_failures 合并）
             "warnings": list,           # 原始 warnings list（含 tool_failures 合并）
@@ -342,27 +330,18 @@ def classify_execution_result(rdata: dict) -> dict:
     _is_fail = (not rdata.get("success")
                 or ("success" in _inner and not _inner["success"])
                 or (rdata.get("error") and str(rdata.get("error")).strip())
-                or (_inner.get("error") and str(_inner.get("error")).strip())
-                or _has_platform_failure_in_warnings(_warn_text))
+                or (_inner.get("error") and str(_inner.get("error")).strip()))
 
     _err_msg = str(rdata.get("error") or _inner.get("error") or "") if _is_fail else ""
-    _is_platform = (_has_platform_failure_in_warnings(_warn_text)
-                    or _has_platform_failure_in_warnings(_err_msg))
 
     return {
         "is_fail": _is_fail,
-        "is_platform_issue": _is_platform,
         "err_msg": _err_msg,
         "warn_text": _warn_text,
         "warnings": _warnings,
         "tool_failures": _tool_failures,
         "inner_result": _inner,
     }
-
-
-def _build_platform_reason(err_msg: str, warn_text: str) -> str:
-    """构造平台能力缺失的退出原因 — 两个 Agent 共用"""
-    return f"平台能力缺失：{err_msg[:500] or warn_text[:500]}"
 
 
 def _build_give_up_reason(count: int, err_msg: str) -> str:
@@ -453,6 +432,10 @@ def _slim_run_script_result(content: str) -> str:
             slim["warnings"] = _warnings
         if _tool_failures:
             slim["tool_failures"] = _tool_failures
+        # 失败时保留 stdout 最后 500 字符（含 [SkillRunner] ... failed 等关键上下文，对齐 OpenCode Bash 失败时完整 error + stderr）
+        _stdout = str(data.get("stdout") or "")
+        if _stdout:
+            slim["stdout"] = _stdout[-500:]
         if data.get("param_warning"):
             slim["param_warning"] = data["param_warning"]
     return json.dumps(slim, ensure_ascii=False, default=str)
@@ -587,6 +570,10 @@ class DataProcessorAgent(BaseAgent):
             content = response.get("content") or ""
             if content:
                 yield {"type": "content", "content": content}
+
+            # 工具调用过程显示 → 独立 tool_action 事件（让用户看到调用了哪些工具）
+            if tool_calls:
+                yield build_tool_action_event(tool_calls)
 
             local_messages.append({
                 "role": "assistant",
@@ -1109,7 +1096,8 @@ class DataProcessorAgent(BaseAgent):
         if name == "run_script":
             script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
             parameters = arguments.get("parameters", {})
-            for key in ["datasource_id", "datasource_name", "source_datasource_id", "target_datasource_id"]:
+            # 只 strip 内部 ID 类参数（防 Agent 覆盖系统数据源），datasource_name 保留（脚本别名映射+UUID 校验兜底）
+            for key in ["datasource_id", "source_datasource_id", "target_datasource_id"]:
                 parameters.pop(key, None)
             try:
                 if context.get("debug_type") == "operator":
@@ -1483,16 +1471,15 @@ class DataProcessorAgent(BaseAgent):
         动态信息（参数/上下文）通过 build_debug_dynamic_hints 注入为 user 消息，
         不混入 system prompt 以保证字节稳定。
         """
-        max_rounds = context.get("debug_max_rounds", 7)
         max_exec_failures = context.get("debug_max_exec_failures", 3)
         target_ds_type = context.get("debug_output_datasource_type", "")
-        cache_key = (max_rounds, max_exec_failures, target_ds_type)
+        cache_key = (max_exec_failures, target_ds_type)
 
         cached = _DEBUG_STATIC_PROMPT_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
-        prompt = DEBUG_INSTRUCTIONS.replace("{max_rounds}", str(max_rounds)).replace("{max_exec_failures}", str(max_exec_failures))
+        prompt = DEBUG_INSTRUCTIONS.replace("{max_exec_failures}", str(max_exec_failures))
 
         # 沙箱函数签名契约（对齐 OpenCode：工具 schema 永远在 prompt 里，LLM 不必猜 API）
         prompt += "\n\n" + SANDBOX_TOOLS_DOC
@@ -1629,23 +1616,22 @@ class DataProcessorAgent(BaseAgent):
         debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
                        _LIST_DATASOURCES_TOOL]
 
-        max_fix_attempts = context.get("debug_max_rounds", 7)
-        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 Agent 持久化，只数 fix 工具
+        _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 Agent 持久化，只数 run_script（一次修改尝试=一次修改+执行）
         _total_llm_calls = 0  # 仅用于日志
         _MAX_EXEC_FAILURES = context.get("debug_max_exec_failures", 3)  # 首次执行成功前连续执行失败上限（可配置）
         _exec_failures_before_success = context.get("debug_exec_failures", 0)
         _execution_succeeded = context.get("debug_execution_succeeded", False)
         _just_succeeded = False
         script_name = context.get("debug_script_name", "main.py")
-        _stuck = StuckDetector(max_total_rounds=40)
+        _stuck = StuckDetector(max_total_rounds=30)
         _last_round_had_fix = False
         _tool_call_meta: Dict[str, tuple] = {}
 
-        logger.info("[run_debug] 开始，max_fix_attempts=" + str(max_fix_attempts) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
+        logger.info("[run_debug] 开始，无修改次数上限，exec_failures上限=" + str(_MAX_EXEC_FAILURES) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
         yield {"type": "model", "content": llm_manager._default}
 
-        while _fix_attempts < max_fix_attempts:
+        while True:
             _total_llm_calls += 1
 
             # 已消费工具结果清理：上一轮调了 edit_script/run_script → 更早的 read/grep 结果已过时
@@ -1668,13 +1654,13 @@ class DataProcessorAgent(BaseAgent):
             content = ""
             tool_calls = []
 
-            logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "/" + str(max_fix_attempts) + "）")
+            logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "）")
             # 记录传给 LLM 的完整 messages（调试用，写文件）
             try:
                 import os as _os
                 _dbg_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "debug_messages.log")
                 with open(_dbg_path, "w", encoding="utf-8") as _df:
-                    _df.write(f"=== LLM调用#{_total_llm_calls} 修改尝试{_fix_attempts + 1}/{max_fix_attempts} ===\n")
+                    _df.write(f"=== LLM调用#{_total_llm_calls} 修改尝试{_fix_attempts + 1} ===\n")
                     _df.write(f"tools: {[t.get('function',{}).get('name','?') for t in debug_tools]}\n\n")
                     for _mi, _m in enumerate(local_messages):
                         _mc = _m.get("content", "") or ""
@@ -1702,18 +1688,15 @@ class DataProcessorAgent(BaseAgent):
 
             logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "返回 content_len=" + str(len(content)) + " tool_calls=" + str(len(tool_calls)))
 
-            # 检测是否为修改尝试（edit_script/run_script）
-            _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
+            # 检测是否为修改尝试（只数 run_script：一次"修改尝试"=一次"修改+执行"完整循环，不算单纯 edit_script）
+            _has_fix = tool_calls and any(tc["function"]["name"] == "run_script" for tc in tool_calls)
             _has_edit = tool_calls and any(tc["function"]["name"] == "edit_script" for tc in tool_calls)
             if _has_fix:
                 _last_round_had_fix = True
-            if _has_fix:
                 _fix_attempts += 1
                 context["debug_total_rounds"] = _fix_attempts
                 _action = "modify" if _has_edit else "execute"
                 _round_evt = {"type": "round", "round": _fix_attempts, "action": _action}
-                if _fix_attempts == max_fix_attempts:
-                    _round_evt["last_chance"] = True
                 yield _round_evt
 
             # 工具调用显示 → 独立 tool_action 事件（不进 content，对齐 OpenCode）
@@ -1921,12 +1904,6 @@ class DataProcessorAgent(BaseAgent):
                                 logger.warning(f"记录正例失败(非致命): {e}")
                     else:
                         _err_msg = _cls["err_msg"]
-                        # 平台错误信号 → 立即退出（修改脚本无法解决）
-                        if _cls["is_platform_issue"]:
-                            _reason = _build_platform_reason(_err_msg, _warn_text_r)
-                            yield {"type": "platform_issue", "message": _reason}
-                            yield {"type": "done", "result": {"agent": self.name, "content": _reason}}
-                            return
                         # 执行错误计数：首次成功前连续失败达上限 → give_up
                         if not _execution_succeeded:
                             _exec_failures_before_success += 1
@@ -1973,7 +1950,6 @@ class DataProcessorAgent(BaseAgent):
 
 
 
-        # 修改次数用完 → give_up
-        _reason = f"已达到最大修改次数（{_fix_attempts}次），最后错误：{content[:500] if content else '无'}"
-        yield {"type": "give_up", "reason": _reason}
+        # 循环正常退出（LLM 主动停止或 StuckDetector 兜底）
+        yield {"type": "give_up", "reason": content[:500] if content else "调试结束"}
         yield {"type": "done", "result": {"agent": self.name, "content": content or "调试失败"}}

@@ -35,6 +35,7 @@ from app.services.agent_utils import (
     should_compact,
     compact_messages,
     get_anti_hallucination_section,
+    build_tool_action_event,
 )
 from app.services.tool_guidance import get_tool_guidance
 from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
@@ -82,6 +83,30 @@ DATA_ANALYST_INSTRUCTIONS = """你是 DataCrab 的 DataAnalyst（数据分析智
 3. 先查后说：提到表名/列名前先调 get_table_schema 确认结构；报告数据前先调 query_table_data/execute_sql 获取实际数据
 4. 分析深度：不只是罗列数据，要给出分布特征、异常点、趋势洞察
 5. 分页意识：大表用 limit/offset 分页查询，避免一次加载过多数据
+
+## 分析结果呈现
+分析完成后必须给出清晰结论。除文字说明外，对于"统计/分布/对比/占比"类分析结果，必须按以下格式输出图表块，前端会自动渲染成可视化图表：
+
+### 图表块格式
+
+```
+<chart type="bar" title="图表标题" x_label="X轴标签" y_label="Y轴标签">
+{"categories": ["A","B","C"], "values": [100,200,150]}
+</chart>
+```
+
+- `type`: bar（柱状图）/ line（折线图）/ pie（饼图）
+- `categories`: X 轴分类（饼图用每项名称）
+- `values`: 数值列表
+- `x_label` / `y_label` / `title`: 可选
+- 多组数据用 `series`：`{"categories": ["A","B"], "series": [{"name":"Q1","values":[100,200]}, {"name":"Q2","values":[150,180]}]}`
+
+### 呈现准则
+1. 表格数据超过 5 行 → 用图表呈现，更直观
+2. 分布/占比 → 优先饼图
+3. 数量对比 → 优先柱状图
+4. 趋势 → 优先折线图
+5. 图表块前后可以加文字说明，但数据结论应优先用图表表达
 
 ## 不负责的事
 - 数据清洗/转换/写入 → 交给 DataProcessor
@@ -216,6 +241,10 @@ class DataAnalystAgent(BaseAgent):
             if content:
                 yield {"type": "content", "content": content}
 
+            # 工具调用过程显示 → 独立 tool_action 事件（让用户看到调用了哪些工具）
+            if tool_calls:
+                yield build_tool_action_event(tool_calls)
+
             local_messages.append({
                 "role": "assistant",
                 "content": content,
@@ -341,8 +370,8 @@ class DataAnalystAgent(BaseAgent):
         from app.services.data_processor_agent import (
             EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
             _LIST_DATASOURCES_TOOL, _slim_run_script_result,
-            _has_platform_failure_in_warnings, classify_execution_result,
-            _build_platform_reason, _build_give_up_reason, _record_negative,
+            classify_execution_result,
+            _build_give_up_reason, _record_negative,
         )
         from app.services.prompt_docs import SAFETY_RULES_DOC
 
@@ -560,12 +589,6 @@ class DataAnalystAgent(BaseAgent):
                         return
                     else:
                         _err_msg = _cls["err_msg"]
-                        # 平台错误信号 → 立即退出
-                        if _cls["is_platform_issue"]:
-                            _reason = _build_platform_reason(_err_msg, _warn_text_r)
-                            yield {"type": "platform_issue", "message": _reason}
-                            yield {"type": "done", "result": {"agent": self.name, "content": _reason}}
-                            return
                         # 执行错误计数
                         _exec_failures += 1
                         if _exec_failures >= _MAX_EXEC_FAILURES:

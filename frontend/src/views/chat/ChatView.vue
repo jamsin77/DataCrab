@@ -105,10 +105,39 @@
                   </el-collapse-item>
                 </el-collapse>
               </div>
-              <!-- 执行进度 -->
-              <div v-if="msg.role === 'assistant' && msg.executingMsg" class="executing-indicator">
+              <!-- 执行日志（归档，折叠显示） -->
+              <div v-if="msg.role === 'assistant' && msg.execLogs && msg.execLogs.length" class="exec-logs-section">
+                <div class="exec-logs-header" @click="toggleExecLogs(msg.id)">
+                  <el-icon><CaretRight /></el-icon>
+                  <span>执行日志</span>
+                  <el-tag size="small" type="info">{{ msg.execLogs.length }}</el-tag>
+                </div>
+                <el-collapse-transition>
+                  <div v-show="execLogsExpanded[msg.id]" class="exec-logs-content">
+                    <div v-for="(log, i) in msg.execLogs" :key="i" class="exec-log-line">{{ log }}</div>
+                  </div>
+                </el-collapse-transition>
+              </div>
+              <!-- 执行进度（仅 streaming 时转圈） -->
+              <div v-if="msg.role === 'assistant' && msg.executingMsg && chatStore.isStreaming" class="executing-indicator">
                 <el-icon class="is-loading"><Loading /></el-icon>
-                <span>{{ msg.executingMsg }}</span>
+                <span>{{ msg.agentName ? `[${msg.agentName}] ` : '' }}{{ msg.executingMsg }}</span>
+              </div>
+              <div v-if="msg.role === 'user' && msg.attachments && msg.attachments.length" class="user-attachments">
+                <div
+                  v-for="att in msg.attachments"
+                  :key="att.filename"
+                  class="user-attachment-card"
+                  @click="reuseAttachment(att)"
+                  title="点击重新引用此文件"
+                >
+                  <el-icon class="att-icon"><Document /></el-icon>
+                  <div class="att-info">
+                    <div class="att-name">{{ att.filename }}</div>
+                    <div class="att-meta" v-if="att.sheets && att.sheets.length">{{ att.sheets.length }} 个工作表</div>
+                  </div>
+                  <el-icon class="att-reuse"><RefreshRight /></el-icon>
+                </div>
               </div>
               <div v-if="msg.role === 'user'" class="user-text">{{ msg.content }}</div>
               
@@ -128,34 +157,67 @@
         </div>
 
         <!-- 输入区域 -->
-        <div class="input-area">
-          <el-input
-            v-model="inputText"
-            type="textarea"
-            :rows="2"
-            :autosize="{ minRows: 1, maxRows: 6 }"
-            :disabled="chatStore.isStreaming"
-            placeholder="输入消息... (Enter发送, Shift+Enter换行, ↑↓浏览历史)"
-            @keydown="handleKeyDown"
-          />
-          <div class="input-actions">
-            <el-button
-              v-if="chatStore.isStreaming"
-              type="danger"
-              circle
-              @click="chatStore.stopGeneration()"
+        <div class="chat-input-wrap">
+          <div v-if="attachments.length" class="attachment-bar">
+            <el-tag
+              v-for="att in attachments"
+              :key="att.filename"
+              closable
+              type="info"
+              size="small"
+              @close="removeAttachment(att.filename)"
             >
-              <el-icon><VideoPause /></el-icon>
-            </el-button>
-            <el-button
-              v-else
-              type="primary"
-              circle
-              :disabled="!inputText.trim()"
-              @click="handleSend"
-            >
-              <el-icon><Promotion /></el-icon>
-            </el-button>
+              <el-icon style="vertical-align: middle; margin-right: 2px;"><Document /></el-icon>
+              {{ att.filename }}
+              <span v-if="att.sheets.length" style="color: #909399; margin-left: 4px;">
+                ({{ att.sheets.length }} 表)
+              </span>
+            </el-tag>
+          </div>
+          <div class="input-area">
+            <el-input
+              v-model="inputText"
+              type="textarea"
+              :rows="2"
+              :autosize="{ minRows: 1, maxRows: 6 }"
+              :disabled="chatStore.isStreaming"
+              placeholder="输入消息... (Enter发送, Shift+Enter换行, ↑↓浏览历史)"
+              @keydown="handleKeyDown"
+            />
+            <div class="input-actions">
+              <el-upload
+                :show-file-list="false"
+                :http-request="handleUpload"
+                accept=".xlsx,.xls"
+                :disabled="chatStore.isStreaming || uploading"
+              >
+                <el-button
+                  circle
+                  :loading="uploading"
+                  :disabled="chatStore.isStreaming"
+                  title="上传 Excel 附件（≤5MB）"
+                >
+                  <el-icon v-if="!uploading"><Paperclip /></el-icon>
+                </el-button>
+              </el-upload>
+              <el-button
+                v-if="chatStore.isStreaming"
+                type="danger"
+                circle
+                @click="chatStore.stopGeneration()"
+              >
+                <el-icon><VideoPause /></el-icon>
+              </el-button>
+              <el-button
+                v-else
+                type="primary"
+                circle
+                :disabled="!inputText.trim() && attachments.length === 0"
+                @click="handleSend"
+              >
+                <el-icon><Promotion /></el-icon>
+              </el-button>
+            </div>
           </div>
         </div>
       </template>
@@ -167,15 +229,27 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading, CircleCheck } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
+import * as echarts from 'echarts'
 import api from '@/api/index'
+import { chatApi } from '@/api/chat'
 
 const chatStore = useChatStore()
 const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
+const execLogsExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
+
+// 聊天附件：所有上传的 Excel 归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
+interface Attachment {
+  filename: string          // 原始文件名，作为附件唯一标识
+  table_name_prefix: string // 表名前缀（basename without extension）
+  sheets: string[]
+}
+const attachments = ref<Attachment[]>([])
+const uploading = ref(false)
 
 // 输入历史（↑↓ 浏览）
 const inputHistory = ref<string[]>(
@@ -196,8 +270,91 @@ const md = new MarkdownIt({
   typographer: true,
 })
 
+// chart 块计数器（每个 chart 块需要唯一 id）
+let _chartBlockSeq = 0
+// 待渲染的 chart 块映射：domId -> spec
+const _pendingChartBlocks = ref<Record<string, any>>({})
+
 function renderMarkdown(content: string): string {
-  return md.render(content)
+  if (!content) return ''
+  // 提取 <chart type="..." title="..." x_label="..." y_label="...">{json}</chart> 块
+  const chartRegex = /<chart\s+([^>]*)>([\s\S]*?)<\/chart>/g
+  const charts: Array<{ id: string; spec: any }> = []
+  let cleaned = content.replace(chartRegex, (match, attrs, jsonStr) => {
+    // 解析属性
+    const typeMatch = attrs.match(/type="([^"]*)"/)
+    const titleMatch = attrs.match(/title="([^"]*)"/)
+    const xLabelMatch = attrs.match(/x_label="([^"]*)"/)
+    const yLabelMatch = attrs.match(/y_label="([^"]*)"/)
+    const type = typeMatch ? typeMatch[1] : 'bar'
+    const title = titleMatch ? titleMatch[1] : ''
+    const xLabel = xLabelMatch ? xLabelMatch[1] : ''
+    const yLabel = yLabelMatch ? yLabelMatch[1] : ''
+
+    // 解析 JSON 数据
+    let data: any = null
+    try {
+      data = JSON.parse(jsonStr.trim())
+    } catch (e) {
+      return `<div class="echart-error">⚠️ 图表数据解析失败: ${(e as Error).message}</div>`
+    }
+
+    // 构造 ECharts option
+    const spec = buildEchartsOption(type, title, xLabel, yLabel, data)
+    const id = `echart-${_chartBlockSeq++}`
+    charts.push({ id, spec })
+    _pendingChartBlocks.value[id] = spec
+    return `<div class="echart-block" id="${id}"></div>`
+  })
+  return md.render(cleaned)
+}
+
+function buildEchartsOption(type: string, title: string, xLabel: string, yLabel: string, data: any): any {
+  const categories = data.categories || []
+  const series = data.series || [{ name: title || '数据', values: data.values || [] }]
+  const option: any = {
+    title: title ? { text: title, left: 'center' } : undefined,
+    tooltip: { trigger: type === 'pie' ? 'item' : 'axis' },
+    legend: series.length > 1 ? { data: series.map((s: any) => s.name), bottom: 0 } : undefined,
+    grid: { left: '3%', right: '4%', bottom: series.length > 1 ? '12%' : '3%', containLabel: true },
+  }
+  if (type === 'pie') {
+    option.series = [{
+      type: 'pie',
+      radius: '60%',
+      data: categories.map((c: string, i: number) => ({ name: c, value: (data.values || [])[i] || 0 })),
+    }]
+  } else if (type === 'line') {
+    option.xAxis = { type: 'category', data: categories, name: xLabel }
+    option.yAxis = { type: 'value', name: yLabel }
+    option.series = series.map((s: any) => ({
+      name: s.name, type: 'line', data: s.values || [], smooth: true,
+    }))
+  } else {
+    // bar（柱状图，默认）
+    option.xAxis = { type: 'category', data: categories, name: xLabel }
+    option.yAxis = { type: 'value', name: yLabel }
+    option.series = series.map((s: any) => ({
+      name: s.name, type: 'bar', data: s.values || [],
+    }))
+  }
+  return option
+}
+
+// 渲染所有待处理的 chart 块
+function renderPendingChartBlocks() {
+  for (const [id, spec] of Object.entries(_pendingChartBlocks.value)) {
+    const el = document.getElementById(id)
+    if (el && !el.hasChildNodes()) {
+      try {
+        const chart = echarts.init(el)
+        chart.setOption(spec)
+      } catch (e) {
+        console.error('echarts init failed:', id, e)
+      }
+      delete _pendingChartBlocks.value[id]
+    }
+  }
 }
 
 function formatMsgTime(ts: string): string {
@@ -213,6 +370,25 @@ function formatMsgTime(ts: string): string {
 
 function toggleReasoning(msgId: string) {
   reasoningExpanded.value[msgId] = !reasoningExpanded.value[msgId]
+}
+
+function toggleExecLogs(msgId: string) {
+  execLogsExpanded.value[msgId] = !execLogsExpanded.value[msgId]
+}
+
+// 点击历史消息里的文件卡片，重新引用该文件
+function reuseAttachment(att: { filename: string; table_name_prefix?: string; sheets?: string[] }) {
+  const exists = attachments.value.some(a => a.filename === att.filename)
+  if (exists) {
+    ElMessage.info(`${att.filename} 已在附件列表中`)
+    return
+  }
+  attachments.value.push({
+    filename: att.filename,
+    table_name_prefix: att.table_name_prefix || '',
+    sheets: att.sheets || [],
+  })
+  ElMessage.success(`已引用: ${att.filename}`)
 }
 
 async function handleCopy(content: string) {
@@ -269,19 +445,21 @@ onMounted(async () => {
     // 后端可能正在 reload（开发模式改代码触发 uvicorn 重启），静默处理
   }
 
-  // 初始化时滚动到底部
+  // 初始化时滚动到底部 + 渲染 chart 块
   scrollToBottom(false)
+  nextTick(() => renderPendingChartBlocks())
 })
 
-// 监听消息变化，自动滚动到底部
+// 监听消息变化，自动滚动到底部 + 渲染 chart 块
 watch(
   () => chatStore.messages.length,
   () => {
     scrollToBottom()
+    nextTick(() => renderPendingChartBlocks())
   }
 )
 
-// 监听流式内容变化，实时滚动
+// 监听流式内容变化，实时滚动 + 渲染 chart 块
 watch(
   () => [chatStore.streamingContent, chatStore.streamingReasoning],
   () => {
@@ -292,6 +470,8 @@ watch(
     }
     // 流式更新使用即时滚动，避免 smooth 动画被高频 token 打断
     scrollToBottom(false)
+    // 渲染 chart 块（DOM 更新后）
+    nextTick(() => renderPendingChartBlocks())
   }
 )
 
@@ -308,19 +488,61 @@ watch(
 async function handleNewSession() {
   await chatStore.createSession()
   reasoningExpanded.value = {}
+  execLogsExpanded.value = {}
 }
 
-async function handleSend() {
+  async function handleSend() {
   if (chatStore.isStreaming) return
-  if (!inputText.value.trim()) return
+  if (!inputText.value.trim() && attachments.value.length === 0) return
   const text = inputText.value
+  const atts = attachments.value.map(a => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets }))
   // 保存到输入历史
   inputHistory.value.push(text)
   if (inputHistory.value.length > 50) inputHistory.value = inputHistory.value.slice(-50)
   try { localStorage.setItem('dc_chat_history', JSON.stringify(inputHistory.value)) } catch {}
   historyIdx.value = -1
   inputText.value = ''
-  await chatStore.sendMessage(text)
+  attachments.value = []
+  await chatStore.sendMessage(text, atts.length ? atts : undefined)
+}
+
+function beforeUpload(file: File): boolean {
+  if (!/\.(xlsx|xls)$/i.test(file.name)) {
+    ElMessage.error('只支持 Excel 文件 (.xlsx / .xls)')
+    return false
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.error(`文件大小超过 5MB 限制（当前 ${(file.size / 1024 / 1024).toFixed(1)}MB）`)
+    return false
+  }
+  return true
+}
+
+async function handleUpload(opt: any) {
+  const file: File = opt.file
+  if (!beforeUpload(file)) {
+    // el-upload 的手动模式，返回 false 即可中止
+    return
+  }
+  uploading.value = true
+  try {
+    const res = await chatApi.uploadAttachment(file)
+    attachments.value.push({
+      filename: res.filename,
+      table_name_prefix: res.table_name_prefix,
+      sheets: res.sheets,
+    })
+    ElMessage.success(`已上传: ${res.filename}（${res.sheets.length} 个工作表）`)
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail || e?.message || String(e)
+    ElMessage.error(`上传失败: ${detail}`)
+  } finally {
+    uploading.value = false
+  }
+}
+
+function removeAttachment(filename: string) {
+  attachments.value = attachments.value.filter(a => a.filename !== filename)
 }
 
 async function handleClearMessages() {
@@ -335,6 +557,7 @@ async function handleClearMessages() {
   }
   await chatStore.clearMessages()
   reasoningExpanded.value = {}
+  execLogsExpanded.value = {}
   ElMessage.success('已清空当前会话记录')
 }
 
@@ -766,6 +989,26 @@ async function handleExportCurrent() {
         background: #f0f0f0;
       }
     }
+
+    // ECharts 图表块
+    .markdown-content :deep(.echart-block) {
+      width: 100%;
+      height: 320px;
+      margin: 12px 0;
+      background: #fff;
+      border: 1px solid #ebeef5;
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .markdown-content :deep(.echart-error) {
+      color: #f56c6c;
+      background: #fef0f0;
+      padding: 8px 12px;
+      border-radius: 4px;
+      margin: 8px 0;
+      font-size: 12px;
+    }
   }
 }
 
@@ -802,14 +1045,98 @@ async function handleExportCurrent() {
   }
 }
 
+/* 执行日志（折叠） */
+.exec-logs-section {
+  margin: 8px 0;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  overflow: hidden;
+
+  .exec-logs-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #f5f7fa;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: #909399;
+
+    &:hover { background: #ecf0f5; }
+
+    .el-icon { transition: transform 0.3s; }
+  }
+
+  .exec-logs-content {
+    padding: 8px 12px;
+    background: #fafafa;
+    border-top: 1px solid #e4e7ed;
+    max-height: 200px;
+    overflow-y: auto;
+
+    .exec-log-line {
+      font-size: 12px;
+      line-height: 1.8;
+      color: #909399;
+      font-family: monospace;
+    }
+  }
+}
+
+/* 用户消息文件卡片 */
+.user-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+
+  .user-attachment-card {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #f0f9ff;
+    border: 1px solid #d9ecff;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+      background: #ecf5ff;
+      border-color: #409eff;
+      .att-reuse { opacity: 1; }
+    }
+
+    .att-icon { color: #409eff; font-size: 18px; }
+
+    .att-info {
+      .att-name { font-size: 13px; font-weight: 500; color: #303133; }
+      .att-meta { font-size: 11px; color: #909399; }
+    }
+
+    .att-reuse { color: #c0c4cc; opacity: 0.6; font-size: 14px; transition: opacity 0.2s; }
+  }
+}
+
 @keyframes typing {
   0%, 60%, 100% { transform: translateY(0); }
   30% { transform: translateY(-8px); }
 }
 
+.chat-input-wrap {
+  border-top: 1px solid #e6e6e6;
+}
+
+.attachment-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 20px 0;
+}
+
 .input-area {
   padding: 16px 20px;
-  border-top: 1px solid #e6e6e6;
   display: flex;
   gap: 12px;
   align-items: flex-end;

@@ -1,132 +1,31 @@
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 
-def _extract_target_names(source_df, source_field, llm_batch_size=20):
-    """从源数据的 source_field 列中提取目标实体名称，优先用正则，无法匹配的用 LLM"""
-    extracted = {}
-    unmatched_indices = []
+# ===== 模块级并行 worker 函数（供 ProcessPoolExecutor 使用，必须是模块级可 pickle）=====
 
-    # 正则模式
-    patterns = [
-        (r'归入(.+)', '归入'),
-        (r'与(.+?)合并', '与...合并'),
-        (r'并入(.+)', '并入'),
-        (r'合并[到入](.+)', '合并到/入'),
-    ]
-
-    for idx, row in source_df.iterrows():
-        val = str(row[source_field]).strip()
-        if not val or val == 'nan':
-            extracted[idx] = None
-            continue
-
-        matched = False
-        for pattern, label in patterns:
-            m = re.search(pattern, val)
-            if m:
-                name = m.group(1).strip()
-                # 去掉可能的"名称："等后缀
-                name = re.sub(r'名称[：:].*', '', name).strip()
-                if name:
-                    extracted[idx] = name
-                    matched = True
-                    break
-        if not matched:
-            unmatched_indices.append(idx)
-            extracted[idx] = None
-
-    # 对正则无法匹配的记录用 LLM
-    if unmatched_indices:
-        log("info", f"正则未匹配 {len(unmatched_indices)} 条，使用 LLM 提取...")
-        chunk_size = llm_batch_size
-        for start in range(0, len(unmatched_indices), chunk_size):
-            chunk_indices = unmatched_indices[start:start + chunk_size]
-            items = []
-            for idx in chunk_indices:
-                val = str(source_df.loc[idx, source_field]).strip()
-                name = str(source_df.loc[idx, 'name']).strip() if 'name' in source_df.columns else ''
-                items.append((idx, name, val))
-
-            source_list = "\n".join([
-                f'{i + 1}. 名称: "{name}", 备注: "{val}"'
-                for i, (_, name, val) in enumerate(items)
-            ])
-
-            prompt = f"""请从以下每条数据的"备注"中提取它要归并到的目标实体名称。
-
-数据：
-{source_list}
-
-提取规则：
-1. "归入XXX" → 提取 "XXX"
-2. "与XXX合并名称：YYY" → 提取 "XXX"
-3. "与XXX合并" → 提取 "XXX"
-4. 如果备注中没有明确的目标实体名称，返回 null
-
-请以 JSON 格式返回：
-{{"results": [{{"index": 1, "target_name": "清远楼"}}, {{"index": 2, "target_name": null}}]}}
-
-只返回 JSON，不要其他内容。"""
-
-            result = llm_chat(prompt, temperature=0.1, max_tokens=2000)
-
-            try:
-                result = result.strip()
-                if result.startswith("```"):
-                    lines = result.split("\n")
-                    result = "\n".join(lines[1:-1]) if len(lines) > 2 else lines[0].strip("`")
-                parsed = json.loads(result)
-                results = parsed.get("results", [])
-                for r in results:
-                    idx_pos = r.get("index")
-                    target_name = r.get("target_name")
-                    if idx_pos is not None and 1 <= idx_pos <= len(items):
-                        actual_idx = items[idx_pos - 1][0]
-                        extracted[actual_idx] = target_name
-            except Exception as e:
-                log("warn", f"LLM 提取失败 (批次 {start}): {e}")
-
-    return extracted
-
-
-def _fuzzy_match_names(
-    extracted_names,
-    target_df,
-    target_field,
-):
-    """将提取的名称与目标数据的 target_field 列进行模糊匹配（优化性能版）"""
-    target_values = target_df[target_field].astype(str).str.strip().tolist()
-    target_index_map = list(target_df.index)
-
-    # 预构建目标名称的小写索引，加速精确匹配
-    target_lower_map = {}
-    for i, v in enumerate(target_values):
-        key = v.lower().strip()
-        if key not in target_lower_map:
-            target_lower_map[key] = i
-
-    # 预计算目标值的字符集合（用于 Jaccard 相似度）
-    target_char_sets = [set(v) for v in target_values]
-
-    mapping = {}
-    for src_idx, name in extracted_names.items():
+def _match_chunk_worker(args):
+    """模块级模糊匹配 worker：Jaccard + 包含匹配（CPU 密集，绕过 GIL）"""
+    chunk_items, target_values, target_index_map, target_lower_map, target_char_sets = args
+    chunk_mapping = {}
+    for src_idx, name in chunk_items:
         if not name or not name.strip():
-            mapping[src_idx] = None
+            chunk_mapping[src_idx] = None
             continue
-
         name = name.strip()
         name_lower = name.lower().strip()
 
         # 1. 精确匹配（不区分大小写）
         if name_lower in target_lower_map:
-            mapping[src_idx] = target_index_map[target_lower_map[name_lower]]
+            chunk_mapping[src_idx] = target_index_map[target_lower_map[name_lower]]
             continue
 
         # 2. 包含匹配（双向）
         found = False
         for i, v in enumerate(target_values):
             if name in v or v in name:
-                mapping[src_idx] = target_index_map[i]
+                chunk_mapping[src_idx] = target_index_map[i]
                 found = True
                 break
         if found:
@@ -145,11 +44,174 @@ def _fuzzy_match_names(
             if score > best_score:
                 best_score = score
                 best_i = i
-
         if best_score >= 0.5 and best_i >= 0:
-            mapping[src_idx] = target_index_map[best_i]
+            chunk_mapping[src_idx] = target_index_map[best_i]
         else:
-            mapping[src_idx] = None
+            chunk_mapping[src_idx] = None
+    return chunk_mapping
+
+
+def _build_merge_pairs_worker(args):
+    """模块级 merge pair 构建 worker：比较源行和目标行各列差异"""
+    chunk_items, src_cols, src_rows_dict, tgt_rows_dict, name_col = args
+    pairs = []
+    for src_idx, tgt_idx in chunk_items:
+        merge_parts = []
+        src_row = src_rows_dict[src_idx]
+        tgt_row = tgt_rows_dict.get(tgt_idx, {})
+        for col in src_cols:
+            src_val = src_row.get(col)
+            if src_val is None or str(src_val).strip() == "":
+                continue
+            src_str = str(src_val).strip()
+            if col in tgt_row:
+                tgt_val = tgt_row[col]
+                if tgt_val is not None and str(tgt_val).strip() == src_str:
+                    continue
+            merge_parts.append(f"{col}: {src_str}")
+        if merge_parts:
+            src_info = "；".join(merge_parts)
+            src_name = str(src_row.get(name_col, "")).strip()
+            pairs.append((tgt_idx, src_info, src_name))
+    return pairs
+
+
+def _extract_target_names(source_df, source_field, llm_batch_size=20):
+    """从源数据的 source_field 列中提取目标实体名称，优先用向量化正则，无法匹配的用 LLM"""
+    extracted = {idx: None for idx in source_df.index}
+
+    # ===== 向量化正则提取（一次性处理整列，比逐行 .loc 快 10-100 倍）=====
+    vals = source_df[source_field].astype(str).str.strip()
+    vals = vals.where(vals != 'nan', '')
+
+    # 4 个正则模式按优先级顺序，用 str.extract 向量化
+    m1 = vals.str.extract(r'归入(.+)', expand=False)
+    m2 = vals.str.extract(r'与(.+?)合并', expand=False)
+    m3 = vals.str.extract(r'并入(.+)', expand=False)
+    m4 = vals.str.extract(r'合并[到入](.+)', expand=False)
+
+    # 按优先级组合：m1 → m2 → m3 → m4
+    result = m1.where(m1.notna() & (m1 != ''),
+             m2.where(m2.notna() & (m2 != ''),
+             m3.where(m3.notna() & (m3 != ''),
+             m4)))
+
+    # 清理："名称：..." 等后缀
+    result = result.str.replace(r'名称[：:].*', '', regex=True).str.strip()
+    result = result.where(result != '', None)
+
+    # 标记匹配成功的行
+    matched_mask = result.notna() & (vals != '')
+    for idx in source_df.index[matched_mask]:
+        extracted[idx] = result[idx]
+
+    unmatched_indices = [idx for idx in source_df.index if not matched_mask[idx]]
+    log("info", f"正则匹配成功: {matched_mask.sum()}/{len(source_df)}, 未匹配: {len(unmatched_indices)}")
+
+    # ===== 对正则无法匹配的记录用 LLM（并行，返回结果而非副作用）=====
+    if unmatched_indices:
+        log("info", f"正则未匹配 {len(unmatched_indices)} 条，使用 LLM 并行提取...")
+        chunk_size = llm_batch_size
+        chunks = []
+        for start in range(0, len(unmatched_indices), chunk_size):
+            chunk_indices = unmatched_indices[start:start + chunk_size]
+            items = []
+            for idx in chunk_indices:
+                val = str(source_df.loc[idx, source_field]).strip()
+                name = str(source_df.loc[idx, 'name']).strip() if 'name' in source_df.columns else ''
+                items.append((idx, name, val))
+            chunks.append(items)
+
+        def _llm_extract_chunk(items):
+            """返回 {actual_idx: target_name}，不修改共享状态"""
+            source_list = "\n".join([
+                f'{i + 1}. 名称: "{name}", 备注: "{val}"'
+                for i, (_, name, val) in enumerate(items)
+            ])
+            prompt = f"""请从以下每条数据的"备注"中提取它要归并到的目标实体名称。
+
+数据：
+{source_list}
+
+提取规则：
+1. "归入XXX" → 提取 "XXX"
+2. "与XXX合并名称：YYY" → 提取 "XXX"
+3. "与XXX合并" → 提取 "XXX"
+4. 如果备注中没有明确的目标实体名称，返回 null
+
+请以 JSON 格式返回：
+{{"results": [{{"index": 1, "target_name": "清远楼"}}, {{"index": 2, "target_name": null}}]}}
+
+只返回 JSON，不要其他内容。"""
+            result = llm_chat(prompt, temperature=0.1, max_tokens=2000)
+            chunk_results = {}
+            try:
+                result = result.strip()
+                if result.startswith("```"):
+                    lines = result.split("\n")
+                    result = "\n".join(lines[1:-1]) if len(lines) > 2 else lines[0].strip("`")
+                parsed = json.loads(result)
+                results = parsed.get("results", [])
+                for r in results:
+                    idx_pos = r.get("index")
+                    target_name = r.get("target_name")
+                    if idx_pos is not None and 1 <= idx_pos <= len(items):
+                        actual_idx = items[idx_pos - 1][0]
+                        chunk_results[actual_idx] = target_name
+            except Exception as e:
+                log("warn", f"LLM 提取失败: {e}")
+            return chunk_results
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(_llm_extract_chunk, items): i for i, items in enumerate(chunks)}
+            for future in as_completed(futures):
+                try:
+                    chunk_results = future.result()
+                    extracted.update(chunk_results)
+                except Exception as e:
+                    log("warn", f"LLM 提取批次 {futures[future]} 异常: {e}")
+
+    return extracted
+
+
+def _fuzzy_match_names(
+    extracted_names,
+    target_df,
+    target_field,
+    match_workers=8,
+):
+    """将提取的名称与目标数据的 target_field 列进行模糊匹配（ProcessPoolExecutor，绕过 GIL）"""
+    target_values = target_df[target_field].astype(str).str.strip().tolist()
+    target_index_map = list(target_df.index)
+
+    # 预构建目标名称的小写索引，加速精确匹配
+    target_lower_map = {}
+    for i, v in enumerate(target_values):
+        key = v.lower().strip()
+        if key not in target_lower_map:
+            target_lower_map[key] = i
+
+    # 预计算目标值的字符集合（用于 Jaccard 相似度）
+    target_char_sets = [set(v) for v in target_values]
+
+    # 将 extracted_names 拆分为多个 chunk，用 ProcessPoolExecutor 并行匹配
+    items = list(extracted_names.items())
+    if len(items) <= 100:
+        chunk_size = len(items)
+    else:
+        chunk_size = max(1, len(items) // match_workers)
+    chunks = [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    mapping = {}
+    if len(chunks) == 1:
+        mapping = _match_chunk_worker((chunks[0], target_values, target_index_map, target_lower_map, target_char_sets))
+    else:
+        # CPU 密集型：用 ProcessPoolExecutor 绕过 GIL
+        args_list = [(chunk, target_values, target_index_map, target_lower_map, target_char_sets) for chunk in chunks]
+        with ProcessPoolExecutor(max_workers=min(match_workers, len(chunks), os.cpu_count() or 4)) as executor:
+            futures = [executor.submit(_match_chunk_worker, args) for args in args_list]
+            for future in as_completed(futures):
+                mapping.update(future.result())
 
     return mapping
 
@@ -163,6 +225,7 @@ def main(input_data=None, **kwargs):
         'filter_condition': ['filter_condition', 'filter', 'condition'],
         'merge_field': ['merge_field', 'match_field', 'field'],
         'output_table_name': ['output_table_name', 'output_table', 'target_table'],
+        'output_datasource_name': ['output_datasource_name', 'output_datasource', 'target_datasource'],
         'if_table_exists': ['if_table_exists', 'write_strategy'],
         'merge_strategy': ['merge_strategy', 'strategy'],
         'batch_size': ['batch_size'],
@@ -189,6 +252,7 @@ def main(input_data=None, **kwargs):
     filter_condition = params.get('filter_condition', '')
     merge_field = params.get('merge_field', '备注')
     output_table_name = params.get('output_table_name')
+    output_datasource_name = params.get('output_datasource_name')
     if_table_exists = params.get('if_table_exists', 'overwrite')
     merge_strategy = params.get('merge_strategy', 'merge_fields')
     batch_size = params.get('batch_size', 1000)
@@ -211,10 +275,20 @@ def main(input_data=None, **kwargs):
             return {"success": False, "error": f"找不到数据源: {datasource_name}"}
         log("info", f"通过名称找到数据源: {datasource_name} -> {ds_id}")
 
+    # 确定输出数据源：Excel 类型不支持 write_table_data 创建新表，需回退到 PostgreSQL
+    write_ds_id = ds_id  # 默认同源写入
+    if output_datasource_name:
+        output_ds_id = get_datasource_id_by_name(output_datasource_name)
+        if output_ds_id:
+            write_ds_id = output_ds_id
+            log("info", f"使用指定输出数据源: {output_datasource_name} -> {write_ds_id}")
+        else:
+            log("warn", f"输出数据源 '{output_datasource_name}' 未找到，将尝试同源写入")
+
     # 读取数据（分块读取，避免漏行）
     all_rows = []
     columns = None
-    for chunk in iter_table_data(ds_id, table_name, chunk_size=5000):
+    for chunk in iter_table_data(ds_id, table_name, chunk_size=20000):
         if not columns:
             columns = chunk.get("columns", [])
         all_rows.extend(chunk.get("rows", []))
@@ -266,7 +340,8 @@ def main(input_data=None, **kwargs):
                                 vals = similar_keywords
                             else:
                                 vals = [v.strip() for v in val.split('|')]
-                            col_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
+                            pattern = '|'.join(re.escape(v) for v in vals)
+                            col_mask = df[col].astype(str).str.contains(pattern, na=False)
                             source_mask = source_mask | col_mask
                             filter_used = True
                         else:
@@ -277,18 +352,20 @@ def main(input_data=None, **kwargs):
                 val = parts[1].strip()
                 if col in df.columns:
                     vals = [v.strip() for v in val.split('|')]
-                    source_mask = df[col].astype(str).apply(lambda x: any(v in str(x) for v in vals))
+                    pattern = '|'.join(re.escape(v) for v in vals)
+                    source_mask = df[col].astype(str).str.contains(pattern, na=False)
                     filter_used = True
                 else:
                     log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
 
     if not filter_used:
-        # 关键词搜索：在所有文本列中搜索归并/合并相关关键词
+        # 关键词搜索：在所有文本列中搜索归并/合并相关关键词（向量化批量 str.contains）
         keywords = ['归并', '合并', '归入', '并入']
+        pattern = '|'.join(re.escape(kw) for kw in keywords)
         log("info", f"在所有列中搜索关键词: {keywords}")
         for col in df.columns:
             try:
-                col_mask = df[col].astype(str).apply(lambda x: any(kw in str(x) for kw in keywords))
+                col_mask = df[col].astype(str).str.contains(pattern, na=False, regex=True)
                 source_mask = source_mask | col_mask
             except:
                 pass
@@ -332,41 +409,47 @@ def main(input_data=None, **kwargs):
     log("info", f"匹配成功: {matched_count}/{len(source_df)}")
 
     # 合并逻辑：把被合并行各列信息用 LLM 组织成通顺文字，放入目标行备注列
-    # 先收集所有需要合并的 (src_idx, tgt_idx) 对及其信息
+    # 预提取 source_df 和 target_df 为 dict（避免 ProcessPoolExecutor 中 .loc 的 GIL 开销）
+    src_cols = list(source_df.columns)
+    tgt_cols = list(target_df.columns)
+    common_cols = [c for c in src_cols if c in tgt_cols]
+    # 预构建索引→行数据的 dict，加速 ProcessPoolExecutor 中的行访问
+    src_rows_dict = {idx: source_df.loc[idx].to_dict() for idx in source_df.index}
+    tgt_rows_dict = {idx: target_df.loc[idx].to_dict() for idx in target_df.index}
+    has_name_col = name_col in source_df.columns
+
+    matched_items = [(src_idx, tgt_idx) for src_idx, tgt_idx in matched.items() if tgt_idx is not None]
     merge_pairs = []  # [(tgt_idx, src_info_str, src_name), ...]
-    for src_idx, tgt_idx in matched.items():
-        if tgt_idx is not None:
-            # 收集源行所有非空列信息
-            merge_parts = []
-            for col in source_df.columns:
-                src_val = source_df.loc[src_idx, col]
-                if pd.isna(src_val) or str(src_val).strip() == "":
-                    continue
-                src_str = str(src_val).strip()
-                # 跳过与目标行完全相同的值（避免冗余）
-                if col in target_df.columns:
-                    tgt_val = target_df.loc[tgt_idx, col]
-                    if not pd.isna(tgt_val) and str(tgt_val).strip() == src_str:
-                        continue
-                merge_parts.append(f"{col}: {src_str}")
-            if merge_parts:
-                src_info = "；".join(merge_parts)
-                src_name = str(source_df.loc[src_idx, name_col]).strip() if name_col in source_df.columns else ""
-                merge_pairs.append((tgt_idx, src_info, src_name))
+    if matched_items:
+        if len(matched_items) <= 200:
+            merge_pairs = _build_merge_pairs_worker(
+                (matched_items, src_cols, src_rows_dict, tgt_rows_dict, name_col if has_name_col else "")
+            )
+        else:
+            chunk_size = max(1, len(matched_items) // max(1, (os.cpu_count() or 4) * 2))
+            item_chunks = [matched_items[i:i + chunk_size] for i in range(0, len(matched_items), chunk_size)]
+            args_list = [(c, src_cols, src_rows_dict, tgt_rows_dict, name_col if has_name_col else "") for c in item_chunks]
+            # 字典查找+字符串比较，用 ThreadPoolExecutor 避免 ProcessPool 的 pickle 序列化开销
+            with ThreadPoolExecutor(max_workers=min(len(item_chunks), 16)) as executor:
+                futures = [executor.submit(_build_merge_pairs_worker, args) for args in args_list]
+                for future in as_completed(futures):
+                    merge_pairs.extend(future.result())
 
     log("info", f"需要生成归并描述: {len(merge_pairs)} 条")
 
-    # 用 LLM 批量生成通顺文字
+    # 用 LLM 批量生成通顺文字（并行）
     merge_texts = {}  # tgt_idx -> 通顺描述文字
     if merge_pairs:
         chunk_size = llm_batch_size
+        chunks = []
         for start in range(0, len(merge_pairs), chunk_size):
-            chunk = merge_pairs[start:start + chunk_size]
+            chunks.append(merge_pairs[start:start + chunk_size])
+
+        def _llm_generate_descriptions(chunk):
             items_text = "\n".join([
                 f'{i + 1}. 被合并文物名称: "{p[2]}", 主要信息: {p[1]}'
                 for i, p in enumerate(chunk)
             ])
-
             prompt = f"""请将以下每条被合并文物的主要信息，组织成通顺、完整的中文描述文字。
 
 要求：
@@ -382,7 +465,6 @@ def main(input_data=None, **kwargs):
 {{"results": [{{"index": 1, "description": "该文物原为XXX，年代为XXX，位于XXX..."}}, ...]}}
 
 只返回 JSON，不要其他内容。"""
-
             try:
                 result = llm_chat(prompt, temperature=0.3, max_tokens=4000)
                 result = result.strip()
@@ -391,33 +473,57 @@ def main(input_data=None, **kwargs):
                     result = "\n".join(lines[1:-1]) if len(lines) > 2 else lines[0].strip("`")
                 parsed = json.loads(result)
                 results = parsed.get("results", [])
+                chunk_results = {}
                 for r in results:
                     idx_pos = r.get("index")
                     desc = r.get("description", "")
                     if idx_pos is not None and 1 <= idx_pos <= len(chunk):
                         tgt_idx = chunk[idx_pos - 1][0]
-                        merge_texts[tgt_idx] = desc
+                        chunk_results[tgt_idx] = desc
+                return chunk_results
             except Exception as e:
-                log("warn", f"LLM 生成描述失败 (批次 {start}): {e}")
+                log("warn", f"LLM 生成描述失败: {e}")
                 # 降级：用原始拼接
-                for p in chunk:
-                    merge_texts[p[0]] = f"【已归并信息】{p[1]}"
+                return {p[0]: f"【已归并信息】{p[1]}" for p in chunk}
 
-            log("info", f"已生成 {start + len(chunk)}/{len(merge_pairs)} 条归并描述")
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(_llm_generate_descriptions, chunk): i for i, chunk in enumerate(chunks)}
+            completed = 0
+            for future in as_completed(futures):
+                try:
+                    chunk_results = future.result()
+                    merge_texts.update(chunk_results)
+                    completed += len(chunk_results)
+                    if completed % 100 == 0 or completed == len(merge_pairs):
+                        log("info", f"已生成 {completed}/{len(merge_pairs)} 条归并描述")
+                except Exception as e:
+                    log("warn", f"LLM 生成描述批次 {futures[future]} 异常: {e}")
 
-    # 将生成的描述写入目标行备注列
-    for tgt_idx, desc in merge_texts.items():
-        existing_remark = target_df.loc[tgt_idx, actual_merge_field]
-        if pd.isna(existing_remark) or str(existing_remark).strip() == "":
-            target_df.loc[tgt_idx, actual_merge_field] = f"【已归并信息】{desc}"
-        else:
-            target_df.loc[tgt_idx, actual_merge_field] = f"{existing_remark}【已归并信息】{desc}"
-        log("info", f"行 {tgt_idx} 备注列已追加归并信息: {desc[:80]}...")
+    # 将生成的描述批量写入目标行备注列（向量化操作，避免逐行 .loc）
+    if merge_texts:
+        # 构建批量更新数据
+        merge_indices = list(merge_texts.keys())
+        merge_texts_list = [f"【已归并信息】{merge_texts[idx]}" for idx in merge_indices]
+        existing_remarks = target_df.loc[merge_indices, actual_merge_field]
+        new_remarks = []
+        for i, idx in enumerate(merge_indices):
+            existing = existing_remarks.loc[idx] if idx in existing_remarks.index else ""
+            if pd.isna(existing) or str(existing).strip() == "":
+                new_remarks.append(merge_texts_list[i])
+            else:
+                new_remarks.append(f"{str(existing).strip()}{merge_texts_list[i]}")
+        target_df.loc[merge_indices, actual_merge_field] = new_remarks
+        log("info", f"批量更新 {len(merge_indices)} 行备注列完成")
+
+    # 修复列名：将 'ID' 转为 snake_case 的 'id'
+    if 'ID' in target_df.columns:
+        target_df = target_df.rename(columns={'ID': 'id'})
+        log("info", "列名 'ID' 已重命名为 'id' (snake_case)")
 
     output_table = output_table_name or f"{table_name}_merged"
     records = target_df.to_dict(orient="records")
 
-    # 分批写入：第一批用 overwrite 清空重建，后续用 append 追加
+    # 分批写入：第一批用 replace 彻底重建表结构（避免旧列名残留），后续用 append 追加
     clearing_strategies = {"overwrite", "replace", "truncate"}
     for i in range(0, len(records), batch_size):
         batch_num = i // batch_size + 1
@@ -425,6 +531,9 @@ def main(input_data=None, **kwargs):
         current_strategy = if_table_exists
         if batch_num > 1 and if_table_exists in clearing_strategies:
             current_strategy = "append"
+        elif batch_num == 1 and if_table_exists == "overwrite":
+            # overwrite 不清除旧列结构，改用 replace 确保列名干净
+            current_strategy = "replace"
         write_result = write_table_data(ds_id, output_table, records=batch, if_table_exists=current_strategy)
         if not write_result.get("success"):
             return {"success": False, "error": f"写入失败(批次{batch_num}): {write_result.get('message', write_result)}"}

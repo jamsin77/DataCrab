@@ -938,11 +938,13 @@ def run_skill_script_streaming(
         uses_argparse = False
     script_content = _strip_main_block(script_content)
 
-    if skill_path and datasource_id and "datasource" not in parameters and "datasource_id" not in parameters:
+    if skill_path and datasource_id and "datasource" not in parameters and "datasource_id" not in parameters and "datasource_name" not in parameters:
         if uses_argparse and datasource_name:
             parameters["datasource"] = datasource_name
         else:
             parameters["datasource"] = datasource_id
+            if datasource_name:
+                parameters["datasource_name"] = datasource_name
     if skill_path and table_name and "tables" not in parameters and "table" not in parameters and "table_name" not in parameters and "table_names" not in parameters:
         if uses_argparse:
             parameters["tables"] = [table_name]
