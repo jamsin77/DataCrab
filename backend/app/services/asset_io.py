@@ -535,9 +535,9 @@ async def import_schedules(data: List[Dict], db: AsyncSession, user_id, overwrit
     operators = (await db.execute(select(Operator))).scalars().all()
     skills = (await db.execute(select(Skill))).scalars().all()
     name2id = {
-        "pipeline": {p.name: str(p.id) for p in pipelines},
-        "operator": {o.name: str(o.id) for o in operators},
-        "skill": {s.name: str(s.id) for s in skills},
+        "pipeline": {p.name: p.id for p in pipelines},
+        "operator": {o.name: o.id for o in operators},
+        "skill": {s.name: s.id for s in skills},
     }
 
     existing = (await db.execute(select(Schedule.name).where(Schedule.created_by == user_id))).scalars().all()
