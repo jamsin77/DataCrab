@@ -180,7 +180,6 @@ function toggleOverwriteType(k: string, checked: boolean) {
     overwriteTypes.value = overwriteTypes.value.filter(t => t !== k)
   }
 }
-}
 
 function onExportTypesChange(val: string[]) {
   if (val.length === 0) {
