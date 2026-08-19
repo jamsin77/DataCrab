@@ -46,10 +46,10 @@
           <div v-if="previewManifest" style="margin-top: 16px">
             <p style="color: #909399; margin-bottom: 8px">检测到以下资产：</p>
             <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 4px">
-              <el-checkbox :model-value="importAll" :indeterminate="importIndeterminate" @update:model-value="toggleImportAll" style="flex: 1; font-weight: bold">
+              <el-checkbox v-model="importAllComputed" :indeterminate="importIndeterminateComputed" style="flex: 1; font-weight: bold">
                 全选
               </el-checkbox>
-              <el-checkbox :model-value="overwriteAll" :indeterminate="overwriteIndeterminate" @update:model-value="toggleOverwriteAll" size="small">
+              <el-checkbox v-model="overwriteAllComputed" :indeterminate="overwriteIndeterminateComputed" size="small">
                 全选覆盖
               </el-checkbox>
             </div>
@@ -87,7 +87,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Document } from '@element-plus/icons-vue'
 import api from '@/api/index'
@@ -99,16 +99,37 @@ const importing = ref(false)
 const exporting = ref(false)
 const importTypes = ref<string[]>([])
 const overwriteTypes = ref<string[]>([])
-const importAll = ref(false)
-const importIndeterminate = ref(false)
-const overwriteAll = ref(false)
-const overwriteIndeterminate = ref(false)
 const previewManifest = ref<any>(null)
 const importResult = ref<any>(null)
 const selectedFile = ref<File | null>(null)
 const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, schedules: 0 })
 
 const ALL_TYPES = ['skills', 'operators', 'pipelines', 'llm_config', 'custom_extensions', 'schedules']
+
+const manifestKeys = computed(() => previewManifest.value ? Object.keys(previewManifest.value.counts) : [])
+
+const importAllComputed = computed({
+  get: () => manifestKeys.value.length > 0 && importTypes.value.length === manifestKeys.value.length,
+  set: (val: boolean) => {
+    if (val) {
+      importTypes.value = [...manifestKeys.value]
+    } else {
+      importTypes.value = []
+      overwriteTypes.value = []
+    }
+  },
+})
+
+const importIndeterminateComputed = computed(() => importTypes.value.length > 0 && importTypes.value.length < manifestKeys.value.length)
+
+const overwriteAllComputed = computed({
+  get: () => importTypes.value.length > 0 && overwriteTypes.value.length === importTypes.value.length,
+  set: (val: boolean) => {
+    overwriteTypes.value = val ? [...importTypes.value] : []
+  },
+})
+
+const overwriteIndeterminateComputed = computed(() => overwriteTypes.value.length > 0 && overwriteTypes.value.length < importTypes.value.length)
 
 onMounted(() => {
   loadCounts()
@@ -143,56 +164,6 @@ function toggleExportAll(val: boolean) {
   exportIndeterminate.value = false
 }
 
-function toggleImportAll(val: boolean) {
-  if (val) {
-    importTypes.value = previewManifest.value ? Object.keys(previewManifest.value.counts) : [...ALL_TYPES]
-  } else {
-    importTypes.value = []
-    overwriteTypes.value = []
-  }
-  importIndeterminate.value = false
-  syncOverwriteAll()
-}
-
-function syncImportAll() {
-  const total = previewManifest.value ? Object.keys(previewManifest.value.counts).length : 0
-  const len = importTypes.value.length
-  if (len === 0) {
-    importAll.value = false
-    importIndeterminate.value = false
-  } else if (len === total) {
-    importAll.value = true
-    importIndeterminate.value = false
-  } else {
-    importAll.value = false
-    importIndeterminate.value = true
-  }
-}
-
-function toggleOverwriteAll(val: boolean) {
-  if (val) {
-    overwriteTypes.value = [...importTypes.value]
-  } else {
-    overwriteTypes.value = []
-  }
-  overwriteIndeterminate.value = false
-}
-
-function syncOverwriteAll() {
-  const len = overwriteTypes.value.length
-  const total = importTypes.value.length
-  if (len === 0) {
-    overwriteAll.value = false
-    overwriteIndeterminate.value = false
-  } else if (len === total) {
-    overwriteAll.value = true
-    overwriteIndeterminate.value = false
-  } else {
-    overwriteAll.value = false
-    overwriteIndeterminate.value = true
-  }
-}
-
 function toggleImportType(k: string, checked: boolean) {
   if (checked) {
     if (!importTypes.value.includes(k)) importTypes.value.push(k)
@@ -200,8 +171,6 @@ function toggleImportType(k: string, checked: boolean) {
     importTypes.value = importTypes.value.filter(t => t !== k)
     overwriteTypes.value = overwriteTypes.value.filter(t => t !== k)
   }
-  syncImportAll()
-  syncOverwriteAll()
 }
 
 function toggleOverwriteType(k: string, checked: boolean) {
@@ -210,7 +179,7 @@ function toggleOverwriteType(k: string, checked: boolean) {
   } else {
     overwriteTypes.value = overwriteTypes.value.filter(t => t !== k)
   }
-  syncOverwriteAll()
+}
 }
 
 function onExportTypesChange(val: string[]) {
