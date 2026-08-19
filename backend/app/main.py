@@ -403,6 +403,51 @@ async def health_check():
     }
 
 
+# ============================================================
+# 前端静态文件托管 & SPA fallback（桌面部署模式）
+# ============================================================
+import os as _os
+_FRONTEND_DIST = _os.path.abspath(_os.path.join(
+    _os.path.dirname(__file__), "..", "..", "frontend", "dist"
+))
+
+if _os.path.isdir(_FRONTEND_DIST):
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse, HTMLResponse
+    from fastapi import HTTPException
+
+    _assets_dir = _os.path.join(_FRONTEND_DIST, "assets")
+    if _os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    _favicon = _os.path.join(_FRONTEND_DIST, "favicon.ico")
+    if _os.path.exists(_favicon):
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def _favicon_handler():
+            return FileResponse(_favicon)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        """Vue SPA 回退 — 非 API 路径返回 index.html"""
+        if full_path.startswith("api/") or full_path.startswith("assets/"):
+            raise HTTPException(status_code=404)
+        _index = _os.path.join(_FRONTEND_DIST, "index.html")
+        if _os.path.exists(_index):
+            return HTMLResponse(open(_index, encoding="utf-8").read())
+        return HTMLResponse("<h1>DataCrab</h1><p>前端未构建</p>")
+
+    @app.get("/", include_in_schema=False)
+    async def _root_handler():
+        _index = _os.path.join(_FRONTEND_DIST, "index.html")
+        if _os.path.exists(_index):
+            return HTMLResponse(open(_index, encoding="utf-8").read())
+        return HTMLResponse("<h1>DataCrab</h1><p>前端未构建</p>")
+
+    logger.info(f"前端静态文件托管: {_FRONTEND_DIST}")
+else:
+    logger.warning(f"前端静态文件目录不存在: {_FRONTEND_DIST}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
