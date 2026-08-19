@@ -167,6 +167,18 @@ def _migrate_builtin_flags(connection):
     except Exception as e:
         logger.warning(f"table_metadata表迁移跳过: {e}")
 
+    # data_sources: is_virtual 列迁移（从 tech_metadata.source 回填）
+    try:
+        result = connection.execute(text("PRAGMA table_info(data_sources)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "is_virtual" not in columns:
+            connection.execute(text("ALTER TABLE data_sources ADD COLUMN is_virtual BOOLEAN DEFAULT 0"))
+            logger.info("data_sources表已添加 is_virtual 列")
+        # 从 tech_metadata 回填虚拟数据源标记
+        connection.execute(text("UPDATE data_sources SET is_virtual = 1 WHERE tech_metadata LIKE '%chat_upload_virtual%'"))
+    except Exception as e:
+        logger.warning(f"data_sources表 is_virtual 迁移跳过: {e}")
+
     # user_llm_configs: flash_model/vision_model 列迁移（旧列 fast_model → flash_model）
     try:
         result = connection.execute(text("PRAGMA table_info(user_llm_configs)"))

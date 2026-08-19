@@ -146,6 +146,7 @@ async def upload_attachment(
                 "source": _VIRTUAL_DS_SOURCE_TAG,
                 "files": [file_meta],
             },
+            is_virtual=True,
             created_by=current_user.id,
         )
         db.add(datasource)

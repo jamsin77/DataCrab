@@ -162,14 +162,12 @@ async def export_custom_extensions(zf: zipfile.ZipFile, db: AsyncSession, user_i
 async def export_datasources(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
     """导出数据源：DB → datasources.json（含连接配置含密码）；只导出当前用户创建的非虚拟数据源"""
     from app.models.datasource import DataSource
-    q = select(DataSource).where(DataSource.is_active == True)
+    q = select(DataSource).where(DataSource.is_active == True, DataSource.is_virtual == False)
     if user_id is not None:
         q = q.where(DataSource.created_by == user_id)
     sources = (await db.execute(q)).scalars().all()
     data = []
     for s in sources:
-        if s.is_virtual:
-            continue
         data.append({
             "name": s.name,
             "type": s.type,

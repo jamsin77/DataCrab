@@ -48,8 +48,7 @@ async def asset_counts(
     counts["pipelines"] = (await db.execute(select(func.count()).select_from(Pipeline).where(Pipeline.created_by == uid, Pipeline.is_builtin == False, Pipeline.is_active == True))).scalar() or 0
     counts["llm_config"] = (await db.execute(select(func.count()).select_from(LLMProvider).where(LLMProvider.created_by == uid, LLMProvider.is_active == True))).scalar() or 0
     counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.created_by == uid, CustomConnector.is_active == True))).scalar() or 0
-    _ds = (await db.execute(select(DataSource).where(DataSource.created_by == uid, DataSource.is_active == True))).scalars().all()
-    counts["datasources"] = sum(1 for d in _ds if not d.is_virtual)
+    counts["datasources"] = (await db.execute(select(func.count()).select_from(DataSource).where(DataSource.created_by == uid, DataSource.is_active == True, DataSource.is_virtual == False))).scalar() or 0
     counts["schedules"] = (await db.execute(select(func.count()).select_from(Schedule).where(Schedule.created_by == uid))).scalar() or 0
     return counts
 

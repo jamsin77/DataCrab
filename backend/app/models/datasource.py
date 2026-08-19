@@ -25,16 +25,11 @@ class DataSource(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    is_virtual = Column(Boolean, default=False)  # 虚拟数据源（聊天上传，受保护不可修改/删除/测试/同步）
 
     # 关系
     creator = relationship("User", back_populates="data_sources")
     table_metadata = relationship("TableMetadata", back_populates="data_source", lazy="noload")
-
-    @property
-    def is_virtual(self) -> bool:
-        """是否为虚拟数据源（聊天上传数据源，受保护不可修改/删除/测试/同步）"""
-        tech = self.tech_metadata or {}
-        return tech.get("source") == "chat_upload_virtual"
 
 
 class TableMetadata(Base):
