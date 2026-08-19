@@ -32,7 +32,7 @@ async def asset_counts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """各资产数量统计（导出页显示用）——只统计当前用户 manage 的资产"""
+    """各资产数量统计（导出页显示用）——平台级资产全量统计，调度按用户统计"""
     from sqlalchemy import select, func
     from app.models.skill import Skill
     from app.models.operator import Operator
@@ -42,11 +42,11 @@ async def asset_counts(
 
     uid = current_user.id
     counts = {}
-    counts["skills"] = (await db.execute(select(func.count()).select_from(Skill).where(Skill.created_by == uid))).scalar() or 0
-    counts["operators"] = (await db.execute(select(func.count()).select_from(Operator).where(Operator.created_by == uid))).scalar() or 0
-    counts["pipelines"] = (await db.execute(select(func.count()).select_from(Pipeline).where(Pipeline.created_by == uid, Pipeline.is_builtin == False, Pipeline.is_active == True))).scalar() or 0
-    counts["llm_config"] = (await db.execute(select(func.count()).select_from(LLMProvider).where(LLMProvider.created_by == uid, LLMProvider.is_active == True))).scalar() or 0
-    counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.created_by == uid, CustomConnector.is_active == True))).scalar() or 0
+    counts["skills"] = (await db.execute(select(func.count()).select_from(Skill))).scalar() or 0
+    counts["operators"] = (await db.execute(select(func.count()).select_from(Operator))).scalar() or 0
+    counts["pipelines"] = (await db.execute(select(func.count()).select_from(Pipeline).where(Pipeline.is_builtin == False, Pipeline.is_active == True))).scalar() or 0
+    counts["llm_config"] = (await db.execute(select(func.count()).select_from(LLMProvider).where(LLMProvider.is_active == True))).scalar() or 0
+    counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.is_active == True))).scalar() or 0
     counts["schedules"] = (await db.execute(select(func.count()).select_from(Schedule).where(Schedule.created_by == uid))).scalar() or 0
     return counts
 
