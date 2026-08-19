@@ -508,7 +508,7 @@
                   </div>
                 </div>
 
-                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" type="textarea" :autosize="{ minRows: 6, maxRows: 12 }" size="small" @keydown="handleCmdKeyDown" />
+                <el-input v-model="execCmdStr" :placeholder="cmdPlaceholder" type="textarea" :autosize="{ minRows: 18, maxRows: 36 }" size="small" @keydown="handleCmdKeyDown" />
                 <div v-if="cmdParseHint" class="cmd-parse-hint">
                   <el-tag size="small" type="info">{{ cmdParseHint }}</el-tag>
                 </div>
