@@ -95,7 +95,10 @@ async def import_assets(
     current_user: User = Depends(get_current_user),
 ):
     """导入 zip 资产。types 是逗号分隔的资产类型，overwrite_types 是逗号分隔的要覆盖的类型（空=全部跳过）。"""
+    import logging
+    logger = logging.getLogger(__name__)
     zip_bytes = await file.read()
+    logger.info(f"[资产导入] file={file.filename} size={len(zip_bytes)} types={types} overwrite_types={overwrite_types}")
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=422, detail="请上传 .zip 文件")
     type_list = [t.strip() for t in types.split(",") if t.strip()]
@@ -104,5 +107,10 @@ async def import_assets(
         result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite_set)
     except (zipfile.BadZipFile, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[资产导入] 导入失败 file={file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"导入失败: {e}")
     await db.commit()
     return result

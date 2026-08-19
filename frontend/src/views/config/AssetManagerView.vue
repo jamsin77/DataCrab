@@ -38,6 +38,11 @@
           <el-upload :show-file-list="false" :before-upload="onFileSelected" accept=".zip">
             <el-button type="primary" plain>选择 zip 文件</el-button>
           </el-upload>
+          <div v-if="selectedFile" style="margin-top: 12px; display: flex; align-items: center; gap: 8px">
+            <el-icon><Document /></el-icon>
+            <span style="color: #606266">{{ selectedFile.name }}</span>
+            <el-tag size="small" type="info">{{ (selectedFile.size / 1024).toFixed(1) }} KB</el-tag>
+          </div>
           <div v-if="previewManifest" style="margin-top: 16px">
             <p style="color: #909399; margin-bottom: 8px">检测到以下资产：</p>
             <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 4px">
@@ -84,6 +89,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Document } from '@element-plus/icons-vue'
 import api from '@/api/index'
 
 const exportTypes = ref<string[]>([])
