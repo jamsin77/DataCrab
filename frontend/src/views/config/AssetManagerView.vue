@@ -19,9 +19,10 @@
             <el-checkbox label="skills">技能（{{ counts.skills }} 个）</el-checkbox>
             <el-checkbox label="operators">算子（{{ counts.operators }} 个）</el-checkbox>
             <el-checkbox label="pipelines">流程（{{ counts.pipelines }} 个）</el-checkbox>
-            <el-checkbox label="llm_config">LLM 配置（{{ counts.llm_config }} 个 Provider）</el-checkbox>
+            <el-checkbox label="llm_config">大模型 Provider（{{ counts.llm_config }} 个）</el-checkbox>
             <el-checkbox label="custom_extensions">自定义连接器（{{ counts.custom_extensions }} 个）</el-checkbox>
-            <el-checkbox label="schedules">调度（{{ counts.schedules }} 个，仅当前用户）</el-checkbox>
+            <el-checkbox label="datasources">数据源（{{ counts.datasources }} 个）</el-checkbox>
+            <el-checkbox label="schedules">调度（{{ counts.schedules }} 个）</el-checkbox>
           </el-checkbox-group>
           <el-button type="primary" :loading="exporting" :disabled="!exportTypes.length" @click="doExport" style="margin-top: 16px">
             导出 zip
@@ -102,9 +103,9 @@ const overwriteTypes = ref<string[]>([])
 const previewManifest = ref<any>(null)
 const importResult = ref<any>(null)
 const selectedFile = ref<File | null>(null)
-const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, schedules: 0 })
+const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, datasources: 0, schedules: 0 })
 
-const ALL_TYPES = ['skills', 'operators', 'pipelines', 'llm_config', 'custom_extensions', 'schedules']
+const ALL_TYPES = ['skills', 'operators', 'pipelines', 'llm_config', 'custom_extensions', 'datasources', 'schedules']
 
 const manifestKeys = computed(() => previewManifest.value ? Object.keys(previewManifest.value.counts) : [])
 
@@ -138,7 +139,7 @@ onMounted(() => {
 async function loadCounts() {
   try {
     const data = await api.get('/assets/counts')
-    counts.value = data as any
+    counts.value = { skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, datasources: 0, schedules: 0, ...data }
   } catch (e) {
     // counts 接口可选，失败不报错
   }
@@ -147,7 +148,7 @@ async function loadCounts() {
 function typeLabel(k: string): string {
   const m: Record<string, string> = {
     skills: '技能', operators: '算子', pipelines: '流程',
-    llm_config: 'LLM 配置', custom_extensions: '连接器', schedules: '调度',
+    llm_config: '大模型 Provider', custom_extensions: '自定义连接器', datasources: '数据源', schedules: '调度',
   }
   return m[k] || k
 }

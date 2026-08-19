@@ -23,12 +23,15 @@ from app.core.config import settings
 # ============ 导出 ============
 
 async def export_skills_to_zip(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出技能：导出所有技能文件夹（平台级资产，不按 created_by 过滤）"""
+    """导出技能：只导出当前用户创建的技能文件夹"""
     from app.models.skill import Skill
     skill_base = Path(settings.SKILL_STORAGE_PATH)
     if not skill_base.is_dir():
         return 0
-    skills = (await db.execute(select(Skill))).scalars().all()
+    q = select(Skill)
+    if user_id is not None:
+        q = q.where(Skill.created_by == user_id)
+    skills = (await db.execute(q)).scalars().all()
     count = 0
     for skill in skills:
         sp = skill.skill_path or str(skill.id)
@@ -45,9 +48,12 @@ async def export_skills_to_zip(zf: zipfile.ZipFile, db: AsyncSession, user_id) -
 
 
 async def export_operators(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出算子：DB → operators.json（含 script_content）；导出所有算子（平台级资产）"""
+    """导出算子：DB → operators.json（含 script_content）；只导出当前用户创建的"""
     from app.models.operator import Operator
-    ops = (await db.execute(select(Operator))).scalars().all()
+    q = select(Operator)
+    if user_id is not None:
+        q = q.where(Operator.created_by == user_id)
+    ops = (await db.execute(q)).scalars().all()
     data = []
     for op in ops:
         data.append({
@@ -69,14 +75,17 @@ async def export_operators(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
 
 
 async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出流程：DB → pipelines.json（skill_calls 的 skill_id 换成 skill_name）；导出所有非内置流程"""
+    """导出流程：DB → pipelines.json（skill_calls 的 skill_id 换成 skill_name）；只导出当前用户创建的非内置流程"""
     from app.models.pipeline import Pipeline
     from app.models.skill import Skill
     # 构建 skill_id → skill_name 映射
     skills = (await db.execute(select(Skill))).scalars().all()
     id2name = {str(s.id): s.name for s in skills}
 
-    pipes = (await db.execute(select(Pipeline).where(Pipeline.is_builtin == False))).scalars().all()
+    q = select(Pipeline).where(Pipeline.is_builtin == False)
+    if user_id is not None:
+        q = q.where(Pipeline.created_by == user_id)
+    pipes = (await db.execute(q)).scalars().all()
     data = []
     for p in pipes:
         skill_calls = []
@@ -104,9 +113,12 @@ async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
 
 
 async def export_llm_config(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出 LLM Provider：DB → llm_config.json（不含 api_key）；导出所有 active 的 Provider"""
+    """导出 LLM Provider：DB → llm_config.json（不含 api_key）；只导出当前用户创建的"""
     from app.models.custom_extension import LLMProvider, UserLLMConfig
-    providers = (await db.execute(select(LLMProvider).where(LLMProvider.is_active == True))).scalars().all()
+    q = select(LLMProvider).where(LLMProvider.is_active == True)
+    if user_id is not None:
+        q = q.where(LLMProvider.created_by == user_id)
+    providers = (await db.execute(q)).scalars().all()
     data = []
     for p in providers:
         data.append({
@@ -127,9 +139,12 @@ async def export_llm_config(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> i
 
 
 async def export_custom_extensions(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出自定义连接器：DB → custom_extensions.json（不含连接密码）；导出所有 active 的"""
+    """导出自定义连接器：DB → custom_extensions.json（不含连接密码）；只导出当前用户创建的"""
     from app.models.custom_extension import CustomConnector
-    connectors = (await db.execute(select(CustomConnector).where(CustomConnector.is_active == True))).scalars().all()
+    q = select(CustomConnector).where(CustomConnector.is_active == True)
+    if user_id is not None:
+        q = q.where(CustomConnector.created_by == user_id)
+    connectors = (await db.execute(q)).scalars().all()
     data = []
     for c in connectors:
         data.append({
@@ -141,6 +156,28 @@ async def export_custom_extensions(zf: zipfile.ZipFile, db: AsyncSession, user_i
             "is_public": c.is_public,
         })
     zf.writestr("custom_extensions.json", json.dumps(data, ensure_ascii=False, indent=2))
+    return len(data)
+
+
+async def export_datasources(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
+    """导出数据源：DB → datasources.json（含连接配置含密码）；只导出当前用户创建的非虚拟数据源"""
+    from app.models.datasource import DataSource
+    q = select(DataSource).where(DataSource.is_active == True)
+    if user_id is not None:
+        q = q.where(DataSource.created_by == user_id)
+    sources = (await db.execute(q)).scalars().all()
+    data = []
+    for s in sources:
+        if s.is_virtual:
+            continue
+        data.append({
+            "name": s.name,
+            "type": s.type,
+            "connection_config": s.connection_config or {},
+            "business_metadata": s.business_metadata or {},
+            "security_level": s.security_level or "",
+        })
+    zf.writestr("datasources.json", json.dumps(data, ensure_ascii=False, indent=2))
     return len(data)
 
 
@@ -217,6 +254,8 @@ async def build_export_zip(types: List[str], db: AsyncSession, user_id=None) -> 
             manifest["counts"]["custom_extensions"] = await export_custom_extensions(zf, db, user_id)
         if "schedules" in types:
             manifest["counts"]["schedules"] = await export_schedules(zf, db, user_id)
+        if "datasources" in types:
+            manifest["counts"]["datasources"] = await export_datasources(zf, db, user_id)
         manifest["elapsed_ms"] = round((datetime.utcnow() - t0).total_seconds() * 1000, 2)
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return buf.getvalue()
@@ -431,6 +470,7 @@ async def import_llm_config(data: List[Dict], db: AsyncSession, user_id, overwri
                 existing_prov.embedding_model = p.get("embedding_model") or ""
                 existing_prov.code = p.get("code") or ""
                 existing_prov.is_public = p.get("is_public", False)
+                existing_prov.created_by = user_id
                 # api_key_encrypted 不动（保留用户已填的 key）
                 updated += 1
                 continue
@@ -482,6 +522,7 @@ async def import_custom_extensions(data: List[Dict], db: AsyncSession, user_id, 
                 existing_conn.code = c.get("code") or ""
                 existing_conn.config_template = c.get("config_template") or []
                 existing_conn.is_public = c.get("is_public", False)
+                existing_conn.created_by = user_id
                 updated += 1
                 continue
         connector = CustomConnector(
@@ -597,6 +638,53 @@ async def import_schedules(data: List[Dict], db: AsyncSession, user_id, overwrit
     return {"imported": imported, "updated": updated, "skipped": skipped, "unresolved": unresolved}
 
 
+async def import_datasources(data: List[Dict], db: AsyncSession, user_id, overwrite_types: set = None) -> Dict:
+    """导入数据源：JSON → DB（按 name 去重，含连接配置含密码）；虚拟数据源不导入"""
+    if overwrite_types is None:
+        overwrite_types = set()
+    overwrite = "datasources" in overwrite_types
+
+    from app.models.datasource import DataSource
+    from uuid import uuid4, UUID
+
+    existing = (await db.execute(select(DataSource.name).where(DataSource.is_active == True))).scalars().all()
+    existing_names = set(existing)
+    imported, updated, skipped = 0, 0, 0
+    for s in data:
+        name = s.get("name", "")
+        if not name:
+            skipped += 1
+            continue
+        if name in existing_names:
+            if not overwrite:
+                skipped += 1
+                continue
+            existing_ds = (await db.execute(select(DataSource).where(DataSource.name == name, DataSource.is_active == True))).scalar_one_or_none()
+            if existing_ds:
+                existing_ds.type = s.get("type", "")
+                existing_ds.connection_config = s.get("connection_config") or {}
+                existing_ds.business_metadata = s.get("business_metadata") or {}
+                existing_ds.security_level = s.get("security_level") or ""
+                existing_ds.created_by = user_id
+                updated += 1
+                continue
+        ds = DataSource(
+            id=uuid4(),
+            name=name,
+            type=s.get("type", ""),
+            connection_config=s.get("connection_config") or {},
+            business_metadata=s.get("business_metadata") or {},
+            security_level=s.get("security_level") or "",
+            is_active=True,
+            created_by=user_id,
+        )
+        db.add(ds)
+        existing_names.add(name)
+        imported += 1
+    await db.flush()
+    return {"imported": imported, "updated": updated, "skipped": skipped}
+
+
 async def read_zip_manifest(zip_bytes: bytes) -> Dict:
     """读取 zip 里的 manifest.json（导入前预览用）"""
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
@@ -630,6 +718,9 @@ async def import_from_zip(zip_bytes: bytes, types: List[str], db: AsyncSession, 
         if "schedules" in types and "schedules.json" in zf.namelist():
             data = json.loads(zf.read("schedules.json"))
             result["schedules"] = await import_schedules(data, db, user_id, overwrite_types)
+        if "datasources" in types and "datasources.json" in zf.namelist():
+            data = json.loads(zf.read("datasources.json"))
+            result["datasources"] = await import_datasources(data, db, user_id, overwrite_types)
     finally:
         zf.close()
     return result
