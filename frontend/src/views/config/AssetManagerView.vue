@@ -46,10 +46,10 @@
           <div v-if="previewManifest" style="margin-top: 16px">
             <p style="color: #909399; margin-bottom: 8px">检测到以下资产：</p>
             <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 4px">
-              <el-checkbox :model-value="importAll" :indeterminate="importIndeterminate" @change="toggleImportAll" style="flex: 1; font-weight: bold">
+              <el-checkbox :model-value="importAll" :indeterminate="importIndeterminate" @update:model-value="toggleImportAll" style="flex: 1; font-weight: bold">
                 全选
               </el-checkbox>
-              <el-checkbox :model-value="overwriteAll" :indeterminate="overwriteIndeterminate" @change="toggleOverwriteAll" size="small">
+              <el-checkbox :model-value="overwriteAll" :indeterminate="overwriteIndeterminate" @update:model-value="toggleOverwriteAll" size="small">
                 全选覆盖
               </el-checkbox>
             </div>
