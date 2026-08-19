@@ -1720,7 +1720,7 @@ def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector
 
 
 async def load_connectors_from_db() -> None:
-    """启动时从 DB 加载所有连接器；内置连接器源码 seed 进 DB（地位平等）"""
+    """启动时从 DB 加载所有连接器；内置连接器首次启动时自动写入 DB"""
     import inspect
     from app.core.database import async_session
     from app.models.custom_extension import CustomConnector

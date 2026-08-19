@@ -23,16 +23,12 @@ from app.core.config import settings
 # ============ 导出 ============
 
 async def export_skills_to_zip(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出技能：只导出 owner（created_by）为当前用户的 skill 文件夹"""
+    """导出技能：导出所有技能文件夹（平台级资产，不按 created_by 过滤）"""
     from app.models.skill import Skill
     skill_base = Path(settings.SKILL_STORAGE_PATH)
     if not skill_base.is_dir():
         return 0
-    # 只取当前用户的 skill（按 created_by 过滤）
-    q = select(Skill)
-    if user_id is not None:
-        q = q.where(Skill.created_by == user_id)
-    skills = (await db.execute(q)).scalars().all()
+    skills = (await db.execute(select(Skill))).scalars().all()
     count = 0
     for skill in skills:
         sp = skill.skill_path or str(skill.id)
@@ -49,12 +45,9 @@ async def export_skills_to_zip(zf: zipfile.ZipFile, db: AsyncSession, user_id) -
 
 
 async def export_operators(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出算子：DB → operators.json（含 script_content）；只导出 owner"""
+    """导出算子：DB → operators.json（含 script_content）；导出所有算子（平台级资产）"""
     from app.models.operator import Operator
-    q = select(Operator)
-    if user_id is not None:
-        q = q.where(Operator.created_by == user_id)
-    ops = (await db.execute(q)).scalars().all()
+    ops = (await db.execute(select(Operator))).scalars().all()
     data = []
     for op in ops:
         data.append({
@@ -76,17 +69,14 @@ async def export_operators(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
 
 
 async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出流程：DB → pipelines.json（skill_calls 的 skill_id 换成 skill_name）；只导出 owner 非内置"""
+    """导出流程：DB → pipelines.json（skill_calls 的 skill_id 换成 skill_name）；导出所有非内置流程"""
     from app.models.pipeline import Pipeline
     from app.models.skill import Skill
     # 构建 skill_id → skill_name 映射
     skills = (await db.execute(select(Skill))).scalars().all()
     id2name = {str(s.id): s.name for s in skills}
 
-    q = select(Pipeline).where(Pipeline.is_builtin == False)
-    if user_id is not None:
-        q = q.where(Pipeline.created_by == user_id)
-    pipes = (await db.execute(q)).scalars().all()
+    pipes = (await db.execute(select(Pipeline).where(Pipeline.is_builtin == False))).scalars().all()
     data = []
     for p in pipes:
         skill_calls = []
@@ -106,7 +96,7 @@ async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
             "parameters": p.parameters or [],
             "skill_calls": skill_calls,
             "tags": p.tags or [],
-            "category": p.category or "seed",
+            "category": p.category or "",
             "visibility": p.visibility or "public",
         })
     zf.writestr("pipelines.json", json.dumps(data, ensure_ascii=False, indent=2))
@@ -114,12 +104,9 @@ async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
 
 
 async def export_llm_config(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出 LLM Provider：DB → llm_config.json（不含 api_key）；只导出 owner（私有自建）"""
+    """导出 LLM Provider：DB → llm_config.json（不含 api_key）；导出所有 active 的 Provider"""
     from app.models.custom_extension import LLMProvider, UserLLMConfig
-    q = select(LLMProvider).where(LLMProvider.is_active == True)
-    if user_id is not None:
-        q = q.where(LLMProvider.created_by == user_id)
-    providers = (await db.execute(q)).scalars().all()
+    providers = (await db.execute(select(LLMProvider).where(LLMProvider.is_active == True))).scalars().all()
     data = []
     for p in providers:
         data.append({
@@ -140,12 +127,9 @@ async def export_llm_config(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> i
 
 
 async def export_custom_extensions(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> int:
-    """导出自定义连接器：DB → custom_extensions.json（不含连接密码）；只导出 owner"""
+    """导出自定义连接器：DB → custom_extensions.json（不含连接密码）；导出所有 active 的"""
     from app.models.custom_extension import CustomConnector
-    q = select(CustomConnector).where(CustomConnector.is_active == True)
-    if user_id is not None:
-        q = q.where(CustomConnector.created_by == user_id)
-    connectors = (await db.execute(q)).scalars().all()
+    connectors = (await db.execute(select(CustomConnector).where(CustomConnector.is_active == True))).scalars().all()
     data = []
     for c in connectors:
         data.append({
@@ -391,7 +375,7 @@ async def import_pipelines(data: List[Dict], db: AsyncSession, user_id, overwrit
                 existing_pipe.parameters = p.get("parameters") or []
                 existing_pipe.skill_calls = skill_calls
                 existing_pipe.tags = p.get("tags") or []
-                existing_pipe.category = p.get("category") or "seed"
+                existing_pipe.category = p.get("category") or ""
                 existing_pipe.visibility = p.get("visibility") or "public"
                 updated += 1
                 continue
@@ -405,7 +389,7 @@ async def import_pipelines(data: List[Dict], db: AsyncSession, user_id, overwrit
             parameters=p.get("parameters") or [],
             skill_calls=skill_calls,
             tags=p.get("tags") or [],
-            category=p.get("category") or "seed",
+            category=p.get("category") or "",
             visibility=p.get("visibility") or "public",
             created_by=user_id,
         )

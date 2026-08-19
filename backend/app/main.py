@@ -236,12 +236,11 @@ def _migrate_author_to_created_by(connection):
 
 
 async def _seed_skills_and_pipelines():
-    """首次启动时自动 seed 技能（从文件夹扫描）、流程和算子（从 seed JSON）"""
+    """启动时扫描技能文件夹同步 DB + 创建内置元数据同步流程和调度"""
     from pathlib import Path
-    from sqlalchemy import select as sa_select, func
+    from sqlalchemy import select as sa_select
     from app.models.skill import Skill
     from app.models.pipeline import Pipeline
-    from app.models.operator import Operator
     from app.services.skill_parser import get_skill_info_from_path
 
     async with async_session() as db:
@@ -288,7 +287,7 @@ async def _seed_skills_and_pipelines():
                 skill_name = info.get("name") or ""
                 # SKILL.md 无 front matter 时 name 为空，跳过（避免用 UUID 创建无效记录）
                 if not skill_name or skill_name in existing_names or skill_name in _seen_in_this_scan:
-                    logger.warning(f"跳过 seed 技能文件夹 {folder_name}：SKILL.md 无 front matter 或名称重复")
+                    logger.warning(f"跳过技能文件夹 {folder_name}：SKILL.md 无 front matter 或名称重复")
                     continue
                 _seen_in_this_scan.add(skill_name)
                 _skill_type = info.get("skill_type") or "processing"
@@ -297,67 +296,14 @@ async def _seed_skills_and_pipelines():
                     display_name=info.get("display_name") or folder_name,
                     description=info.get("description") or "",
                     skill_path=folder_name,
-                    category="seed",
-                    tags=["seed", f"skill_type:{_skill_type}"],
+                    tags=[f"skill_type:{_skill_type}"],
                     visibility="public",
                 )
                 db.add(skill)
-                logger.info(f"Seed 技能: {skill_name}")
+                logger.info(f"扫描到技能: {skill_name}")
             await db.flush()
 
-        seed_dir = Path(settings.SKILL_STORAGE_PATH).parent / "seed"
-
-        # 2. Seed pipelines：表为空时从 seed JSON 加载
-        count_result = await db.execute(sa_select(func.count()).select_from(Pipeline))
-        if count_result.scalar() == 0:
-            seed_file = seed_dir / "pipelines.json"
-            if seed_file.exists():
-                import json
-                pipelines = json.loads(seed_file.read_text(encoding="utf-8"))
-                for p in pipelines:
-                    pipe = Pipeline(
-                        name=p["name"],
-                        display_name=p.get("display_name") or p["name"],
-                        description=p.get("description") or "",
-                        main_code=p.get("main_code") or "",
-                        entry_function=p.get("entry_function") or "main",
-                        parameters=p.get("parameters") or [],
-                        skill_calls=p.get("skill_calls") or [],
-                        tags=p.get("tags") or [],
-                        category=p.get("category") or "seed",
-                        visibility="public",
-                        is_active=True,
-                    )
-                    db.add(pipe)
-                logger.info(f"Seed 流程: {len(pipelines)} 个")
-
-        # 3. Seed operators：表为空时从 seed JSON 加载
-        count_result = await db.execute(sa_select(func.count()).select_from(Operator))
-        if count_result.scalar() == 0:
-            seed_file = seed_dir / "operators.json"
-            if seed_file.exists():
-                import json
-                operators = json.loads(seed_file.read_text(encoding="utf-8"))
-                for op in operators:
-                    operator = Operator(
-                        name=op["name"],
-                        display_name=op.get("display_name") or op["name"],
-                        description=op.get("description") or "",
-                        category=op.get("category") or "general",
-                        inputs=op.get("inputs") or [],
-                        outputs=op.get("outputs") or [],
-                        parameters=op.get("parameters") or [],
-                        execution_config=op.get("execution_config") or {},
-                        script_content=op.get("script_content") or "",
-                        script_filename=op.get("script_filename") or "",
-                        function_name=op.get("function_name") or "",
-                        tags=op.get("tags") or [],
-                        visibility="public",
-                    )
-                    db.add(operator)
-                logger.info(f"Seed 算子: {len(operators)} 个")
-
-        # 4. Seed 内置流程和调度（按 is_builtin 查重，用户删除后不复活）
+        # 2. Seed 内置流程和调度（按 is_builtin 查重，用户删除后不复活）
         from app.models.schedule import Schedule
 
         builtin_pipe = (await db.execute(
@@ -380,7 +326,7 @@ async def _seed_skills_and_pipelines():
             )
             db.add(builtin_pipe)
             await db.flush()
-            logger.info("Seed 内置流程: 元数据同步与AI增强")
+            logger.info("创建内置流程: 元数据同步与AI增强")
 
         builtin_sched = (await db.execute(
             sa_select(Schedule).where(Schedule.is_builtin == True)
@@ -408,7 +354,7 @@ async def _seed_skills_and_pipelines():
                 next_run_at=next_run,
             )
             db.add(builtin_sched)
-            logger.info("Seed 内置调度: 元数据每日同步")
+            logger.info("创建内置调度: 元数据每日同步")
 
         await db.commit()
 
