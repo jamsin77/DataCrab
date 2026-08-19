@@ -528,16 +528,21 @@ async def import_schedules(data: List[Dict], db: AsyncSession, user_id, overwrit
     from app.models.pipeline import Pipeline
     from app.models.operator import Operator
     from app.models.skill import Skill
-    from uuid import uuid4
+    from uuid import uuid4, UUID
+
+    def _ensure_uuid(val):
+        if isinstance(val, str):
+            return UUID(val)
+        return val
 
     # 构建 name → id 映射（按 task_type 分表）
     pipelines = (await db.execute(select(Pipeline))).scalars().all()
     operators = (await db.execute(select(Operator))).scalars().all()
     skills = (await db.execute(select(Skill))).scalars().all()
     name2id = {
-        "pipeline": {p.name: p.id for p in pipelines},
-        "operator": {o.name: o.id for o in operators},
-        "skill": {s.name: s.id for s in skills},
+        "pipeline": {p.name: _ensure_uuid(p.id) for p in pipelines},
+        "operator": {o.name: _ensure_uuid(o.id) for o in operators},
+        "skill": {s.name: _ensure_uuid(s.id) for s in skills},
     }
 
     existing = (await db.execute(select(Schedule.name).where(Schedule.created_by == user_id))).scalars().all()
