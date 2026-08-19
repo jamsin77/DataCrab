@@ -18,6 +18,7 @@ from loguru import logger
 from app.core.database import get_db, async_session
 from app.models.operator import Operator
 from app.models.user import User
+from app.services.permission_service import assert_resource_access
 from app.schemas.operator import (
     OperatorCreate,
     OperatorUpdate,
@@ -168,6 +169,7 @@ async def download_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "view")
 
     if not operator.script_content:
         raise HTTPException(status_code=404, detail="该算子没有可下载的脚本")
@@ -195,6 +197,7 @@ async def debug_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "use")
 
     if not operator.script_content:
         raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")
@@ -280,6 +283,7 @@ async def update_operator_script(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "manage")
 
     try:
         parsed = parse_python_script(request.script_content)
@@ -381,6 +385,7 @@ async def get_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "view")
     return operator
 
 
@@ -396,6 +401,7 @@ async def update_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "manage")
 
     update_data = request.model_dump(exclude_unset=True)
     for key, value in update_data.items():
@@ -417,6 +423,7 @@ async def delete_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "manage")
     await db.delete(operator)
     await db.flush()
 
@@ -433,6 +440,7 @@ async def clone_operator(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "view")
 
     script_name = request.name.lower().replace(" ", "_")
 
@@ -776,113 +784,6 @@ async def generate_operator(
     return operator
 
 
-@router.post("/{operator_id}/modify", response_model=OperatorResponse)
-async def modify_operator(
-    operator_id: UUID,
-    request: OperatorModifyRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """根据自然语言指令修改算子脚本"""
-    result = await db.execute(select(Operator).where(Operator.id == operator_id))
-    operator = result.scalar_one_or_none()
-    if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
-
-    if not operator.script_content:
-        raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
-
-    await init_user_llm_context(current_user.id)
-    await llm_manager.initialize()
-    sys_prompt = await _system_prompt_with_lessons(db, current_user)
-
-    user_msg = f"以下是现有算子的脚本代码：\n\n```python\n{operator.script_content}\n```\n\n请根据以下要求修改这个算子：\n{request.instruction}\n\n请输出修改后的完整脚本代码。"
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": user_msg},
-    ]
-
-    try:
-        raw_code = await llm_manager.chat_with_messages(messages, temperature=0.3, max_tokens=3000)
-    except Exception as e:
-        logger.error(f"LLM修改算子失败: {e}")
-        raise HTTPException(status_code=500, detail=f"AI修改失败: {str(e)}")
-
-    script_content = _strip_code_fences(raw_code)
-
-    MAX_FIX_ROUNDS = 2
-    for fix_round in range(MAX_FIX_ROUNDS + 1):
-        try:
-            parsed = parse_python_script(script_content)
-            break
-        except SyntaxError as e:
-            if fix_round >= MAX_FIX_ROUNDS:
-                raise HTTPException(status_code=400, detail=f"修改后脚本语法错误且自动修复失败: {e}")
-            logger.warning(f"修改后的脚本语法错误(修复第{fix_round+1}轮): {e}")
-            try:
-                script_content = await _llm_fix_operator_script(messages, script_content, f"语法错误: {e}")
-            except Exception as fix_err:
-                raise HTTPException(status_code=400, detail=f"修改后脚本语法错误且自动修复失败: {e}")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"修改后脚本解析失败: {e}")
-
-    func_name = parsed.get("function_name")
-    if not func_name:
-        raise HTTPException(status_code=400, detail="修改后的脚本中未找到可用的函数定义")
-
-    operator.script_content = script_content
-    operator.function_name = func_name
-    operator.inputs = parsed.get("inputs", operator.inputs)
-    operator.outputs = parsed.get("outputs", operator.outputs)
-    operator.parameters = parsed.get("parameters", operator.parameters)
-
-    try:
-        desc_messages = [
-            {"role": "system", "content": "你是一个算子描述生成器。根据算子脚本和修改指令，生成简洁的算子描述。只输出描述文本，不要任何解释。"},
-            {"role": "user", "content": f"原始描述：{operator.description}\n修改指令：{request.instruction}\n修改后的脚本：\n{script_content}\n\n请生成更新后的算子描述（一句话概括功能）和显示名称。格式：\n描述：...\n名称：..."},
-        ]
-        desc_result = await llm_manager.chat_with_messages(desc_messages, temperature=0.3, max_tokens=200)
-        if desc_result:
-            for line in desc_result.strip().split("\n"):
-                line = line.strip()
-                if line.startswith("描述：") or line.startswith("描述:"):
-                    operator.description = line.split("：", 1)[-1].split(":", 1)[-1].strip() or operator.description
-                elif line.startswith("名称：") or line.startswith("名称:"):
-                    operator.display_name = line.split("：", 1)[-1].split(":", 1)[-1].strip() or operator.display_name
-    except Exception as e:
-        logger.warning(f"生成算子描述失败，保留原描述: {e}")
-        operator.description = parsed.get("description") or operator.description
-
-    await db.flush()
-    await db.refresh(operator)
-
-    success, error_msg = _validate_operator_script(script_content, current_user.id)
-    if success:
-        logger.info(f"算子修改后自动验证通过: {operator.name}")
-    else:
-        logger.warning(f"算子修改后自动验证失败: {error_msg}，尝试LLM修复...")
-        for fix_round in range(MAX_FIX_ROUNDS):
-            try:
-                fixed_content = await _llm_fix_operator_script(messages, script_content, error_msg)
-                parsed2 = parse_python_script(fixed_content)
-                success2, error2 = _validate_operator_script(fixed_content, current_user.id)
-                if success2:
-                    operator.script_content = fixed_content
-                    operator.function_name = parsed2.get("function_name", func_name)
-                    await db.flush()
-                    logger.info(f"算子修改后LLM修复验证通过(第{fix_round+1}轮): {operator.name}")
-                    break
-                else:
-                    script_content = fixed_content
-                    error_msg = error2
-                    logger.warning(f"算子修改后LLM修复验证仍失败(第{fix_round+1}轮): {error2}")
-            except Exception as e:
-                logger.warning(f"算子修改后LLM修复异常(第{fix_round+1}轮): {e}")
-                break
-
-    return operator
-
-
 @router.post("/generate-stream")
 async def generate_operator_stream(
     request: OperatorGenerateRequest,
@@ -1009,6 +910,8 @@ async def modify_operator_stream(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "manage")
+
     if not operator.script_content:
         raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
 
@@ -1136,6 +1039,7 @@ async def debug_operator_chat(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "use")
 
     await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
@@ -1213,6 +1117,11 @@ async def get_operator_experience(
     current_user: User = Depends(get_current_user),
 ):
     """查看算子经验库（反例列表 + 经验总结 + 统计）"""
+    result = await db.execute(select(Operator).where(Operator.id == operator_id))
+    operator = result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "view")
     base = experience.operator_experience_dir(operator_id)
     return {
         "stats": experience.experience_stats(base),
@@ -1233,6 +1142,7 @@ async def summarize_operator_experience(
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail="算子不存在")
+    await assert_resource_access(db, current_user, "operator", operator, "view")
 
     base = experience.operator_experience_dir(operator_id)
     errors = experience.read_negative(base)
@@ -1338,6 +1248,12 @@ async def internal_execute_operator(body: dict, db: AsyncSession = Depends(get_d
     operator = result.scalar_one_or_none()
     if not operator:
         raise HTTPException(status_code=404, detail=f"算子不存在: {operator_key}")
+
+    _perm_user = None
+    if user_id:
+        _pu = await db.execute(select(User).where(User.id == _UUID(str(user_id))))
+        _perm_user = _pu.scalar_one_or_none()
+    await assert_resource_access(db, _perm_user, "operator", operator, "use")
 
     if not operator.script_content:
         raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")

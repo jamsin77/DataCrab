@@ -323,3 +323,49 @@ async def get_role_members(db: AsyncSession, role_id: uuid.UUID) -> List[dict]:
         }
         for u in users
     ]
+
+
+# 资源类型 → 公开字段名（visibility / is_public）；None 表示无公开豁免
+_PUBLIC_FIELD = {
+    "skill": "visibility",
+    "operator": "visibility",
+    "pipeline": "visibility",
+    "datasource": None,  # 数据源无公开字段，靠显式授权
+    "schedule": None,
+    "connector": "is_public",
+    "llmprovider": "is_public",
+}
+
+
+async def assert_resource_access(
+    db: AsyncSession,
+    user,
+    resource_type: str,
+    resource,
+    required_level: str = "view",
+):
+    """统一权限断言。owner/superuser 直通；公开资源放行 view/use；否则查 Permission 表。
+    不通过抛 HTTPException(403)。manage 级仅 owner/superuser 或显式授权 manage。
+    """
+    from fastapi import HTTPException
+
+    if user is None or getattr(user, "is_superuser", False):
+        return
+    owner_id = getattr(resource, "created_by", None)
+    if owner_id == user.id:
+        return
+
+    # 公开资源放行 view/use（manage 仍需授权）
+    public_field = _PUBLIC_FIELD.get(resource_type)
+    if public_field and required_level in ("view", "use"):
+        if getattr(resource, public_field, None) in (True, "public"):
+            return
+
+    has_perm = await check_permission(
+        db, user.id, resource_type, resource.id, required_level, is_owner=False
+    )
+    if not has_perm:
+        raise HTTPException(
+            status_code=403,
+            detail=f"无权{required_level}此{resource_type}（id={resource.id}）",
+        )

@@ -44,10 +44,6 @@ export const operatorApi = {
     return api.post('/operators/generate', { prompt }, { timeout })
   },
 
-  modify(id: string, instruction: string, timeout = 120000): Promise<Operator> {
-    return api.post(`/operators/${id}/modify`, { instruction }, { timeout })
-  },
-
   clone(id: string, name: string): Promise<Operator> {
     return api.post(`/operators/${id}/clone`, { name })
   },

@@ -61,8 +61,4 @@ export const skillApi = {
   generate(data: { prompt: string }, timeout = 120000): Promise<Skill> {
     return api.post('/skills/generate', data, { timeout })
   },
-
-  modify(id: string, instruction: string, timeout = 120000): Promise<any> {
-    return api.post(`/skills/${id}/modify`, { instruction }, { timeout })
-  },
 }

@@ -20,7 +20,7 @@ from app.services.asset_io import build_export_zip, import_from_zip, read_zip_ma
 router = APIRouter()
 
 
-SUPPORTED_TYPES = ["skills", "operators", "pipelines", "llm_config", "custom_extensions", "rules", "schedules"]
+SUPPORTED_TYPES = ["skills", "operators", "pipelines", "llm_config", "custom_extensions", "schedules"]
 
 
 class ExportRequest(BaseModel):
@@ -32,24 +32,22 @@ async def asset_counts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """各资产数量统计（导出页显示用）"""
+    """各资产数量统计（导出页显示用）——只统计当前用户 manage 的资产"""
     from sqlalchemy import select, func
     from app.models.skill import Skill
     from app.models.operator import Operator
     from app.models.pipeline import Pipeline
     from app.models.custom_extension import LLMProvider, CustomConnector
     from app.models.schedule import Schedule
-    from pathlib import Path
 
+    uid = current_user.id
     counts = {}
-    counts["skills"] = (await db.execute(select(func.count()).select_from(Skill))).scalar() or 0
-    counts["operators"] = (await db.execute(select(func.count()).select_from(Operator))).scalar() or 0
-    counts["pipelines"] = (await db.execute(select(func.count()).select_from(Pipeline))).scalar() or 0
-    counts["llm_config"] = (await db.execute(select(func.count()).select_from(LLMProvider).where(LLMProvider.is_active == True))).scalar() or 0
-    counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.is_active == True))).scalar() or 0
-    rules_dir = Path(settings.SKILL_STORAGE_PATH).parent / "rules"
-    counts["rules"] = sum(1 for n in ("data_standards", "data_quality", "data_security") if (rules_dir / f"{n}.md").exists())
-    counts["schedules"] = (await db.execute(select(func.count()).select_from(Schedule).where(Schedule.created_by == current_user.id))).scalar() or 0
+    counts["skills"] = (await db.execute(select(func.count()).select_from(Skill).where(Skill.created_by == uid))).scalar() or 0
+    counts["operators"] = (await db.execute(select(func.count()).select_from(Operator).where(Operator.created_by == uid))).scalar() or 0
+    counts["pipelines"] = (await db.execute(select(func.count()).select_from(Pipeline).where(Pipeline.created_by == uid, Pipeline.is_builtin == False, Pipeline.is_active == True))).scalar() or 0
+    counts["llm_config"] = (await db.execute(select(func.count()).select_from(LLMProvider).where(LLMProvider.created_by == uid, LLMProvider.is_active == True))).scalar() or 0
+    counts["custom_extensions"] = (await db.execute(select(func.count()).select_from(CustomConnector).where(CustomConnector.created_by == uid, CustomConnector.is_active == True))).scalar() or 0
+    counts["schedules"] = (await db.execute(select(func.count()).select_from(Schedule).where(Schedule.created_by == uid))).scalar() or 0
     return counts
 
 
@@ -61,8 +59,8 @@ async def export_assets(
 ):
     """导出选中资产为 zip。API Key 不导出。调度只导出当前用户创建的。"""
     zip_bytes = await build_export_zip(req.types, db, current_user.id)
-    ts = __import__("datetime").datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"datacrab_assets_{ts}.zip"
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"datacrab_{ts}.zip"
     return StreamingResponse(
         __import__("io").BytesIO(zip_bytes),
         media_type="application/zip",
@@ -92,17 +90,18 @@ async def import_preview(
 async def import_assets(
     file: UploadFile = File(...),
     types: str = Form(...),
-    overwrite: bool = Form(False),
+    overwrite_types: str = Form(""),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """导入 zip 资产。types 是逗号分隔的资产类型，可选择只导入部分。"""
+    """导入 zip 资产。types 是逗号分隔的资产类型，overwrite_types 是逗号分隔的要覆盖的类型（空=全部跳过）。"""
     zip_bytes = await file.read()
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=422, detail="请上传 .zip 文件")
     type_list = [t.strip() for t in types.split(",") if t.strip()]
+    overwrite_set = set(t.strip() for t in overwrite_types.split(",") if t.strip())
     try:
-        result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite)
+        result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite_set)
     except (zipfile.BadZipFile, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
     await db.commit()

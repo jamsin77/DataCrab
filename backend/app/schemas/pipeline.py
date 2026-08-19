@@ -68,6 +68,9 @@ class PipelineRunRequest(BaseModel):
 
 class PipelineFromSkillRequest(BaseModel):
     display_name: Optional[str] = None
+    # mode: skip(默认，查重命中则取消) / overwrite(覆盖现有) / rename(另存为新名)
+    mode: Optional[str] = "skip"
+    new_name: Optional[str] = None  # mode=rename 时的新 display_name
 
 
 class PipelineExecutionResponse(BaseModel):

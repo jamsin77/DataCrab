@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.skill import Skill
 from app.models.user import User
+from app.services.permission_service import assert_resource_access
 from app.schemas.skill import (
     SkillCreate,
     SkillUpdate,
@@ -209,6 +210,7 @@ async def get_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
     return _build_detail(skill)
 
 
@@ -259,6 +261,7 @@ async def update_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     update_data = request.model_dump(exclude_unset=True)
     if "name" in update_data:
@@ -301,6 +304,7 @@ async def delete_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     if folder.exists():
@@ -447,6 +451,7 @@ async def download_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     folder = _resolve_skill_folder(skill)
     if not folder.exists():
@@ -478,6 +483,7 @@ async def get_skill_md(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     content = read_skill_md(_resolve_skill_folder(skill))
     return {"skill_md": content or "", "parsed": parse_skill_md(content) if content else {}}
@@ -495,6 +501,7 @@ async def update_skill_md(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     folder.mkdir(parents=True, exist_ok=True)
@@ -524,6 +531,7 @@ async def get_skill_rules(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     folder = _resolve_skill_folder(skill)
     rules_path = folder / "rules.md" if folder else None
@@ -551,6 +559,7 @@ async def update_skill_rules(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     if not folder:
@@ -581,6 +590,7 @@ async def reset_skill_rules(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     if folder:
@@ -603,6 +613,7 @@ async def get_skill_scripts(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     return list_skill_scripts(_resolve_skill_folder(skill))
 
@@ -619,6 +630,7 @@ async def get_skill_script(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     content = read_skill_script(_resolve_skill_folder(skill), script_name)
     if content is None:
@@ -639,6 +651,7 @@ async def update_skill_script(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     folder.mkdir(parents=True, exist_ok=True)
@@ -658,6 +671,7 @@ async def delete_skill_script(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     script_path = _resolve_skill_folder(skill) / "scripts" / script_name
     if script_path.exists():
@@ -677,6 +691,7 @@ async def run_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "use")
 
     folder = _resolve_skill_folder(skill)
 
@@ -718,6 +733,7 @@ async def get_skill_params(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     folder = _resolve_skill_folder(skill)
     params = []
@@ -768,6 +784,7 @@ async def run_skill_nl(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "use")
 
     folder = _resolve_skill_folder(skill)
 
@@ -897,6 +914,7 @@ async def debug_skill_chat(
     skill = result_row.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "use")
 
     folder = _resolve_skill_folder(skill)
     skill_md = read_skill_md(folder) or ""
@@ -1026,6 +1044,7 @@ async def summarize_skill_errors(
     skill = result_row.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     errors = read_error_log(folder)
@@ -1117,6 +1136,7 @@ async def get_skill_experience(
     skill = result_row.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     from app.services import experience
     folder = Path(settings.SKILL_STORAGE_PATH) / str(skill_id)
@@ -1419,6 +1439,7 @@ async def clone_skill(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "view")
 
     new_id = uuid4()
     new_folder = _get_skill_folder(new_id)
@@ -1444,82 +1465,6 @@ async def clone_skill(
     return _build_detail(clone)
 
 
-@router.post("/{skill_id}/modify", response_model=SkillDetailResponse)
-async def modify_skill(
-    skill_id: UUID,
-    request: SkillModifyRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Skill).where(Skill.id == skill_id))
-    skill = result.scalar_one_or_none()
-    if not skill:
-        raise HTTPException(status_code=404, detail="技能不存在")
-
-    folder = _resolve_skill_folder(skill)
-    current_md = read_skill_md(folder) or ""
-
-    if not current_md:
-        raise HTTPException(status_code=400, detail="该技能没有 SKILL.md 内容")
-
-    from app.services.llm import llm_manager, init_user_llm_context
-    await init_user_llm_context(current_user.id)
-    await llm_manager.initialize()
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一个 Skill 文档编辑器。根据用户的自然语言指令修改 SKILL.md 文件。\n"
-                "SKILL.md 是 YAML front matter + Markdown 格式的技能描述文档。\n"
-                "保持 YAML front matter 格式，只修改用户要求的部分。\n"
-                "输出完整的 SKILL.md 内容，不要用代码块包裹。\n\n"
-                "🚫 安全红线：Skill 只能处理用户的业务数据，不能修改 DataCrab 平台自身。\n"
-                "如果用户要求修改 SKILL.md 使技能能够操作平台系统数据，请拒绝并说明原因。\n\n"
-                "✅ 修改后必验证：修改 SKILL.md 后，请重新读取确认修改内容已正确反映。\n"
-                "如果修改涉及脚本逻辑，建议在修改后执行技能验证效果。\n\n"
-                "📂 输出默认同源：数据处理生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"以下是现有的 SKILL.md 内容：\n\n```markdown\n{current_md}\n```\n\n"
-                f"请根据以下要求修改这个 SKILL.md：\n{request.instruction}\n\n"
-                f"请输出修改后的完整 SKILL.md 内容。"
-            ),
-        },
-    ]
-
-    try:
-        new_md = await llm_manager.chat_with_messages(messages, temperature=0.3, max_tokens=3000)
-    except Exception as e:
-        logger.error(f"LLM修改技能失败: {e}")
-        raise HTTPException(status_code=500, detail=f"AI修改失败: {str(e)}")
-
-    new_md = new_md.strip()
-    if new_md.startswith("```"):
-        lines = new_md.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        new_md = "\n".join(lines).strip()
-
-    write_skill_md(folder, new_md)
-
-    parsed = parse_skill_md(new_md)
-    if parsed.get("name"):
-        skill.display_name = parsed["name"]
-    if parsed.get("description"):
-        skill.description = parsed["description"]
-
-    await db.flush()
-    await db.refresh(skill)
-    logger.info(f"技能已通过AI修改: {skill.name} ({skill.id})")
-    return _build_detail(skill)
-
-
 @router.post("/{skill_id}/modify-stream")
 async def modify_skill_stream(
     skill_id: UUID,
@@ -1531,6 +1476,7 @@ async def modify_skill_stream(
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
+    await assert_resource_access(db, current_user, "skill", skill, "manage")
 
     folder = _resolve_skill_folder(skill)
     current_md = read_skill_md(folder) or ""

@@ -1,7 +1,7 @@
 <template>
   <div class="asset-manager">
     <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px">
-      导出技能/算子/流程/LLM配置/连接器/规则到 zip 包，在新机器导入即可迁移。API Key / 密码不导出，导入后需手动填写。
+      导出技能/算子/流程/LLM配置/连接器/调度到 zip 包，在新机器导入即可迁移。只导出当前用户创建的资产；API Key / 密码不导出，导入后需手动填写。
     </el-alert>
 
     <el-row :gutter="20">
@@ -12,13 +12,15 @@
             <span style="font-weight: bold">导出资产</span>
           </template>
           <p style="color: #909399; margin-bottom: 16px">选择要导出的资产类型</p>
-          <el-checkbox-group v-model="exportTypes" style="display: flex; flex-direction: column; gap: 8px">
+          <el-checkbox v-model="exportAll" :indeterminate="exportIndeterminate" @change="toggleExportAll" style="margin-bottom: 4px; font-weight: bold">
+            全选 / 取消全选
+          </el-checkbox>
+          <el-checkbox-group v-model="exportTypes" @change="onExportTypesChange" style="display: flex; flex-direction: column; gap: 8px; margin-left: 8px">
             <el-checkbox label="skills">技能（{{ counts.skills }} 个）</el-checkbox>
             <el-checkbox label="operators">算子（{{ counts.operators }} 个）</el-checkbox>
             <el-checkbox label="pipelines">流程（{{ counts.pipelines }} 个）</el-checkbox>
             <el-checkbox label="llm_config">LLM 配置（{{ counts.llm_config }} 个 Provider）</el-checkbox>
             <el-checkbox label="custom_extensions">自定义连接器（{{ counts.custom_extensions }} 个）</el-checkbox>
-            <el-checkbox label="rules">数据规则（{{ counts.rules }} 项）</el-checkbox>
             <el-checkbox label="schedules">调度（{{ counts.schedules }} 个，仅当前用户）</el-checkbox>
           </el-checkbox-group>
           <el-button type="primary" :loading="exporting" :disabled="!exportTypes.length" @click="doExport" style="margin-top: 16px">
@@ -38,12 +40,24 @@
           </el-upload>
           <div v-if="previewManifest" style="margin-top: 16px">
             <p style="color: #909399; margin-bottom: 8px">检测到以下资产：</p>
-            <el-checkbox-group v-model="importTypes" style="display: flex; flex-direction: column; gap: 8px">
-              <el-checkbox v-for="(v, k) in previewManifest.counts" :key="k" :label="k">
-                {{ typeLabel(k) }}（{{ v }} 个）
+            <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 4px">
+              <el-checkbox :model-value="importAll" :indeterminate="importIndeterminate" @change="toggleImportAll" style="flex: 1; font-weight: bold">
+                全选
               </el-checkbox>
-            </el-checkbox-group>
-            <el-checkbox v-model="overwrite" style="margin-top: 12px">已存在的覆盖（默认跳过）</el-checkbox>
+              <el-checkbox :model-value="overwriteAll" :indeterminate="overwriteIndeterminate" @change="toggleOverwriteAll" size="small">
+                全选覆盖
+              </el-checkbox>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-left: 8px">
+              <div v-for="(v, k) in previewManifest.counts" :key="k" style="display: flex; align-items: center; gap: 24px">
+                <el-checkbox :model-value="importTypes.includes(k)" @update:model-value="toggleImportType(k, $event)" style="flex: 1">
+                  {{ typeLabel(k) }}（{{ v }} 个）
+                </el-checkbox>
+                <el-checkbox :model-value="overwriteTypes.includes(k)" @update:model-value="toggleOverwriteType(k, $event)" :disabled="!importTypes.includes(k)" size="small">
+                  覆盖
+                </el-checkbox>
+              </div>
+            </div>
             <div style="margin-top: 16px">
               <el-button type="success" :loading="importing" :disabled="!importTypes.length" @click="doImport">
                 导入选中
@@ -73,14 +87,22 @@ import { ElMessage } from 'element-plus'
 import api from '@/api/index'
 
 const exportTypes = ref<string[]>([])
+const exportAll = ref(false)
+const exportIndeterminate = ref(false)
 const importing = ref(false)
 const exporting = ref(false)
 const importTypes = ref<string[]>([])
-const overwrite = ref(false)
+const overwriteTypes = ref<string[]>([])
+const importAll = ref(false)
+const importIndeterminate = ref(false)
+const overwriteAll = ref(false)
+const overwriteIndeterminate = ref(false)
 const previewManifest = ref<any>(null)
 const importResult = ref<any>(null)
 const selectedFile = ref<File | null>(null)
-const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, rules: 0, schedules: 0 })
+const counts = ref({ skills: 0, operators: 0, pipelines: 0, llm_config: 0, custom_extensions: 0, schedules: 0 })
+
+const ALL_TYPES = ['skills', 'operators', 'pipelines', 'llm_config', 'custom_extensions', 'schedules']
 
 onMounted(() => {
   loadCounts()
@@ -98,7 +120,7 @@ async function loadCounts() {
 function typeLabel(k: string): string {
   const m: Record<string, string> = {
     skills: '技能', operators: '算子', pipelines: '流程',
-    llm_config: 'LLM 配置', custom_extensions: '连接器', rules: '数据规则', schedules: '调度',
+    llm_config: 'LLM 配置', custom_extensions: '连接器', schedules: '调度',
   }
   return m[k] || k
 }
@@ -110,6 +132,94 @@ function extractErr(e: any): string {
   return e?.message || '未知错误'
 }
 
+function toggleExportAll(val: boolean) {
+  exportTypes.value = val ? [...ALL_TYPES] : []
+  exportIndeterminate.value = false
+}
+
+function toggleImportAll(val: boolean) {
+  if (val) {
+    importTypes.value = previewManifest.value ? Object.keys(previewManifest.value.counts) : [...ALL_TYPES]
+  } else {
+    importTypes.value = []
+    overwriteTypes.value = []
+  }
+  importIndeterminate.value = false
+  syncOverwriteAll()
+}
+
+function syncImportAll() {
+  const total = previewManifest.value ? Object.keys(previewManifest.value.counts).length : 0
+  const len = importTypes.value.length
+  if (len === 0) {
+    importAll.value = false
+    importIndeterminate.value = false
+  } else if (len === total) {
+    importAll.value = true
+    importIndeterminate.value = false
+  } else {
+    importAll.value = false
+    importIndeterminate.value = true
+  }
+}
+
+function toggleOverwriteAll(val: boolean) {
+  if (val) {
+    overwriteTypes.value = [...importTypes.value]
+  } else {
+    overwriteTypes.value = []
+  }
+  overwriteIndeterminate.value = false
+}
+
+function syncOverwriteAll() {
+  const len = overwriteTypes.value.length
+  const total = importTypes.value.length
+  if (len === 0) {
+    overwriteAll.value = false
+    overwriteIndeterminate.value = false
+  } else if (len === total) {
+    overwriteAll.value = true
+    overwriteIndeterminate.value = false
+  } else {
+    overwriteAll.value = false
+    overwriteIndeterminate.value = true
+  }
+}
+
+function toggleImportType(k: string, checked: boolean) {
+  if (checked) {
+    if (!importTypes.value.includes(k)) importTypes.value.push(k)
+  } else {
+    importTypes.value = importTypes.value.filter(t => t !== k)
+    overwriteTypes.value = overwriteTypes.value.filter(t => t !== k)
+  }
+  syncImportAll()
+  syncOverwriteAll()
+}
+
+function toggleOverwriteType(k: string, checked: boolean) {
+  if (checked) {
+    if (!overwriteTypes.value.includes(k)) overwriteTypes.value.push(k)
+  } else {
+    overwriteTypes.value = overwriteTypes.value.filter(t => t !== k)
+  }
+  syncOverwriteAll()
+}
+
+function onExportTypesChange(val: string[]) {
+  if (val.length === 0) {
+    exportAll.value = false
+    exportIndeterminate.value = false
+  } else if (val.length === ALL_TYPES.length) {
+    exportAll.value = true
+    exportIndeterminate.value = false
+  } else {
+    exportAll.value = false
+    exportIndeterminate.value = true
+  }
+}
+
 async function doExport() {
   exporting.value = true
   try {
@@ -117,8 +227,9 @@ async function doExport() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
-    a.download = `datacrab_assets_${ts}.zip`
+    const d = new Date()
+    const ts = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}${String(d.getSeconds()).padStart(2,'0')}`
+    a.download = `datacrab_${ts}.zip`
     a.click()
     URL.revokeObjectURL(url)
     ElMessage.success('导出成功')
@@ -133,7 +244,7 @@ async function onFileSelected(file: File) {
   selectedFile.value = file
   importResult.value = null
   importTypes.value = []
-  overwrite.value = false
+  overwriteTypes.value = []
   try {
     const fd = new FormData()
     fd.append('file', file)
@@ -155,7 +266,7 @@ async function doImport() {
     const fd = new FormData()
     fd.append('file', selectedFile.value)
     fd.append('types', importTypes.value.join(','))
-    fd.append('overwrite', String(overwrite.value))
+    fd.append('overwrite_types', overwriteTypes.value.join(','))
     const data = await api.post('/assets/import', fd) as any
     importResult.value = data
     ElMessage.success('导入完成')
@@ -171,8 +282,8 @@ function resetImport() {
   previewManifest.value = null
   importResult.value = null
   importTypes.value = []
+  overwriteTypes.value = []
   selectedFile.value = null
-  overwrite.value = false
 }
 </script>
 

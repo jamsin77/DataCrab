@@ -146,6 +146,29 @@
       </template>
     </el-dialog>
 
+    <!-- ==================== 转流程重名冲突对话框 ==================== -->
+    <el-dialog v-model="showPipelineConflict" title="流程已存在" width="460px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom:16px">
+        <template #title>
+          流程 "{{ pipelineConflictInfo?.existing_display_name || pipelineConflictInfo?.existing_name }}" 已存在，请选择覆盖或另存为
+        </template>
+      </el-alert>
+      <el-form label-width="80px" style="margin-top: 12px">
+        <el-form-item label="新名称">
+          <el-input
+            v-model="pipelineRenameValue"
+            placeholder="输入新流程名称"
+            @keyup.enter="confirmPipelineRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showPipelineConflict = false">取消</el-button>
+        <el-button type="danger" plain :loading="convertingPipeline" @click="confirmPipelineOverwrite">覆盖现有</el-button>
+        <el-button type="primary" :loading="convertingPipeline" @click="confirmPipelineRename">另存为</el-button>
+      </template>
+    </el-dialog>
+
     <!-- ==================== AI 生成对话框 ==================== -->
     <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
@@ -939,6 +962,10 @@ function downloadSkill(skill: any) {
 // ==================== 转为流程（调试页面内，流式推理） ====================
 
 const convertingPipeline = ref(false)
+// 转流程重名冲突
+const showPipelineConflict = ref(false)
+const pipelineConflictInfo = ref<any>(null)
+const pipelineRenameValue = ref('')
 
 // 调试经验
 const showExperience = ref(false)
@@ -960,8 +987,13 @@ async function openExperience() {
 
 async function convertToPipeline() {
   if (!debugSkill.value || convertingPipeline.value) return
+  await streamConvert('skip', null)
+}
 
+async function streamConvert(mode: string, newName: string | null) {
+  if (!debugSkill.value) return
   convertingPipeline.value = true
+  showPipelineConflict.value = false
 
   const assistantIdx = debugMessages.value.length
   debugMessages.value.push({
@@ -976,16 +1008,21 @@ async function convertToPipeline() {
 
   let streamOk = false
   let pipelineName = ''
+  let existingInfo: any = null
 
   try {
     const token = localStorage.getItem('access_token')
+    const bodyPayload: any = { mode }
+    if (mode === 'rename' && newName) {
+      bodyPayload.new_name = newName
+    }
     const response = await fetch(`/api/v1/pipelines/from-skill-stream/${debugSkill.value.id}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify(bodyPayload),
     })
 
     if (!response.ok) {
@@ -1009,6 +1046,8 @@ async function convertToPipeline() {
           msg.thinking = (msg.thinking || '') + data.content
         } else if (data.type === 'content') {
           msg.content += data.content
+        } else if (data.type === 'existing') {
+          existingInfo = data
         } else if (data.type === 'done') {
           pipelineName = data.pipeline_name || data.name || '流程'
           streamOk = true
@@ -1035,6 +1074,16 @@ async function convertToPipeline() {
       nextTick(() => scrollSkillDebugToBottom())
     }
 
+    if (existingInfo && !streamOk) {
+      // 命中重名，弹窗让用户选择
+      pipelineConflictInfo.value = existingInfo
+      pipelineRenameValue.value = `${existingInfo.existing_display_name || existingInfo.existing_name} (副本)`
+      showPipelineConflict.value = true
+      const msg = debugMessages.value[assistantIdx]
+      if (msg) msg.content = `检测到流程 "${existingInfo.existing_display_name || existingInfo.existing_name}" 已存在，请选择覆盖或另存为。`
+      return
+    }
+
     if (streamOk) {
       const msg = debugMessages.value[assistantIdx]
       if (msg.thinking) msg.thinkingOpen = false
@@ -1052,6 +1101,23 @@ async function convertToPipeline() {
     await nextTick()
     scrollSkillDebugToBottom()
   }
+}
+
+// 转流程冲突：覆盖现有
+async function confirmPipelineOverwrite() {
+  if (!pipelineConflictInfo.value) return
+  showPipelineConflict.value = false
+  await streamConvert('overwrite', null)
+}
+
+// 转流程冲突：另存为
+async function confirmPipelineRename() {
+  if (!pipelineConflictInfo.value || !pipelineRenameValue.value.trim()) {
+    ElMessage.warning('请输入新的流程名称')
+    return
+  }
+  showPipelineConflict.value = false
+  await streamConvert('rename', pipelineRenameValue.value.trim())
 }
 
 async function confirmDelete(skill: any) {

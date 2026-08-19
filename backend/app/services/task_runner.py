@@ -20,6 +20,7 @@ from app.models.schedule import Schedule, TaskExecution
 from app.models.operator import Operator
 from app.models.skill import Skill
 from app.services.sandbox_ns import build_operator_namespace
+from app.services.permission_service import check_permission
 
 
 async def execute_task(
@@ -167,6 +168,15 @@ async def _run_skill(
     if not skill:
         return False, None, "技能不存在", None
 
+    # 权限软校验：非 owner 需 use 级授权（防调度迁移后越权）
+    if user_id and skill.created_by != user_id:
+        from app.models.user import User
+        u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if u and not u.is_superuser:
+            has_perm = await check_permission(db, user_id, "skill", skill_id, "use", is_owner=False)
+            if not has_perm and skill.visibility != "public":
+                return False, None, f"用户无权执行技能 {skill.name}", None
+
     folder = Path(settings.SKILL_STORAGE_PATH) / str(skill_id)
     script_name = params.get("script_name", "main.py")
     parameters = params.get("parameters", {})
@@ -203,6 +213,15 @@ async def _run_operator(
         return False, None, "算子不存在", None
     if not operator.script_content:
         return False, None, "该算子没有可执行的脚本", None
+
+    # 权限软校验：非 owner 需 use 级授权
+    if user_id and operator.created_by != user_id:
+        from app.models.user import User
+        u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if u and not u.is_superuser:
+            has_perm = await check_permission(db, user_id, "operator", operator_id, "use", is_owner=False)
+            if not has_perm and operator.visibility != "public":
+                return False, None, f"用户无权执行算子 {operator.name}", None
 
     captured_output = io.StringIO()
 
@@ -256,6 +275,15 @@ async def _run_pipeline(
     pipeline = result.scalar_one_or_none()
     if not pipeline:
         return False, None, "流程不存在", None
+
+    # 权限软校验：非 owner 需 use 级授权
+    if user_id and pipeline.created_by != user_id:
+        from app.models.user import User
+        u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if u and not u.is_superuser:
+            has_perm = await check_permission(db, user_id, "pipeline", pipeline_id, "use", is_owner=False)
+            if not has_perm and pipeline.visibility != "public":
+                return False, None, f"用户无权执行流程 {pipeline.name}", None
 
     inputs = params.get("inputs", params)
 
