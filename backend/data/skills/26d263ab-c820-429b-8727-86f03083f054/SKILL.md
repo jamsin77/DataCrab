@@ -1,7 +1,8 @@
 ---
 name: semantic-classify
-description: 对数据列进行AI语义分类，支持自动检测分类类别或使用预定义类别，可选择新增列或更新已有列
+description: 对数据列进行AI语义分类/标注/提取，支持自动检测分类类别或使用预定义类别，可选择新增列或更新已有列，适合从地址提取省市、文本分类、数据打标、语义标注等场景
 version: "1.0.0"
+skill_type: processing
 tags:
   - 语义分类
   - LLM

@@ -4,6 +4,7 @@ export interface ChatSession {
   id: string
   user_id: string
   title: string | null
+  context?: Record<string, any> | null
   created_at: string
   updated_at: string | null
 }
@@ -18,12 +19,16 @@ export interface ChatMessage {
   code_blocks: any[] | null
   table_data: any | null
   charts: any[] | null
+  meta?: Record<string, any> | null  // 后端持久化的临时字段（model/reasoning/executingMsgs/suggestion 等）
   created_at: string
   executingMsg?: string
-  execLogs?: string[]        // 归档的执行日志（工具调用/智能体切换等，折叠显示）
+  executingMsgs?: string[]       // 实时执行进度（逐行显示，最后一行带转圈）
   inspectionReport?: string
   agentName?: string  // 当前处理智能体中文名（如"数据分析师"）
   attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]  // 用户消息附件元信息
+  suggestion?: { type: string; matches: any[] }  // 技能/流程/数据匹配建议
+  noMatch?: boolean  // 无匹配标记
+  _suggestionConsumed?: boolean  // 前端标记：建议已被消费（如选择了数据）
 }
 
 export interface StreamEvent {
@@ -63,6 +68,10 @@ export const chatApi = {
     return api.delete(`/chat/sessions/${sessionId}/messages`)
   },
 
+  updateMessageMetadata(messageId: string, metadata: Record<string, any>): Promise<void> {
+    return api.patch(`/chat/messages/${messageId}/metadata`, metadata)
+  },
+
   stopGeneration(sessionId: string): Promise<void> {
     return api.post('/chat/stop', null, { params: { session_id: sessionId } })
   },
@@ -89,6 +98,10 @@ export const chatApi = {
     signal: AbortSignal,
     onEvent: (event: StreamEvent) => void,
     attachments?: string[],
+    skipMatch?: boolean,
+    skipSteps?: string[],
+    selectedDatasourceId?: string,
+    selectedTableName?: string,
   ): Promise<void> {
     const token = localStorage.getItem('access_token')
 
@@ -98,7 +111,15 @@ export const chatApi = {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ session_id: sessionId, content, attachments }),
+      body: JSON.stringify({
+        session_id: sessionId,
+        content,
+        attachments,
+        skip_match: skipMatch || false,
+        skip_steps: skipSteps || [],
+        selected_datasource_id: selectedDatasourceId || null,
+        selected_table_name: selectedTableName || null,
+      }),
       signal,
     })
 

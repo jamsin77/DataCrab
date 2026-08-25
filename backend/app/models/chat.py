@@ -17,6 +17,7 @@ class ChatSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     title = Column(String(200))
+    context = Column(JSON)  # 会话级上下文：{source_datasource_id, source_datasource_name, source_table_name, target_datasource_id, target_datasource_name, target_table_name}
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -36,6 +37,7 @@ class ChatMessage(Base):
     code_blocks = Column(JSON)
     table_data = Column(JSON)
     charts = Column(JSON)
+    meta = Column(JSON)  # 前端临时字段持久化（model/reasoning/executingMsgs/suggestion/agentName/noMatch）
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # 关系

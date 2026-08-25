@@ -1,6 +1,7 @@
 ---
 name: data-cleaning-deduplication
-description: 对指定数据表进行批量清洗和去重。基于主键删除空值与重复行，直接在原表修改，不生成新表。
+description: 清洗/清理数据表的脏数据、空值、重复行，支持去重、删空行、去重复、删除缺失值、基于主键整行清理，直接在原表修改，适合数据预处理、数据质量提升等场景
+skill_type: processing
 ---
 # 数据清洗和去重技能
 

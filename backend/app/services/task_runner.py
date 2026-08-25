@@ -23,6 +23,28 @@ from app.services.sandbox_ns import build_operator_namespace
 from app.services.permission_service import check_permission
 
 
+async def _commit_with_retry(db, max_attempts: int = 3, base_delay: float = 0.5) -> bool:
+    """SQLite commit 重试（处理 database is locked）。
+    失败后 rollback 再重试，避免 PendingRollbackError 连锁。
+    返回 True 表示成功，False 表示最终失败（调用方负责降级处理）。"""
+    for attempt in range(max_attempts):
+        try:
+            await db.commit()
+            return True
+        except Exception as e:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            if attempt < max_attempts - 1:
+                logger.warning(f"commit 失败（第{attempt+1}次），{base_delay * (attempt + 1):.1f}s 后重试: {e}")
+                await asyncio.sleep(base_delay * (attempt + 1))
+            else:
+                logger.error(f"commit 最终失败（{max_attempts}次）: {e}")
+                return False
+    return False
+
+
 async def execute_task(
     execution_id: UUID,
     task_type: str,
@@ -51,7 +73,9 @@ async def execute_task(
         execution.status = "running"
         execution.started_at = datetime.utcnow()
         execution.logs = "正在执行..."  # 占位日志，让前端详情能看到执行中状态
-        await db.commit()  # commit 而非 flush：让 API 轮询能读到"运行中"状态
+        if not await _commit_with_retry(db):
+            logger.error(f"设置执行记录 running 状态失败: {execution_id}")
+            return  # commit 失败无法继续，避免后续操作卡死
 
         start_time = time.time()
         success = False
@@ -87,7 +111,10 @@ async def execute_task(
             logger.error(f"调度任务执行异常 [{execution_id}]: {e}")
             # 子任务崩溃可能留下未提交的脏事务，回滚后重新加载执行记录，
             # 确保状态能正确写入 failed 而非永远卡在 pending
-            await db.rollback()
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             result = await db.execute(
                 select(TaskExecution).where(TaskExecution.id == execution_id)
             )
@@ -95,24 +122,53 @@ async def execute_task(
             if not execution:
                 return
 
-        execution.status = "success" if success else "failed"
-        execution.finished_at = datetime.utcnow()
-        execution.duration = int(time.time() - start_time)
-        execution.result = result_data if isinstance(result_data, dict) else None
-        execution.error_message = error_msg
-        execution.logs = logs
-        execution.exit_code = 0 if success else 1
+        # 更新执行记录最终状态（带重试，处理 SQLite database is locked + PendingRollbackError 连锁）
+        for _final_attempt in range(3):
+            try:
+                execution.status = "success" if success else "failed"
+                execution.finished_at = datetime.utcnow()
+                execution.duration = int(time.time() - start_time)
+                execution.result = result_data if isinstance(result_data, dict) else None
+                execution.error_message = error_msg
+                execution.logs = logs
+                execution.exit_code = 0 if success else 1
 
-        sched_result = await db.execute(
-            select(Schedule).where(Schedule.id == execution.schedule_id)
-        )
-        schedule = sched_result.scalar_one_or_none()
-        if schedule:
-            schedule.last_run_at = execution.finished_at
-            schedule.last_run_status = execution.status
-            _reschedule_next_run(schedule)
+                sched_result = await db.execute(
+                    select(Schedule).where(Schedule.id == execution.schedule_id)
+                )
+                schedule = sched_result.scalar_one_or_none()
+                if schedule:
+                    schedule.last_run_at = execution.finished_at
+                    schedule.last_run_status = execution.status
+                    _reschedule_next_run(schedule)
 
-        await db.commit()
+                if await _commit_with_retry(db):
+                    break
+                # commit 重试耗尽 → rollback 后重新加载对象再试
+                if _final_attempt < 2:
+                    logger.warning(f"更新执行记录状态失败（第{_final_attempt+1}次），重新加载后重试")
+                    result = await db.execute(
+                        select(TaskExecution).where(TaskExecution.id == execution_id)
+                    )
+                    execution = result.scalar_one_or_none()
+                    if not execution:
+                        return
+            except Exception as final_err:
+                logger.warning(f"更新执行记录状态异常（第{_final_attempt+1}次）: {final_err}")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                if _final_attempt < 2:
+                    await asyncio.sleep(0.5 * (_final_attempt + 1))
+                    result = await db.execute(
+                        select(TaskExecution).where(TaskExecution.id == execution_id)
+                    )
+                    execution = result.scalar_one_or_none()
+                    if not execution:
+                        return
+                else:
+                    logger.error(f"更新执行记录状态最终失败: {final_err}")
         logger.info(
             f"调度任务完成 [{execution_id}] task_type={task_type} status={execution.status} duration={execution.duration}s"
         )
@@ -612,16 +668,47 @@ async def stop_scheduler():
 
 async def _scheduler_loop(scan_interval: int):
     """扫描循环：周期检查到期调度并触发执行"""
+    _perm_escalation_counter = 0
     while _stop_event and not _stop_event.is_set():
         try:
             await _scan_and_trigger()
             await _recover_orphaned_executions()
+            _perm_escalation_counter += 1
+            if _perm_escalation_counter >= 6:
+                _perm_escalation_counter = 0
+                await _escalate_stale_permission_requests()
         except Exception as e:
             logger.error(f"调度扫描异常: {e}")
         try:
             await asyncio.wait_for(_stop_event.wait(), timeout=scan_interval)
         except asyncio.TimeoutError:
             pass
+
+
+async def _escalate_stale_permission_requests():
+    """超时权限申请升级：pending 且 created_at < now()-3天 → escalated=True"""
+    try:
+        from app.models.user import PermissionRequest
+        from datetime import timedelta
+        now = datetime.utcnow()
+        cutoff = now - timedelta(days=3)
+        async with async_session() as db:
+            result = await db.execute(
+                select(PermissionRequest).where(
+                    PermissionRequest.status == "pending",
+                    PermissionRequest.escalated == False,
+                    PermissionRequest.created_at < cutoff,
+                )
+            )
+            stale = result.scalars().all()
+            for pr in stale:
+                pr.escalated = True
+                pr.escalated_at = now
+                logger.info(f"权限申请超时升级: {pr.id} ({pr.resource_type}/{pr.resource_id})")
+            if stale:
+                await db.commit()
+    except Exception as e:
+        logger.warning(f"权限申请超时升级失败: {e}")
 
 
 async def _scan_and_trigger():
@@ -690,7 +777,11 @@ async def _trigger_scheduled(schedule_id: UUID, schedule_name: str):
         # 重算 next_run_at（防止下一轮扫描重复触发）
         _reschedule_next_run(sched)
 
-        await db.commit()
+        if not await _commit_with_retry(db):
+            # commit 失败（database is locked），放弃本次触发
+            # next_run_at 未更新，下一轮扫描（30s 后）会重新尝试
+            logger.error(f"调度 {schedule_name} 创建执行记录 commit 失败，放弃本次触发（下一轮扫描会重试）")
+            return
         await db.refresh(execution)
 
         # 捕获执行所需参数（session 关闭后 detached）

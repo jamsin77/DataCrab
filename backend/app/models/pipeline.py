@@ -24,6 +24,7 @@ class Pipeline(Base):
     skill_calls = Column(JSON, default=list)
 
     source_skill_id = Column(UUID(as_uuid=True))
+    related_skill_ids = Column(JSON, default=list)
 
     version = Column(Integer, default=1)
 

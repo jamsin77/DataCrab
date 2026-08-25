@@ -49,6 +49,7 @@ class PipelineResponse(BaseModel):
     parameters: Optional[List[Any]] = None
     skill_calls: Optional[List[Any]] = None
     source_skill_id: Optional[UUID] = None
+    related_skill_ids: Optional[List[Any]] = None
     version: int = 1
     tags: Optional[List[str]] = None
     category: Optional[str] = None

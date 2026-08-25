@@ -2361,6 +2361,13 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'migrated_rows': 5297, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_key_cultural_relic_protection_units'"
+    },
+    {
+      "timestamp": "2026-08-25T14:32:01.002296",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5058, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '代码', '时间戳'], 'target_table': '全国文物', 'table_remark': None, 'column_remarks': {}}"
     }
   ],
   "lessons": "",

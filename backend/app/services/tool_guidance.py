@@ -15,10 +15,6 @@ _MAIN_TOOL_CAPABILITY_TABLE = """## 工具能力表（诚实声明）
 | execute_sql | 最多1000行（可调到10000） | 高 | DB型走原生SQL；Excel/CSV 用 DuckDB 内存SQL。Excel表名=文件名_工作表名，CSV表名=文件名(不带扩展名)；表名含中文/特殊字符用双引号包裹：SELECT * FROM "销售数据_Q1"。仅SELECT，不支持DML |
 | list_user_file_links | 全量 | 高 | 仅返回目录类型的链接 |
 | save_file_to_link | 精确写入 | 高 | 只能写入CSV格式文本；路径必须在链接目录范围内（沙箱限制） |
-| profile_data | 全表扫描 | 高 | 大表（万行以上）较慢；返回的是统计概览，不含原始数据行 |
-| check_data_standards | 按列检查 | 高 | 格式类标准用确定性正则；命名规范检查基于规则，可能有边界情况 |
-| check_data_quality | 按维度检查 | 高 | 完整性/唯一性用确定性逻辑；业务逻辑一致性需要LLM判断，可能有偏差 |
-| check_data_security | 全表扫描 | 高 | PII识别基于正则+关键词，复杂场景可能遗漏；不修改数据，仅报告 |
 | kb_search | top_k默认5 | 中 | 仅搜索已上传文档的向量索引，top_k硬限制必然遗漏相关内容；PDF/DOCX仅纯文本，表格图片丢失；不支持结构化数据源 |
 
 以上是能力描述，不是强制路由。请根据具体任务自主判断。

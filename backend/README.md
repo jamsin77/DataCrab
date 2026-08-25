@@ -17,6 +17,8 @@ DataCrab 数据工程智能体后端服务
 - 8 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载）
 - 技能/算子/流程全生命周期（CRUD + AI 生成/调试 + 自愈循环 + 经验库）
 - 7 种写表策略 + 调度系统（Cron/间隔/手动 + 30s 定时扫描器）
+- 资产导入导出（7 类资产一键 ZIP 迁移，API Key 不导出，跨机器引用稳定）
+- 向量索引服务（ChromaDB：技能/流程/算子/数据表语义检索 + LLM 自适应匹配）
 - 文档知识库 RAG + 元数据管理（技术元数据自动同步 + 业务元数据 AI 补充）
 - 视频处理（关键帧抽取 + 元数据提取）+ RBAC 权限（用户/角色/权限，view/use/manage 三级）
 
@@ -25,9 +27,9 @@ DataCrab 数据工程智能体后端服务
 - FastAPI + Uvicorn
 - SQLAlchemy 2.0（async）
 - pandas / numpy
-- 智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容（`_default`/`_flash` 双模型 + 多模型降级链 + CircuitBreaker 熔断 + 视觉/嵌入按 provider 选）
+- 智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容（**去全局化：强制用户配置，无全局 provider/api_key**；`_default`/`_flash` 双模型 + 多模型降级链 + CircuitBreaker 熔断 + 视觉/嵌入按 provider 选）
 - SQLite（开发）/ PostgreSQL 14+（生产）
-- ChromaDB（文档知识库向量库）
+- ChromaDB（文档知识库 + 语义索引向量库）
 
 ## 安装
 

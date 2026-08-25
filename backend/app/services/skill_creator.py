@@ -167,13 +167,30 @@ SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab
 
 """ + get_anti_hallucination_section("standard") + """
 
+## description 写作规范（影响技能匹配，必须遵守）
+
+description 是用户找到此技能的唯一语义桥梁——用户说一句话，系统靠 description 判断是否匹配此技能。必须按以下规范写：
+
+1. **场景式描述**：描述"用户什么场景下需要它"，不是"它内部怎么实现"
+2. **覆盖常见问法**：把用户可能用的口语化表达、同义词都自然融入 description
+   - 用户可能说"导出"而非"迁移"；"清理"而非"清洗"；"拆分"而非"分割"
+   - 在 description 里把这些口语词都带上，让用户怎么问都能匹配到
+3. **一句话写全**：场景 + 动作 + 同义词，不要只写一个技术术语
+
+示例（对比）：
+- ❌ "在不同数据源之间迁移数据，支持列名转换、列删除、列添加及基本数据处理"（技术语言，用户说"导出"匹配不上）
+- ✅ "把数据从源表导出/迁移/同步到另一个数据源或文件（Excel/CSV），支持导入、导出、搬数据、列名转换、空值填充等处理"
+
+- ❌ "对数据表进行批量清洗和去重"（用户说"清理脏数据"匹配不上）
+- ✅ "清洗/清理数据表的脏数据、空值、重复行，支持去重、删空行、去重复"
+
 ## 输出格式（严格遵守）
 你必须在一次回复中输出完整的 Skill 包内容。使用以下分隔符：
 
 ```yaml
 ---
 name: skill-name
-description: 技能描述
+description: 技能描述（按上述 description 写作规范写，覆盖用户常见问法）
 skill_type: processing    # processing=数据处理 / analysis=数据分析（只查不改用 analysis）
 ---
 ```
@@ -185,7 +202,7 @@ skill_type: processing    # processing=数据处理 / analysis=数据分析（�
 ===SKILL_MD===
 ---
 name: filter-by-dynasty
-description: 按朝代筛选文物数据，支持单朝代和多朝代筛选
+description: 按朝代筛选/过滤/查找文物数据，支持单朝代和多朝代筛选，可用于查询特定朝代的文物记录
 version: "1.0.0"
 skill_type: processing
 tags:
@@ -593,3 +610,46 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
         yield {"type": "status", "message": "验证通过，脚本符合规范"}
 
     yield {"type": "done", "data": parsed}
+
+
+async def modify_skill_md_stream(current_md: str, instruction: str) -> AsyncGenerator[Dict[str, Any], None]:
+    """流式修改 SKILL.md，复用 SKILL_CREATOR_SYSTEM_PROMPT（规范/沙箱/陷阱/安全/工具指引全注入）。
+
+    与 generate_skill_stream 共用 system prompt（命中 prefix cache）；区别在 user prompt：
+    生成是「创建新 Skill 包（SKILL.md + scripts）」，修改是「只改用户要求的部分，输出完整 SKILL.md」。
+
+    落盘逻辑（解析 front matter / 写 DB）由端点负责，本方法只负责调 LLM 流式产出新 SKILL.md 文本。
+    """
+    await llm_manager.initialize()
+
+    user_prompt = (
+        f"以下是现有的 SKILL.md 内容：\n\n```markdown\n{current_md}\n```\n\n"
+        f"请根据以下要求修改这个 SKILL.md：\n{instruction}\n\n"
+        f"请输出修改后的完整 SKILL.md 内容（仅 SKILL.md，不要输出脚本）。\n"
+        f"要求：\n"
+        f"1. 保持 YAML front matter 格式，只修改用户要求的部分，不要改动未提及的字段\n"
+        f"2. 输出完整的 SKILL.md 内容，不要用代码块包裹\n"
+        f"3. 如果用户要求修改 description，按 description 写作规范覆盖用户常见问法\n"
+    )
+
+    try:
+        async for chunk in llm_manager.chat_stream_with_thinking(
+            messages=[
+                {"role": "system", "content": SKILL_CREATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        ):
+            t = chunk.get("type", "")
+            if t == "model":
+                yield {"type": "model", "content": chunk["content"]}
+            elif t == "thinking":
+                yield {"type": "thinking", "content": chunk["content"]}
+            elif t == "content":
+                yield {"type": "content", "content": chunk["content"]}
+    except Exception as e:
+        logger.error(f"Skill Creator 流式修改失败: {e}")
+        yield {"type": "error", "content": str(e)}
+        return
+
+    yield {"type": "done"}

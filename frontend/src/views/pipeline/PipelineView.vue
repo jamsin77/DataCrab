@@ -199,6 +199,16 @@
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 调试助手</span>
+            <el-button
+              size="small"
+              plain
+              type="danger"
+              style="margin-left: auto"
+              :disabled="plStreaming || debugMessages.length === 0"
+              @click="clearPipelineDebugHistory"
+            >
+              <el-icon><Delete /></el-icon> 清空记录
+            </el-button>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onDebugListScroll">
             <div v-if="debugMessages.length === 0 && !plStreaming" class="debug-empty">
@@ -499,6 +509,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Search, VideoPlay, Document, CopyDocument,
@@ -879,6 +890,48 @@ const plStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
 let debugAbortController: AbortController | null = null
 
+const DEBUG_MSG_MAX = 50
+
+function loadPipelineDebugMsgs(plId: string | number): DebugMessage[] {
+  try {
+    const raw = localStorage.getItem(`dc_pipeline_debug_msgs_${plId}`)
+    if (!raw) return []
+    return JSON.parse(raw).map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined, executingMsgs: undefined }))
+  } catch { return [] }
+}
+
+function savePipelineDebugMsgs(plId: string | number, msgs: DebugMessage[]) {
+  try {
+    const stripped = msgs.slice(-DEBUG_MSG_MAX).map(m => ({ ...m, executingMsg: undefined, executingMsgs: undefined, thinkingOpen: false }))
+    localStorage.setItem(`dc_pipeline_debug_msgs_${plId}`, JSON.stringify(stripped))
+  } catch {
+    try {
+      const lite = msgs.slice(-DEBUG_MSG_MAX).map(m => ({ role: m.role, content: m.content, llmContent: m.llmContent, scriptUpdated: m.scriptUpdated, model: m.model, created_at: m.created_at }))
+      localStorage.setItem(`dc_pipeline_debug_msgs_${plId}`, JSON.stringify(lite))
+    } catch { /* quota exceeded */ }
+  }
+}
+
+let _plDebugSaveTimer: ReturnType<typeof setTimeout> | null = null
+let _plDebugSaveId: string | number | null = null
+function scheduleSavePipelineDebug() {
+  if (!debugPipeline.value) return
+  _plDebugSaveId = (debugPipeline.value as any).id
+  if (_plDebugSaveTimer) clearTimeout(_plDebugSaveTimer)
+  _plDebugSaveTimer = setTimeout(() => {
+    if (_plDebugSaveId != null) savePipelineDebugMsgs(_plDebugSaveId, debugMessages.value)
+  }, 500)
+}
+function flushPipelineDebugSave() {
+  if (_plDebugSaveTimer) {
+    clearTimeout(_plDebugSaveTimer)
+    _plDebugSaveTimer = null
+    if (_plDebugSaveId != null && debugMessages.value.length > 0) savePipelineDebugMsgs(_plDebugSaveId, debugMessages.value)
+  }
+}
+
+watch(debugMessages, scheduleSavePipelineDebug, { deep: true })
+
 const signatureParams = computed(() => {
   if (debugPipeline.value?.entry_function === '_pipeline_entry') return ''
   const params = debugPipeline.value?.parameters as any[] | undefined
@@ -940,8 +993,9 @@ function onDebugListScroll() {
 }
 
 function openDebug(pl: Pipeline) {
+  flushPipelineDebugSave()
   debugPipeline.value = { ...pl }
-  debugMessages.value = []
+  debugMessages.value = loadPipelineDebugMsgs((pl as any).id)
   debugInput.value = ''
 
   if (pl.entry_function === '_pipeline_entry') {
@@ -968,12 +1022,26 @@ function openDebug(pl: Pipeline) {
   debugPinnedToBottom.value = true
 }
 
+async function clearPipelineDebugHistory() {
+  try {
+    await ElMessageBox.confirm('确认清空当前流程的调试记录？此操作不可撤销。', '提示', { type: 'warning' })
+  } catch { return }
+  if (debugPipeline.value) {
+    localStorage.removeItem(`dc_pipeline_debug_msgs_${(debugPipeline.value as any).id}`)
+  }
+  debugMessages.value = []
+  ElMessage.success('已清空调试记录')
+}
+
 function resetDebug() {
+  flushPipelineDebugSave()
+  debugPipeline.value = null
   if (debugAbortController) {
     debugAbortController.abort()
     debugAbortController = null
   }
   plStreaming.value = false
+  debugMessages.value = []
 }
 
 function handleDebugBeforeClose(done: () => void) {
@@ -1421,8 +1489,21 @@ async function deleteSchedule() {
   } catch (e: any) { if (e !== 'cancel') ElMessage.error('删除失败') }
 }
 
-onMounted(() => {
-  loadPipelines()
+const route = useRoute()
+
+onMounted(async () => {
+  await loadPipelines()
+  const debugId = route.query.debug as string
+  if (debugId) {
+    const pl = pipelines.value.find((p: any) => p.id === debugId)
+    if (pl) {
+      openDebug(pl)
+      const instruction = route.query.instruction ? decodeURIComponent(route.query.instruction as string) : ''
+      if (instruction) {
+        debugInput.value = instruction
+      }
+    }
+  }
 })
 </script>
 

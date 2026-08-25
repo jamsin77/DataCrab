@@ -192,7 +192,15 @@ async def update_metadata(
 
     await db.flush()
     await db.refresh(meta)
-    return _serialize_meta(meta, None)
+    ds_name = None
+    if meta.data_source_id:
+        ds_r = await db.execute(select(DataSource.name).where(DataSource.id == meta.data_source_id))
+        row = ds_r.first()
+        if row:
+            ds_name = row[0]
+    from app.services.match_service import index_table
+    await index_table(meta, ds_name or "")
+    return _serialize_meta(meta, ds_name)
 
 
 async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession) -> None:
@@ -291,6 +299,8 @@ async def ai_enrich_business_metadata(
 
     await db.flush()
     await db.refresh(meta)
+    from app.services.match_service import index_table
+    await index_table(meta, ds.name if ds else "")
     return _serialize_meta(meta, ds.name if ds else None)
 
 
@@ -436,6 +446,14 @@ async def sync_datasource_metadata(
         await connector.close()
 
     logger.info(f"数据源 [{ds.name}] 元数据同步完成: {synced_count} 张表, 清理 {len(stale_metas)} 张过期表")
+    from app.services.match_service import index_table, delete_table_index
+    all_metas = (await db.execute(
+        select(TableMetadata).where(TableMetadata.data_source_id == ds.id)
+    )).scalars().all()
+    for tm in all_metas:
+        await index_table(tm, ds.name)
+    for stale in stale_metas:
+        delete_table_index(str(stale.id))
     return {"synced": synced_count, "deleted_stale": len(stale_metas), "datasource": ds.name}
 
 

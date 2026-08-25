@@ -42,6 +42,11 @@ export default defineConfig({
           proxy.on('error', (err) => {
             console.error('[vite proxy]', err.message)
           })
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.url?.includes('/chat/stream')) {
+              proxyReq.setHeader('Accept', 'text/event-stream')
+            }
+          })
         },
       },
       '/ws': {

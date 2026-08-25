@@ -35,6 +35,7 @@ from app.schemas.skill import (
     SkillScriptUpdate,
     SkillScriptInfo,
     SkillModifyRequest,
+    SkillInferInstructionRequest,
     SkillDebugChatRequest,
     SkillParamDef,
     SimilarSkillCheckRequest,
@@ -247,6 +248,8 @@ async def create_skill(
     await db.flush()
     await db.refresh(skill)
     logger.info(f"技能已创建: {skill.name} ({skill.id})")
+    from app.services.match_service import index_skill
+    await index_skill(skill)
     return _build_detail(skill)
 
 
@@ -291,6 +294,8 @@ async def update_skill(
 
     await db.flush()
     await db.refresh(skill)
+    from app.services.match_service import index_skill
+    await index_skill(skill)
     return _build_detail(skill)
 
 
@@ -313,6 +318,8 @@ async def delete_skill(
     skill_name = skill.name
     await db.delete(skill)
     await db.flush()
+    from app.services.match_service import delete_skill_index
+    delete_skill_index(str(skill_id))
     logger.info(f"技能已删除: {skill_name} ({skill_id})")
 
 
@@ -517,6 +524,8 @@ async def update_skill_md(
 
     await db.flush()
     await db.refresh(skill)
+    from app.services.match_service import index_skill
+    await index_skill(skill)
     return _build_detail(skill)
 
 
@@ -769,6 +778,102 @@ async def get_skill_params(
         params = _extract_params_from_md(skill_md)
 
     return params
+
+
+@router.post("/{skill_id}/infer-instruction")
+async def infer_skill_instruction(
+    skill_id: UUID,
+    request: SkillInferInstructionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """根据技能参数要求 + Chat 会话上下文，LLM 生成一条调用技能的指令。
+
+    流程：读技能 SKILL.md（参数规范 + 使用示例）→ 读 Chat 会话 context（数据源/表名）→ LLM 生成符合技能格式的指令。
+    """
+    try:
+        logger.info(f"[infer-instruction] 收到请求: skill_id={skill_id} chat_session_id={request.chat_session_id} user_message={request.user_message[:80]!r} source_ds={request.source_datasource_name!r} source_tbl={request.source_table_name!r}")
+        result = await db.execute(select(Skill).where(Skill.id == skill_id))
+        skill = result.scalar_one_or_none()
+        if not skill:
+            logger.warning(f"[infer-instruction] 技能不存在: {skill_id}")
+            raise HTTPException(status_code=404, detail="技能不存在")
+        await assert_resource_access(db, current_user, "skill", skill, "use")
+
+        folder = _resolve_skill_folder(skill)
+        skill_md = read_skill_md(folder) or ""
+        logger.info(f"[infer-instruction] skill_md len={len(skill_md)}")
+
+        # 从 ChatSession.context 读取已知的数据上下文（不读消息列表）
+        from app.models.chat import ChatSession
+        chat_session_result = await db.execute(
+            select(ChatSession).where(ChatSession.id == UUID(request.chat_session_id))
+        )
+        chat_session = chat_session_result.scalar_one_or_none()
+        ctx = chat_session.context if chat_session and chat_session.context else {}
+        _src_ds = request.source_datasource_name or ctx.get("source_datasource_name")
+        _src_tbl = request.source_table_name or ctx.get("source_table_name")
+        _tgt_ds = ctx.get("target_datasource_name")
+        _tgt_tbl = ctx.get("target_table_name")
+        ctx_lines = []
+        if _src_ds:
+            ctx_lines.append(f"源数据源: {_src_ds}")
+        if _src_tbl:
+            ctx_lines.append(f"源表: {_src_tbl}")
+        if _tgt_ds:
+            ctx_lines.append(f"目标数据源: {_tgt_ds}")
+        if _tgt_tbl:
+            ctx_lines.append(f"目标表: {_tgt_tbl}")
+        chat_context = "\n".join(ctx_lines) if ctx_lines else "无已知数据上下文"
+        logger.info(f"[infer-instruction] skill={skill.name} chat_context={chat_context!r}")
+
+        from app.services.llm import llm_manager, init_user_llm_context
+        await init_user_llm_context(current_user.id)
+        await llm_manager.initialize()
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个技能调用指令生成器。根据技能的 SKILL.md（参数规范 + 使用示例）和用户的对话上下文，"
+                    "生成一条符合技能使用示例格式的调用指令。\n\n"
+                    "## 严格要求\n"
+                    "1. 指令必须符合 SKILL.md 中「使用方式」的示例格式\n"
+                    "2. 从对话上下文中提取具体的数据源名、表名等参数值，不要用「这个数据源」「这张表」等代词\n"
+                    "3. 指令要包含技能所需的关键参数（数据源名、表名、目标数据源名等）\n"
+                    "4. 只输出一条指令，不要解释，不要输出 JSON\n"
+                    "5. 如果对话上下文不足以确定某个参数，用「请指定」标注\n"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## 技能信息\n技能名称：{skill.display_name or skill.name}\n技能描述：{skill.description or ''}\n\n"
+                    f"## SKILL.md\n{skill_md[:3000]}\n\n"
+                    f"## 已知数据上下文\n{chat_context}\n\n"
+                    f"## 用户消息\n{request.user_message}\n\n"
+                    f"请根据以上信息，生成一条符合技能使用示例格式的调用指令。"
+                ),
+            },
+        ]
+
+        instruction = await llm_manager.chat_with_messages(messages, temperature=0.2, max_tokens=500)
+        instruction = instruction.strip()
+        if instruction.startswith("```"):
+            lines = instruction.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            instruction = "\n".join(lines).strip()
+        logger.info(f"[infer-instruction] 生成成功: instruction={instruction[:120]!r}")
+        return {"instruction": instruction}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.opt(raw=True).error("[infer-instruction] 异常: " + str(e))
+        logger.opt(raw=True).error("[infer-instruction] traceback:\n" + __import__('traceback').format_exc())
+        raise HTTPException(status_code=500, detail="生成指令失败: " + str(e))
 
 
 @router.post("/{skill_id}/run-nl")
@@ -1155,98 +1260,17 @@ async def _collect_all_lessons(db: AsyncSession, user_id) -> str:
     return await experience.collect_all_lessons(db, user_id)
 
 
-SIMILARITY_THRESHOLD = 0.6
-
-
-async def _find_similar_skills_llm(prompt: str, skills: list, top_k: int = 5) -> list:
-    """用 LLM 语义匹配相似技能，返回 [(skill, similarity, reason), ...]"""
-    from app.services.llm import llm_manager
-
-    if not skills:
-        return []
-
-    skill_list = "\n".join(
-        f"{i + 1}. {s.name}: {s.description or '(无描述)'}"
-        for i, s in enumerate(skills)
-    )
-
-    system = "你是技能匹配助手。判断哪些现有技能与用户需求相似、可复用。只返回 JSON。"
-    user_msg = f"""用户需求：{prompt}
-
-现有技能：
-{skill_list}
-
-返回 JSON 数组，只包含相似度>=0.6的技能：
-[{{"index": 1, "similarity": 0.8, "reason": "功能描述"}}]
-
-index 是上面列表的序号(从1开始)。无相似技能返回 []。"""
-
-    try:
-        resp = await llm_manager.chat_with_messages(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.1,
-        )
-        resp_text = resp if isinstance(resp, str) else resp.get("content", "")
-        import json as _json
-        match = re.search(r'\[.*\]', resp_text, re.DOTALL)
-        if not match:
-            return []
-        matched = _json.loads(match.group())
-        result = []
-        for item in matched:
-            idx = item.get("index", 0) - 1
-            if 0 <= idx < len(skills):
-                score = min(max(float(item.get("similarity", 0)), 0.0), 1.0)
-                if score >= SIMILARITY_THRESHOLD:
-                    result.append((skills[idx], score, item.get("reason", "")))
-        return result[:top_k]
-    except Exception as e:
-        logger.warning(f"LLM 技能匹配失败，回退关键词匹配: {e}")
-        return _keyword_match_skills(prompt, skills, top_k)
-
-
-def _keyword_match_skills(prompt: str, skills: list, top_k: int = 5) -> list:
-    """关键词匹配兜底：name/description/tags 加权"""
-    prompt_lower = prompt.lower()
-    scored = []
-    for s in skills:
-        score = 0.0
-        if s.name and s.name.lower() in prompt_lower:
-            score += 0.5
-        desc = (s.description or "").lower()
-        for word in prompt_lower.split():
-            if len(word) > 1 and word in desc:
-                score += 0.15
-        tags = s.tags or []
-        for tag in tags:
-            if tag.lower() in prompt_lower:
-                score += 0.2
-        if score >= SIMILARITY_THRESHOLD:
-            scored.append((s, min(score, 1.0), "关键词匹配"))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
-
-
 @router.post("/check-similar", response_model=SimilarSkillCheckResponse)
 async def check_similar_skills(
     request: SimilarSkillCheckRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """检测是否有相似技能可复用"""
+    """检测是否有相似技能可复用（embedding 向量检索）"""
     from app.services.permission_service import get_accessible_resource_ids
-    from app.services.llm import init_user_llm_context
+    from app.services.match_service import search_skills, MATCH_THRESHOLD
 
-    result_all = await db.execute(select(Skill))
-    all_skills = result_all.scalars().all()
-    if not all_skills:
-        return SimilarSkillCheckResponse(has_similar=False, skills=[])
-
-    await init_user_llm_context(current_user.id)
-    matched = await _find_similar_skills_llm(request.prompt, all_skills, top_k=5)
+    matched = await search_skills(request.prompt, top_k=5)
     if not matched:
         return SimilarSkillCheckResponse(has_similar=False, skills=[])
 
@@ -1254,7 +1278,13 @@ async def check_similar_skills(
 
     owner_cache: dict = {}
     items = []
-    for skill, score, reason in matched:
+    for sid, score in matched:
+        if score < MATCH_THRESHOLD:
+            continue
+        result = await db.execute(select(Skill).where(Skill.id == sid))
+        skill = result.scalar_one_or_none()
+        if not skill:
+            continue
         can_use = (
             skill.created_by == current_user.id
             or skill.visibility == "public"
@@ -1462,6 +1492,8 @@ async def clone_skill(
     db.add(clone)
     await db.flush()
     await db.refresh(clone)
+    from app.services.match_service import index_skill
+    await index_skill(clone)
     return _build_detail(clone)
 
 
@@ -1491,39 +1523,17 @@ async def modify_skill_stream(
     import asyncio
     import json as json_mod
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是一个 Skill 文档编辑器。根据用户的自然语言指令修改 SKILL.md 文件。\n"
-                "SKILL.md 是 YAML front matter + Markdown 格式的技能描述文档。\n"
-                "保持 YAML front matter 格式，只修改用户要求的部分。\n"
-                "输出完整的 SKILL.md 内容，不要用代码块包裹。\n\n"
-                "🚫 安全红线：Skill 只能处理用户的业务数据，不能修改 DataCrab 平台自身。\n"
-                "如果用户要求修改 SKILL.md 使技能能够操作平台系统数据，请拒绝并说明原因。\n\n"
-                "✅ 修改后必验证：修改 SKILL.md 后，请重新读取确认修改内容已正确反映。\n"
-                "如果修改涉及脚本逻辑，建议在修改后执行技能验证效果。\n\n"
-                "📂 输出默认同源：数据处理生成新文件时，如果未指定输出路径，默认保存到 DataSource（数据源）指定的文件路径下。"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"以下是现有的 SKILL.md 内容：\n\n```markdown\n{current_md}\n```\n\n"
-                f"请根据以下要求修改这个 SKILL.md：\n{request.instruction}\n\n"
-                f"请输出修改后的完整 SKILL.md 内容。"
-            ),
-        },
-    ]
+    from app.services import skill_creator
 
     async def generate():
         full_content = ""
         try:
-            async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
-                event = {"type": chunk["type"], "content": chunk["content"]}
-                yield f"data: {json_mod.dumps(event, ensure_ascii=False)}\n\n"
-                if chunk["type"] == "content":
-                    full_content += chunk["content"]
+            async for chunk in skill_creator.modify_skill_md_stream(current_md, request.instruction):
+                yield f"data: {json_mod.dumps(chunk, ensure_ascii=False)}\n\n"
+                if chunk.get("type") == "content":
+                    full_content += chunk.get("content", "")
+                elif chunk.get("type") == "error":
+                    return
 
             new_md = full_content.strip()
             if new_md.startswith("```"):

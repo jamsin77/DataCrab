@@ -1,7 +1,8 @@
 ---
 name: extract-image-info
-description: 从图片（身份证、营业执照等）中提取关键信息，写入指定数据源，识别失败的标记为待人工审核
+description: 从图片（身份证、营业执照等证件）中提取/识别关键信息，写入/保存到指定数据源，识别失败的标记为待人工审核，支持OCR识别、图片信息提取、证件信息提取等场景
 version: "1.1.0"
+skill_type: processing
 tags:
   - 图片识别
   - OCR

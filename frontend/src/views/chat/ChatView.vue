@@ -73,24 +73,98 @@
               <el-avatar :size="36" v-if="msg.role === 'assistant'" style="background:#409eff">{{ agentName }}</el-avatar>
               <el-avatar :size="36" v-else>我</el-avatar>
             </div>
-            <div class="message-content">
-              <!-- 推理过程 -->
+              <div class="message-content">
+              <!-- 推理过程（默认折叠，点击展开） -->
               <div v-if="msg.role === 'assistant' && msg.reasoning" class="reasoning-section">
                 <div class="reasoning-header" @click="toggleReasoning(msg.id)">
-                  <el-icon><CaretRight /></el-icon>
+                  <el-icon :class="{ 'is-rotated': reasoningExpanded[msg.id] }"><CaretRight /></el-icon>
                   <span>推理过程</span>
                   <el-tag v-if="msg.model" size="small" type="info">{{ msg.model }}</el-tag>
                 </div>
-                <el-collapse-transition>
-                  <div v-show="reasoningExpanded[msg.id]" class="reasoning-content">
-                    <div class="reasoning-text" v-html="renderMarkdown(msg.reasoning)"></div>
-                  </div>
-                </el-collapse-transition>
+                <div v-show="reasoningExpanded[msg.id]" class="reasoning-content">
+                  <div class="reasoning-text" v-html="renderMarkdown(msg.reasoning)"></div>
+                </div>
+              </div>
+              <!-- 执行进度（逐行显示，最后一行带转圈） -->
+              <div v-if="msg.role === 'assistant' && msg.executingMsgs && msg.executingMsgs.length" class="executing-indicator">
+                <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
+                  <el-icon v-if="i === msg.executingMsgs.length - 1 && chatStore.isStreaming" class="is-loading"><Loading /></el-icon>
+                  <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
+                  <span>{{ msg.agentName && i === msg.executingMsgs.length - 1 ? `[${msg.agentName}] ` : '' }}{{ m }}</span>
+                </div>
               </div>
               
+              <!-- 技能/流程/数据匹配建议 -->
+              <div v-if="msg.role === 'assistant' && msg.suggestion && !msg._suggestionConsumed" class="suggestion-card">
+                <template v-if="msg.suggestion.type === 'data_suggestion'">
+                  <div class="suggestion-header">
+                    <el-icon><Coin /></el-icon>
+                    <span>检测到相关数据（共 {{ msg.suggestion.matches.length }} 个），请选择要使用的数据</span>
+                  </div>
+                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                    <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
+                    <div class="suggestion-item-meta">
+                      <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
+                      <span v-if="m.column_count != null" class="meta-col">列数: {{ m.column_count }}</span>
+                    </div>
+                    <div class="suggestion-actions">
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectData(msg, m)">选择此数据</el-button>
+                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">查看数据</el-button>
+                      <el-button v-else type="warning" size="small" @click="requestPermission('datasource', m.datasource_id, m)">申请数据权限</el-button>
+                    </div>
+                  </div>
+                  <div v-if="msg.suggestion.matches.length > 3" class="suggestion-pager">
+                    <el-button size="small" :disabled="suggestionPageIdx(msg) === 0" @click="suggestionPrev(msg)">上一页</el-button>
+                    <span class="pager-info">{{ suggestionPageIdx(msg) + 1 }}/{{ Math.ceil(msg.suggestion.matches.length / 3) }}</span>
+                    <el-button size="small" :disabled="(suggestionPageIdx(msg) + 1) * 3 >= msg.suggestion.matches.length" @click="suggestionNext(msg)">下一页</el-button>
+                  </div>
+                </template>
+                <template v-else-if="msg.suggestion.type === 'target_suggestion'">
+                  <div class="suggestion-header">
+                    <el-icon><WarningFilled /></el-icon>
+                    <span>检测到目标表已存在（共 {{ msg.suggestion.matches.length }} 个），可能已处理过</span>
+                  </div>
+                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                    <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
+                    <div class="suggestion-item-meta">
+                      <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
+                      <span v-if="m.column_count != null" class="meta-col">列数: {{ m.column_count }}</span>
+                    </div>
+                    <div class="suggestion-actions">
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectData(msg, m)">选择此数据</el-button>
+                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">查看数据</el-button>
+                    </div>
+                  </div>
+                  <div class="suggestion-actions" style="margin-top: 8px;">
+                    <el-button size="small" @click="continueProcessing(msg)">继续处理</el-button>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="suggestion-header">
+                    <el-icon><MagicStick /></el-icon>
+                    <span>检测到匹配{{ (msg.suggestion.matches[0]?.type === 'pipeline') ? '流程' : '技能' }}（共 {{ msg.suggestion.matches.length }} 个）</span>
+                  </div>
+                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                    <div class="suggestion-item-name">{{ m.name }}</div>
+                    <div class="suggestion-item-desc">{{ m.description }}</div>
+                    <div class="suggestion-actions">
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="useMatched(m, msg)">使用{{ m.type === 'pipeline' ? '流程' : '技能' }}</el-button>
+                      <el-button v-else type="warning" size="small" @click="requestPermission(m.type, m.id, m)">申请权限</el-button>
+                    </div>
+                  </div>
+                  <div v-if="msg.suggestion.matches.length > 3" class="suggestion-pager">
+                    <el-button size="small" :disabled="suggestionPageIdx(msg) === 0" @click="suggestionPrev(msg)">上一页</el-button>
+                    <span class="pager-info">{{ suggestionPageIdx(msg) + 1 }}/{{ Math.ceil(msg.suggestion.matches.length / 3) }}</span>
+                    <el-button size="small" :disabled="(suggestionPageIdx(msg) + 1) * 3 >= msg.suggestion.matches.length" @click="suggestionNext(msg)">下一页</el-button>
+                  </div>
+                  <div class="suggestion-actions" style="margin-top: 8px;">
+                    <el-button size="small" @click="continueProcessing(msg)">直接处理</el-button>
+                  </div>
+                </template>
+              </div>
               <!-- 主要内容 -->
               <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
-              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && !msg.executingMsg && !msg.inspectionReport" class="typing-indicator">
+              <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && (!msg.executingMsgs || !msg.executingMsgs.length) && !msg.inspectionReport" class="typing-indicator">
                 <span></span><span></span><span></span>
               </div>
               <!-- 数据检查报告 -->
@@ -104,24 +178,6 @@
                     <div class="markdown-content" v-html="renderMarkdown(msg.inspectionReport)"></div>
                   </el-collapse-item>
                 </el-collapse>
-              </div>
-              <!-- 执行日志（归档，折叠显示） -->
-              <div v-if="msg.role === 'assistant' && msg.execLogs && msg.execLogs.length" class="exec-logs-section">
-                <div class="exec-logs-header" @click="toggleExecLogs(msg.id)">
-                  <el-icon><CaretRight /></el-icon>
-                  <span>执行日志</span>
-                  <el-tag size="small" type="info">{{ msg.execLogs.length }}</el-tag>
-                </div>
-                <el-collapse-transition>
-                  <div v-show="execLogsExpanded[msg.id]" class="exec-logs-content">
-                    <div v-for="(log, i) in msg.execLogs" :key="i" class="exec-log-line">{{ log }}</div>
-                  </div>
-                </el-collapse-transition>
-              </div>
-              <!-- 执行进度（仅 streaming 时转圈） -->
-              <div v-if="msg.role === 'assistant' && msg.executingMsg && chatStore.isStreaming" class="executing-indicator">
-                <el-icon class="is-loading"><Loading /></el-icon>
-                <span>{{ msg.agentName ? `[${msg.agentName}] ` : '' }}{{ msg.executingMsg }}</span>
               </div>
               <div v-if="msg.role === 'user' && msg.attachments && msg.attachments.length" class="user-attachments">
                 <div
@@ -172,6 +228,17 @@
               <span v-if="att.sheets.length" style="color: #909399; margin-left: 4px;">
                 ({{ att.sheets.length }} 表)
               </span>
+            </el-tag>
+          </div>
+          <div v-if="chatStore.selectedData" class="selected-data-bar">
+            <el-tag
+              closable
+              type="success"
+              size="default"
+              @close="chatStore.selectedData = null"
+            >
+              <el-icon style="vertical-align: middle; margin-right: 2px;"><Coin /></el-icon>
+              {{ chatStore.selectedData.datasource_name }} → {{ chatStore.selectedData.table_name }}
             </el-tag>
           </div>
           <div class="input-area">
@@ -227,19 +294,20 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import api from '@/api/index'
 import { chatApi } from '@/api/chat'
 
+const router = useRouter()
 const chatStore = useChatStore()
 const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
-const execLogsExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
 
 // 聊天附件：所有上传的 Excel 归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
@@ -251,12 +319,16 @@ interface Attachment {
 const attachments = ref<Attachment[]>([])
 const uploading = ref(false)
 
-// 输入历史（↑↓ 浏览）
-const inputHistory = ref<string[]>(
-  (() => { try { return JSON.parse(localStorage.getItem('dc_chat_history') || '[]') } catch { return [] } })()
-)
+// 输入历史（↑↓ 浏览）— 按会话 ID 隔离
+const inputHistory = ref<string[]>([])
 const historyIdx = ref(-1)
 const savedDraft = ref('')
+
+function loadInputHistory(sessionId: string | null) {
+  if (!sessionId) { inputHistory.value = []; return }
+  try { inputHistory.value = JSON.parse(localStorage.getItem(`dc_chat_history_${sessionId}`) || '[]') } catch { inputHistory.value = [] }
+  historyIdx.value = -1
+}
 
 const currentSessionTitle = computed(() => {
   const s = chatStore.sessions.find((s) => s.id === chatStore.currentSessionId)
@@ -372,10 +444,6 @@ function toggleReasoning(msgId: string) {
   reasoningExpanded.value[msgId] = !reasoningExpanded.value[msgId]
 }
 
-function toggleExecLogs(msgId: string) {
-  execLogsExpanded.value[msgId] = !execLogsExpanded.value[msgId]
-}
-
 // 点击历史消息里的文件卡片，重新引用该文件
 function reuseAttachment(att: { filename: string; table_name_prefix?: string; sheets?: string[] }) {
   const exists = attachments.value.some(a => a.filename === att.filename)
@@ -463,11 +531,6 @@ watch(
 watch(
   () => [chatStore.streamingContent, chatStore.streamingReasoning],
   () => {
-    // 推理过程默认折叠
-    const lastMsg = chatStore.messages[chatStore.messages.length - 1]
-    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.reasoning && reasoningExpanded.value[lastMsg.id] === undefined) {
-      reasoningExpanded.value[lastMsg.id] = false
-    }
     // 流式更新使用即时滚动，避免 smooth 动画被高频 token 打断
     scrollToBottom(false)
     // 渲染 chart 块（DOM 更新后）
@@ -475,10 +538,11 @@ watch(
   }
 )
 
-// 监听会话切换，滚动到底部
+// 监听会话切换，滚动到底部 + 加载该会话的输入历史
 watch(
   () => chatStore.currentSessionId,
-  () => {
+  (newId) => {
+    loadInputHistory(newId)
     nextTick(() => {
       scrollToBottom(false)
     })
@@ -488,22 +552,155 @@ watch(
 async function handleNewSession() {
   await chatStore.createSession()
   reasoningExpanded.value = {}
-  execLogsExpanded.value = {}
 }
+
+  reasoningExpanded.value = {}
 
   async function handleSend() {
   if (chatStore.isStreaming) return
   if (!inputText.value.trim() && attachments.value.length === 0) return
   const text = inputText.value
   const atts = attachments.value.map(a => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets }))
-  // 保存到输入历史
-  inputHistory.value.push(text)
-  if (inputHistory.value.length > 50) inputHistory.value = inputHistory.value.slice(-50)
-  try { localStorage.setItem('dc_chat_history', JSON.stringify(inputHistory.value)) } catch {}
+  // 保存到输入历史（按会话 ID 隔离）
+  const _sid = chatStore.currentSessionId
+  if (_sid) {
+    inputHistory.value.push(text)
+    if (inputHistory.value.length > 50) inputHistory.value = inputHistory.value.slice(-50)
+    try { localStorage.setItem(`dc_chat_history_${_sid}`, JSON.stringify(inputHistory.value)) } catch {}
+  }
   historyIdx.value = -1
   inputText.value = ''
   attachments.value = []
-  await chatStore.sendMessage(text, atts.length ? atts : undefined)
+  // 如果上一条 assistant 消息有未消费的 suggestion → 自动跳过对应匹配步骤
+  const _autoSkip: string[] = []
+  const _lastAssistant = [...chatStore.messages].reverse().find(m => m.role === 'assistant')
+  if (_lastAssistant && _lastAssistant.suggestion && !_lastAssistant._suggestionConsumed) {
+    if (_lastAssistant.suggestion.type === 'data_suggestion') _autoSkip.push('tables')
+    if (_lastAssistant.suggestion.type === 'target_suggestion') _autoSkip.push('target')
+    if (_lastAssistant.suggestion.type === 'skill_suggestion') {
+      _autoSkip.push('tables', 'pipelines', 'skills')
+    }
+  }
+  await chatStore.sendMessage(text, atts.length ? atts : undefined, undefined, _autoSkip.length ? _autoSkip : undefined)
+}
+
+// ===== 匹配建议导航 =====
+const _suggestionPages = ref<Record<string, number>>({})
+
+function suggestionPage(msg: any) {
+  if (!msg.suggestion?.matches) return []
+  const idx = _suggestionPages.value[msg.id] || 0
+  const start = idx * 3
+  return msg.suggestion.matches.slice(start, start + 3).map((m: any, i: number) => ({ ...m, _idx: start + i }))
+}
+
+function suggestionPageIdx(msg: any) {
+  return _suggestionPages.value[msg.id] || 0
+}
+
+function suggestionPrev(msg: any) {
+  const idx = _suggestionPages.value[msg.id] || 0
+  if (idx > 0) _suggestionPages.value[msg.id] = idx - 1
+}
+
+function suggestionNext(msg: any) {
+  const idx = _suggestionPages.value[msg.id] || 0
+  _suggestionPages.value[msg.id] = idx + 1
+}
+
+function useMatched(m: any, msg: any) {
+  const allMsgs = chatStore.messages
+  const msgIdx = allMsgs.findIndex(x => x === msg)
+  const userText = msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : ''
+  const sel = chatStore.selectedData
+  const sessionId = chatStore.currentSessionId || ''
+  const query: Record<string, string> = { debug: m.id }
+  const _dsName = sel?.datasource_name || m.datasource_name || ''
+  const _tblName = sel?.table_name || m.table_name || ''
+  if (_dsName) query.ds_name = _dsName
+  if (_tblName) query.table_name = _tblName
+  if (sessionId) query.chat_session_id = sessionId
+  query.instruction = encodeURIComponent(userText)
+  if (m.type === 'pipeline') {
+    window.open(router.resolve({ path: '/pipeline', query }).href, '_blank')
+  } else {
+    window.open(router.resolve({ path: '/skill', query }).href, '_blank')
+  }
+}
+
+function viewTable(m: any) {
+  window.open(router.resolve({ path: '/config', query: { tab: 'datasource', ds: m.datasource_id, table: m.table_name } }).href, '_blank')
+}
+
+function selectData(msg: any, m: any) {
+  chatStore.selectedData = {
+    datasource_id: m.datasource_id,
+    datasource_name: m.datasource_name,
+    table_name: m.table_name,
+  }
+  msg._suggestionConsumed = true
+  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.table_name}，请输入您的指令`)
+  // 聚焦输入框
+  nextTick(() => {
+    const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
+    if (textarea) textarea.focus()
+  })
+}
+
+function goCreateSkill(msg: any) {
+  const desc = encodeURIComponent(msg.content || '')
+  window.open(router.resolve({ path: '/skill', query: { create: 'true', desc } }).href, '_blank')
+}
+
+async function continueProcessing(msg: any) {
+  const allMsgs = chatStore.messages
+  const msgIdx = allMsgs.findIndex(m => m === msg)
+  if (msgIdx < 1) return
+  const userMsg = allMsgs[msgIdx - 1]
+  const text = userMsg?.content || ''
+  if (!text) return
+  const atts = (userMsg as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
+  // 根据当前 suggestion 类型判断跳过哪些步骤
+  const skipSteps: string[] = []
+  const suggestion = msg.suggestion
+  if (suggestion) {
+    if (suggestion.type === 'target_suggestion') {
+      skipSteps.push('tables', 'target')
+    } else if (suggestion.matches?.[0]?.type === 'pipeline') {
+      skipSteps.push('tables', 'pipelines')
+    } else if (suggestion.matches?.[0]?.type === 'skill') {
+      skipSteps.push('tables', 'pipelines', 'skills')
+    }
+  }
+  // 从同会话之前的 suggestion 消息累积 skipSteps
+  for (let i = 0; i < msgIdx; i++) {
+    const prevMsg = allMsgs[i] as any
+    if (prevMsg.suggestion) {
+      if (prevMsg.suggestion.type === 'target_suggestion' && !skipSteps.includes('target')) skipSteps.push('target')
+      if (prevMsg.suggestion.matches?.[0]?.type === 'pipeline' && !skipSteps.includes('pipelines')) skipSteps.push('pipelines')
+      if (prevMsg.suggestion.matches?.[0]?.type === 'skill' && !skipSteps.includes('skills')) skipSteps.push('skills')
+    }
+  }
+  await chatStore.sendDirectly(text, atts.length ? atts : undefined, skipSteps.length ? skipSteps : undefined)
+}
+
+async function requestPermission(resourceType: string, resourceId: string, m: any) {
+  try {
+    await api.post('/permissions/request', {
+      resource_type: resourceType,
+      resource_id: resourceId,
+      requested_level: 'use',
+      reason: `在对话中需要使用此${resourceType === 'datasource' ? '数据源' : resourceType === 'pipeline' ? '流程' : '技能'}`,
+    })
+    ElMessage.success('权限申请已提交，等待资源所有者审批')
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail
+    if (detail && typeof detail === 'string') {
+      ElMessage.warning(detail)
+    } else {
+      ElMessage.error('权限申请失败')
+    }
+  }
 }
 
 function beforeUpload(file: File): boolean {
@@ -557,7 +754,6 @@ async function handleClearMessages() {
   }
   await chatStore.clearMessages()
   reasoningExpanded.value = {}
-  execLogsExpanded.value = {}
   ElMessage.success('已清空当前会话记录')
 }
 
@@ -905,6 +1101,9 @@ async function handleExportCurrent() {
     
     .el-icon {
       transition: transform 0.3s;
+      &.is-rotated {
+        transform: rotate(90deg);
+      }
     }
     
     span {
@@ -1012,6 +1211,57 @@ async function handleExportCurrent() {
   }
 }
 
+.suggestion-card {
+  background: #f0f9ff;
+  border: 1px solid #d0e8ff;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+
+  .suggestion-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #409eff;
+    margin-bottom: 8px;
+  }
+
+  .suggestion-item {
+    padding: 8px 0;
+    border-top: 1px solid #e8f4ff;
+
+    .suggestion-item-name {
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .suggestion-item-meta {
+      display: flex;
+      gap: 12px;
+      margin: 4px 0;
+      font-size: 12px;
+      color: #909399;
+
+      .meta-row { color: #67c23a; }
+      .meta-col { color: #909399; }
+    }
+
+    .suggestion-item-desc {
+      font-size: 12px;
+      color: #666;
+      margin: 4px 0;
+    }
+
+    .suggestion-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+  }
+}
+
 .typing-indicator {
   display: flex;
   gap: 4px;
@@ -1030,9 +1280,6 @@ async function handleExportCurrent() {
 }
 
 .executing-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   padding: 8px 12px;
   margin: 4px 0;
   background: #f0f9ff;
@@ -1040,47 +1287,20 @@ async function handleExportCurrent() {
   color: #409eff;
   font-size: 13px;
 
+  .executing-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+  }
+
   .is-loading {
     animation: rotating 1.5s linear infinite;
   }
-}
 
-/* 执行日志（折叠） */
-.exec-logs-section {
-  margin: 8px 0;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  overflow: hidden;
-
-  .exec-logs-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    background: #f5f7fa;
-    cursor: pointer;
-    user-select: none;
-    font-size: 13px;
-    color: #909399;
-
-    &:hover { background: #ecf0f5; }
-
-    .el-icon { transition: transform 0.3s; }
-  }
-
-  .exec-logs-content {
-    padding: 8px 12px;
-    background: #fafafa;
-    border-top: 1px solid #e4e7ed;
-    max-height: 200px;
-    overflow-y: auto;
-
-    .exec-log-line {
-      font-size: 12px;
-      line-height: 1.8;
-      color: #909399;
-      font-family: monospace;
-    }
+  .executing-dot {
+    color: #67c23a;
+    font-size: 12px;
   }
 }
 
@@ -1133,6 +1353,13 @@ async function handleExportCurrent() {
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 20px 0;
+}
+
+.selected-data-bar {
+  padding: 8px 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .input-area {

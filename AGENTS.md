@@ -21,15 +21,15 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 |------|------|
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
 | `agent_config.py` | Agent 配置管理（加载 soul.md 人格、构建各 Agent system prompt 静态段） |
-| `chat_router.py` | 对话路由器——按关键词/技能 skill_type 判断用户消息走 DataAnalyst（只读）或 DataProcessor（修改，默认兜底） |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）** |
+| `chat_router.py` | 对话路由器——一次 LLM 调用判断消息类型(analysis/processing/chat) + 是否继续用当前已选数据(keep/change)；返回 `(msg_type, keep_data, events)` |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；删平台信号词匹配，靠 LLM 自主判断 + 3 次执行错误兜底 + StuckDetector 30 轮兜底** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
 | `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
 | `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex），31 条 STD/DQ/SEC 规则实现 + `format_report` 表格化 |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
 | `tool_guidance.py` | **工具诚实能力表——主对话/调试模式拆分（`get_tool_guidance(debug=)`），主对话不注入调试工具表** |
-| `llm.py` | LLM 管理器（`_default`/`_flash` 模型属性 + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选） |
+| `llm.py` | **LLM 管理器（去全局化：无全局 provider/api_key/model 属性，强制基于用户配置 `_require_user_cfg`）；`_default`/`_flash` 模型属性 + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选** |
 | `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 异常类名提取）** |
 | `skill_creator.py` | AI 生成完整 Skill 包（SKILL.md + scripts，从自然语言描述生成） |
 | `skill_parser.py` | SKILL.md 解析器（YAML front matter + Markdown 内容，含 skill_type 字段） |
@@ -49,19 +49,22 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `permission_service.py` | RBAC 权限管理服务（用户/角色/权限，view/use/manage 三级） |
 | `kb_service.py` | 文档知识库服务（解析+切片+嵌入+ChromaDB 存取+语义检索） |
 | `video_utils.py` | **视频处理工具：`probe_video`（元数据提取，ffprobe 优先回退 opencv）+ `extract_keyframes`（关键帧抽取，ffmpeg 场景检测优先回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85** |
+| `asset_io.py` | **资产导出/导入服务——7 类资产（skills/operators/pipelines/llm_config/custom_extensions/datasources/schedules）一键 ZIP 迁移；API Key/密码不导出；按 name 去重 + 按类型独立覆盖；skill_calls 用 skill_name 跨机器引用，调度 task_target_id→task_target_name** |
+| `match_service.py` | **向量索引服务（ChromaDB）——技能/流程/算子/数据表 embedding 存取 + 语义检索；LLM 自适应匹配（粗筛→精排两阶段，超阈值才粗筛）；`rebuild_index` 全量重建（启动时可触发）** |
 | `soul.md` | 助手人格定义（原 personal.md，rename 对齐「灵魂」语义）；安全红线已移至 DATA_PROCESSOR_INSTRUCTIONS |
 | `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
 
 > 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-16 个端点文件、共 182 条路由，主要：
+17 个端点文件、共 187 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理
 - `agents.py` — 多智能体事件/血缘查询
-- `skill.py` — 技能 CRUD + AI 生成/调试（27 路由，最多）
+- `skill.py` — 技能 CRUD + AI 生成/调试（29 路由，最多）
 - `operator.py` — 算子 CRUD + 执行
 - `datasource.py` — 数据源 + 12 个 `/internal/*` 无认证沙箱端点（SQL/文件 I/O/LLM 对话/视觉/分块读取）
 - `knowledge.py` — 文档知识库 RAG
+- `assets.py` — 资产导出/导入（7 类资产一键 ZIP 迁移；counts/export/import preview/import）
 - `custom_extension.py` — 自定义数据源连接器 + LLM Provider 适配器（AI 生成代码，沙箱加载）
 
 ### 前端（`frontend/src/`）
@@ -740,11 +743,13 @@ cd backend && black app/ && isort app/
 
 **核心洞察**：第十四轮引入"错误分级退出"（`_classify_execution_error` L4/L5/L6 → 环境问题/平台限制/数据问题），第十七轮引入 `_llm_classify_error`（LLM 重分类 4 类）。这两套分级机制在第二十一轮"模型选择简化"时已删 skill_runner 侧函数定义，但 data_processor_agent 侧的消费者代码（行1868-1873 死代码分支 + 行1939-1963 末尾 LLM 分类兜底）+ DEBUG_INSTRUCTIONS 的"错误判断"指令段 + AGENTS.md 多处记录均未同步删除。死代码分支 `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` 永不命中（`_extract_exception_type` 只提取英文异常类名如 `RuntimeError`，不含中文词），末尾 LLM 分类兜底分类后都走 give_up 无分支差异（死逻辑）。
 
-**当前错误处理机制（分级删除后）**：
-1. **平台信号词匹配**（`_PLATFORM_FAILURE_SIGNALS` + `_has_platform_failure_in_warnings`）：warnings/error 文本含信号词 → 立即 `platform_issue` 退出（不消耗修复额度）
-2. **执行错误计数**（`_exec_failures_before_success` ≥ `_MAX_EXEC_FAILURES`=3）：首次成功前连续 3 次执行失败 → `give_up` 退出
-3. **修改次数上限**（`_fix_attempts` ≥ `max_fix_attempts`=7）：总修改次数达 7 次 → `give_up` 退出
-4. **LLM 自主判断**：DEBUG_INSTRUCTIONS 引导"能修就修，修不了就说明原因停止"，不强制分类标签
+**当前错误处理机制（分级删除后，第二十八轮进一步删除平台信号词）**：
+1. **执行错误计数**（`_exec_failures_before_success` ≥ `_MAX_EXEC_FAILURES`=3）：首次成功前连续 3 次执行失败 → `give_up` 退出
+2. **修改次数上限**（`_fix_attempts` ≥ `max_fix_attempts`=7）：总修改次数达 7 次 → `give_up` 退出
+3. **LLM 自主判断**：DEBUG_INSTRUCTIONS 引导"能修就修，修不了就说明原因停止"，不强制分类标签
+4. **StuckDetector 兜底**：30 轮总轮次上限 → 强制退出
+
+> 注：第二十七轮记录的"平台信号词匹配"（`_PLATFORM_FAILURE_SIGNALS`）在第二十八轮被彻底删除——信号词与 skill_runner 实际 print 措辞不匹配（中文信号词 vs 英文 `failed`），LLM 自主判断更可靠。
 
 | 改进 | 文件 | 说明 |
 |------|------|------|
@@ -753,9 +758,67 @@ cd backend && black app/ && isort app/
 | **DEBUG_INSTRUCTIONS 错误判断段删除** | data_processor_agent.py | 删"错误判断"段（教 LLM 按"非脚本错误：xxx"格式输出，但无代码消费此标签）；替换为极简"看 traceback 自主判断：能修就修，修不了就说明原因停止" |
 | **AGENTS.md 记录校正** | AGENTS.md | 第十四轮标题/表格/前轮关系删"错误分级退出"；第十七轮标题/表格删"错误分类 LLM 推断"；skill_runner 职责描述改"错误分类 LLM 推断"→"异常类名提取"；行635 `_stream_execute` 描述改"错误分类"→"异常类名提取" |
 
-**验证**：`app.main` 完整加载 182 路由；`DEBUG_INSTRUCTIONS`/`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings` 导入正常；`_llm_classify_error`/`_classify_execution_error` 函数定义已不存在（grep 全空）。
+**验证**：`app.main` 完整加载 182 路由；`_llm_classify_error`/`_classify_execution_error` 函数定义已不存在（grep 全空）。
 
 **与前轮关系**：第十四轮"错误分级退出" + 第十七轮"错误分类 LLM 推断"在本轮彻底删除（代码 + 文档）。当前错误退出靠平台信号词匹配 + 执行错误计数 + 修改次数上限三层兜底，LLM 自主判断修复可行性（不靠分类标签）。`_PLATFORM_FAILURE_SIGNALS` 信号词与 skill_runner 实际 print 措辞不匹配的问题（中文信号词 vs 英文 `failed`）已知，后续可补信号词对齐。
+
+### 第二十八轮（资产管理导入导出 + LLM 配置去全局化 + 跨平台安装 + 对齐 OpenCode 调试 + 资产去全局化）
+
+**核心洞察**：第二十七轮清理了错误分级死代码，但此后积累了多项重大特性却未更新文档。本轮汇总第二十七轮之后的所有改动——最显著的是新增**资产导入导出**（7 类资产一键 ZIP 迁移，解决跨机器迁移痛点）、**LLM 配置去全局化**（删全局 provider/api_key/model，强制用户配置，配合 `.env` 清理 LLM 硬编码）、**对齐 OpenCode 调试模式**（删平台信号词匹配 + 删 Docker/nginx 回归开发模式）。
+
+**资产管理导入导出（asset_io.py + assets.py）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **资产导出/导入服务** | asset_io.py（新增） | 7 类资产（skills/operators/pipelines/llm_config/custom_extensions/datasources/schedules）ZIP 打包迁移；API Key/密码不导出（导入后手动填）；按 name 去重 + 按类型独立覆盖（overwrite_types）；skill_calls 用 skill_name 跨机器引用，导入时反查 skill_id；调度 task_target_id→task_target_name 跨机器稳定；datasources 导入含连接配置含密码（虚拟数据源不导出） |
+| **资产端点** | assets.py（新增） | `GET /assets/counts`（各资产数量统计，按 created_by 筛选）+ `POST /assets/export`（导出 ZIP，时间戳命名当地时区）+ `POST /assets/import/preview`（manifest 预览）+ `POST /assets/import`（导入，types/overwrite_types 逗号分隔） |
+| **is_virtual 列** | models/datasource.py + main.py | `data_sources` 加 `is_virtual` 列（DB 列替代 property，SQL 层直接过滤）；虚拟数据源（聊天上传）受保护：不可修改/删除/测试/同步/导出；启动自动迁移从 tech_metadata 回填 |
+| **统一 author→created_by** | skill.py + operator.py + 各模型 | skill/operator 的 `author` 字段统一为 `created_by`；10 个模型均含 `created_by`（FK users.id） |
+| **seed 资产加载删除** | main.py | 删除从 `data/seed/operators.json`/`pipelines.json` 加载逻辑；仅保留技能磁盘扫描同步 + 内置流程/调度 seed（按 is_builtin 查重，用户删除后不复活） |
+
+**LLM 配置去全局化（bab52b9）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删全局属性** | llm.py | 删 `llm_manager` 的 `provider`/`api_key`/`api_base`/`model`/`embedding_model`/`fallback_models` 全局属性；新增 `_require_user_cfg()` 强制基于用户配置（contextvar），未配置抛 RuntimeError |
+| **vision_model 字段** | models/custom_extension.py + llm.py + config.py | LLMProvider + UserLLMConfig 加 `vision_model` 列；Provider 注册表加 `default_vision_model`/`default_embedding_model`；`_eff_vision_model` 优先用户配置→Provider 默认；前端 ModelConfigView 加视觉/向量模型配置 UI |
+| **.env 清理 LLM 硬编码** | .env.example | 删除 `LLM_PROVIDER`/`OPENAI_API_KEY`/`OPENAI_MODEL`/`OPENAI_API_BASE` 等硬编码；LLM 配置全在前端「系统设置-大模型管理」页面管理（存 DB） |
+| **create_new 写入策略** | connectors.py | PG/MySQL/SQLite/CSV/Excel 5 种连接器支持表已存在时自动找新表名（_1/_2 后缀） |
+| **缺源检测** | chat.py | `_match_datasource_names` 抽出；数据操作关键词但未匹配到数据源时提示用户指定 |
+
+**对齐 OpenCode 调试模式（2bd1a58）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删平台信号词匹配** | data_processor_agent.py | 删 `_PLATFORM_FAILURE_SIGNALS` + `_has_platform_failure_in_warnings` + `is_platform_issue`；靠 LLM 看 error+stdout 自主判断（对齐 OpenCode 让 LLM 看 traceback） |
+| **删超时引导** | data_processor_agent.py | 删错误类型判断→LLM，系统不给约束 |
+| **_has_fix 只算 run_script** | data_processor_agent.py | `edit_script` 不算修改尝试（对齐用户设计：3 次执行错误 + 7 次检查循环） |
+| **Docker/nginx 删除** | docker-compose.yml + Dockerfile×2 + nginx.conf | 回归开发模式（第二十五轮添加的 Docker 部署被删除） |
+| **StuckDetector 增强** | agent_utils.py | 新增"只调查不修改"检测（连续 5 轮只 read/grep 不 edit/run → 提示）+ 总轮次上限（30 轮 → 强制退出）；INVESTIGATION_TOOLS/FIX_TOOLS 工具分类 |
+
+**跨平台后端依赖安装（208294d）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **install-backend.js** | scripts/install-backend.js（新增） | 检测 Python 3.11+ 与 sqlite3 模块后再装后端依赖；依次尝试 py -3 / python3 / python；失败回退核心依赖（requirements.txt）；解决系统 pip 绑定旧 Python / Windows 不在 PATH / 缺 sqlite3 报错不友好 |
+| **pyproject.toml** | pyproject.toml | `requires-python` 3.9→3.11，补 tzdata/pillow/opencv-python-headless |
+| **SQLite 路径锚定** | config.py | SQLite 相对路径锚定到 backend/ 目录，避免启动 cwd 不同读到错误的数据库文件 |
+
+**其他改进**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **DataAnalyst 调试模式** | data_analyst_agent.py + skill.py + multi_agent.py | 新增 `run_debug()`——3 次执行错误上限，无 Inspector handoff，无修改次数限制；skill_type 路由（analysis→data_analyst / processing→data_processor）；tags 变更同步 SKILL.md front matter |
+| **classify_execution_result 共享** | data_processor_agent.py | 抽出 `classify_execution_result`/`_build_platform_reason`/`_record_negative` 共享 helper，供 DataProcessor + DataAnalyst 复用 |
+| **Inspector severity 校正** | inspector_tools.py | 所有检查规则 severity 从硬编码改为规则库读取（`_dq_severity`/`_sec_severity`）；format_report 增加按规则 ID 的明细表格；fatal→critical 统一 |
+| **resolve_column 删 LLM 匹配** | inspector_tools.py | 删除 LLM 列名模糊匹配，改为机械匹配 |
+| **skill_type 全链路** | skill_parser.py + skill_creator.py + SKILL_SPEC.md | 解析 SKILL.md front matter `skill_type` 字段；生成技能强制写 skill_type + 判定规则文档 |
+| **flash_model 列迁移修复** | main.py | 旧列 `fast_model`→`flash_model` 数据迁移 + 新数据库无条件添加 `flash_model`/`vision_model`/`embedding_model` 列 |
+| **单 Agent 服务删除** | agent.py | 删除 `agent.py`（284 行，非流式 /chat），无残留引用 |
+
+**验证**：`app.main` 完整加载 187 路由（+5 资产端点）；`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空（已删除）；`docker-compose.yml`/`Dockerfile`/`nginx.conf` 均不存在；`asset_io.py`/`match_service.py`/`assets.py` 存在；`.env.example` 无 LLM 硬编码。
+
+**与前轮关系**：第二十五轮添加的 Docker 部署在本轮被删除（回归开发模式）。第二十七轮记录的"平台信号词匹配"在本轮被彻底删除。第十四轮的 `create_new_file` Excel 平台能力标记为 False 在本轮由 `create_new` 写入策略实现（5 种连接器支持自动找新表名）。第十五轮的 seed 算子/流程加载逻辑在本轮删除（改用资产导入导出替代 seed 文件）。
 
 ## 现状校正（文档 vs 代码实际）
 
@@ -767,5 +830,56 @@ cd backend && black app/ && isort app/
 | 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()`（line 469）实际仍用非流式 `chat_with_tools()`（line 533）；仅 `run_debug()`（line 1551）用流式 `chat_stream_with_tools_and_thinking`（line 1690） |
 | 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个：`DEBUG_TOOLS`（line 149）含 4 核心（edit_script/run_script/read_script/grep_script）+ 第 151 行追加 `list_user_datasources`（从 SHARED_TOOL_SCHEMAS 提取） |
 | 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数：`run_skill_script`（631）/`run_skill_script_async`（659）/`run_skill_script_streaming`（898）/`run_skill_script_streaming_async`（995）/`run_skill_script_by_content`（1043）/`run_skill_script_by_content_async`（1066），含 async 包装器 |
-| 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | `data/seed/operators.json` 不存在（仅 `pipelines.json` 存在）；`main.py` line 306-312 仍含 seed operators 逻辑但因文件缺失触发时静默跳过 |
-| 路由数 | 第二十一轮记录"183 条路由" | 实际 182 条路由（`len(app.routes)` 含 methods） |
+| 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | 第二十八轮已删除 seed 算子/流程加载逻辑（改用资产导入导出替代）；`data/seed/operators.json` 不存在；`main.py` `_seed_skills_and_pipelines` 仅保留技能磁盘扫描 + 内置流程/调度 seed（按 is_builtin 查重） |
+| 路由数 | 第二十一轮记录"183 条路由" | 实际 187 条路由（第二十八轮新增 assets.py 的 4 条端点：counts/export/import preview/import） |
+| 第二十五轮 | "Docker 一键部署：前端多阶段构建 nginx 托管 + SSE 长连接支持" | 第二十八轮（2bd1a58）已删除 Docker/nginx 全部配置（`docker-compose.yml`/`Dockerfile`×2/`nginx/nginx.conf` 均不存在），回归开发模式 |
+| 第二十七轮 | "当前错误处理机制含平台信号词匹配（_PLATFORM_FAILURE_SIGNALS）" | 第二十八轮（2bd1a58）已彻底删除平台信号词匹配（`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空），靠 LLM 自主判断 + 执行错误计数 + 修改次数上限三层兜底 |
+
+### 第二十九轮（Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化 + 输入历史隔离）
+
+**核心洞察**：用户测试技能匹配跳转时发现指令全是"请指定"占位符——根因是 `ChatSession.context` 的 SQLAlchemy JSON 字段原地修改不触发 dirty 标记，commit 不写入 DB，数据源/表名永远丢失。本轮修复数据上下文全链路持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化。
+
+**数据上下文持久化（根因修复）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **dict() 触发 dirty** | chat.py:798 + 972 | `_session_obj.context = dict(_session_ctx)` 创建新 dict 对象触发 SQLAlchemy dirty 标记，修复 JSON 字段原地修改不触发 UPDATE 的 bug（`source_datasource_name`/`source_table_name`/`target_*` 永远不写入 DB） |
+| **ChatSessionResponse 加 context** | schemas/chat.py | `ChatSessionResponse` 加 `context` 字段，前端能拿到会话上下文 |
+| **前端 ChatSession 接口加 context** | api/chat.ts | `ChatSession` 接口加 `context?: Record<string, any>` |
+| **switchSession 恢复 selectedData** | stores/chat.ts | 切会话时从 `session.context` 恢复 `selectedData`（source_datasource_id/name/table_name），刷新/重开不丢 |
+| **infer-instruction 读 context** | skill.py:807-828 | `ChatSession.context` 读取数据上下文（源/目标数据源名+表名），修复指令全是"请指定"占位符 |
+| **infer-instruction UUID 修复** | skill.py:810 | `UUID(request.chat_session_id)` 转换 str→UUID，修复 `AttributeError: 'str' object has no attribute 'hex'`（ChatSession.id 是 UUID(as_uuid=True) 列） |
+| **SkillInferInstructionRequest 加 source 字段** | schemas/skill.py | 加 `source_datasource_name`/`source_table_name`（前端跳转 URL 传入，优先于 context） |
+| **前端传 source 字段** | SkillView.vue:2860 | 调 infer-instruction 时传 `dsName`/`tblName`（回退 `m.datasource_name`） |
+
+**会话隔离（删会话清消息 + 输入历史隔离）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **delete_session 级联删消息** | chat.py:490-493 | 显式 `delete(ChatMessage).where(session_id=...)` + `_HISTORY_SUMMARIES.pop()` 清缓存（SQLite 默认不启用外键级联） |
+| **输入历史按会话隔离** | ChatView.vue + chat.ts | `localStorage` key 从 `dc_chat_history` → `dc_chat_history_<session_id>`；`switchSession` 时 `loadInputHistory(newId)` 加载对应会话的输入历史 |
+
+**路由判断合并（classify + keep/change 一次 LLM 调用）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **classify_message 合并 keep/change** | chat_router.py | 一次 LLM 调用判断类型(analysis/processing/chat) + 是否继续用当前已选数据(keep/change)；返回 `(msg_type, keep_data, events)`；prompt 只给当前已选数据源+表名+判断依据，不加示例不硬编码 |
+| **keep_data 控制 tables 跳过** | chat.py:818-828 | `_keep_data=True` → 跳过数据表匹配（继续用当前数据）；`_keep_data=False` → 清除 context 旧数据走数据表匹配 |
+| **useMatched 回退 m.datasource_name** | ChatView.vue:607-612 | `useMatched` 跳转时 `chatStore.selectedData` 已被清空（sendMessage 后 null），回退用匹配建议项 `m.datasource_name`/`m.table_name`；后端 infer-instruction 从 context 读 |
+
+**技能/流程匹配优化（msg_type 透传）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **粗筛+精排带 msg_type** | match_service.py | `_llm_coarse_match`/`_llm_fine_match` 加 `msg_type` 参数；analysis 类加"用户意图：只分析不修改"；processing 类加"用户意图：数据处理"；`llm_match_pipelines`/`llm_match_skills`/`_llm_match_items` 全链路透传 |
+| **全部技能加 skill_type** | data/skills/*/SKILL.md | 9 个技能全部加 `skill_type` 字段（8 个 processing + 1 个 analysis）；description 按 skill_creator 规范重写（覆盖常见问法+口语化表达，如"导出/迁移/搬数据"、"清洗/清理/去重"、"提取/识别/标注"） |
+
+**目标表匹配按钮文案**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **按钮文案调整** | ChatView.vue:134+139 | 目标表匹配：每个表项 `继续处理` → `选择此数据`（调 `selectData` 选目标表）；底部 `直接继续处理` → `继续处理`（调 `continueProcessing` 跳过目标匹配） |
+
+**验证**：`ChatSession.context` 正确持久化（源+目标数据源名+表名全写入 DB）；infer-instruction 从 context 读取生成带真实参数的指令；classify 一次 LLM 调用判断类型+keep/change；技能匹配带 msg_type 意图提示；9 个技能全有 skill_type + 口语化 description。
+
+**与前轮关系**：第二十六轮 DataAnalystAgent 集成的 skill_type 路由在本轮扩展到全部技能（之前只有 data-statistics 有 skill_type）；第二十八轮 LLM 配置去全局化的 `_flash`/`_default` 属性在本轮被 classify_message 复用（`model=llm_manager._flash` 快速判断）；第二十三轮的 `_compress_history` 用 `_session_ctx` 但未发现 dirty 问题在本轮修复。

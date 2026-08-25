@@ -636,11 +636,7 @@ async def list_available_models(
         ]
     }
 
-    return {
-        "current_provider": settings.LLM_PROVIDER,
-        "current_model": settings.OPENAI_MODEL,
-        "models": models,
-    }
+    return {"models": models}
 
 
 @router.get("/version")

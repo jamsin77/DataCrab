@@ -224,7 +224,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive, computed } from 'vue'
+import { ref, onMounted, reactive, computed, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, FolderOpened, Refresh, Setting, Delete } from '@element-plus/icons-vue'
@@ -278,9 +279,24 @@ const currentConfigTemplate = computed(() => {
   return c?.config_template || []
 })
 
+const route = useRoute()
+
 onMounted(async () => {
   await fetchConnectors()
   await fetchDataSources()
+
+  const dsId = route.query.ds as string
+  const tableName = route.query.table as string
+  if (dsId) {
+    const source = dataSources.value.find((s: any) => s.id === dsId)
+    if (source) {
+      await browseDataSource(source)
+      if (tableName) {
+        await nextTick()
+        await selectBrowseTable(tableName)
+      }
+    }
+  }
 })
 
 async function fetchConnectors() {

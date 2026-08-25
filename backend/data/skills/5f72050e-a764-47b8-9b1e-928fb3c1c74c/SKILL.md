@@ -1,5 +1,5 @@
 ---
-description: 对数据表进行常见分析，包括排序、分组聚合、TopK、频次统计、描述统计和综合摘要，并支持生成报表和统计图表。
+description: 对数据表进行统计分析、排序、分组聚合、TopK、频次统计、描述统计和综合摘要，支持生成报表和统计图表，适合数据概览、统计分析、分布查看、数据汇总等场景
 name: data-statistics
 skill_type: analysis
 tags:

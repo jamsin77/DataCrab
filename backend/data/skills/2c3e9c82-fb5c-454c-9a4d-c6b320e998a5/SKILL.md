@@ -1,9 +1,10 @@
 ---
 name: cultural-relics-expert
 display_name: 文物检索专家
-description: 从权威网站检索各级保护文物信息，生成知识库，支持多条件检索
+description: 从权威网站检索/查询/搜索各级保护文物信息，生成文物知识库，支持多条件检索、关键字搜索、名录查询，适合文物数据采集、文化遗产信息收集等场景
 version: 1.0.0
 category: data_collection
+skill_type: processing
 tags:
   - 文物
   - 检索

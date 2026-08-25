@@ -100,6 +100,13 @@ class SkillModifyRequest(BaseModel):
     instruction: str = Field(..., description="自然语言修改指令")
 
 
+class SkillInferInstructionRequest(BaseModel):
+    chat_session_id: str = Field(..., description="对话会话ID")
+    user_message: str = Field(..., description="用户原始消息")
+    source_datasource_name: Optional[str] = Field(None, description="源数据源名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+    source_table_name: Optional[str] = Field(None, description="源表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+
+
 class SkillDebugChatRequest(BaseModel):
     message: str = Field(..., description="用户调试消息")
     history: list = Field(default_factory=list, description="对话历史 [{role, content}]")

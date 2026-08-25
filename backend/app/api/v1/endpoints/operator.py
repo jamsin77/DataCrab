@@ -305,6 +305,8 @@ async def update_operator_script(
 
     await db.flush()
     await db.refresh(operator)
+    from app.services.match_service import index_operator
+    await index_operator(operator)
     return operator
 
 
@@ -332,6 +334,8 @@ async def create_operator(
     db.add(operator)
     await db.flush()
     await db.refresh(operator)
+    from app.services.match_service import index_operator
+    await index_operator(operator)
     return operator
 
 
@@ -409,6 +413,8 @@ async def update_operator(
 
     await db.flush()
     await db.refresh(operator)
+    from app.services.match_service import index_operator
+    await index_operator(operator)
     return operator
 
 
@@ -426,6 +432,8 @@ async def delete_operator(
     await assert_resource_access(db, current_user, "operator", operator, "manage")
     await db.delete(operator)
     await db.flush()
+    from app.services.match_service import delete_operator_index
+    delete_operator_index(str(operator_id))
 
 
 @router.post("/{operator_id}/clone", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
@@ -463,6 +471,8 @@ async def clone_operator(
     db.add(clone)
     await db.flush()
     await db.refresh(clone)
+    from app.services.match_service import index_operator
+    await index_operator(clone)
     return clone
 
 
@@ -561,95 +571,17 @@ if __name__ == "__main__":
 """ + SAFETY_RULES_DOC
 
 
-OPERATOR_SIMILARITY_THRESHOLD = 0.6
-
-
-async def _find_similar_operators_llm(prompt: str, operators: list, top_k: int = 5) -> list:
-    """用 LLM 语义匹配相似算子，返回 [(operator, similarity, reason), ...]"""
-    if not operators:
-        return []
-
-    op_list = "\n".join(
-        f"{i + 1}. {o.name}: {o.description or '(无描述)'}"
-        for i, o in enumerate(operators)
-    )
-
-    system = "你是算子匹配助手。判断哪些现有算子与用户需求相似、可复用。只返回 JSON。"
-    user_msg = f"""用户需求：{prompt}
-
-现有算子：
-{op_list}
-
-返回 JSON 数组，只包含相似度>=0.6的算子：
-[{{"index": 1, "similarity": 0.8, "reason": "功能描述"}}]
-
-index 是上面列表的序号(从1开始)。无相似算子返回 []。"""
-
-    try:
-        resp = await llm_manager.chat_with_messages(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.1,
-        )
-        resp_text = resp if isinstance(resp, str) else resp.get("content", "")
-        import re as _re
-        match = _re.search(r'\[.*\]', resp_text, _re.DOTALL)
-        if not match:
-            return []
-        matched = json.loads(match.group())
-        result = []
-        for item in matched:
-            idx = item.get("index", 0) - 1
-            if 0 <= idx < len(operators):
-                score = min(max(float(item.get("similarity", 0)), 0.0), 1.0)
-                if score >= OPERATOR_SIMILARITY_THRESHOLD:
-                    result.append((operators[idx], score, item.get("reason", "")))
-        return result[:top_k]
-    except Exception as e:
-        logger.warning(f"LLM 算子匹配失败，回退关键词匹配: {e}")
-        return _keyword_match_operators(prompt, operators, top_k)
-
-
-def _keyword_match_operators(prompt: str, operators: list, top_k: int = 5) -> list:
-    """关键词匹配兜底：name/description/tags 加权"""
-    prompt_lower = prompt.lower()
-    scored = []
-    for o in operators:
-        score = 0.0
-        if o.name and o.name.lower() in prompt_lower:
-            score += 0.5
-        desc = (o.description or "").lower()
-        for word in prompt_lower.split():
-            if len(word) > 1 and word in desc:
-                score += 0.15
-        tags = o.tags or []
-        for tag in tags:
-            if tag.lower() in prompt_lower:
-                score += 0.2
-        if score >= OPERATOR_SIMILARITY_THRESHOLD:
-            scored.append((o, min(score, 1.0), "关键词匹配"))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
-
-
 @router.post("/check-similar", response_model=SimilarOperatorCheckResponse)
 async def check_similar_operators(
     request: SimilarOperatorCheckRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """检测是否有相似算子可复用"""
+    """检测是否有相似算子可复用（embedding 向量检索）"""
     from app.services.permission_service import get_accessible_resource_ids
+    from app.services.match_service import search_operators, MATCH_THRESHOLD
 
-    result_all = await db.execute(select(Operator))
-    all_operators = result_all.scalars().all()
-    if not all_operators:
-        return SimilarOperatorCheckResponse(has_similar=False, operators=[])
-
-    await init_user_llm_context(current_user.id)
-    matched = await _find_similar_operators_llm(request.prompt, all_operators, top_k=5)
+    matched = await search_operators(request.prompt, top_k=5)
     if not matched:
         return SimilarOperatorCheckResponse(has_similar=False, operators=[])
 
@@ -657,7 +589,13 @@ async def check_similar_operators(
 
     owner_cache: dict = {}
     items = []
-    for op, score, reason in matched:
+    for oid, score in matched:
+        if score < MATCH_THRESHOLD:
+            continue
+        result = await db.execute(select(Operator).where(Operator.id == oid))
+        op = result.scalar_one_or_none()
+        if not op:
+            continue
         can_use = (
             op.created_by == current_user.id
             or op.visibility == "public"
@@ -805,7 +743,9 @@ async def generate_operator_stream(
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': 'AI 正在推理和生成算子代码...'}, ensure_ascii=False)}\n\n"
 
             async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
-                if chunk["type"] == "thinking":
+                if chunk["type"] == "model":
+                    yield f"data: {json_mod.dumps({'type': 'model', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
+                elif chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
                     full_content += chunk["content"]
@@ -932,7 +872,9 @@ async def modify_operator_stream(
             yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': 'AI 正在推理和修改算子代码...'}, ensure_ascii=False)}\n\n"
 
             async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
-                if chunk["type"] == "thinking":
+                if chunk["type"] == "model":
+                    yield f"data: {json_mod.dumps({'type': 'model', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
+                elif chunk["type"] == "thinking":
                     yield f"data: {json_mod.dumps({'type': 'thinking', 'content': chunk['content']}, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "content":
                     full_content += chunk["content"]

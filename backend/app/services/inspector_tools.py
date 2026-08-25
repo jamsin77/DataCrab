@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid as _uuid
+import warnings
 from typing import Dict, Any, List
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -644,7 +645,7 @@ class DataInspectorTools:
             # 兜底：若规则库解析失败，用内置 PII 模式
             if not sec_rules:
                 sec_rules = [
-                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]
@@ -658,7 +659,9 @@ class DataInspectorTools:
                         if not sec.get("regex"):
                             continue
                         try:
-                            match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", UserWarning)
+                                match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
                         except re.error:
                             continue
                         if match_count > 0:
@@ -998,7 +1001,7 @@ class DataInspectorTools:
                 sec_rules = []
             if not sec_rules:
                 sec_rules = [
-                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
+                    {"id": "SEC-PII-001", "name": "身份证号明文", "regex": r'[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]', "severity": "critical"},
                     {"id": "SEC-PII-002", "name": "手机号明文", "regex": r'1[3-9]\d{9}', "severity": "critical"},
                     {"id": "SEC-PII-003", "name": "电子邮箱明文", "regex": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "severity": "error"},
                 ]
@@ -1014,7 +1017,9 @@ class DataInspectorTools:
                         if not sec.get("regex"):
                             continue
                         try:
-                            match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", UserWarning)
+                                match_count = int(sample.str.contains(sec["regex"], regex=True, na=False).sum())
                         except re.error:
                             continue
                         if match_count > 0:

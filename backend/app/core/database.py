@@ -11,8 +11,9 @@ _is_sqlite = "sqlite" in settings.DATABASE_URL
 
 engine_kwargs = {"echo": False}
 if _is_sqlite:
-    # SQLite busy timeout：等待锁释放而非立即报错（30秒）
-    engine_kwargs["connect_args"] = {"timeout": 30}
+    # SQLite busy timeout：等待锁释放而非立即报错（60秒）
+    # 30秒在 Pipeline 并发执行 + task_runner 调度扫描时仍会超时，提升到60秒
+    engine_kwargs["connect_args"] = {"timeout": 60}
 else:
     engine_kwargs["pool_size"] = settings.DATABASE_POOL_SIZE
     engine_kwargs["max_overflow"] = settings.DATABASE_MAX_OVERFLOW

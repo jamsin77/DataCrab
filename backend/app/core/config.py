@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
 
-    # 数据库配置
-    # 默认相对路径相对于 backend/ 目录；生产环境可设置绝对路径或 PG 连接串
+    # 数据库配�?
+    # 默认相对路径相对�?backend/ 目录；生产环境可设置绝对路径�?PG 连接�?
     DATABASE_URL: str = "sqlite+aiosqlite:///./datacrab.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "datacrab-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
-    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7天
+    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7�?
 
     # MinIO配置
     MINIO_ENDPOINT: str = "localhost:9000"
@@ -35,23 +35,13 @@ class Settings(BaseSettings):
     # Elasticsearch配置
     ELASTICSEARCH_URL: str = "http://localhost:9200"
 
-    # LLM配置
-    LLM_PROVIDER: str = "glm"
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_API_BASE: Optional[str] = None
-    OPENAI_MODEL: str = "glm-5.2"
-    # 已废弃：业务代码不再使用
-    # 保留此字段仅为兼容已有 .env 中的 LLM_FAST_MODEL 变量（避免 pydantic extra_forbidden 报错）。
-    LLM_FAST_MODEL: str = ""
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-ada-002"
-    # 降级模型链：JSON 数组，如 [{"provider":"qwen","api_key":"...","model":"qwen-plus"}, {...}]
-    LLM_FALLBACK_MODELS: str = ""
+    # LLM 配置全部存于 DB（UserLLMConfig / LLMProvider 表），在配置页面管理
 
-    # 加密密钥（用于 API Key 等敏感信息加密存储）
+    # 加密密钥（用�?API Key 等敏感信息加密存储）
     ENCRYPT_KEY: str = ""
 
     # CORS配置
-    # 公网部署时在 .env 设置 CORS_ORIGINS=["*"] 或指定来源，如 ["http://1.2.3.4:5173","http://example.com"]
+    # 公网部署时在 .env 设置 CORS_ORIGINS=["*"] 或指定来源，�?["http://1.2.3.4:5173","http://example.com"]
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
 
     # 内部 API 地址（技能沙箱子进程调主进程用）
@@ -80,7 +70,7 @@ _backend_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspa
 if not _os.path.isabs(settings.SKILL_STORAGE_PATH):
     settings.SKILL_STORAGE_PATH = _os.path.join(_backend_dir, settings.SKILL_STORAGE_PATH)
 
-# SQLite 相对路径锚定到 backend/ 目录，避免因启动 cwd 不同而读到错误的数据库文件
+# SQLite 相对路径锚定�?backend/ 目录，避免因启动 cwd 不同而读到错误的数据库文�?
 if settings.DATABASE_URL.startswith("sqlite+aiosqlite:///./"):
     _sqlite_path = settings.DATABASE_URL[len("sqlite+aiosqlite:///./"):]
     if not _os.path.isabs(_sqlite_path):

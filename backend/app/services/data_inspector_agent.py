@@ -291,8 +291,6 @@ class DataInspectorAgent(BaseAgent):
         had_any_tool_calls = False
         pressure_warned = False
 
-        yield {"type": "model", "content": llm_manager._flash}
-
         for i in range(max_iterations):
             # 上下文压缩（对齐 OpenCode compaction）
             if should_compact(local_messages):

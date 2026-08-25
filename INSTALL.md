@@ -54,12 +54,14 @@ npm install
 # 数据库（默认 SQLite，无需额外配置）
 DATABASE_URL=sqlite+aiosqlite:///./datacrab.db
 
-# LLM 配置（也可启动后在前端「系统设置」页面配置）
-LLM_PROVIDER=glm
-OPENAI_API_KEY=你的API密钥
-OPENAI_MODEL=glm-5.2
-OPENAI_API_BASE=https://open.bigmodel.cn/api/paas/v4
+# CORS 跨域配置
+CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
+
+# 内部 API 地址（技能沙箱子进程调主进程用，默认无需修改）
+DATACRAB_API_BASE=http://localhost:8000
 ```
+
+> **LLM 配置**：无需在 `.env` 中配置。启动后在前端「系统设置 → 大模型管理」页面配置 Provider、API Key、模型（存 DB）。
 
 ## 4. 启动
 
@@ -87,17 +89,6 @@ npm run dev
 | `npm run dev:frontend` | 仅启动前端 |
 | `npm run build:frontend` | 构建前端生产包 |
 | `python -m pip install -e ./backend[all]` | 安装可选依赖（知识库 + OBS） |
-
-## Docker 部署
-
-```bash
-docker-compose up -d
-```
-
-- 前端：nginx 托管构建产物（端口 80）
-- 后端：Uvicorn + 数据卷持久化（`backend_data:/app/data`）
-- nginx：反向代理 + SSE 长连接支持（`proxy_buffering off` + `proxy_read_timeout 300s`）
-- `DATACRAB_API_BASE` 环境变量：skill_runner 子进程通过它访问后端 API（Docker 中设为 `http://backend:8000`）
 
 ## 版本号
 

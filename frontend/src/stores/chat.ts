@@ -10,7 +10,22 @@ export const useChatStore = defineStore('chat', () => {
   const streamingContent = ref('')
   const streamingReasoning = ref('')
   const currentModel = ref('')
+  const selectedData = ref<{ datasource_id: string; datasource_name: string; table_name: string } | null>(null)
   let abortController: AbortController | null = null
+
+  function _restoreMetadata(msgs: ChatMessage[]) {
+    for (const msg of msgs) {
+      if (!msg.meta) continue
+      if (msg.meta.model) msg.model = msg.meta.model
+      if (msg.meta.reasoning) msg.reasoning = msg.meta.reasoning
+      if (msg.meta.executingMsgs) msg.executingMsgs = msg.meta.executingMsgs
+      if (msg.meta.agentName) msg.agentName = msg.meta.agentName
+      if (msg.meta.suggestion) msg.suggestion = msg.meta.suggestion
+      if (msg.meta.suggestionConsumed) msg._suggestionConsumed = true
+      if (msg.meta.inspectionReport) msg.inspectionReport = msg.meta.inspectionReport
+      if (msg.meta.noMatch) msg.noMatch = true
+    }
+  }
 
   async function fetchSessions() {
     sessions.value = await chatApi.listSessions()
@@ -25,8 +40,24 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function switchSession(sessionId: string) {
+    if (isStreaming.value && currentSessionId.value !== sessionId) {
+      await stopGeneration()
+    }
     currentSessionId.value = sessionId
     messages.value = await chatApi.listMessages(sessionId)
+    _restoreMetadata(messages.value)
+    // 从会话 context 恢复已选数据源/表（刷新/重开不丢）
+    const _sess = sessions.value.find((s) => s.id === sessionId)
+    const _ctx = _sess?.context
+    if (_ctx && _ctx.source_datasource_id && _ctx.source_datasource_name) {
+      selectedData.value = {
+        datasource_id: _ctx.source_datasource_id,
+        datasource_name: _ctx.source_datasource_name,
+        table_name: _ctx.source_table_name || '',
+      }
+    } else {
+      selectedData.value = null
+    }
   }
 
   async function deleteSession(sessionId: string) {
@@ -48,7 +79,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]) {
+  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[], skipMatch?: boolean, skipSteps?: string[]) {
     if (!currentSessionId.value) {
       await createSession()
     }
@@ -72,16 +103,16 @@ export const useChatStore = defineStore('chat', () => {
       session_id: currentSessionId.value!,
       role: 'assistant',
       content: '',
-      reasoning: undefined,
-      model: undefined,
+      reasoning: '',
+      model: '',
       code_blocks: null,
       table_data: null,
       charts: null,
       created_at: new Date().toISOString(),
-      execLogs: [],
     }
     messages.value.push(assistantMessage)
     const aiIndex = messages.value.length - 1
+    const sessionId = currentSessionId.value!
 
     isStreaming.value = true
     streamingContent.value = ''
@@ -89,18 +120,65 @@ export const useChatStore = defineStore('chat', () => {
 
     abortController = new AbortController()
 
-    // 归档执行日志：把当前 executingMsg 推入 execLogs，再清空
-    const archiveExec = (msg: ChatMessage | undefined) => {
-      if (!msg) return
-      if (msg.executingMsg) {
-        if (!msg.execLogs) msg.execLogs = []
-        msg.execLogs.push(msg.executingMsg)
-        msg.executingMsg = ''
-      }
-    }
-
     // 提取文件名给后端
     const attFilenames = attachments?.map(a => a.filename)
+    // 携带用户选择的数据（从 data_suggestion 选择后发送消息时带上）
+    const _selDs = selectedData.value?.datasource_id
+    const _selTbl = selectedData.value?.table_name
+
+    // 保存临时字段 → 从 DB 刷新 → 恢复临时字段 → 持久化 meta（正常完成和 AbortError 共用）
+    async function _syncFromDB() {
+      if (currentSessionId.value !== sessionId) return
+      const msg = messages.value[aiIndex]
+      if (!msg) return
+      const _savedReport = msg.inspectionReport
+      const _savedReasoning = msg.reasoning
+      const _savedModel = msg.model
+      const _savedExecMsgs = msg.executingMsgs
+      const _savedAgentName = msg.agentName
+      const _savedSuggestion = msg.suggestion
+      const _savedSuggestionConsumed = msg._suggestionConsumed
+      const _savedNoMatch = msg.noMatch
+      const _savedUserAtts = messages.value[aiIndex - 1]?.attachments
+      try {
+        messages.value = await chatApi.listMessages(currentSessionId.value!)
+        _restoreMetadata(messages.value)
+        const _lastAssistant = [...messages.value].reverse().find(m => m.role === 'assistant')
+        if (_lastAssistant) {
+          if (_savedReport) _lastAssistant.inspectionReport = _savedReport
+          if (_savedReasoning) _lastAssistant.reasoning = _savedReasoning
+          if (_savedModel) _lastAssistant.model = _savedModel
+          if (_savedExecMsgs && _savedExecMsgs.length) _lastAssistant.executingMsgs = _savedExecMsgs
+          if (_savedAgentName) _lastAssistant.agentName = _savedAgentName
+          if (_savedSuggestion) _lastAssistant.suggestion = _savedSuggestion
+          if (_savedSuggestionConsumed) _lastAssistant._suggestionConsumed = true
+          if (_savedNoMatch) _lastAssistant.noMatch = true
+          const _meta: Record<string, any> = {}
+          if (_savedModel) _meta.model = _savedModel
+          if (_savedReasoning) _meta.reasoning = _savedReasoning
+          if (_savedExecMsgs?.length) _meta.executingMsgs = _savedExecMsgs
+          if (_savedAgentName) _meta.agentName = _savedAgentName
+        if (_savedSuggestion) _meta.suggestion = _savedSuggestion
+        if (_savedSuggestionConsumed) _meta.suggestionConsumed = true
+        if (_savedReport) _meta.inspectionReport = _savedReport
+          if (_savedNoMatch) _meta.noMatch = true
+          if (Object.keys(_meta).length > 0) {
+            chatApi.updateMessageMetadata(_lastAssistant.id, _meta).catch(() => {})
+          }
+        }
+        const _lastUser = [...messages.value].reverse().find(m => m.role === 'user')
+        if (_lastUser && _savedUserAtts) {
+          _lastUser.attachments = _savedUserAtts
+        }
+      } catch {
+        // DB 刷新失败（后端可能还没保存完），用前端已有内容
+        if (msg.content) {
+          msg.content += '\n\n*[已停止生成]*'
+        } else {
+          msg.content = '*[已停止生成]*'
+        }
+      }
+    }
 
     try {
       await chatApi.sendMessageStream(
@@ -108,16 +186,24 @@ export const useChatStore = defineStore('chat', () => {
         content,
         abortController.signal,
         (event: StreamEvent) => {
+          if (currentSessionId.value !== sessionId) return
           const msg = messages.value[aiIndex]
           if (!msg) return
 
           if (event.type === 'error') {
-            archiveExec(msg)
             msg.content = (msg.content || '') + `\n\n❌ ${event.content || '未知错误'}`
             return
           }
           if (event.type === 'done') {
-            archiveExec(msg)
+            return
+          }
+          if (event.type === 'data_suggestion' || event.type === 'skill_suggestion' || event.type === 'target_suggestion') {
+            const _data = event as any
+            msg.suggestion = { type: _data.type, matches: _data.matches || [] }
+            return
+          }
+          if (event.type === 'no_match') {
+            msg.noMatch = true
             return
           }
           if (event.type === 'model') {
@@ -138,69 +224,51 @@ export const useChatStore = defineStore('chat', () => {
           } else if (event.type === 'content' && event.content) {
             msg.content = (msg.content || '') + event.content
             streamingContent.value = msg.content
-            archiveExec(msg)
           } else if (event.type === 'progress' || event.type === 'executing') {
-            archiveExec(msg)
-            msg.executingMsg = event.message || event.content || ''
+            const _m = event.message || event.content || ''
+            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
           } else if (event.type === 'agent_switch') {
             const _name = (event as any).display_name || event.agent || ''
             const _reason = (event as any).reason_display || event.reason || ''
-            archiveExec(msg)
-            msg.executingMsg = _reason ? `${_name}：${_reason}` : _name
+            const _m = _reason ? `${_name}：${_reason}` : _name
+            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
             msg.agentName = _name
           } else if (event.type === 'tool_action') {
             const _actions = (event as any).actions || []
             const _lines = _actions.map((a: any) => `${a.icon || '🔧'} ${a.tool}${a.detail ? ': ' + a.detail : ''}`)
-            archiveExec(msg)
-            msg.executingMsg = _lines.join(' | ')
+            const _m = _lines.join(' | ')
+            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
           } else if (event.type === 'tool_summary') {
             const _summaries = (event as any).summaries || []
-            archiveExec(msg)
-            msg.executingMsg = _summaries.join(' | ')
+            const _m = _summaries.join(' | ')
+            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
           } else if (event.type === 'inspecting' || event.type === 'retry') {
-            archiveExec(msg)
-            msg.executingMsg = event.message || ''
+            const _m = event.message || ''
+            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
           } else if (event.type === 'round') {
-            archiveExec(msg)
-            msg.executingMsg = event.message || `第 ${event.round} 次修改`
+            const _m = event.message || `第 ${event.round} 次修改`
+            if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m)
           } else if (event.type === 'inspection_report') {
             msg.inspectionReport = event.report || ''
           }
         },
         attFilenames,
+        skipMatch,
+        skipSteps,
+        _selDs,
+        _selTbl,
       )
-      // 流式结束后从 DB 刷新（同步历史，避免 temp ID 残留）
-      // 保留前端临时字段（inspectionReport/reasoning/model/execLogs/attachments），DB 里没有这些字段
-      const _savedReport = messages.value[aiIndex]?.inspectionReport
-      const _savedReasoning = messages.value[aiIndex]?.reasoning
-      const _savedModel = messages.value[aiIndex]?.model
-      const _savedExecLogs = messages.value[aiIndex]?.execLogs
-      const _savedUserIdx = aiIndex - 1
-      const _savedUserAtts = messages.value[_savedUserIdx]?.attachments
-      messages.value = await chatApi.listMessages(currentSessionId.value!)
-      // 找刷新后的最后一条 assistant 消息，回填临时字段
-      const _lastAssistant = [...messages.value].reverse().find(m => m.role === 'assistant')
-      if (_lastAssistant) {
-        if (_savedReport) _lastAssistant.inspectionReport = _savedReport
-        if (_savedReasoning && !_lastAssistant.reasoning) _lastAssistant.reasoning = _savedReasoning
-        if (_savedModel && !_lastAssistant.model) _lastAssistant.model = _savedModel
-        if (_savedExecLogs && _savedExecLogs.length) _lastAssistant.execLogs = _savedExecLogs
-      }
-      // 回填用户消息附件
-      const _lastUser = [...messages.value].reverse().find(m => m.role === 'user')
-      if (_lastUser && _savedUserAtts) {
-        _lastUser.attachments = _savedUserAtts
-      }
+      // 发送后清除选择的数据
+      selectedData.value = null
+      await _syncFromDB()
     } catch (e: any) {
+      if (currentSessionId.value !== sessionId) return
       const msg = messages.value[aiIndex]
       if (msg) {
         archiveExec(msg)
         if (e.name === 'AbortError') {
-          if (msg.content) {
-            msg.content += '\n\n*[已停止生成]*'
-          } else {
-            msg.content = '*[已停止生成]*'
-          }
+          // 后端已保存 partial content，从 DB 刷新 + 持久化临时字段
+          await _syncFromDB()
         } else {
           const errDetail = e.message || String(e)
           const errStack = e.stack ? `\n\n堆栈:\n${e.stack.split('\n').slice(0, 5).join('\n')}` : ''
@@ -208,11 +276,13 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     } finally {
-      // 清除转圈指示，但保留 execLogs（折叠显示）
-      messages.value.forEach(m => { m.executingMsg = '' })
       isStreaming.value = false
       abortController = null
     }
+  }
+
+  async function sendDirectly(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[], skipSteps?: string[]) {
+    await sendMessage(content, attachments, false, skipSteps)
   }
 
   async function stopGeneration() {
@@ -233,12 +303,14 @@ export const useChatStore = defineStore('chat', () => {
     streamingContent,
     streamingReasoning,
     currentModel,
+    selectedData,
     fetchSessions,
     createSession,
     switchSession,
     deleteSession,
     clearMessages,
     sendMessage,
+    sendDirectly,
     stopGeneration,
   }
 })

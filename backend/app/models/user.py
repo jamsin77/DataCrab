@@ -73,3 +73,25 @@ class Permission(Base):
     permission_level = Column(String(20), nullable=False)  # view, use, manage
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PermissionRequest(Base):
+    """权限申请模型"""
+    __tablename__ = "permission_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    resource_type = Column(String(50), nullable=False)
+    resource_id = Column(UUID(as_uuid=True), nullable=False)
+    requester_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    requested_level = Column(String(20), nullable=False)  # view, use, manage
+    reason = Column(Text)
+
+    status = Column(String(20), default="pending")  # pending/approved/rejected
+    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    review_note = Column(Text, nullable=True)
+
+    escalated = Column(Boolean, default=False)
+    escalated_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    reviewed_at = Column(DateTime, nullable=True)

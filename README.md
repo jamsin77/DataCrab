@@ -167,6 +167,7 @@ assets/           # 静态资源
 
 - 运行时动态切换模型提供商/密钥/模型
 - 选择提供商后自动填入官方 API 地址，模型列表自动过滤为该提供商的模型
+- **去全局化**：无全局 provider/api_key/model 属性，所有 LLM 调用强制基于用户配置（contextvar）；`.env` 无需配置 LLM，全在前端「系统设置-大模型管理」页面管理（存 DB）
 - **双模型架构**：`_default`（配置的深度模型，用于生成/修改脚本）+ `_flash`（名称含 flash 的快速模型，用于参数推断/对话）；所有 chat 方法用 `self._default`
 - 流式输出支持思维链/推理内容
 - 工具调用（Function Calling）支持
@@ -201,6 +202,15 @@ assets/           # 静态资源
 ### 16. 关于页
 
 - 系统设置中新增「关于」tab，展示项目简介、核心特性、技术栈、开源地址
+
+### 17. 资产导入导出
+
+- 7 类资产一键 ZIP 迁移：技能 / 算子 / 流程 / LLM 配置 / 自定义连接器 / 数据源 / 调度
+- API Key / 密码不导出（导入后手动填）；数据源连接配置含密码（便于跨机器直接使用）
+- 按 name 去重 + 按类型独立覆盖（已存在的可跳过或覆盖）
+- 流程 `skill_calls` 用 `skill_name` 跨机器引用（不依赖 UUID），导入时反查 skill_id
+- 调度 `task_target_id`→`task_target_name` 跨机器稳定
+- 虚拟数据源（聊天上传）受保护，不导出
 
 ---
 
@@ -241,16 +251,14 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（16 个端点文件，182 条路由）
+│   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，187 条路由）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
-│   │       ├── llm.py         # LLM 管理器（多提供商、流式、工具调用）
-│   │       ├── agent.py       # Agent 服务（工具调用循环）
+│   │       ├── llm.py         # LLM 管理器（去全局化，强制用户配置；多提供商、流式、工具调用）
 │   │       ├── multi_agent.py # 多智能体运行时（Handoff、AgentRegistry）
 │   │       ├── data_processor_agent.py  # DataProcessor 智能体
 │   │       ├── data_inspector_agent.py  # DataInspector 智能体
-│   │       ├── inspector_tools.py       # 数据检查工具集
 │   │       ├── data_analyst_agent.py  # DataAnalyst 只读分析智能体
 │   │       ├── skill_parser.py   # SKILL.md 解析器
 │   │       ├── skill_runner.py   # 子进程沙盒执行器
@@ -261,6 +269,8 @@ DataCrab/
 │   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 8 种数据源连接器
 │   │       ├── shared_tools.py  # 7 个公共工具统一入口（LRU 缓存）
+│   │       ├── asset_io.py      # 资产导出/导入服务（7 类资产一键 ZIP 迁移）
+│   │       ├── match_service.py # 向量索引服务（ChromaDB 语义检索 + LLM 自适应匹配）
 │   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警/压缩等）
 │   │       ├── tool_guidance.py # 工具诚实能力表（主对话/调试拆分）
 │   │       ├── data_harness.py # 非侵入式流程层 Harness（收敛检测+经验采集）
@@ -339,6 +349,7 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 | `/knowledge` | 文档知识库 RAG（上传/切片/嵌入/语义检索） |
 | `/permissions` | 权限管理（RBAC：用户/角色/权限） |
 | `/filesystem` | 文件系统浏览 |
+| `/assets` | 资产导出/导入（7 类资产一键 ZIP 迁移） |
 | `/connectors`, `/providers` | 自定义数据源连接器 + LLM Provider 适配器管理 |
 
 ---
@@ -356,4 +367,5 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 9. **AST 脚本自省**：Python AST 解析自动提取函数签名和文档，零配置注册算子
 10. **AI 调试助手**：Chat 风格交互式调试（4 工具对齐 OpenCode），AI 推理过程可视化，执行失败自动反馈错误堆栈给 AI 修复（Loop Engineering 实践）
 11. **Prefix Cache 优化**：system prompt 进程级 memoize + datasource_context 移出 system → user message，字节稳定命中 GLM context cache，input 成本降 30%+
-12. **Docker 一键部署**：前端多阶段构建 nginx 托管 + SSE 长连接支持 + 数据卷持久化
+12. **资产导入导出**：7 类资产（技能/算子/流程/LLM 配置/连接器/数据源/调度）一键 ZIP 迁移，API Key 不导出，按 name 去重，跨机器引用稳定
+13. **LLM 配置去全局化**：无全局 provider/api_key/model 属性，所有 LLM 调用强制基于用户配置（contextvar）；`.env` 无需配置 LLM，全在前端管理（存 DB）

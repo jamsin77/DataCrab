@@ -1,7 +1,8 @@
 ---
 name: training-video-knowledge-extraction
-description: 对培训/教学视频抽帧、OCR识别、语义提取，形成结构化培训知识并入库
+description: 对培训/教学视频抽帧、OCR识别、语义提取，形成结构化培训知识并入库，支持视频内容提取、关键帧分析、视频知识总结、视频转文字等场景
 version: "1.0.0"
+skill_type: processing
 tags:
   - 视频处理
   - 知识提取

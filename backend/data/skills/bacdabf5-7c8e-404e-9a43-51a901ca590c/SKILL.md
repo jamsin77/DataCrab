@@ -1,7 +1,8 @@
 ---
 name: split-table-export
-description: 根据指定列或AI推断的分类规则，将数据表分割并保存为包含多个Sheet的Excel文件
+description: 按指定列或AI智能推断的分类规则，将数据表拆分/分割/切分为多个Sheet并导出/保存为Excel文件，适合数据分类导出、分组拆表、按类别分Sheet等场景
 version: 1.0.0
+skill_type: processing
 tags: 
   - data-processing
   - export

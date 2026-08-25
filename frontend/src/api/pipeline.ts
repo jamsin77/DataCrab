@@ -30,10 +30,6 @@ export const pipelineApi = {
     return api.get(`/pipelines/${id}`)
   },
 
-  create(data: { name: string; display_name?: string; description?: string; main_code?: string }): Promise<Pipeline> {
-    return api.post('/pipelines', data)
-  },
-
   fromSkill(skillId: string): Promise<Pipeline> {
     return api.post(`/pipelines/from-skill/${skillId}`)
   },

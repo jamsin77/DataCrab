@@ -286,6 +286,20 @@ async def build_datasource_context(
     return "\n".join(lines), data_previews, matched_names
 
 
+async def _build_selected_datasource_context(ds, table_name: str, user_message: str) -> tuple:
+    """用户从 data_suggestion 选择了数据源+表，只构建数据源和表名上下文（不预查数据）。
+    返回 (datasource_context, data_preview)——data_preview 固定为空，Agent 用工具自行查询。"""
+    lines = ["\n## 用户选择的数据源"]
+    lines.append(f"数据源名: {ds.name}")
+    lines.append(f"数据源 ID: {ds.id}")
+    lines.append(f"数据源类型: {ds.type}")
+    if table_name:
+        lines.append(f"用户选择的表: {table_name}")
+    lines.append("")
+    lines.append("> 请用 query_table_data / get_table_schema / execute_sql 等工具按 datasource_id 查询此数据源的数据。")
+    return "\n".join(lines), ""
+
+
 async def _query_datasource_previews(sources, user_message: str):
     """查询数据源的实际数据预览。sources 已由 _match_datasource_names 过滤。
     返回 (preview_text, matched_names)"""
@@ -471,7 +485,12 @@ async def delete_session(
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+    # 显式删除关联消息（SQLite 默认不启用外键级联）
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
     await db.delete(session)
+    # 清理内存中的历史摘要缓存
+    _sid = str(session_id)
+    _HISTORY_SUMMARIES.pop(_sid, None)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageResponse])
@@ -493,6 +512,28 @@ async def list_messages(
         .order_by(ChatMessage.created_at)
     )
     return result.scalars().all()
+
+
+@router.patch("/messages/{message_id}/metadata")
+async def update_message_metadata(
+    message_id: UUID,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """更新消息的 metadata 字段（前端流式结束后持久化临时字段：model/reasoning/executingMsgs/suggestion 等）"""
+    result = await db.execute(
+        select(ChatMessage).join(ChatSession, ChatMessage.session_id == ChatSession.id).where(
+            ChatMessage.id == message_id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在或无权访问")
+    msg.meta = body
+    await db.commit()
+    return {"success": True}
 
 
 @router.delete("/sessions/{session_id}/messages", status_code=status.HTTP_204_NO_CONTENT)
@@ -524,6 +565,7 @@ _HISTORY_SUMMARIES_MAX = 100
 HISTORY_CHAR_BUDGET = 6000   # 历史原文总 token 估算超过此值则触发压缩
 HISTORY_KEEP_RECENT = 6      # 压缩时保留最近 N 条原文
 PREVIEW_CHAR_LIMIT = 5000    # 单个数据源预览的字符上限
+
 
 
 async def _compress_history(history_messages: list, session_id: str) -> list:
@@ -604,6 +646,13 @@ async def stream_response(
         full_response = ""
 
         try:
+            # 加载会话上下文（源/目标数据源和表，跨消息持久化）
+            _sess_result = await db.execute(
+                select(ChatSession).where(ChatSession.id == request.session_id, ChatSession.user_id == current_user.id)
+            )
+            _session_obj = _sess_result.scalar_one_or_none()
+            _session_ctx = _session_obj.context if _session_obj and _session_obj.context else {}
+
             user_message = ChatMessage(
                 session_id=request.session_id,
                 role="user",
@@ -621,7 +670,7 @@ async def stream_response(
             await db.flush()
 
             # 设置当前用户的 LLM 配置（API Key 按用户隔离，contextvars 请求级生效）
-            from app.services.llm import init_user_llm_context
+            from app.services.llm import init_user_llm_context, llm_manager
             await init_user_llm_context(current_user.id)
 
             await llm_manager.initialize()
@@ -640,13 +689,65 @@ async def stream_response(
 
             # 优先处理附件：用户上传了数据文件 → 直接用虚拟数据源，不推断
             # 无附件时才走文本推断（build_datasource_context）
+            # 用户从 data_suggestion 选择了数据 → 直接用选中的数据源，跳过名称匹配和表匹配
             datasource_context = ""
             data_preview = ""
             matched_names = []
             _user_msg = request.content
             _attachment_matched = False
 
-            if request.attachments:
+            # 如果前端没传 selected_datasource_id，但会话上下文有源数据 → 从 context 恢复
+            # 是否跳过数据表匹配由 classify_message 的 keep_data 决定（line 812 处统一判断）
+            if not request.selected_datasource_id and _session_ctx.get("source_datasource_id"):
+                from app.models.datasource import DataSource as _DS
+                _ctx_src = await db.execute(select(_DS).where(_DS.id == UUID(_session_ctx["source_datasource_id"]), _DS.is_active == True))
+                _ctx_ds = _ctx_src.scalars().first()
+                if _ctx_ds:
+                    _can_use_ctx = (
+                        _ctx_ds.created_by == current_user.id
+                        or current_user.is_superuser
+                    )
+                    if _can_use_ctx:
+                        datasource_context, data_preview = await _build_selected_datasource_context(
+                            _ctx_ds, _session_ctx.get("source_table_name"), request.content
+                        )
+                        matched_names = [_ctx_ds.name]
+                        _attachment_matched = True
+
+            if request.selected_datasource_id:
+                # 用户选择了数据，直接用选中的数据源构建上下文
+                from app.services.permission_service import check_permission
+                from app.models.datasource import DataSource as _DS
+                sel_result = await db.execute(
+                    select(_DS).where(
+                        _DS.id == UUID(request.selected_datasource_id),
+                        _DS.is_active == True,
+                    )
+                )
+                sel_ds = sel_result.scalars().first()
+                if sel_ds:
+                    # 检查权限
+                    _can_use = (
+                        sel_ds.created_by == current_user.id
+                        or current_user.is_superuser
+                        or await check_permission(db, current_user.id, "datasource", sel_ds.id, "use",
+                            is_owner=(sel_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                    )
+                    if _can_use:
+                        datasource_context, data_preview = await _build_selected_datasource_context(
+                            sel_ds, request.selected_table_name, request.content
+                        )
+                        matched_names = [sel_ds.name]
+                        _attachment_matched = True
+                        # 存源数据到会话上下文
+                        _session_ctx["source_datasource_id"] = str(sel_ds.id)
+                        _session_ctx["source_datasource_name"] = sel_ds.name
+                        _session_ctx["source_table_name"] = request.selected_table_name
+                        # 跳过表匹配（用户已选）
+                        if "tables" not in (request.skip_steps or []):
+                            request.skip_steps = (request.skip_steps or []) + ["tables"]
+
+            if request.attachments and not _attachment_matched:
                 from app.models.datasource import DataSource as _DS
                 att_result = await db.execute(
                     select(_DS).where(
@@ -697,22 +798,356 @@ async def stream_response(
                 )
                 _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
 
-            # 缺源数据源检测：用户消息含数据操作关键词但未指定源数据源，提示并停止
-            _OP_KEYWORDS = {"提取", "处理", "清洗", "转换", "写入", "导入", "导出", "加载", "迁移", "合并", "拆分", "去重", "脱敏", "补全", "修复", "分类", "格式化", "标准化", "生成", "创建", "新建"}
-            _has_op = any(kw in request.content for kw in _OP_KEYWORDS)
-            if _has_op and not matched_names:
-                yield {"type": "content", "content": "请指定源数据源名称，例如：从 凭证库 数据源 把图片信息提取出来"}
-                yield {"type": "done", "result": {"agent": "system", "content": "缺少源数据源"}}
-                return
-
             # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
+            if _session_obj:
+                _session_obj.context = dict(_session_ctx)
             await db.commit()
 
-            # 路由：只读分析类问题走 DataAnalyst，其余走 DataProcessor
-            from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason
-            from app.services.chat_router import route_agent
+            # ===== 一次 LLM 调用判断消息类型 + 技能/流程/数据匹配 =====
+            from app.services.chat_router import classify_message
+            from app.services.llm import llm_manager
+            from app.core.database import async_session as _new_session
+            yield f"data: {json.dumps({'type': 'executing', 'message': '正在理解您的需求...'}, ensure_ascii=False)}\n\n"
+            _msg_type, _keep_data, _classify_events = await classify_message(request.content, _session_ctx)
+            for _ev in _classify_events:
+                if _ev.get("type") in ("model", "thinking"):
+                    yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
+            _type_label = {"analysis": "数据分析", "processing": "数据处理", "chat": "智能对话"}.get(_msg_type, _msg_type)
+            yield f"data: {json.dumps({'type': 'executing', 'message': f'已识别：{_type_label}，正在为您准备...'}, ensure_ascii=False)}\n\n"
+            logger.info(f"[match] session={session_id} msg_type={_msg_type} keep_data={_keep_data} skip={request.skip_match} content={request.content[:50]!r}")
+            # LLM 判定继续用当前已选数据 → 跳过数据表匹配；判定换数据 → 清除 context 旧数据
+            if _keep_data and "tables" not in (request.skip_steps or []):
+                request.skip_steps = (request.skip_steps or []) + ["tables"]
+            if not _keep_data and not request.selected_datasource_id:
+                _session_ctx.pop("source_datasource_id", None)
+                _session_ctx.pop("source_datasource_name", None)
+                _session_ctx.pop("source_table_name", None)
+                _session_ctx.pop("target_datasource_id", None)
+                _session_ctx.pop("target_datasource_name", None)
+                _session_ctx.pop("target_table_name", None)
+                if _session_obj:
+                    _session_obj.context = dict(_session_ctx)
+            if not request.skip_match and _msg_type != "chat":
+                from app.services.match_service import (
+                    llm_match_tables, llm_match_skills, llm_match_pipelines, llm_match_target_tables,
+                )
+                from app.models.datasource import DataSource, TableMetadata
+                from app.models.skill import Skill
+                from app.models.pipeline import Pipeline
+                from app.services.permission_service import check_permission
+                from app.core.database import async_session as _new_session
 
-            _agent_name = route_agent(request.content)
+                _skip_steps = request.skip_steps or []
+
+                _match_error = None
+                try:
+                    # Step 0: 匹配数据表（LLM 判断）
+                    if "tables" not in _skip_steps:
+                        _ds_names = [ds.name for ds in (await db.execute(select(DataSource))).scalars().all() if ds.name and ds.name in request.content]
+                        _ds_hint = f"正在{'、'.join(_ds_names)}中查找相关数据表..." if _ds_names else "正在为您查找相关数据表..."
+                        yield f"data: {json.dumps({'type': 'executing', 'message': _ds_hint}, ensure_ascii=False)}\n\n"
+                        if cancel_event.is_set():
+                            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                            return
+                        table_matches, _table_events = await llm_match_tables(request.content, db)
+                        for _ev in _table_events:
+                            if _ev.get("type") in ("model", "thinking"):
+                                yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
+                        logger.info(f"[match] tables: {len(table_matches)} matched")
+                        if table_matches:
+                            _names = [m.get('table_name','') for _,_,m in table_matches[:3]]
+                            _hint = '找到 {} 个相关数据表: {}'.format(len(table_matches), ', '.join(_names))
+                            yield f"data: {json.dumps({'type': 'executing', 'message': _hint}, ensure_ascii=False)}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': '未找到直接匹配的数据表'}, ensure_ascii=False)}\n\n"
+                        table_results = []
+                        for tid, score, meta in table_matches:
+                            ds_id = meta.get("data_source_id", "")
+                            table_name = meta.get("table_name", "")
+                            if not ds_id or not table_name:
+                                continue
+                            try:
+                                ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(ds_id)))
+                            except (ValueError, Exception):
+                                continue
+                            ds = ds_result.scalar_one_or_none()
+                            if not ds:
+                                continue
+                            can_use = (
+                                ds.created_by == current_user.id
+                                or current_user.is_superuser
+                                or await check_permission(db, current_user.id, "datasource", ds.id, "use", is_owner=(ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                            )
+                            owner_name = None
+                            owner_email = None
+                            if not can_use and ds.created_by:
+                                u_result = await db.execute(select(User).where(User.id == ds.created_by))
+                                u = u_result.scalar_one_or_none()
+                                if u:
+                                    owner_name = u.display_name or u.username
+                                    owner_email = u.email
+                            table_results.append({
+                                "type": "table",
+                                "datasource_id": str(ds.id),
+                                "datasource_name": ds.name,
+                                "table_name": table_name,
+                                "row_count": meta.get("row_count"),
+                                "column_count": meta.get("column_count"),
+                                "similarity": score,
+                                "can_use": can_use,
+                                "owner_name": owner_name,
+                                "owner_email": owner_email,
+                            })
+                        if table_results:
+                            async with _new_session() as save_session:
+                                save_session.add(ChatMessage(
+                                    session_id=request.session_id, role="assistant",
+                                    content="检测到数据已存在，请选择操作。",
+                                ))
+                                await save_session.commit()
+                            yield f"data: {json.dumps({'type': 'data_suggestion', 'matches': table_results}, ensure_ascii=False, default=str)}\n\n"
+                            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                            return
+
+                    # Step 0.5: 目标表匹配（仅 processing 类，源数据已确定）
+                    _src_ds_id = request.selected_datasource_id or _session_ctx.get("source_datasource_id")
+                    if _msg_type == "processing" and "target" not in _skip_steps and _src_ds_id:
+                        # 如果 context 已有目标信息 → 跳过
+                        if _session_ctx.get("target_datasource_id"):
+                            _skip_steps.append("target")
+                        else:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': '正在检查目标数据源...'}, ensure_ascii=False)}\n\n"
+                            if cancel_event.is_set():
+                                yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                                return
+                            target_matches, target_ds_names, _target_events = await llm_match_target_tables(
+                                request.content, db, source_datasource_id=_src_ds_id
+                            )
+                            for _ev in _target_events:
+                                if _ev.get("type") in ("model", "thinking"):
+                                    yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
+
+                            if not target_ds_names:
+                                # 用户没提到目标数据源 → 提醒
+                                _hint = "请指定目标数据源（结果要写入哪个数据源），例如：导入到「证件OCR识别」数据源"
+                                yield f"data: {json.dumps({'type': 'content', 'content': _hint}, ensure_ascii=False)}\n\n"
+                                async with _new_session() as save_session:
+                                    save_session.add(ChatMessage(
+                                        session_id=request.session_id, role="assistant",
+                                        content=_hint,
+                                    ))
+                                    await save_session.commit()
+                                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                                return
+
+                            if target_matches:
+                                # 目标表已存在 → 提示已处理过 + 存 context
+                                logger.info(f"[match] target tables: {len(target_matches)} matched (已处理过)")
+                                target_results = []
+                                for tid, score, meta in target_matches:
+                                    _ds_id = meta.get("data_source_id", "")
+                                    _tname = meta.get("table_name", "")
+                                    if not _ds_id or not _tname:
+                                        continue
+                                    try:
+                                        _ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(_ds_id)))
+                                    except (ValueError, Exception):
+                                        continue
+                                    _ds = _ds_result.scalar_one_or_none()
+                                    if not _ds:
+                                        continue
+                                    _can_use = (
+                                        _ds.created_by == current_user.id
+                                        or current_user.is_superuser
+                                        or await check_permission(db, current_user.id, "datasource", _ds.id, "use",
+                                            is_owner=(_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                                    )
+                                    target_results.append({
+                                        "type": "target_table",
+                                        "datasource_id": str(_ds.id),
+                                        "datasource_name": _ds.name,
+                                        "table_name": _tname,
+                                        "row_count": meta.get("row_count"),
+                                        "column_count": meta.get("column_count"),
+                                        "similarity": score,
+                                        "can_use": _can_use,
+                                    })
+                                if target_results:
+                                    # 存目标数据到会话上下文
+                                    _session_ctx["target_datasource_id"] = target_results[0]["datasource_id"]
+                                    _session_ctx["target_datasource_name"] = target_results[0]["datasource_name"]
+                                    _session_ctx["target_table_name"] = target_results[0]["table_name"]
+                                    async with _new_session() as save_session:
+                                        save_session.add(ChatMessage(
+                                            session_id=request.session_id, role="assistant",
+                                            content="检测到目标表已存在，可能已处理过，请选择操作。",
+                                            meta={"suggestion": {"type": "target_suggestion", "matches": target_results}},
+                                        ))
+                                        # 同步存 context 到 session
+                                        _sess = await save_session.get(ChatSession, request.session_id)
+                                        if _sess:
+                                            _sess.context = dict(_session_ctx)
+                                        await save_session.commit()
+                                    yield f"data: {json.dumps({'type': 'target_suggestion', 'matches': target_results}, ensure_ascii=False, default=str)}\n\n"
+                                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                                    return
+
+                            yield f"data: {json.dumps({'type': 'executing', 'message': '目标表不存在，将创建新表'}, ensure_ascii=False)}\n\n"
+
+                    # Step 1: 匹配流程（LLM 判断）
+                    if "pipelines" not in _skip_steps:
+                        yield f"data: {json.dumps({'type': 'executing', 'message': '正在查找匹配的处理流程...'}, ensure_ascii=False)}\n\n"
+                        if cancel_event.is_set():
+                            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                            return
+                        pipe_matches, _pipe_events = await llm_match_pipelines(request.content, db, _msg_type)
+                        for _ev in _pipe_events:
+                            if _ev.get("type") in ("model", "thinking"):
+                                yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
+                        logger.info(f"[match] pipelines: {len(pipe_matches)} matched")
+                        if pipe_matches:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': f'找到 {len(pipe_matches)} 个匹配的流程'}, ensure_ascii=False)}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': '未找到匹配的流程'}, ensure_ascii=False)}\n\n"
+                        pipe_results = []
+                        for pid, score in pipe_matches:
+                            try:
+                                p_result = await db.execute(select(Pipeline).where(Pipeline.id == UUID(pid), Pipeline.is_active == True))
+                            except (ValueError, Exception):
+                                continue
+                            p = p_result.scalar_one_or_none()
+                            if not p:
+                                continue
+                            can_use = (
+                                p.created_by == current_user.id
+                                or p.visibility == "public"
+                                or current_user.is_superuser
+                                or await check_permission(db, current_user.id, "pipeline", p.id, "use", is_owner=(p.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                            )
+                            owner_name = None
+                            owner_email = None
+                            if not can_use and p.created_by:
+                                u_result = await db.execute(select(User).where(User.id == p.created_by))
+                                u = u_result.scalar_one_or_none()
+                                if u:
+                                    owner_name = u.display_name or u.username
+                                    owner_email = u.email
+                            pipe_results.append({
+                                "type": "pipeline",
+                                "id": str(p.id),
+                                "name": p.display_name or p.name,
+                                "description": p.description or "",
+                                "similarity": score,
+                                "can_use": can_use,
+                                "owner_name": owner_name,
+                                "owner_email": owner_email,
+                            })
+                        if pipe_results:
+                            async with _new_session() as save_session:
+                                save_session.add(ChatMessage(
+                                    session_id=request.session_id, role="assistant",
+                                    content="检测到匹配的流程，请选择操作。",
+                                ))
+                                await save_session.commit()
+                            yield f"data: {json.dumps({'type': 'skill_suggestion', 'matches': pipe_results}, ensure_ascii=False, default=str)}\n\n"
+                            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                            return
+
+                    # Step 2: 匹配技能（LLM 判断）
+                    if "skills" not in _skip_steps:
+                        yield f"data: {json.dumps({'type': 'executing', 'message': '正在查找匹配的技能...'}, ensure_ascii=False)}\n\n"
+                        if cancel_event.is_set():
+                            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                            return
+                        skill_matches, _skill_events = await llm_match_skills(request.content, db, _msg_type)
+                        for _ev in _skill_events:
+                            if _ev.get("type") in ("model", "thinking"):
+                                yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
+                        logger.info(f"[match] skills: {len(skill_matches)} matched")
+                        if skill_matches:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': f'找到 {len(skill_matches)} 个匹配的技能'}, ensure_ascii=False)}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'executing', 'message': '未找到匹配的技能'}, ensure_ascii=False)}\n\n"
+                        skill_results = []
+                        for sid, score in skill_matches:
+                            try:
+                                s_result = await db.execute(select(Skill).where(Skill.id == UUID(sid)))
+                            except (ValueError, Exception):
+                                continue
+                            s = s_result.scalar_one_or_none()
+                            if not s:
+                                continue
+                            can_use = (
+                                s.created_by == current_user.id
+                                or s.visibility == "public"
+                                or current_user.is_superuser
+                                or await check_permission(db, current_user.id, "skill", s.id, "use", is_owner=(s.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                            )
+                            owner_name = None
+                            owner_email = None
+                            if not can_use and s.created_by:
+                                u_result = await db.execute(select(User).where(User.id == s.created_by))
+                                u = u_result.scalar_one_or_none()
+                                if u:
+                                    owner_name = u.display_name or u.username
+                                    owner_email = u.email
+                            skill_results.append({
+                                "type": "skill",
+                                "id": str(s.id),
+                                "name": s.display_name or s.name,
+                                "description": s.description or "",
+                                "similarity": score,
+                                "can_use": can_use,
+                                "owner_name": owner_name,
+                                "owner_email": owner_email,
+                            })
+                        if skill_results:
+                            async with _new_session() as save_session:
+                                save_session.add(ChatMessage(
+                                    session_id=request.session_id, role="assistant",
+                                    content="检测到匹配的技能，请选择操作。",
+                                ))
+                                await save_session.commit()
+                            yield f"data: {json.dumps({'type': 'skill_suggestion', 'matches': skill_results}, ensure_ascii=False, default=str)}\n\n"
+                            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                            return
+
+                    # Step 3: 无匹配 → 提示一下，继续走 Agent
+                    _no_match_hint = "未找到匹配的流程或技能，正在直接为您处理。\n\n"
+                    yield f"data: {json.dumps({'type': 'content', 'content': _no_match_hint}, ensure_ascii=False)}\n\n"
+                    full_response += _no_match_hint
+                except Exception as e:
+                    _err = f"⚠️ 匹配检测出错：{e}\n\n"
+                    logger.error(f"[match] 匹配出错，停止处理: {e}")
+                    yield f"data: {json.dumps({'type': 'content', 'content': _err}, ensure_ascii=False)}\n\n"
+                    full_response += _err
+                    async with _new_session() as save_session:
+                        save_session.add(ChatMessage(
+                            session_id=request.session_id, role="assistant",
+                            content=full_response,
+                        ))
+                        await save_session.commit()
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                    return
+
+            # 路由：用 classify_message 的结果，不再重复调 LLM
+            from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason
+
+            _agent_name = "data_analyst" if _msg_type == "analysis" else "data_processor"
+            logger.info(f"[route] session={session_id} msg_type={_msg_type} agent={_agent_name}")
+
+            # 注入已知的数据上下文到 user message（避免 Agent 重复推断）
+            _ctx_lines = []
+            if _session_ctx.get("source_datasource_name"):
+                _ctx_lines.append(f"源数据源: {_session_ctx['source_datasource_name']}")
+            if _session_ctx.get("source_table_name"):
+                _ctx_lines.append(f"源表: {_session_ctx['source_table_name']}")
+            if _session_ctx.get("target_datasource_name"):
+                _ctx_lines.append(f"目标数据源: {_session_ctx['target_datasource_name']}")
+            if _session_ctx.get("target_table_name"):
+                _ctx_lines.append(f"目标表: {_session_ctx['target_table_name']}")
+            if _ctx_lines:
+                _user_msg = f"【已确定的数据上下文】\n" + "\n".join(_ctx_lines) + f"\n\n---\n\n{_user_msg}"
 
             runtime = ensure_agent_runtime()
 
@@ -726,6 +1161,7 @@ async def stream_response(
                 "session_id": session_id,
                 "history": compressed_history,
                 "has_preinjected_data": bool(data_preview),
+                "session_ctx": _session_ctx,
             }
 
             message = AgentMessage(
@@ -740,6 +1176,19 @@ async def stream_response(
             agen = runtime.run(_agent_name, message, context).__aiter__()
             while True:
                 if cancel_event.is_set():
+                    # 保存已收到的部分内容，避免刷新后回复丢失
+                    from app.core.database import async_session as _new_session
+                    async with _new_session() as save_session:
+                        partial = full_response or ""
+                        if partial:
+                            partial += "\n\n*[已停止]*"
+                        else:
+                            partial = "*[已停止]*"
+                        save_session.add(ChatMessage(
+                            session_id=request.session_id, role="assistant",
+                            content=partial,
+                        ))
+                        await save_session.commit()
                     yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
                     return
 
@@ -757,6 +1206,11 @@ async def stream_response(
                     event = fut.result()
                 except StopAsyncIteration:
                     break
+                except Exception as e:
+                    logger.error(f"Agent 执行异常: {e}", exc_info=True)
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'响应出错: {e}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                    return
 
                 if event.get("type") == "agent_switch":
                     yield f"data: {json.dumps({'type': 'agent_switch', 'agent': event['agent'], 'display_name': event.get('display_name',''), 'reason': event['reason'], 'reason_display': event.get('reason_display','')}, ensure_ascii=False)}\n\n"
@@ -790,6 +1244,19 @@ async def stream_response(
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
+            # 保存已收到的部分内容，避免刷新后回复丢失
+            from app.core.database import async_session as _new_session
+            async with _new_session() as save_session:
+                partial = full_response or ""
+                if partial:
+                    partial += "\n\n*[已停止]*"
+                else:
+                    partial = "*[已停止]*"
+                save_session.add(ChatMessage(
+                    session_id=request.session_id, role="assistant",
+                    content=partial,
+                ))
+                await save_session.commit()
             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
             import traceback as _tb

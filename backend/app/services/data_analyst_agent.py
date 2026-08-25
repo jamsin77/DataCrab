@@ -187,8 +187,6 @@ class DataAnalystAgent(BaseAgent):
                 logger.error(f"DataAnalyst 工具异常 {tc['function']['name']}: {e}")
                 return {"tool_call_id": tc["id"], "content": json.dumps({"error": f"工具执行失败: {e}"}, ensure_ascii=False)}
 
-        yield {"type": "model", "content": llm_manager._default}
-
         for i in range(max_iterations):
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
@@ -399,8 +397,6 @@ class DataAnalystAgent(BaseAgent):
         _stuck = StuckDetector(max_total_rounds=15)
         _tool_call_meta: Dict[str, tuple] = {}
         _last_round_had_fix = False
-
-        yield {"type": "model", "content": llm_manager._default}
 
         while _exec_failures < _MAX_EXEC_FAILURES:
             # 已消费工具结果清理

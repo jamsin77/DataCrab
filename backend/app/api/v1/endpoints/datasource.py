@@ -555,25 +555,39 @@ async def internal_write_table_data(
             **kwargs,
         )
         # 写入成功后更新 TableMetadata.data_updated_at，使浏览树显示最新修改时间
+        # 使用独立 session + 重试，避免与 task_runner 调度扫描器并发争抢系统库写锁
         if isinstance(result, dict) and result.get("success", True):
             from datetime import datetime as _dt
-            meta_result = await db.execute(
-                select(TableMetadata).where(
-                    TableMetadata.data_source_id == datasource_id,
-                    TableMetadata.table_name == table_name,
-                )
-            )
-            meta = meta_result.scalar_one_or_none()
-            if meta:
-                meta.data_updated_at = _dt.utcnow()
-            else:
-                meta = TableMetadata(
-                    data_source_id=datasource_id,
-                    table_name=table_name,
-                    data_updated_at=_dt.utcnow(),
-                )
-                db.add(meta)
-            await db.flush()
+            from app.core.database import async_session as _meta_session
+            import asyncio as _asyncio
+            _meta_err = None
+            for _attempt in range(3):
+                try:
+                    async with _meta_session() as meta_db:
+                        meta_result = await meta_db.execute(
+                            select(TableMetadata).where(
+                                TableMetadata.data_source_id == datasource_id,
+                                TableMetadata.table_name == table_name,
+                            )
+                        )
+                        meta = meta_result.scalar_one_or_none()
+                        if meta:
+                            meta.data_updated_at = _dt.utcnow()
+                        else:
+                            meta_db.add(TableMetadata(
+                                data_source_id=datasource_id,
+                                table_name=table_name,
+                                data_updated_at=_dt.utcnow(),
+                            ))
+                        await meta_db.commit()
+                        _meta_err = None
+                        break
+                except Exception as e:
+                    _meta_err = e
+                    if _attempt < 2:
+                        await _asyncio.sleep(0.5 * (_attempt + 1))
+            if _meta_err:
+                logger.warning(f"更新 TableMetadata.data_updated_at 失败（不影响写入结果）: {_meta_err}")
         return result
     except Exception as e:
         logger.error(f"内部写入异常: {e}")

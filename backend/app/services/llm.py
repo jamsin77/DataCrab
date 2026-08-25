@@ -191,6 +191,7 @@ _SEED_PROVIDERS = {
             {"label": "Qwen3.6-Flash", "value": "qwen3.6-flash"},
             {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro"},
             {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash"},
+            {"label": "Text-Embedding-V3", "value": "text-embedding-v3"},
         ],
     },
     "glm": {
@@ -208,6 +209,7 @@ _SEED_PROVIDERS = {
             {"label": "GLM-4 Plus", "value": "glm-4-plus"},
             {"label": "GLM-4", "value": "glm-4"},
             {"label": "GLM-4 Flash", "value": "glm-4-flash"},
+            {"label": "Embedding-3", "value": "embedding-3"},
         ],
     },
     "siliconflow": {
@@ -221,6 +223,7 @@ _SEED_PROVIDERS = {
             {"label": "DeepSeek-V3", "value": "deepseek-ai/DeepSeek-V3"},
             {"label": "Qwen2.5-72B", "value": "Qwen/Qwen2.5-72B-Instruct"},
             {"label": "Qwen2.5-Coder-32B", "value": "Qwen/Qwen2.5-Coder-32B-Instruct"},
+            {"label": "BGE-Large-ZH-V1.5", "value": "BAAI/bge-large-zh-v1.5"},
         ],
     },
     "volcengine": {
@@ -286,6 +289,11 @@ async def load_providers_from_db():
                     record.vision_model = info["vision_model"]
                 if info.get("embedding_model") and not record.embedding_model:
                     record.embedding_model = info["embedding_model"]
+                # 确保 models 列表包含 embedding 模型（补缺，不覆盖用户自定义）
+                if record.models and info.get("embedding_model"):
+                    _vals = {m.get("value") for m in record.models if isinstance(m, dict)}
+                    if info["embedding_model"] not in _vals:
+                        record.models = [*record.models, {"label": info["embedding_model"], "value": info["embedding_model"]}]
         await session.commit()
 
         # 加载所有 Provider 到内存
@@ -325,30 +333,6 @@ def refresh_provider(provider_name: str, info: Dict[str, Any]):
     """注册或刷新 Provider 到内存缓存"""
     _provider_registry[provider_name] = info
     logger.info(f"Provider 已刷新: {provider_name}")
-
-
-def _parse_fallback_models(raw: str) -> List[Dict[str, str]]:
-    """解析降级模型链 JSON"""
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-        if not isinstance(data, list):
-            return []
-        out = []
-        for item in data:
-            if isinstance(item, dict) and item.get("model"):
-                out.append({
-                    "provider": item.get("provider") or "",
-                    "api_key": item.get("api_key") or "",
-                    "api_base": item.get("api_base"),
-                    "model": item.get("model"),
-                })
-        return out
-    except Exception as e:
-        logger.warning(f"解析 LLM_FALLBACK_MODELS 失败: {e}")
-        return []
 
 
 class CircuitBreaker:
@@ -537,7 +521,38 @@ class LLMManager:
                     "vision_model": self._eff_model("vision_model", fb),
                     "embedding_model": self._eff_model("embedding_model", fb),
                 })
+            else:
+                logger.warning(f"[降级链] fallback {fb.get('provider','')} 无 api_key，未加入降级链（请在配置页给备用模型配 Key，或确保其 Provider 公共 Key 已配置）")
+        logger.info(f"[降级链] 共 {len(configs)} 个配置可用（主模型 + {len(configs)-1} 个 fallback）")
         return configs
+
+    def _resolve_model_for_cfg(self, cfg: Dict[str, str], requested_model: Optional[str]) -> str:
+        """降级链：把请求的模型名映射到当前 cfg 对应的模型名。
+
+        不同 provider 模型名不同（主配 deepseek-v4-pro，fallback 配 glm-5.2）。
+        降级到 fallback 时需按“模型角色”映射，而非硬带主模型名：
+        - requested == 主 default_model → 本 cfg default_model
+        - requested == 主 flash_model → 本 cfg flash_model
+        - requested == 主 vision_model → 本 cfg vision_model
+        - requested == 主 embedding_model → 本 cfg embedding_model
+        - requested 为空 → 本 cfg default_model
+        - 其他（用户自定义名）→ 原样返回
+        """
+        if not requested_model:
+            return cfg.get("default_model") or cfg.get("model") or ""
+        configs = self._model_configs()
+        if not configs:
+            return requested_model
+        main = configs[0]
+        if requested_model == main.get("default_model"):
+            return cfg.get("default_model") or requested_model
+        if requested_model == main.get("flash_model"):
+            return cfg.get("flash_model") or cfg.get("default_model") or requested_model
+        if requested_model == main.get("vision_model"):
+            return cfg.get("vision_model") or requested_model
+        if requested_model == main.get("embedding_model"):
+            return cfg.get("embedding_model") or requested_model
+        return requested_model
 
     async def _acreate(self, cfg: Dict[str, str], **kwargs):
         """用指定配置创建一次 completion 请求"""
@@ -581,12 +596,6 @@ class LLMManager:
         """初始化（无全局客户端，仅标记已初始化；实际客户端由 _client_for 按用户配置动态构建）"""
         self._initialized = True
 
-    async def reinitialize(self, provider: str, api_key: str, api_base: str = None, model: str = None, embedding_model: str = None, fallback_models: List[Dict[str, str]] = None):
-        """使用新配置重新初始化（清空客户端缓存，强制按新配置重建）"""
-        self._client_cache = {}
-        self._initialized = True
-        await self.initialize()
-
     # ---------- 非流式调用（全链路降级） ----------
     async def chat(
         self,
@@ -599,12 +608,9 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        if model is None:
-            model = self._default
-
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat调用: provider={cfg['provider']}, model={actual_model}")
                 response = await self._acreate_with_retry(
@@ -632,12 +638,9 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        if model is None:
-            model = self._default
-
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat_with_messages: provider={cfg['provider']}, model={actual_model}, messages={len(messages)}")
                 response = await self._acreate_with_retry(
@@ -668,7 +671,7 @@ class LLMManager:
 
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat_with_tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
                 response = await self._acreate_with_retry(
@@ -715,7 +718,7 @@ class LLMManager:
 
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat_stream: provider={cfg['provider']}, model={actual_model}")
                 stream = await self._acreate(
@@ -750,12 +753,9 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        if model is None:
-            model = self._default
-
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat_stream_with_messages: provider={cfg['provider']}, model={actual_model}, messages={len(messages)}")
                 stream = await self._acreate(
@@ -790,12 +790,12 @@ class LLMManager:
         if not self._initialized:
             await self.initialize()
 
-        target_model = model or self._default
         errors = []
 
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             if not _circuit.is_available(actual_model):
+                logger.warning(f"[降级链] 跳过 {cfg.get('provider','')}/{actual_model}（断路器熔断中，60s 后自动恢复）")
                 continue
             try:
                 logger.info(f"LLM chat_stream_with_thinking: provider={cfg['provider']}, model={actual_model}")
@@ -841,7 +841,7 @@ class LLMManager:
 
         errors = []
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
                 logger.info(f"LLM chat_stream_with_tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
                 stream = await self._acreate(
@@ -895,8 +895,9 @@ class LLMManager:
         errors = []
 
         for cfg in self._model_configs():
-            actual_model = model or cfg["model"]
+            actual_model = self._resolve_model_for_cfg(cfg, model)
             if not _circuit.is_available(actual_model):
+                logger.warning(f"[降级链] 跳过 {cfg.get('provider','')}/{actual_model}（断路器熔断中，60s 后自动恢复）")
                 continue
             try:
                 logger.info(f"LLM stream+tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
@@ -980,16 +981,22 @@ class LLMManager:
                     return self._eff_model("embedding_model", fb)
         return self._eff_model("embedding_model", cfg)
 
+    _embed_skip_providers: set = set()  # 缓存 embed 失败的 (provider, embedding_model) 组合，不重复试
+
     async def embed(self, text: str) -> list:
-        """生成文本嵌入向量（主模型，失败则降级）"""
+        """生成文本嵌入向量（主模型，失败则降级）。
+        自动跳过已知失败的 (provider, embedding_model) 组合，不重复试。"""
         if not self._initialized:
             await self.initialize()
 
         errors = []
         for cfg in self._model_configs():
+            emb_model = self._eff_model("embedding_model", cfg)
+            skip_key = f"{cfg.get('provider','')}:{emb_model}"
+            if skip_key in self._embed_skip_providers:
+                continue
             try:
                 client = self._client_for(cfg)
-                emb_model = self._eff_model("embedding_model", cfg)
                 if not emb_model:
                     raise RuntimeError(f"Provider {cfg.get('provider','')} 不支持嵌入模型，无法处理向量化任务")
                 response = await client.embeddings.create(
@@ -998,8 +1005,13 @@ class LLMManager:
                 )
                 return response.data[0].embedding
             except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"LLM embed失败 [{cfg['provider']}/{cfg.get('model','')}]: {e}，尝试下一个模型")
+                errors.append(f"[{cfg['provider']}/{emb_model}] {e}")
+                logger.warning(f"LLM embed失败 [{cfg['provider']}/{emb_model}]: {e}，尝试下一个模型")
+                self._embed_skip_providers.add(skip_key)
+                logger.error(
+                    f"⚠️ 向量模型 [{cfg['provider']}/{emb_model}] 不可用，已在「系统设置-大模型管理」页面检查配置。"
+                    f"已缓存跳过该组合，后续直接使用降级模型。"
+                )
                 continue
         raise self._format_chain_error(errors, "LLM 调用")
 

@@ -108,7 +108,7 @@ Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中�
 - **文件存储**: 本地文件系统
 
 #### 基础设施
-- **容器化**: Docker + Docker Compose（可选）
+- **容器化**: 已移除 Docker 配置，当前为开发模式部署（`npm run dev`）
 - **反向代理**: Nginx（生产部署）
 
 ## 2. 核心模块设计
@@ -3834,51 +3834,9 @@ data: {"outputs": {...}, "duration": 2.5}
 └───────────────────────────────────────────────┘
 ```
 
-### 5.2 Docker Compose配置（可选）
+### 5.2 部署方式
 
-> 生产环境可使用 Docker Compose 部署，开发环境使用 `npm run dev` 即可（见 INSTALL.md）。
-
-```yaml
-version: '3.8'
-
-services:
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - frontend
-      - backend
-
-  frontend:
-    build: ./frontend
-    environment:
-      - VITE_API_URL=http://backend:8000
-    depends_on:
-      - backend
-
-  backend:
-    build: ./backend
-    environment:
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/datacrab
-    depends_on:
-      - postgres
-
-  postgres:
-    image: postgres:14-alpine
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=pass
-      - POSTGRES_DB=datacrab
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:
-```
+> 当前为开发模式部署（`npm run dev` 前后端并行启动），详见 INSTALL.md。Docker Compose 配置已在第二十八轮删除（回归开发模式）。
 
 ## 6. 安全设计
 
@@ -3955,7 +3913,7 @@ volumes:
 - **API文档**: OpenAPI/Swagger
 - **代码文档**: Docstring
 - **用户文档**: Markdown
-- **部署文档**: Docker Compose
+- **部署文档**: INSTALL.md（开发模式）
 
 ## 10. 技术风险与应对
 

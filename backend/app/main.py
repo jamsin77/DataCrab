@@ -28,10 +28,12 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(_migrate_custom_extensions)
         await conn.run_sync(_migrate_builtin_flags)
         await conn.run_sync(_migrate_author_to_created_by)
+        await conn.run_sync(_migrate_chat_metadata)
     logger.info("数据库表已创建")
     await _seed_skills_and_pipelines()
     await _load_custom_extensions()
-    await _init_llm_from_db()
+    await _backfill_related_skill_ids()
+    await _rebuild_match_index()
     await start_scheduler()
     yield
     await stop_scheduler()
@@ -64,51 +66,6 @@ async def _load_custom_extensions():
     # 加载所有连接器（统一从 DB 装载，首次启动 seed 内置连接器）
     await load_connectors_from_db()
 
-
-async def _init_llm_from_db():
-    """从数据库读取解密后的 API Key，初始化 LLM 客户端"""
-    from sqlalchemy import select as sa_select
-    from app.models.custom_extension import LLMProvider
-    from app.services.llm import llm_manager, _parse_fallback_models
-    from app.core.crypto import decrypt
-    from app.core.config import settings
-
-    async with async_session() as session:
-        # 读取主 Provider 的 API Key
-        provider_name = settings.LLM_PROVIDER
-        result = await session.execute(
-            sa_select(LLMProvider).where(LLMProvider.provider_name == provider_name)
-        )
-        provider_record = result.scalar_one_or_none()
-        api_key = ""
-        if provider_record and provider_record.api_key_encrypted:
-            api_key = decrypt(provider_record.api_key_encrypted)
-
-        # 读取降级模型的 API Key
-        fallback_models = _parse_fallback_models(settings.LLM_FALLBACK_MODELS)
-        for f in fallback_models:
-            fb_provider = f.get("provider", "")
-            if fb_provider and not f.get("api_key"):
-                fb_result = await session.execute(
-                    sa_select(LLMProvider).where(LLMProvider.provider_name == fb_provider)
-                )
-                fb_record = fb_result.scalar_one_or_none()
-                if fb_record and fb_record.api_key_encrypted:
-                    f["api_key"] = decrypt(fb_record.api_key_encrypted)
-
-    if api_key:
-        try:
-            await llm_manager.reinitialize(
-                provider=provider_name,
-                api_key=api_key,
-                api_base=settings.OPENAI_API_BASE or "",
-                model=settings.OPENAI_MODEL,
-                embedding_model=settings.OPENAI_EMBEDDING_MODEL,
-                fallback_models=fallback_models,
-            )
-            logger.info(f"LLM 客户端已从数据库初始化: provider={provider_name}")
-        except Exception as e:
-            logger.warning(f"LLM 客户端从数据库初始化失败: {e}")
 
 
 def _migrate_skills(connection):
@@ -147,6 +104,15 @@ def _migrate_builtin_flags(connection):
                 logger.info(f"{table}表已添加 is_builtin 列")
         except Exception as e:
             logger.warning(f"{table}表迁移跳过: {e}")
+    # pipelines: related_skill_ids 列迁移 + 回填
+    try:
+        result = connection.execute(text("PRAGMA table_info(pipelines)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "related_skill_ids" not in columns:
+            connection.execute(text("ALTER TABLE pipelines ADD COLUMN related_skill_ids JSON DEFAULT '[]'"))
+            logger.info("pipelines表已添加 related_skill_ids 列")
+    except Exception as e:
+        logger.warning(f"pipelines表 related_skill_ids 迁移跳过: {e}")
     try:
         result = connection.execute(text("PRAGMA table_info(schedules)"))
         columns = {row[1] for row in result.fetchall()}
@@ -245,6 +211,135 @@ def _migrate_author_to_created_by(connection):
             logger.info(f"{table}表 author 列已迁移为 created_by")
         except Exception as e:
             logger.warning(f"{table}表 author→created_by 迁移跳过: {e}")
+
+    # permission_requests 表（PermissionRequest 模型）— 由 Base.metadata.create_all 自动创建
+    try:
+        result = connection.execute(text("PRAGMA table_info(permission_requests)"))
+        columns = {row[1] for row in result.fetchall()}
+        if not columns:
+            logger.info("permission_requests 表将由 create_all 自动创建")
+    except Exception as e:
+        logger.warning(f"permission_requests 表迁移跳过: {e}")
+
+
+def _migrate_chat_metadata(connection):
+    """chat_messages 表加 meta JSON 列；chat_sessions 表加 context JSON 列"""
+    from sqlalchemy import text
+    try:
+        result = connection.execute(text("PRAGMA table_info(chat_messages)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "meta" not in columns:
+            connection.execute(text("ALTER TABLE chat_messages ADD COLUMN meta JSON"))
+            logger.info("chat_messages表已添加 meta 列")
+    except Exception as e:
+        logger.warning(f"chat_messages表 metadata 迁移跳过: {e}")
+    try:
+        result = connection.execute(text("PRAGMA table_info(chat_sessions)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "context" not in columns:
+            connection.execute(text("ALTER TABLE chat_sessions ADD COLUMN context JSON"))
+            logger.info("chat_sessions表已添加 context 列")
+    except Exception as e:
+        logger.warning(f"chat_sessions表 context 迁移跳过: {e}")
+
+
+async def _backfill_related_skill_ids():
+    """回填存量 pipeline 的 related_skill_ids（从 source_skill_id + skill_calls 合并）"""
+    from app.models.pipeline import Pipeline
+    from sqlalchemy import select
+    async with async_session() as db:
+        pipelines = (await db.execute(select(Pipeline))).scalars().all()
+        changed = 0
+        for p in pipelines:
+            existing = p.related_skill_ids or []
+            if existing:
+                continue
+            ids = set()
+            if p.source_skill_id:
+                ids.add(str(p.source_skill_id))
+            for sc in (p.skill_calls or []):
+                if isinstance(sc, dict) and sc.get("skill_id"):
+                    ids.add(str(sc["skill_id"]))
+            if ids:
+                p.related_skill_ids = list(ids)
+                changed += 1
+        if changed:
+            await db.commit()
+            logger.info(f"回填 related_skill_ids: {changed} 条流程")
+
+
+async def _rebuild_match_index():
+    """启动时重建向量索引。从 UserLLMConfig 取用户配置，遍历主+fallback 试 embed。"""
+    try:
+        from app.services.match_service import rebuild_index
+        from app.services.llm import set_user_llm_config, llm_manager
+        from app.core.crypto import decrypt
+        from app.models.custom_extension import UserLLMConfig, LLMProvider
+        from sqlalchemy import select as sa_select
+
+        # 从 UserLLMConfig 表收集所有可能的 embedding 配置（主 + fallback）
+        configs = []
+        async with async_session() as session:
+            result = await session.execute(sa_select(UserLLMConfig))
+            for rec in result.scalars().all():
+                api_key = decrypt(rec.api_key_encrypted) if rec.api_key_encrypted else ""
+                if not api_key:
+                    continue
+                # 主配置
+                if rec.embedding_model:
+                    configs.append({
+                        "provider": rec.provider, "api_key": api_key,
+                        "api_base": rec.api_base or "",
+                        "embedding_model": rec.embedding_model,
+                        "default_model": rec.model or "",
+                        "flash_model": rec.flash_model or "",
+                        "vision_model": rec.vision_model or "",
+                        "fallback_models": [],
+                    })
+                # fallback 配置
+                for fb in (rec.fallback_models or []):
+                    fb_key = decrypt(fb["api_key_encrypted"]) if fb.get("api_key_encrypted") else ""
+                    if not fb_key and fb.get("provider"):
+                        pub = await session.execute(
+                            sa_select(LLMProvider).where(
+                                LLMProvider.provider_name == fb["provider"],
+                                LLMProvider.is_active == True,
+                            )
+                        )
+                        pub_rec = pub.scalar_one_or_none()
+                        if pub_rec and pub_rec.api_key_encrypted:
+                            fb_key = decrypt(pub_rec.api_key_encrypted)
+                    if fb_key and fb.get("embedding_model"):
+                        configs.append({
+                            "provider": fb.get("provider", ""), "api_key": fb_key,
+                            "api_base": fb.get("api_base", ""),
+                            "embedding_model": fb.get("embedding_model", ""),
+                            "default_model": fb.get("model", ""),
+                            "flash_model": fb.get("flash_model", ""),
+                            "vision_model": fb.get("vision_model", ""),
+                            "fallback_models": [],
+                        })
+
+        # 逐个试 embed，找到能用的配置
+        sys_cfg = None
+        for cfg in configs:
+            try:
+                set_user_llm_config(cfg)
+                await llm_manager.embed("__health_check__")
+                sys_cfg = cfg
+                break
+            except Exception:
+                continue
+
+        if sys_cfg:
+            logger.info(f"向量索引使用配置: provider={sys_cfg['provider']}, embedding={sys_cfg['embedding_model']}")
+        else:
+            logger.warning("未找到可用的向量模型配置，向量索引无法重建")
+
+        async with async_session() as db:
+            await rebuild_index(db)
+    except Exception as e:
+        logger.error(f"向量索引重建失败: {e}")
 
 
 async def _seed_skills_and_pipelines():

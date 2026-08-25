@@ -18,6 +18,7 @@ class ChatSessionResponse(BaseModel):
     id: UUID
     user_id: UUID
     title: Optional[str] = None
+    context: Optional[dict] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -30,6 +31,13 @@ class ChatMessageCreate(BaseModel):
     content: str
     # 用户本次对话上传的附件（datasource_id 列表），后端注入到 user message 前缀让 Agent 知道
     attachments: Optional[List[str]] = None
+    # 跳过技能/流程/数据匹配（用户点「直接对话」或「继续处理」时为 True）
+    skip_match: bool = False
+    # 跳过指定匹配步骤（用户点「继续」时带上已匹配过的步骤，如 ["tables", "pipelines"]）
+    skip_steps: List[str] = Field(default_factory=list)
+    # 用户从 data_suggestion 中选择的数据（点"选择此数据"后发送消息时带上，跳过名称匹配和表匹配）
+    selected_datasource_id: Optional[str] = None
+    selected_table_name: Optional[str] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -40,6 +48,7 @@ class ChatMessageResponse(BaseModel):
     code_blocks: Optional[List[dict]] = None
     table_data: Optional[dict] = None
     charts: Optional[List[dict]] = None
+    meta: Optional[dict] = None
     created_at: datetime
 
     class Config:

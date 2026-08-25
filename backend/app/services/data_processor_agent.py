@@ -507,35 +507,29 @@ class DataProcessorAgent(BaseAgent):
 
         for i in range(max_iterations):
             logger.info(f"[run] 第{i+1}轮开始, budget={max_iterations}")
-            # 主对话不暴露内部轮次给前端（避免"第N轮"转圈困扰用户）
 
             # 上下文压缩（对齐 OpenCode compaction）
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
-            response = await llm_manager.chat_with_tools(
+            # 流式调用（实时推送 thinking/content/tool_calls）
+            tool_calls = []
+            content = ""
+            async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=self.tools, model=llm_manager._default,
-                temperature=0.3
-            )
-            if response is None:
-                yield {"type": "content", "content": "所有模型均不可用，请稍后重试或检查模型配置。"}
-                yield {"type": "done", "result": {"agent": self.name, "content": "模型不可用"}}
-                return
-            if i == 0:
-                yield {"type": "model", "content": llm_manager._default}
-            tool_calls = response.get("tool_calls", [])
-            finish_reason = response.get("finish_reason")
-
-            # 推理过程（GLM 等推理模型返回 reasoning_content）
-            reasoning = response.get("reasoning")
-            if reasoning:
-                yield {"type": "thinking", "content": reasoning}
+                temperature=0.3, tool_choice="auto",
+            ):
+                t = event["type"]
+                if t == "thinking":
+                    yield event
+                elif t == "content":
+                    content += event["content"]
+                    yield event
+                elif t == "tool_calls":
+                    tool_calls = event["tool_calls"]
 
             if not tool_calls:
-                content = response.get("content", "")
-
                 # 反幻觉：无工具支撑的数据声明警告（P）
-                # 例外：system prompt 已预注入实时数据时，Agent 基于预注入数据回答是合理的
                 if not had_any_tool_calls and not has_preinjected_data:
                     warn = should_warn_ungrounded_claim(content, had_tool_calls_this_turn=False)
                     if warn and i < max_iterations - 1:
@@ -567,7 +561,6 @@ class DataProcessorAgent(BaseAgent):
                 if intervention:
                     local_messages.append({"role": "user", "content": intervention})
 
-            content = response.get("content") or ""
             if content:
                 yield {"type": "content", "content": content}
 
@@ -1629,8 +1622,6 @@ class DataProcessorAgent(BaseAgent):
 
         logger.info("[run_debug] 开始，无修改次数上限，exec_failures上限=" + str(_MAX_EXEC_FAILURES) + " tools=" + str([t.get("function",{}).get("name","?") for t in debug_tools]))
 
-        yield {"type": "model", "content": llm_manager._default}
-
         while True:
             _total_llm_calls += 1
 
@@ -1731,15 +1722,7 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "tool_action", "actions": _actions}
 
             if not tool_calls:
-                # LLM 无工具调用（对齐 OpenCode：LLM 不调工具 = 判断完毕）
-                _INVESTIGATION_MARKERS = ("是不是", "是否", "让我看看", "让我检查",
-                                          "看一下", "检查一下", "确认一下", "需要确认")
-                _is_investigation = bool(content) and any(m in content for m in _INVESTIGATION_MARKERS)
-                if _is_investigation:
-                    local_messages.append({"role": "assistant", "content": content})
-                    local_messages.append({"role": "user", "content": "请使用可用工具执行实际操作（read_script/grep_script 定位问题，edit_script 修改，run_script 执行）。"})
-                    continue
-                # 非调查语气的不调工具 → 判断完毕，直接退出
+                # LLM 无工具调用 = 判断完毕（对齐 OpenCode）
                 yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
                 yield {"type": "done", "result": {"agent": self.name, "content": content or "未执行工具操作"}}
                 return

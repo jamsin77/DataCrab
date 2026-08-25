@@ -94,32 +94,6 @@ async def get_pipeline(
     return _build_response(p)
 
 
-@router.post("", response_model=PipelineResponse, status_code=201)
-async def create_pipeline(
-    req: PipelineCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    pipeline = Pipeline(
-        id=uuid4(),
-        name=req.name,
-        display_name=req.display_name or req.name,
-        description=req.description,
-        main_code=req.main_code,
-        entry_function=req.entry_function or "main",
-        parameters=req.parameters or [],
-        skill_calls=[c.model_dump() for c in (req.skill_calls or [])],
-        tags=req.tags or [],
-        category=req.category,
-        visibility=req.visibility or "private",
-        created_by=current_user.id,
-    )
-    db.add(pipeline)
-    await db.flush()
-    await db.refresh(pipeline)
-    return _build_response(pipeline)
-
-
 @router.put("/{pipeline_id}", response_model=PipelineResponse)
 async def update_pipeline(
     pipeline_id: UUID,
@@ -147,6 +121,8 @@ async def update_pipeline(
     p.version = (p.version or 1) + 1
     await db.flush()
     await db.refresh(p)
+    from app.services.match_service import index_pipeline
+    await index_pipeline(p, db)
     return _build_response(p)
 
 
@@ -167,6 +143,8 @@ async def delete_pipeline(
         raise HTTPException(status_code=403, detail="内置流程不可删除")
     p.is_active = False
     await db.flush()
+    from app.services.match_service import delete_pipeline_index
+    delete_pipeline_index(str(pipeline_id))
     return {"ok": True}
 
 
@@ -272,10 +250,22 @@ async def create_pipeline_from_skill(
         existing.description = func_desc
         existing.display_name = display_name
         existing.source_skill_id = skill_id
+        _related = {str(skill_id)}
+        for sc in (built.get("skill_calls") or []):
+            if isinstance(sc, dict) and sc.get("skill_id"):
+                _related.add(str(sc["skill_id"]))
+        existing.related_skill_ids = list(_related)
         await db.flush()
         await db.refresh(existing)
         logger.info(f"流程已覆盖更新: {existing.display_name} ({existing.id})")
+        from app.services.match_service import index_pipeline
+        await index_pipeline(existing, db)
         return _build_response(existing)
+
+    _related = {str(skill_id)}
+    for sc in (built.get("skill_calls") or []):
+        if isinstance(sc, dict) and sc.get("skill_id"):
+            _related.add(str(sc["skill_id"]))
 
     pipeline = Pipeline(
         id=uuid4(),
@@ -287,6 +277,7 @@ async def create_pipeline_from_skill(
         parameters=built.get("parameters", []),
         skill_calls=built.get("skill_calls", []),
         source_skill_id=skill_id,
+        related_skill_ids=list(_related),
         tags=skill.tags or [],
         category=skill.category,
         created_by=current_user.id,
@@ -423,11 +414,23 @@ async def create_pipeline_from_skill_stream(
                 existing.description = description
                 existing.display_name = display_name
                 existing.source_skill_id = skill_id
+                _rel = {str(skill_id)}
+                for sc in (built.get("skill_calls") or []):
+                    if isinstance(sc, dict) and sc.get("skill_id"):
+                        _rel.add(str(sc["skill_id"]))
+                existing.related_skill_ids = list(_rel)
                 await db.flush()
                 await db.refresh(existing)
                 logger.info(f"流程已覆盖更新: {existing.display_name} ({existing.id})")
+                from app.services.match_service import index_pipeline
+                await index_pipeline(existing, db)
                 yield f"data: {json_mod.dumps({'type': 'done', 'pipeline_name': display_name, 'mode': 'overwrite'}, ensure_ascii=False)}\n\n"
                 return
+
+            _rel = {str(skill_id)}
+            for sc in (built.get("skill_calls") or []):
+                if isinstance(sc, dict) and sc.get("skill_id"):
+                    _rel.add(str(sc["skill_id"]))
 
             pipeline = Pipeline(
                 id=uuid4(),
@@ -439,6 +442,7 @@ async def create_pipeline_from_skill_stream(
                 parameters=built.get("parameters", []),
                 skill_calls=built.get("skill_calls", []),
                 source_skill_id=skill_id,
+                related_skill_ids=list(_rel),
                 tags=skill.tags or [],
                 category=skill.category,
                 created_by=current_user.id,
@@ -654,6 +658,7 @@ async def clone_pipeline(
         parameters=original.parameters,
         skill_calls=original.skill_calls,
         source_skill_id=original.source_skill_id,
+        related_skill_ids=(original.related_skill_ids or []),
         version=1,
         tags=original.tags,
         category=original.category,
@@ -663,6 +668,8 @@ async def clone_pipeline(
     db.add(clone)
     await db.flush()
     await db.refresh(clone)
+    from app.services.match_service import index_pipeline
+    await index_pipeline(clone, db)
     return _build_response(clone)
 
 

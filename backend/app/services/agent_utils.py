@@ -231,30 +231,9 @@ def should_warn_ungrounded_claim(output_text: str, had_tool_calls_this_turn: boo
 
 # ==================== 动态轮次预算（进度感知）====================
 
-_COMPLEXITY_KEYWORDS = {
-    "simple": ["查询", "查看", "看看", "显示", "列出", "多少", "count", "show", "list", "什么是"],
-    "complex": ["分析", "清洗", "转换", "合并", "关联", "交叉", "对比", "报告", "批量", "全部",
-                 "analyze", "clean", "transform", "merge", "join", "compare", "report"],
-}
-
-
 def estimate_complexity(user_message: str) -> str:
-    """根据用户消息估算任务复杂度。
-
-    借鉴 DeepAnalyze 的 calculateDynamicTurnBudget：
-    - simple：简单查询、单表查找
-    - medium：中等分析、多步处理
-    - complex：复杂多表分析、全量处理、报告生成
-    """
-    if not user_message:
-        return "simple"
-    msg_lower = user_message.lower()
-    complex_hits = sum(1 for kw in _COMPLEXITY_KEYWORDS["complex"] if kw in msg_lower or kw in user_message)
-    if complex_hits >= 2:
-        return "complex"
-    if complex_hits == 1:
-        return "medium"
-    return "simple"
+    """任务复杂度估算（对齐 OpenCode：不靠关键词，固定中等预算）。"""
+    return "medium"
 
 
 def get_turn_budget(complexity: str) -> int:

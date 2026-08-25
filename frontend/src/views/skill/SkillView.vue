@@ -560,6 +560,15 @@
             >
               <el-icon><Document /></el-icon> 调试经验
             </el-button>
+            <el-button
+              size="small"
+              plain
+              type="danger"
+              :disabled="debugStreaming || execRunning || debugMessages.length === 0"
+              @click="clearDebugHistory"
+            >
+              <el-icon><Delete /></el-icon> 清空记录
+            </el-button>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onSkillListScroll">
             <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
@@ -776,7 +785,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch, nextTick, type Ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
@@ -789,6 +798,7 @@ import markdownIt from 'markdown-it'
 import { formatTime, timePrefix } from '@/utils/time'
 
 const router = useRouter()
+const route = useRoute()
 const skills = ref<any[]>([])
 const searchQuery = ref('')
 const sortBy = ref('created')
@@ -1450,7 +1460,7 @@ async function handleModifySkill() {
   const userText = modifyInstruction.value.trim()
   pushHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
   modifyMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
-  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, model: '', created_at: new Date().toISOString() })
 
   const ctrl = new AbortController()
   modifyAbortCtrl.value = ctrl
@@ -1486,7 +1496,9 @@ async function handleModifySkill() {
       try {
         const data = JSON.parse(trimmed.slice(6))
         const msg = modifyMessages.value[modifyMessages.value.length - 1]
-        if (data.type === 'clear_thinking') {
+        if (data.type === 'model') {
+          msg.model = data.content
+        } else if (data.type === 'clear_thinking') {
           msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
         } else if (data.type === 'thinking') {
           if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
@@ -1684,6 +1696,48 @@ const debugMessages = ref<DebugMessage[]>([])
 const debugInput = ref('')
 const debugStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
+
+const DEBUG_MSG_MAX = 50
+
+function loadSkillDebugMsgs(skillId: string | number): DebugMessage[] {
+  try {
+    const raw = localStorage.getItem(`dc_skill_debug_msgs_${skillId}`)
+    if (!raw) return []
+    return JSON.parse(raw).map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined, executingMsgs: undefined }))
+  } catch { return [] }
+}
+
+function saveSkillDebugMsgs(skillId: string | number, msgs: DebugMessage[]) {
+  try {
+    const stripped = msgs.slice(-DEBUG_MSG_MAX).map(m => ({ ...m, executingMsg: undefined, executingMsgs: undefined, thinkingOpen: false }))
+    localStorage.setItem(`dc_skill_debug_msgs_${skillId}`, JSON.stringify(stripped))
+  } catch {
+    try {
+      const lite = msgs.slice(-DEBUG_MSG_MAX).map(m => ({ role: m.role, content: m.content, llmContent: m.llmContent, scriptUpdated: m.scriptUpdated, model: m.model, created_at: m.created_at }))
+      localStorage.setItem(`dc_skill_debug_msgs_${skillId}`, JSON.stringify(lite))
+    } catch { /* quota exceeded, give up */ }
+  }
+}
+
+let _skillDebugSaveTimer: ReturnType<typeof setTimeout> | null = null
+let _skillDebugSaveId: string | number | null = null
+function scheduleSaveSkillDebug() {
+  if (!debugSkill.value) return
+  _skillDebugSaveId = debugSkill.value.id
+  if (_skillDebugSaveTimer) clearTimeout(_skillDebugSaveTimer)
+  _skillDebugSaveTimer = setTimeout(() => {
+    if (_skillDebugSaveId != null) saveSkillDebugMsgs(_skillDebugSaveId, debugMessages.value)
+  }, 500)
+}
+function flushSkillDebugSave() {
+  if (_skillDebugSaveTimer) {
+    clearTimeout(_skillDebugSaveTimer)
+    _skillDebugSaveTimer = null
+    if (_skillDebugSaveId != null && debugMessages.value.length > 0) saveSkillDebugMsgs(_skillDebugSaveId, debugMessages.value)
+  }
+}
+
+watch(debugMessages, scheduleSaveSkillDebug, { deep: true })
 let debugAbortController: AbortController | null = null
 const skillPinnedToBottom = ref(true)
 
@@ -2278,7 +2332,19 @@ const cmdExamples = computed(() => {
 
 
 
+async function clearDebugHistory() {
+  try {
+    await ElMessageBox.confirm('确认清空当前技能的调试记录？此操作不可撤销。', '提示', { type: 'warning' })
+  } catch { return }
+  if (debugSkill.value) {
+    localStorage.removeItem(`dc_skill_debug_msgs_${debugSkill.value.id}`)
+  }
+  debugMessages.value = []
+  ElMessage.success('已清空调试记录')
+}
+
 function resetDebug() {
+  flushSkillDebugSave()
   debugSkill.value = null
   execRunning.value = false
   execResult.value = null
@@ -2315,7 +2381,7 @@ async function openDebug(skill: any, scriptName?: string) {
   execCmdStr.value = `/${freshSkill.name || 'skill'} `
   execTab.value = 'nl'
   skillParams.value = []
-  debugMessages.value = []
+  debugMessages.value = loadSkillDebugMsgs(freshSkill.id)
   debugInput.value = ''
   debugStreaming.value = false
   debugDrawer.value = true
@@ -2769,10 +2835,58 @@ async function handleDebugSend() {
   }
 }
 
-onMounted(() => {
-  loadSkills()
+onMounted(async () => {
+  await loadSkills()
   loadDatasources()
   loadAgentConfig()
+
+  const debugId = route.query.debug as string
+  if (debugId) {
+    const skill = skills.value.find((s: any) => s.id === debugId)
+    const userMessage = route.query.instruction ? decodeURIComponent(route.query.instruction as string) : ''
+    const dsName = route.query.ds_name as string || ''
+    const tblName = route.query.table_name as string || ''
+    const chatSessionId = route.query.chat_session_id as string || ''
+    router.replace({ query: {} })
+    if (skill) {
+      await openDebug(skill)
+      if (dsName) cmdExampleDsName.value = dsName
+      if (tblName) cmdExampleTableName.value = tblName
+      // 调后端生成技能调用指令（根据技能参数要求 + 对话上下文）
+      let instruction = userMessage
+      if (chatSessionId && userMessage) {
+        try {
+          console.log('[infer-instruction] 调用端点:', { skill_id: skill.id, chat_session_id: chatSessionId, user_message: userMessage, dsName, tblName })
+          const res = await api.post(`/skills/${skill.id}/infer-instruction`, {
+            chat_session_id: chatSessionId,
+            user_message: userMessage,
+            source_datasource_name: dsName || undefined,
+            source_table_name: tblName || undefined,
+          })
+          console.log('[infer-instruction] 返回:', res)
+          if (res?.instruction) instruction = res.instruction
+        } catch (e: any) {
+          console.error('[infer-instruction] 失败:', e?.message || e, e?.response?.data)
+        }
+      } else {
+        console.log('[infer-instruction] 跳过: chatSessionId=', chatSessionId, 'userMessage=', userMessage)
+      }
+      if (instruction) {
+        console.log('[infer-instruction] 最终指令:', instruction)
+        execNLQuery.value = instruction
+      }
+    }
+    return
+  }
+  if (route.query.create === 'true') {
+    const desc = route.query.desc ? decodeURIComponent(route.query.desc as string) : ''
+    router.replace({ query: {} })
+    generatePrompt.value = desc
+    showGenerateDialog.value = true
+    if (desc) {
+      await handleGenerate()
+    }
+  }
 })
 </script>
 

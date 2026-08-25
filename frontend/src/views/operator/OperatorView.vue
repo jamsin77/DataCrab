@@ -158,6 +158,16 @@
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
             <span>AI 代码助手</span>
+            <el-button
+              size="small"
+              plain
+              type="danger"
+              style="margin-left: auto"
+              :disabled="opStreaming || opMessages.length === 0"
+              @click="clearOpDebugHistory"
+            >
+              <el-icon><Delete /></el-icon> 清空记录
+            </el-button>
           </div>
           <div class="debug-message-list" ref="opMsgListRef" @scroll="onOpListScroll">
             <div v-if="opMessages.length === 0" class="debug-empty">
@@ -645,9 +655,48 @@ interface OpDebugSession {
   inputValues: Record<string, string>
   paramValues: Record<string, string>
 }
-const OP_SESSION_KEY = 'datacrab:op_debug_session'
+const OP_LAST_KEY = 'datacrab:op_debug:last'
+const DEBUG_MSG_MAX = 50
+
+function opDebugKey(opId: number | string): string {
+  return `datacrab:op_debug:${opId}`
+}
+
+function loadOpDebugSession(opId: number | string): Partial<OpDebugSession> | null {
+  try {
+    const raw = localStorage.getItem(opDebugKey(opId))
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    if (data.messages) data.messages = data.messages.map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined }))
+    return data
+  } catch { return null }
+}
+
+function saveOpDebugSession(opId: number | string, data: OpDebugSession) {
+  try {
+    const stripped = {
+      ...data,
+      messages: data.messages.slice(-DEBUG_MSG_MAX).map(m => ({ ...m, executingMsg: undefined, thinkingOpen: false })),
+    }
+    localStorage.setItem(opDebugKey(opId), JSON.stringify(stripped))
+    localStorage.setItem(OP_LAST_KEY, String(opId))
+  } catch {
+    try {
+      const lite = {
+        ...data,
+        messages: data.messages.slice(-DEBUG_MSG_MAX).map(m => ({ role: m.role, content: m.content, scriptUpdated: m.scriptUpdated, model: m.model, created_at: m.created_at })),
+      }
+      localStorage.setItem(opDebugKey(opId), JSON.stringify(lite))
+      localStorage.setItem(OP_LAST_KEY, String(opId))
+    } catch { /* quota exceeded */ }
+  }
+}
 
 function openDebug(op: any, restore?: Partial<OpDebugSession>) {
+  // 无 restore 时从 localStorage 加载该算子的历史
+  if (!restore) {
+    restore = loadOpDebugSession(op.id) || undefined
+  }
   debugOperator.value = op
 
   for (const key of Object.keys(debugInputValues)) {
@@ -692,30 +741,25 @@ function saveOpSession() {
     inputValues: { ...debugInputValues },
     paramValues: { ...debugParamValues },
   }
-  try {
-    sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify(data))
-  } catch {
-    try {
-      sessionStorage.setItem(OP_SESSION_KEY, JSON.stringify({ ...data, messages: [] }))
-    } catch {
-      // 放弃持久化（可能 sessionStorage 已满）
-    }
-  }
+  saveOpDebugSession(debugOperator.value.id, data)
 }
 function scheduleSaveOpSession() {
   if (opSaveTimer) clearTimeout(opSaveTimer)
-  opSaveTimer = setTimeout(saveOpSession, 300)
+  opSaveTimer = setTimeout(saveOpSession, 500)
 }
 function clearOpSession() {
-  sessionStorage.removeItem(OP_SESSION_KEY)
+  if (debugOperator.value) {
+    localStorage.removeItem(opDebugKey(debugOperator.value.id))
+  }
+  localStorage.removeItem(OP_LAST_KEY)
 }
 async function restoreOpSession() {
-  const raw = sessionStorage.getItem(OP_SESSION_KEY)
-  if (!raw) return
+  const lastId = localStorage.getItem(OP_LAST_KEY)
+  if (!lastId) return
   try {
-    const data = JSON.parse(raw) as Partial<OpDebugSession>
-    if (!data.operatorId) return
-    const op = await api.get(`/operators/${data.operatorId}`)
+    const data = loadOpDebugSession(lastId)
+    if (!data) return
+    const op = await api.get(`/operators/${lastId}`)
     openDebug(op, data)
   } catch {
     clearOpSession()
@@ -741,6 +785,17 @@ function handleDebugBeforeClose(done: () => void) {
     return
   }
   done()
+}
+
+async function clearOpDebugHistory() {
+  try {
+    await ElMessageBox.confirm('确认清空当前算子的调试记录？此操作不可撤销。', '提示', { type: 'warning' })
+  } catch { return }
+  if (debugOperator.value) {
+    localStorage.removeItem(opDebugKey(debugOperator.value.id))
+  }
+  opMessages.value = []
+  ElMessage.success('已清空调试记录')
 }
 
 function resetDebug() {
@@ -1040,7 +1095,7 @@ async function handleModify() {
   modifying.value = true
   const userText = modifyInstruction.value.trim()
   modifyMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
-  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
+  modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, model: '', created_at: new Date().toISOString() })
   modifyAbortController = new AbortController()
   pushGenericHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
 
@@ -1079,7 +1134,9 @@ async function handleModify() {
         try {
           const data = JSON.parse(trimmed.slice(6))
           const msg = modifyMessages.value[modifyMessages.value.length - 1]
-          if (data.type === 'clear_thinking') {
+          if (data.type === 'model') {
+            msg.model = data.content
+          } else if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }

@@ -1,15 +1,17 @@
 """权限管理API端点"""
 
 import uuid
+from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_
 from loguru import logger
 
 from app.core.database import get_db
 from app.api.deps import get_current_user
-from app.models.user import User
+from app.models.user import User, PermissionRequest
 from app.services import permission_service as ps
 
 router = APIRouter()
@@ -260,3 +262,210 @@ async def remove_role_member(
     await ps.remove_role_from_user(db, uuid.UUID(role_id), uuid.UUID(user_id))
     await db.commit()
     return {"success": True, "message": "已移除成员"}
+
+
+# ===== 权限申请流程 =====
+
+class PermissionRequestCreate(BaseModel):
+    resource_type: str = Field(..., description="资源类型")
+    resource_id: str = Field(..., description="资源UUID")
+    requested_level: str = Field("use", description="申请的权限级别")
+    reason: Optional[str] = Field(None, description="申请理由")
+
+
+class PermissionRequestResponse(BaseModel):
+    id: str
+    resource_type: str
+    resource_id: str
+    requester_id: str
+    requested_level: str
+    reason: Optional[str] = None
+    status: str
+    reviewer_id: Optional[str] = None
+    review_note: Optional[str] = None
+    escalated: bool = False
+    created_at: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+async def _get_resource_owner_id(db: AsyncSession, resource_type: str, resource_id: uuid.UUID) -> Optional[uuid.UUID]:
+    """查询资源的 created_by"""
+    if resource_type == "skill":
+        from app.models.skill import Skill
+        r = await db.execute(select(Skill).where(Skill.id == resource_id))
+        s = r.scalar_one_or_none()
+        return s.created_by if s else None
+    elif resource_type == "pipeline":
+        from app.models.pipeline import Pipeline
+        r = await db.execute(select(Pipeline).where(Pipeline.id == resource_id))
+        p = r.scalar_one_or_none()
+        return p.created_by if p else None
+    elif resource_type == "operator":
+        from app.models.operator import Operator
+        r = await db.execute(select(Operator).where(Operator.id == resource_id))
+        o = r.scalar_one_or_none()
+        return o.created_by if o else None
+    elif resource_type == "datasource":
+        from app.models.datasource import DataSource
+        r = await db.execute(select(DataSource).where(DataSource.id == resource_id))
+        d = r.scalar_one_or_none()
+        return d.created_by if d else None
+    return None
+
+
+@router.post("/request", response_model=PermissionRequestResponse)
+async def create_permission_request(
+    req: PermissionRequestCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """提交权限申请"""
+    existing = await db.execute(
+        select(PermissionRequest).where(
+            and_(
+                PermissionRequest.resource_type == req.resource_type,
+                PermissionRequest.resource_id == uuid.UUID(req.resource_id),
+                PermissionRequest.requester_id == current_user.id,
+                PermissionRequest.status == "pending",
+            )
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="已有一份待审批的申请，请等待资源所有者处理")
+
+    has_perm = await ps.check_permission(
+        db, current_user.id, req.resource_type, uuid.UUID(req.resource_id), req.requested_level,
+        is_superuser=current_user.is_superuser,
+    )
+    if has_perm:
+        raise HTTPException(status_code=400, detail="您已拥有该权限，无需申请")
+
+    pr = PermissionRequest(
+        resource_type=req.resource_type,
+        resource_id=uuid.UUID(req.resource_id),
+        requester_id=current_user.id,
+        requested_level=req.requested_level,
+        reason=req.reason,
+        status="pending",
+    )
+    db.add(pr)
+    await db.flush()
+    await db.refresh(pr)
+    await db.commit()
+    return PermissionRequestResponse(
+        id=str(pr.id), resource_type=pr.resource_type, resource_id=str(pr.resource_id),
+        requester_id=str(pr.requester_id), requested_level=pr.requested_level,
+        reason=pr.reason, status=pr.status, escalated=pr.escalated,
+        created_at=pr.created_at.isoformat() if pr.created_at else None,
+    )
+
+
+@router.get("/requests/my", response_model=List[PermissionRequestResponse])
+async def list_my_requests(
+    status_filter: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """我发起的权限申请"""
+    q = select(PermissionRequest).where(PermissionRequest.requester_id == current_user.id)
+    if status_filter:
+        q = q.where(PermissionRequest.status == status_filter)
+    q = q.order_by(PermissionRequest.created_at.desc())
+    result = await db.execute(q)
+    return [PermissionRequestResponse(
+        id=str(pr.id), resource_type=pr.resource_type, resource_id=str(pr.resource_id),
+        requester_id=str(pr.requester_id), requested_level=pr.requested_level,
+        reason=pr.reason, status=pr.status,
+        reviewer_id=str(pr.reviewer_id) if pr.reviewer_id else None,
+        review_note=pr.review_note, escalated=pr.escalated,
+        created_at=pr.created_at.isoformat() if pr.created_at else None,
+        reviewed_at=pr.reviewed_at.isoformat() if pr.reviewed_at else None,
+    ) for pr in result.scalars().all()]
+
+
+@router.get("/requests/incoming", response_model=List[PermissionRequestResponse])
+async def list_incoming_requests(
+    status_filter: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """别人对我的资源的申请"""
+    q = select(PermissionRequest).where(PermissionRequest.status == "pending")
+    result = await db.execute(q)
+    all_pending = result.scalars().all()
+    mine = []
+    for pr in all_pending:
+        owner_id = await _get_resource_owner_id(db, pr.resource_type, pr.resource_id)
+        if owner_id == current_user.id or current_user.is_superuser:
+            if status_filter and pr.status != status_filter:
+                continue
+            mine.append(PermissionRequestResponse(
+                id=str(pr.id), resource_type=pr.resource_type, resource_id=str(pr.resource_id),
+                requester_id=str(pr.requester_id), requested_level=pr.requested_level,
+                reason=pr.reason, status=pr.status,
+                reviewer_id=str(pr.reviewer_id) if pr.reviewer_id else None,
+                review_note=pr.review_note, escalated=pr.escalated,
+                created_at=pr.created_at.isoformat() if pr.created_at else None,
+                reviewed_at=pr.reviewed_at.isoformat() if pr.reviewed_at else None,
+            ))
+    return mine
+
+
+@router.post("/requests/{request_id}/approve")
+async def approve_request(
+    request_id: str,
+    review_note: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """批准权限申请（资源所有者或超管）"""
+    result = await db.execute(select(PermissionRequest).where(PermissionRequest.id == uuid.UUID(request_id)))
+    pr = result.scalar_one_or_none()
+    if not pr:
+        raise HTTPException(status_code=404, detail="申请不存在")
+    if pr.status != "pending":
+        raise HTTPException(status_code=400, detail="该申请已处理")
+
+    owner_id = await _get_resource_owner_id(db, pr.resource_type, pr.resource_id)
+    if owner_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="只有资源所有者或管理员可以审批")
+
+    await ps.grant_permission(
+        db, pr.resource_type, pr.resource_id, current_user.id,
+        user_id=pr.requester_id, permission_level=pr.requested_level,
+    )
+    pr.status = "approved"
+    pr.reviewer_id = current_user.id
+    pr.review_note = review_note
+    pr.reviewed_at = datetime.utcnow()
+    await db.flush()
+    await db.commit()
+    return {"success": True, "message": "已批准权限申请"}
+
+
+@router.post("/requests/{request_id}/reject")
+async def reject_request(
+    request_id: str,
+    review_note: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """驳回权限申请（资源所有者或超管）"""
+    result = await db.execute(select(PermissionRequest).where(PermissionRequest.id == uuid.UUID(request_id)))
+    pr = result.scalar_one_or_none()
+    if not pr:
+        raise HTTPException(status_code=404, detail="申请不存在")
+    if pr.status != "pending":
+        raise HTTPException(status_code=400, detail="该申请已处理")
+
+    owner_id = await _get_resource_owner_id(db, pr.resource_type, pr.resource_id)
+    if owner_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="只有资源所有者或管理员可以审批")
+
+    pr.status = "rejected"
+    pr.reviewer_id = current_user.id
+    pr.review_note = review_note
+    pr.reviewed_at = datetime.utcnow()
+    await db.flush()
+    await db.commit()
+    return {"success": True, "message": "已驳回权限申请"}

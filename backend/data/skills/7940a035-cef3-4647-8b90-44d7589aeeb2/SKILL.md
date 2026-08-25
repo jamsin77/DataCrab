@@ -1,7 +1,8 @@
 ---
 name: semantic-merge-records
-description: 按条件筛选源数据，基于字段语义与大模型匹配将源数据归并到目标数据中，支持归并校验
+description: 按条件筛选源数据，基于字段语义/AI匹配将源数据归并/合并到目标数据中，支持归并校验、语义匹配合并、智能数据合并，适合多源数据整合、跨表数据归并等场景
 version: "1.0.1"
+skill_type: processing
 tags:
   - 归并
   - 语义匹配
