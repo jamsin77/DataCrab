@@ -10,7 +10,6 @@ class OperatorCreate(BaseModel):
     name: str = Field(..., max_length=100)
     display_name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
-    category: Optional[str] = None
     inputs: Optional[Any] = None
     outputs: Optional[Any] = None
     parameters: Optional[Any] = None
@@ -23,7 +22,6 @@ class OperatorCreate(BaseModel):
 class OperatorUpdate(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
-    category: Optional[str] = None
     inputs: Optional[Any] = None
     outputs: Optional[Any] = None
     parameters: Optional[Any] = None
@@ -38,7 +36,6 @@ class OperatorResponse(BaseModel):
     name: str
     display_name: Optional[str] = None
     description: Optional[str] = None
-    category: Optional[str] = None
     inputs: Optional[Any] = None
     outputs: Optional[Any] = None
     parameters: Optional[Any] = None
@@ -101,7 +98,6 @@ class SimilarOperatorItem(BaseModel):
     name: str
     display_name: Optional[str] = None
     description: Optional[str] = None
-    category: Optional[str] = None
     tags: Optional[List[str]] = None
     similarity: float = Field(..., description="相似度 0~1")
     can_use: bool = Field(..., description="当前用户是否有权限使用")

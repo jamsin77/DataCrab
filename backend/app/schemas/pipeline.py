@@ -23,7 +23,7 @@ class PipelineCreate(BaseModel):
     parameters: Optional[List[Dict[str, Any]]] = None
     skill_calls: Optional[List[SkillCall]] = None
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    pipeline_type: Optional[str] = None
     visibility: Optional[str] = "private"
 
 
@@ -35,7 +35,7 @@ class PipelineUpdate(BaseModel):
     parameters: Optional[List[Dict[str, Any]]] = None
     skill_calls: Optional[List[SkillCall]] = None
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    pipeline_type: Optional[str] = None
     visibility: Optional[str] = None
 
 
@@ -52,7 +52,7 @@ class PipelineResponse(BaseModel):
     related_skill_ids: Optional[List[Any]] = None
     version: int = 1
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    pipeline_type: Optional[str] = None
     visibility: Optional[str] = None
     is_active: bool = True
     is_builtin: bool = False

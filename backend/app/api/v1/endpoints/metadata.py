@@ -203,9 +203,10 @@ async def update_metadata(
     return _serialize_meta(meta, ds_name)
 
 
-async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession) -> None:
+async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str) -> None:
     """AI增强核心逻辑（不查 DataSource，不重复 initialize，不 flush）"""
-    from app.services.llm import llm_manager
+    from app.services.llm import llm_manager, init_user_llm_context
+    await init_user_llm_context(user_id)
     if not llm_manager._initialized:
         await llm_manager.initialize()
 
@@ -277,7 +278,7 @@ async def ai_enrich_business_metadata(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """AI补充业务元数据"""
+    """AI增强业务元数据"""
     result = await db.execute(
         select(TableMetadata).where(TableMetadata.id == table_metadata_id)
     )
@@ -291,11 +292,11 @@ async def ai_enrich_business_metadata(
     ds = ds_result.scalar_one_or_none()
 
     try:
-        await _do_ai_enrich(meta, ds, db)
+        await _do_ai_enrich(meta, ds, db, str(current_user.id))
         logger.info(f"AI enrich done: {meta.table_name}")
     except Exception as e:
         logger.error(f"AI enrich failed [{meta.table_name}]: {e}")
-        raise HTTPException(status_code=500, detail=f"AI补充失败: {e}")
+        raise HTTPException(status_code=500, detail=f"AI增强失败: {e}")
 
     await db.flush()
     await db.refresh(meta)

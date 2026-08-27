@@ -29,7 +29,7 @@ class Pipeline(Base):
     version = Column(Integer, default=1)
 
     tags = Column(JSON)
-    category = Column(String(50))
+    pipeline_type = Column(String(20), index=True)  # analysis / processing / system
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     visibility = Column(String(20), default="private")
 

@@ -128,7 +128,7 @@ async def _builtin_metadata_sync_enrich(
             for batch_start in range(0, len(to_enrich), BATCH):
                 batch = to_enrich[batch_start:batch_start + BATCH]
                 results = await asyncio.gather(
-                    *[_do_ai_enrich(t, ds, db) for t in batch],
+                    *[_do_ai_enrich(t, ds, db, str(user_id)) for t in batch],
                     return_exceptions=True,
                 )
                 for t, r in zip(batch, results):

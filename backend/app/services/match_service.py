@@ -6,6 +6,13 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 
+_MATCH_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "match_detail.log")
+
+def _mlog(msg: str):
+    """独立写入 match_detail.log，不依赖 main.py 的日志过滤器"""
+    with open(_MATCH_LOG, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MATCH_CHROMA_DIR = os.path.join(_BACKEND_DIR, "data", "match_chroma")
 os.makedirs(MATCH_CHROMA_DIR, exist_ok=True)
@@ -67,9 +74,6 @@ def _build_skill_text(skill) -> str:
     tags = skill.tags or []
     if tags:
         parts.append(" ".join(str(t) for t in tags))
-    category = getattr(skill, "category", None)
-    if category:
-        parts.append(category)
     return "\n".join(p for p in parts if p)
 
 
@@ -78,9 +82,6 @@ def _build_operator_text(operator) -> str:
     tags = operator.tags or []
     if tags:
         parts.append(" ".join(str(t) for t in tags))
-    category = getattr(operator, "category", None)
-    if category:
-        parts.append(category)
     if operator.display_name:
         parts.insert(0, operator.display_name)
     return "\n".join(p for p in parts if p)
@@ -121,9 +122,6 @@ def _build_pipeline_text(pipeline, db=None) -> str:
     tags = pipeline.tags or []
     if tags:
         parts.append(" ".join(str(t) for t in tags))
-    category = getattr(pipeline, "category", None)
-    if category:
-        parts.append(category)
     return "\n".join(p for p in parts if p)
 
 
@@ -168,7 +166,7 @@ async def index_skill(skill, raise_on_error=False):
             documents=[text],
             metadatas=[{
                 "name": skill.name or "",
-                "skill_type": " ".join(str(t) for t in (skill.tags or []) if str(t).startswith("skill_type:")),
+                "skill_type": skill.skill_type or "",
                 "visibility": skill.visibility or "public",
             }],
         )
@@ -329,6 +327,75 @@ async def search_operators(query: str, top_k: int = 5) -> List[Tuple[str, float]
         return []
 
 
+async def check_similar_resources(
+    prompt: str,
+    search_fn,
+    model_cls,
+    db,
+    user_id,
+    permission_resource: str,
+    top_k: int = 5,
+    extra_fields_fn=None,
+) -> list:
+    """通用相似资源检测（向量检索 + 阈值过滤 + 权限判断 + owner 信息）。
+
+    :param search_fn: match_service.search_skills / search_operators 等
+    :param model_cls: Skill / Operator 等 ORM 模型类
+    :param permission_resource: "skill" / "operator" 等，用于 get_accessible_resource_ids
+    :param extra_fields_fn: 可选 callable(obj) -> dict，补充类型特有字段
+    :return: dict 列表（含 id/name/display_name/description/tags/similarity/can_use/owner_name/owner_email + extra）
+    """
+    from sqlalchemy import select as sa_select
+    from app.models.user import User
+    from app.services.permission_service import get_accessible_resource_ids
+
+    matched = await search_fn(prompt, top_k=top_k)
+    if not matched:
+        return []
+
+    shared_ids = await get_accessible_resource_ids(db, user_id, permission_resource)
+
+    owner_cache: dict = {}
+    items = []
+    for rid, score in matched:
+        if score < MATCH_THRESHOLD:
+            continue
+        result = await db.execute(sa_select(model_cls).where(model_cls.id == rid))
+        obj = result.scalar_one_or_none()
+        if not obj:
+            continue
+        can_use = (
+            obj.created_by == user_id
+            or obj.visibility == "public"
+            or obj.id in shared_ids
+        )
+        owner_name = None
+        owner_email = None
+        if not can_use and obj.created_by:
+            if obj.created_by not in owner_cache:
+                user_result = await db.execute(sa_select(User).where(User.id == obj.created_by))
+                owner_cache[obj.created_by] = user_result.scalar_one_or_none()
+            owner = owner_cache[obj.created_by]
+            if owner:
+                owner_name = owner.display_name or owner.username
+                owner_email = owner.email
+        item = {
+            "id": str(obj.id),
+            "name": obj.name,
+            "display_name": obj.display_name,
+            "description": obj.description,
+            "tags": obj.tags,
+            "similarity": score,
+            "can_use": can_use,
+            "owner_name": owner_name,
+            "owner_email": owner_email,
+        }
+        if extra_fields_fn:
+            item.update(extra_fields_fn(obj))
+        items.append(item)
+    return items
+
+
 async def search_tables(query: str, top_k: int = 3) -> List[Tuple[str, float]]:
     if not query or not query.strip():
         return []
@@ -351,112 +418,64 @@ async def search_tables(query: str, top_k: int = 3) -> List[Tuple[str, float]]:
 
 # ---------- LLM 匹配（技能/流程/数据表，直接全列表给 LLM 判断）----------
 
-async def llm_match_tables(user_message: str, db) -> Tuple[List[Tuple[str, float, dict]], List[Dict]]:
-    """自适应 LLM 匹配数据表。返回 (result, events)。
-    先按数据源名过滤，只把相关数据源的表给 LLM。"""
-    from app.models.datasource import DataSource, TableMetadata
-    from sqlalchemy import select
-
-    ds_rows = (await db.execute(select(DataSource))).scalars().all()
-    ds_map = {str(ds.id): ds.name for ds in ds_rows}
-    table_metas = (await db.execute(select(TableMetadata))).scalars().all()
-    if not table_metas:
-        return [], []
-
-    # 先按数据源名过滤：用户消息中包含哪些数据源名
-    mentioned_ds_ids = set()
-    for ds in ds_rows:
-        if ds.name and ds.name in user_message:
-            mentioned_ds_ids.add(str(ds.id))
-    # 只保留用户提到的数据源的表；没提到则全量（兜底）
-    if mentioned_ds_ids:
-        table_metas = [tm for tm in table_metas if str(tm.data_source_id) in mentioned_ds_ids]
-        logger.info(f"[match] 数据源过滤: {len(mentioned_ds_ids)} 个数据源, {len(table_metas)} 张表")
-    if not table_metas:
-        return [], []
-
-    id_to_meta = {}
-    items = []
-    for tm in table_metas:
-        ds_name = ds_map.get(str(tm.data_source_id), "")
-        col_names = [c["name"] for c in (tm.table_schema or []) if isinstance(c, dict) and c.get("name")]
-        items.append({
-            "id": str(tm.id),
-            "name": f"{ds_name} → {tm.table_name}",
-            "desc": f"{getattr(tm, 'business_description', '') or getattr(tm, 'business_name', '') or ''} 列: {', '.join(col_names[:10])}",
-        })
-        id_to_meta[str(tm.id)] = (tm, ds_name)
-
-    matched, events = await _llm_match_items(user_message, items)
-    result = []
-    for mid, score in matched:
-        tm, ds_name = id_to_meta.get(mid, (None, ""))
-        if tm:
-            result.append((mid, score, {
-                "data_source_id": str(tm.data_source_id) if tm.data_source_id else "",
-                "table_name": tm.table_name or "",
-                "datasource_name": ds_name,
-                "row_count": tm.row_count,
-                "column_count": tm.column_count,
-            }))
-    return result, events
-
-
-async def llm_match_target_tables(
-    user_message: str, db, source_datasource_id: str = "",
+async def llm_match_tables(
+    user_message: str, db, exclude_datasource_id: str = "",
 ) -> Tuple[List[Tuple[str, float, dict]], List[str], List[Dict]]:
-    """在目标数据源中匹配目标表（排除已选的源数据源）。
+    """自适应 LLM 匹配数据表。返回 (result, ds_names, events)。
 
-    从用户消息中提取目标数据源名（排除源数据源），在目标数据源的表中用 LLM 匹配。
-    返回 (matches, target_ds_names, events)。
-    - target_ds_names 非空 = 用户提到了目标数据源（即使没匹配到表）
-    - target_ds_names 空 = 用户没提到目标数据源
+    先按数据源名过滤（字符串匹配），只把相关数据源的表给 LLM。
+    exclude_datasource_id 非空时排除该数据源（目标表匹配时排除已选源数据源）。
+    - ds_names 非空 = 用户提到了数据源（即使没匹配到表）
+    - ds_names 空 = 用户没提到数据源
     """
     from app.models.datasource import DataSource, TableMetadata
     from sqlalchemy import select
 
+    _mlog(f"\n{'#'*60}")
+    _mlog(f"# llm_match_tables 入口: user_message={user_message} exclude={exclude_datasource_id}")
     ds_rows = (await db.execute(select(DataSource))).scalars().all()
     ds_map = {str(ds.id): ds.name for ds in ds_rows}
 
-    # 提取用户消息中提到的数据源，排除已选的源数据源
-    target_ds_ids = set()
-    target_ds_names = []
+    # 字符串匹配数据源名，排除指定数据源
+    mentioned_ds_ids = set()
+    mentioned_ds_names = []
     for ds in ds_rows:
-        if str(ds.id) == source_datasource_id:
+        if exclude_datasource_id and str(ds.id) == exclude_datasource_id:
             continue
         if ds.name and ds.name in user_message:
-            target_ds_ids.add(str(ds.id))
-            target_ds_names.append(ds.name)
+            mentioned_ds_ids.add(str(ds.id))
+            mentioned_ds_names.append(ds.name)
+            _mlog(f"# 匹配到数据源: {ds.name} -> {ds.id}")
 
-    if not target_ds_ids:
+    if not mentioned_ds_ids:
+        _mlog(f"# 未匹配到数据源名，返回空")
         return [], [], []
 
-    # 查目标数据源的表
+    # 查这些数据源的表
     from uuid import UUID as _UUID
     table_metas = (await db.execute(
         select(TableMetadata).where(
-            TableMetadata.data_source_id.in_([_UUID(d) for d in target_ds_ids])
+            TableMetadata.data_source_id.in_([_UUID(d) for d in mentioned_ds_ids])
         )
     )).scalars().all()
 
     if not table_metas:
-        # 目标数据源中没表（可能新数据源，第一次处理）
-        return [], target_ds_names, []
+        _mlog(f"# 数据源中无表，返回空（数据源名已匹配）")
+        return [], mentioned_ds_names, []
 
-    # LLM 匹配目标表
-    items = []
     id_to_meta = {}
+    items = []
     for tm in table_metas:
         ds_name = ds_map.get(str(tm.data_source_id), "")
         col_names = [c["name"] for c in (tm.table_schema or []) if isinstance(c, dict) and c.get("name")]
         items.append({
             "id": str(tm.id),
             "name": f"{ds_name} → {tm.table_name}",
-            "desc": f"{getattr(tm, 'business_description', '') or getattr(tm, 'business_name', '') or ''} 列: {', '.join(col_names[:10])}",
+            "desc": f"{getattr(tm, 'business_description', '') or getattr(tm, 'business_name', '') or ''} {getattr(tm, 'business_purpose', '') or ''} 标签: {', '.join(getattr(tm, 'business_tags', []) or [])} 列: {', '.join(col_names[:10])}",
         })
         id_to_meta[str(tm.id)] = (tm, ds_name)
 
-    matched, events = await _llm_match_items(user_message, items)
+    matched, events = await _llm_match_items(user_message, items, match_type="table")
     result = []
     for mid, score in matched:
         tm, ds_name = id_to_meta.get(mid, (None, ""))
@@ -468,7 +487,7 @@ async def llm_match_target_tables(
                 "row_count": tm.row_count,
                 "column_count": tm.column_count,
             }))
-    return result, target_ds_names, events
+    return result, mentioned_ds_names, events
 
 
 async def llm_match_skills(user_message: str, db, msg_type: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
@@ -476,10 +495,14 @@ async def llm_match_skills(user_message: str, db, msg_type: str = "") -> Tuple[L
     from app.models.skill import Skill
     from sqlalchemy import select
     skills = (await db.execute(select(Skill))).scalars().all()
+    _mlog(f"\n{'#'*60}")
+    _mlog(f"# llm_match_skills 入口: msg_type={msg_type} 技能数={len(skills)}")
+    for s in skills:
+        _mlog(f"#   技能: name={s.name} display={s.display_name} type={s.skill_type} vis={s.visibility}")
     if not skills:
         return [], []
     return await _llm_match_items(user_message, [
-        {"id": str(s.id), "name": s.name, "desc": s.description or ""} for s in skills
+        {"id": str(s.id), "name": s.display_name or s.name or "", "desc": f"{s.description or ''} 标签: {', '.join(s.tags or [])}"} for s in skills
     ], msg_type)
 
 
@@ -487,22 +510,33 @@ async def llm_match_pipelines(user_message: str, db, msg_type: str = "") -> Tupl
     """用 LLM 判断用户消息匹配哪些流程。返回 (matched, events)。"""
     from app.models.pipeline import Pipeline
     from sqlalchemy import select
-    pipelines = (await db.execute(select(Pipeline).where(Pipeline.is_active == True))).scalars().all()
+    # 排除内置流程（平台维护类，不参与用户业务匹配）
+    pipelines = (await db.execute(select(Pipeline).where(Pipeline.is_active == True, Pipeline.is_builtin == False))).scalars().all()
+    _mlog(f"\n{'#'*60}")
+    _mlog(f"# llm_match_pipelines 入口: msg_type={msg_type} 候选流程数={len(pipelines)} (已排除 is_builtin=True)")
+    for p in pipelines:
+        _mlog(f"#   流程: name={p.name} display={p.display_name} type={p.pipeline_type} builtin={p.is_builtin}")
     if not pipelines:
         return [], []
     return await _llm_match_items(user_message, [
-        {"id": str(p.id), "name": p.display_name or p.name or "", "desc": p.description or ""} for p in pipelines
+        {"id": str(p.id), "name": p.display_name or p.name or "", "desc": f"{p.description or ''} 标签: {', '.join(p.tags or [])}"} for p in pipelines
     ], msg_type)
 
 
 _PROMPT_LEN_THRESHOLD = 3000
 
 
-async def _llm_parse_response(prompt: str, items: List[Dict], top_k: int = None) -> Tuple[List[Tuple[str, float]], List[Dict]]:
+async def _llm_parse_response(prompt: str, items: List[Dict], top_k: int = None, match_stage: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
     """底层：流式调 LLM 并解析返回的序号列表为 (id, 1.0)。
     返回 (matched, events)——events 供前端显示推理过程。"""
     events = []
     resp_text = ""
+    _mlog(f"{'='*60}")
+    _mlog(f"[stage={match_stage}] 候选数={len(items)}")
+    _mlog(f"[prompt]:\n{prompt}")
+    _mlog(f"[候选列表]:")
+    for i, it in enumerate(items):
+        _mlog(f"  {i}. id={it['id']} name={it.get('name','')} desc={it.get('desc','')[:200]}")
     try:
         async for event in llm_manager.chat_stream_with_thinking(
             messages=[{"role": "user", "content": prompt}],
@@ -511,8 +545,10 @@ async def _llm_parse_response(prompt: str, items: List[Dict], top_k: int = None)
             events.append(event)
             if event.get("type") == "content":
                 resp_text += event["content"]
+        _mlog(f"[LLM 原始响应]: {resp_text}")
         resp = resp_text.strip().lower()
         if not resp or resp == "none":
+            _mlog(f"[结果] 无匹配（resp={resp}）")
             return [], events
         matched = []
         for part in resp.replace("，", ",").split(","):
@@ -521,11 +557,13 @@ async def _llm_parse_response(prompt: str, items: List[Dict], top_k: int = None)
                 idx = int(part)
                 if 0 <= idx < len(items):
                     matched.append((items[idx]["id"], 1.0))
+                    _mlog(f"  匹配: idx={idx} -> id={items[idx]['id']} name={items[idx].get('name','')}")
         if top_k:
             matched = matched[:top_k]
+        _mlog(f"[最终匹配数]={len(matched)}")
         return matched, events
     except Exception as e:
-        logger.warning(f"LLM 匹配失败: {e}")
+        _mlog(f"[LLM 匹配失败]: {e}")
         return [], events
 
 
@@ -543,10 +581,10 @@ async def _llm_coarse_match(user_message: str, items: List[Dict], top_k: int = 2
         f"可选项目：\n{item_list}\n\n"
         f"返回最相关的 {top_k} 个项目的序号（逗号分隔），按相关程度从高到低排序，无匹配返回 none。不要解释。"
     )
-    return await _llm_parse_response(prompt, items, top_k=top_k)
+    return await _llm_parse_response(prompt, items, top_k=top_k, match_stage="coarse")
 
 
-async def _llm_fine_match(user_message: str, items: List[Dict], msg_type: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
+async def _llm_fine_match(user_message: str, items: List[Dict], msg_type: str = "", match_type: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
     """精排：给项目名称+描述，LLM 返回所有匹配 ID（按匹配程度排序）。返回 (matched, events)。"""
     item_list = "\n".join(f"{i}. {it['name']} - {it['desc']}" for i, it in enumerate(items))
     _type_hint = ""
@@ -554,16 +592,22 @@ async def _llm_fine_match(user_message: str, items: List[Dict], msg_type: str = 
         _type_hint = "用户意图：只分析不修改\n"
     elif msg_type == "processing":
         _type_hint = "用户意图：数据处理\n"
+    _task_hint = ""
+    if match_type == "table":
+        _task_hint = "判断哪些表是用户想要查询或操作的数据表，根据表名、业务描述、标签和列名语义匹配。无匹配返回 none。\n"
+    else:
+        _task_hint = "判断哪些项目能完成用户的需求。无匹配返回 none。\n"
     prompt = (
         f"用户消息：{user_message}\n\n"
         f"{_type_hint}"
+        f"{_task_hint}"
         f"可选项目：\n{item_list}\n\n"
-        "判断哪些项目能完成用户的需求。返回所有匹配项目的序号（逗号分隔），按匹配程度从高到低排序，无匹配返回 none。不要解释。"
+        "返回所有匹配项目的序号（逗号分隔），按匹配程度从高到低排序，不要解释。"
     )
-    return await _llm_parse_response(prompt, items)
+    return await _llm_parse_response(prompt, items, match_stage="fine")
 
 
-async def _llm_match_items(user_message: str, items: List[Dict], msg_type: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
+async def _llm_match_items(user_message: str, items: List[Dict], msg_type: str = "", match_type: str = "") -> Tuple[List[Tuple[str, float]], List[Dict]]:
     """自适应匹配：item_list 短就一次精排，超阈值就粗筛→精排两阶段。
     返回 (matched, events)——events 供前端显示推理过程。"""
     if not items:
@@ -571,16 +615,19 @@ async def _llm_match_items(user_message: str, items: List[Dict], msg_type: str =
     item_list = "\n".join(f"{i}. {it['name']} - {it['desc']}" for i, it in enumerate(items))
     all_events = []
     if len(item_list) > _PROMPT_LEN_THRESHOLD:
+        _mlog(f"[_llm_match_items] 走两阶段（粗筛→精排） item_list_len={len(item_list)} threshold={_PROMPT_LEN_THRESHOLD}")
         coarse_matched, coarse_events = await _llm_coarse_match(user_message, items, msg_type=msg_type)
         all_events.extend(coarse_events)
         coarse_ids = {mid for mid, _ in coarse_matched}
         fine_items = [it for it in items if it["id"] in coarse_ids]
         if not fine_items:
+            _mlog(f"[_llm_match_items] 粗筛无结果，精排跳过")
             return [], all_events
-        fine_matched, fine_events = await _llm_fine_match(user_message, fine_items, msg_type)
+        fine_matched, fine_events = await _llm_fine_match(user_message, fine_items, msg_type, match_type)
         all_events.extend(fine_events)
         return fine_matched, all_events
-    fine_matched, fine_events = await _llm_fine_match(user_message, items, msg_type)
+    _mlog(f"[_llm_match_items] 走一次精排 item_list_len={len(item_list)} threshold={_PROMPT_LEN_THRESHOLD}")
+    fine_matched, fine_events = await _llm_fine_match(user_message, items, msg_type, match_type)
     all_events.extend(fine_events)
     return fine_matched, all_events
 

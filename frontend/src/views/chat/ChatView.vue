@@ -85,23 +85,30 @@
                   <div class="reasoning-text" v-html="renderMarkdown(msg.reasoning)"></div>
                 </div>
               </div>
-              <!-- 执行进度（逐行显示，最后一行带转圈） -->
+              <!-- 执行进度（可折叠，默认展开） -->
               <div v-if="msg.role === 'assistant' && msg.executingMsgs && msg.executingMsgs.length" class="executing-indicator">
-                <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
-                  <el-icon v-if="i === msg.executingMsgs.length - 1 && chatStore.isStreaming" class="is-loading"><Loading /></el-icon>
-                  <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
-                  <span>{{ msg.agentName && i === msg.executingMsgs.length - 1 ? `[${msg.agentName}] ` : '' }}{{ m }}</span>
+                <div class="executing-toggle" @click="msg._execCollapsed = !msg._execCollapsed">
+                  <el-icon v-if="!msg._execCollapsed"><ArrowDown /></el-icon>
+                  <el-icon v-else><ArrowRight /></el-icon>
+                  <span>{{ msg.executingMsgs.length }} 条进度信息</span>
+                </div>
+                <div v-show="!msg._execCollapsed">
+                  <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
+                    <el-icon v-if="i === msg.executingMsgs.length - 1 && chatStore.isStreaming" class="is-loading"><Loading /></el-icon>
+                    <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
+                    <span>{{ msg.agentName && i === msg.executingMsgs.length - 1 ? `[${msg.agentName}] ` : '' }}{{ m }}</span>
+                  </div>
                 </div>
               </div>
               
-              <!-- 技能/流程/数据匹配建议 -->
-              <div v-if="msg.role === 'assistant' && msg.suggestion && !msg._suggestionConsumed" class="suggestion-card">
-                <template v-if="msg.suggestion.type === 'data_suggestion'">
+              <!-- 技能/流程/数据匹配建议（可能多个同时出现） -->
+              <div v-for="(sug, sugIdx) in (msg.suggestions || (msg.suggestion ? [msg.suggestion] : []))" :key="sugIdx" v-if="msg.role === 'assistant' && !msg._suggestionConsumed" class="suggestion-card">
+                <template v-if="sug.type === 'data_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><Coin /></el-icon>
-                    <span>检测到相关数据（共 {{ msg.suggestion.matches.length }} 个），请选择要使用的数据</span>
+                    <span>检测到相关数据（共 {{ sug.matches.length }} 个），请选择要使用的数据</span>
                   </div>
-                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
                       <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
@@ -113,38 +120,51 @@
                       <el-button v-else type="warning" size="small" @click="requestPermission('datasource', m.datasource_id, m)">申请数据权限</el-button>
                     </div>
                   </div>
-                  <div v-if="msg.suggestion.matches.length > 3" class="suggestion-pager">
-                    <el-button size="small" :disabled="suggestionPageIdx(msg) === 0" @click="suggestionPrev(msg)">上一页</el-button>
-                    <span class="pager-info">{{ suggestionPageIdx(msg) + 1 }}/{{ Math.ceil(msg.suggestion.matches.length / 3) }}</span>
-                    <el-button size="small" :disabled="(suggestionPageIdx(msg) + 1) * 3 >= msg.suggestion.matches.length" @click="suggestionNext(msg)">下一页</el-button>
+                  <div v-if="sug.matches.length > 3" class="suggestion-pager">
+                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">上一页</el-button>
+                    <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
+                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
+                  </div>
+                  <div class="suggestion-actions" style="margin-top: 8px;">
+                    <el-button size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '放弃选择，继续分析' : '放弃选择，继续处理' }}</el-button>
                   </div>
                 </template>
-                <template v-else-if="msg.suggestion.type === 'target_suggestion'">
+                <template v-else-if="sug.type === 'target_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><WarningFilled /></el-icon>
-                    <span>检测到目标表已存在（共 {{ msg.suggestion.matches.length }} 个），可能已处理过</span>
+                    <span>检测到目标表已存在（共 {{ sug.matches.length }} 个），可能已处理过</span>
                   </div>
-                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
                       <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
                       <span v-if="m.column_count != null" class="meta-col">列数: {{ m.column_count }}</span>
                     </div>
                     <div class="suggestion-actions">
-                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectData(msg, m)">选择此数据</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectTargetTable(msg, m, sugIdx)">选择此数据</el-button>
                       <el-button v-if="m.can_use" size="small" @click="viewTable(m)">查看数据</el-button>
                     </div>
+                    <!-- 选中后显示写入策略 -->
+                    <div v-if="msg._selectedTarget === sugIdx + '_' + m._idx" class="target-write-mode">
+                      <el-radio-group v-model="msg._writeMode" size="small">
+                        <el-radio-button label="overwrite">覆盖</el-radio-button>
+                        <el-radio-button label="append">追加</el-radio-button>
+                        <el-radio-button label="direct">直接使用</el-radio-button>
+                      </el-radio-group>
+                      <el-button v-if="msg._writeMode" type="primary" size="small" style="margin-left: 8px;" @click="confirmTargetTable(msg, m)">{{ msg._writeMode === 'direct' ? '确认使用' : '确认' }}</el-button>
+                    </div>
                   </div>
+                  <!-- 不选择：输入新表名 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
-                    <el-button size="small" @click="continueProcessing(msg)">继续处理</el-button>
+                    <el-input v-model="msg._newTableName" size="small" placeholder="输入新表名" style="width: 200px;" :value="msg._newTableName || generateTableName(msg)"></el-input>
                   </div>
                 </template>
                 <template v-else>
                   <div class="suggestion-header">
                     <el-icon><MagicStick /></el-icon>
-                    <span>检测到匹配{{ (msg.suggestion.matches[0]?.type === 'pipeline') ? '流程' : '技能' }}（共 {{ msg.suggestion.matches.length }} 个）</span>
+                    <span>检测到匹配{{ (sug.matches[0]?.type === 'pipeline') ? '流程' : '技能' }}（共 {{ sug.matches.length }} 个）</span>
                   </div>
-                  <div v-for="m in suggestionPage(msg)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.name }}</div>
                     <div class="suggestion-item-desc">{{ m.description }}</div>
                     <div class="suggestion-actions">
@@ -152,13 +172,14 @@
                       <el-button v-else type="warning" size="small" @click="requestPermission(m.type, m.id, m)">申请权限</el-button>
                     </div>
                   </div>
-                  <div v-if="msg.suggestion.matches.length > 3" class="suggestion-pager">
-                    <el-button size="small" :disabled="suggestionPageIdx(msg) === 0" @click="suggestionPrev(msg)">上一页</el-button>
-                    <span class="pager-info">{{ suggestionPageIdx(msg) + 1 }}/{{ Math.ceil(msg.suggestion.matches.length / 3) }}</span>
-                    <el-button size="small" :disabled="(suggestionPageIdx(msg) + 1) * 3 >= msg.suggestion.matches.length" @click="suggestionNext(msg)">下一页</el-button>
+                  <div v-if="sug.matches.length > 3" class="suggestion-pager">
+                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">上一页</el-button>
+                    <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
+                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
                   </div>
                   <div class="suggestion-actions" style="margin-top: 8px;">
-                    <el-button size="small" @click="continueProcessing(msg)">直接处理</el-button>
+                    <el-button size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
+                    <el-button size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
                   </div>
                 </template>
               </div>
@@ -571,16 +592,8 @@ async function handleNewSession() {
   historyIdx.value = -1
   inputText.value = ''
   attachments.value = []
-  // 如果上一条 assistant 消息有未消费的 suggestion → 自动跳过对应匹配步骤
+  // 用户不点「选择」也不点「继续」→ 说明之前的匹配结果不对，重新匹配，不跳过任何步骤
   const _autoSkip: string[] = []
-  const _lastAssistant = [...chatStore.messages].reverse().find(m => m.role === 'assistant')
-  if (_lastAssistant && _lastAssistant.suggestion && !_lastAssistant._suggestionConsumed) {
-    if (_lastAssistant.suggestion.type === 'data_suggestion') _autoSkip.push('tables')
-    if (_lastAssistant.suggestion.type === 'target_suggestion') _autoSkip.push('target')
-    if (_lastAssistant.suggestion.type === 'skill_suggestion') {
-      _autoSkip.push('tables', 'pipelines', 'skills')
-    }
-  }
   await chatStore.sendMessage(text, atts.length ? atts : undefined, undefined, _autoSkip.length ? _autoSkip : undefined)
 }
 
@@ -606,6 +619,31 @@ function suggestionPrev(msg: any) {
 function suggestionNext(msg: any) {
   const idx = _suggestionPages.value[msg.id] || 0
   _suggestionPages.value[msg.id] = idx + 1
+}
+
+// 多 suggestion 分页（按 suggestion 索引）
+function suggestionPageFor(sug: any, sugIdx: number) {
+  if (!sug?.matches) return []
+  const key = `${sugIdx}`
+  const idx = _suggestionPages.value[key] || 0
+  const start = idx * 3
+  return sug.matches.slice(start, start + 3).map((m: any, i: number) => ({ ...m, _idx: start + i }))
+}
+
+function suggestionPageIdxFor(sugIdx: number) {
+  return _suggestionPages.value[`${sugIdx}`] || 0
+}
+
+function suggestionPrevFor(sugIdx: number) {
+  const key = `${sugIdx}`
+  const idx = _suggestionPages.value[key] || 0
+  if (idx > 0) _suggestionPages.value[key] = idx - 1
+}
+
+function suggestionNextFor(sugIdx: number) {
+  const key = `${sugIdx}`
+  const idx = _suggestionPages.value[key] || 0
+  _suggestionPages.value[key] = idx + 1
 }
 
 function useMatched(m: any, msg: any) {
@@ -647,6 +685,44 @@ function selectData(msg: any, m: any) {
   })
 }
 
+function selectTargetTable(msg: any, m: any, sugIdx: number) {
+  msg._selectedTarget = sugIdx + '_' + m._idx
+  msg._writeMode = ''
+}
+
+function confirmTargetTable(msg: any, m: any) {
+  const mode = msg._writeMode
+  if (mode === 'direct') {
+    // 直接使用 = 结束对话，不处理
+    msg._suggestionConsumed = true
+    ElMessage.success(`已选择直接使用目标表：${m.datasource_name} → ${m.table_name}`)
+    return
+  }
+  // overwrite / append → 存目标数据到 selectedData
+  chatStore.selectedData = {
+    ...chatStore.selectedData,
+    target_datasource_id: m.datasource_id,
+    target_datasource_name: m.datasource_name,
+    target_table_name: m.table_name,
+    target_write_mode: mode,
+  } as any
+  msg._suggestionConsumed = true
+  ElMessage.success(`已选择目标表：${m.datasource_name} → ${m.table_name}（${mode === 'overwrite' ? '覆盖' : '追加'}）`)
+  nextTick(() => {
+    const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
+    if (textarea) textarea.focus()
+  })
+}
+
+function generateTableName(msg: any) {
+  if (!msg._newTableName) {
+    const now = new Date()
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    msg._newTableName = `result_${ts}`
+  }
+  return msg._newTableName
+}
+
 function goCreateSkill(msg: any) {
   const desc = encodeURIComponent(msg.content || '')
   window.open(router.resolve({ path: '/skill', query: { create: 'true', desc } }).href, '_blank')
@@ -660,28 +736,28 @@ async function continueProcessing(msg: any) {
   const text = userMsg?.content || ''
   if (!text) return
   const atts = (userMsg as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
-  // 根据当前 suggestion 类型判断跳过哪些步骤
-  const skipSteps: string[] = []
   const suggestion = msg.suggestion
-  if (suggestion) {
-    if (suggestion.type === 'target_suggestion') {
-      skipSteps.push('tables', 'target')
-    } else if (suggestion.matches?.[0]?.type === 'pipeline') {
-      skipSteps.push('tables', 'pipelines')
-    } else if (suggestion.matches?.[0]?.type === 'skill') {
-      skipSteps.push('tables', 'pipelines', 'skills')
+  // 用户不选源表 → 提示必须选
+  if (suggestion && suggestion.type === 'data_suggestion') {
+    if (!chatStore.selectedData?.datasource_id) {
+      ElMessage.warning('请先选择源数据表，再继续处理')
+      return
     }
   }
-  // 从同会话之前的 suggestion 消息累积 skipSteps
-  for (let i = 0; i < msgIdx; i++) {
-    const prevMsg = allMsgs[i] as any
-    if (prevMsg.suggestion) {
-      if (prevMsg.suggestion.type === 'target_suggestion' && !skipSteps.includes('target')) skipSteps.push('target')
-      if (prevMsg.suggestion.matches?.[0]?.type === 'pipeline' && !skipSteps.includes('pipelines')) skipSteps.push('pipelines')
-      if (prevMsg.suggestion.matches?.[0]?.type === 'skill' && !skipSteps.includes('skills')) skipSteps.push('skills')
+  // 用户不选目标表 → 用输入的新表名（如有）
+  if (suggestion && suggestion.type === 'target_suggestion') {
+    if (!chatStore.selectedData?.target_datasource_id) {
+      if (msg._newTableName) {
+        // 用户输入了新表名 → 存为目标表（会创建新表）
+        chatStore.selectedData = {
+          ...chatStore.selectedData,
+          target_table_name: msg._newTableName,
+          target_write_mode: 'create',
+        } as any
+      }
     }
   }
-  await chatStore.sendDirectly(text, atts.length ? atts : undefined, skipSteps.length ? skipSteps : undefined)
+  await chatStore.sendDirectly(text, atts.length ? atts : undefined)
 }
 
 async function requestPermission(resourceType: string, resourceId: string, m: any) {
@@ -1258,6 +1334,15 @@ async function handleExportCurrent() {
       display: flex;
       gap: 8px;
       margin-top: 6px;
+      align-items: center;
+    }
+
+    .target-write-mode {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      margin-top: 4px;
     }
   }
 }
@@ -1286,6 +1371,21 @@ async function handleExportCurrent() {
   border-radius: 6px;
   color: #409eff;
   font-size: 13px;
+
+  .executing-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    padding-bottom: 4px;
+    color: #909399;
+    font-size: 12px;
+    user-select: none;
+
+    &:hover {
+      color: #409eff;
+    }
+  }
 
   .executing-line {
     display: flex;

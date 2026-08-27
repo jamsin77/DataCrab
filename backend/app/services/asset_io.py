@@ -60,7 +60,6 @@ async def export_operators(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
             "name": op.name,
             "display_name": op.display_name or op.name,
             "description": op.description or "",
-            "category": op.category or "general",
             "inputs": op.inputs or [],
             "outputs": op.outputs or [],
             "parameters": op.parameters or [],
@@ -105,7 +104,6 @@ async def export_pipelines(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> in
             "parameters": p.parameters or [],
             "skill_calls": skill_calls,
             "tags": p.tags or [],
-            "category": p.category or "",
             "visibility": p.visibility or "public",
         })
     zf.writestr("pipelines.json", json.dumps(data, ensure_ascii=False, indent=2))
@@ -303,9 +301,8 @@ async def import_skills(zf: zipfile.ZipFile, db: AsyncSession, overwrite_types: 
         result = await db.execute(select(Skill).where(Skill.skill_path == folder_name))
         existing_skill = result.scalar_one_or_none()
         if existing_skill:
-            existing_tags = [t for t in (existing_skill.tags or []) if not (isinstance(t, str) and t.startswith("skill_type:"))]
-            existing_tags.append(f"skill_type:{new_type}")
-            existing_skill.tags = existing_tags
+            existing_skill.skill_type = new_type
+            existing_skill.tags = [t for t in (existing_skill.tags or []) if not (isinstance(t, str) and t.startswith("skill_type:"))]
             if info.get("display_name"):
                 existing_skill.display_name = info["display_name"]
             if info.get("description") is not None:
@@ -339,7 +336,6 @@ async def import_operators(data: List[Dict], db: AsyncSession, overwrite_types: 
             if existing_op:
                 existing_op.display_name = op.get("display_name") or name
                 existing_op.description = op.get("description") or ""
-                existing_op.category = op.get("category") or "general"
                 existing_op.inputs = op.get("inputs") or []
                 existing_op.outputs = op.get("outputs") or []
                 existing_op.parameters = op.get("parameters") or []
@@ -355,7 +351,6 @@ async def import_operators(data: List[Dict], db: AsyncSession, overwrite_types: 
             name=name,
             display_name=op.get("display_name") or name,
             description=op.get("description") or "",
-            category=op.get("category") or "general",
             inputs=op.get("inputs") or [],
             outputs=op.get("outputs") or [],
             parameters=op.get("parameters") or [],
@@ -412,7 +407,7 @@ async def import_pipelines(data: List[Dict], db: AsyncSession, user_id, overwrit
                 existing_pipe.parameters = p.get("parameters") or []
                 existing_pipe.skill_calls = skill_calls
                 existing_pipe.tags = p.get("tags") or []
-                existing_pipe.category = p.get("category") or ""
+                existing_pipe.pipeline_type = p.get("pipeline_type") or ""
                 existing_pipe.visibility = p.get("visibility") or "public"
                 updated += 1
                 continue
@@ -426,7 +421,7 @@ async def import_pipelines(data: List[Dict], db: AsyncSession, user_id, overwrit
             parameters=p.get("parameters") or [],
             skill_calls=skill_calls,
             tags=p.get("tags") or [],
-            category=p.get("category") or "",
+            pipeline_type=p.get("pipeline_type") or "",
             visibility=p.get("visibility") or "public",
             created_by=user_id,
         )

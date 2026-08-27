@@ -47,7 +47,7 @@ def _build_response(p: Pipeline) -> PipelineResponse:
         source_skill_id=p.source_skill_id,
         version=p.version or 1,
         tags=p.tags,
-        category=p.category,
+        pipeline_type=p.pipeline_type,
         visibility=p.visibility,
         is_active=p.is_active,
         is_builtin=getattr(p, "is_builtin", False) or False,
@@ -58,7 +58,7 @@ def _build_response(p: Pipeline) -> PipelineResponse:
 
 @router.get("", response_model=list[PipelineResponse])
 async def list_pipelines(
-    category: Optional[str] = Query(None),
+    pipeline_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -66,8 +66,8 @@ async def list_pipelines(
     current_user: User = Depends(get_current_user),
 ):
     query = select(Pipeline).where(Pipeline.is_active == True)
-    if category:
-        query = query.where(Pipeline.category == category)
+    if pipeline_type:
+        query = query.where(Pipeline.pipeline_type == pipeline_type)
     if search:
         query = query.where(
             (Pipeline.name.ilike(f"%{search}%")) |
@@ -279,7 +279,7 @@ async def create_pipeline_from_skill(
         source_skill_id=skill_id,
         related_skill_ids=list(_related),
         tags=skill.tags or [],
-        category=skill.category,
+        pipeline_type=skill.skill_type,
         created_by=current_user.id,
     )
     db.add(pipeline)
@@ -444,7 +444,7 @@ async def create_pipeline_from_skill_stream(
                 source_skill_id=skill_id,
                 related_skill_ids=list(_rel),
                 tags=skill.tags or [],
-                category=skill.category,
+                pipeline_type=skill.skill_type,
                 created_by=current_user.id,
             )
             db.add(pipeline)
@@ -661,7 +661,7 @@ async def clone_pipeline(
         related_skill_ids=(original.related_skill_ids or []),
         version=1,
         tags=original.tags,
-        category=original.category,
+        pipeline_type=original.pipeline_type,
         created_by=current_user.id,
         visibility="private",
     )
@@ -699,7 +699,7 @@ async def import_pipeline(
         parameters=req.parameters or [],
         skill_calls=[c.model_dump() for c in (req.skill_calls or [])],
         tags=req.tags or [],
-        category=req.category,
+        pipeline_type=req.pipeline_type,
         visibility=req.visibility or "private",
         created_by=current_user.id,
     )

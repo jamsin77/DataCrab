@@ -112,7 +112,6 @@ router = APIRouter()
 @router.post("/upload", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
 async def upload_operator(
     file: UploadFile = File(...),
-    category: Optional[str] = None,
     display_name: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -140,7 +139,6 @@ async def upload_operator(
         name=script_name,
         display_name=display_name or func_name,
         description=parsed.get("description") or script_name,
-        category=category or "custom",
         inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
         outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
         parameters=parsed.get("parameters", []),
@@ -321,7 +319,6 @@ async def create_operator(
         name=request.name,
         display_name=request.display_name,
         description=request.description,
-        category=request.category,
         inputs=request.inputs,
         outputs=request.outputs,
         parameters=request.parameters,
@@ -341,7 +338,6 @@ async def create_operator(
 
 @router.get("", response_model=list[OperatorResponse])
 async def list_operators(
-    category: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     sort_by: str = Query("created", pattern="^(created|updated)$"),
@@ -358,24 +354,10 @@ async def list_operators(
             Operator.id.in_(shared_ids) if shared_ids else False,
         )
     )
-    if category:
-        query = query.where(Operator.category == category)
     order_col = Operator.updated_at if sort_by == "updated" else Operator.created_at
     query = query.order_by(order_col.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
-
-
-@router.get("/categories", response_model=list[str])
-async def get_categories(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """获取算子分类"""
-    result = await db.execute(
-        select(Operator.category).distinct().where(Operator.category.isnot(None))
-    )
-    return [row[0] for row in result.all()]
 
 
 @router.get("/{operator_id}", response_model=OperatorResponse)
@@ -456,7 +438,6 @@ async def clone_operator(
         name=script_name,
         display_name=request.name,
         description=operator.description,
-        category=operator.category,
         inputs=operator.inputs,
         outputs=operator.outputs,
         parameters=operator.parameters,
@@ -578,52 +559,13 @@ async def check_similar_operators(
     current_user: User = Depends(get_current_user),
 ):
     """检测是否有相似算子可复用（embedding 向量检索）"""
-    from app.services.permission_service import get_accessible_resource_ids
-    from app.services.match_service import search_operators, MATCH_THRESHOLD
+    from app.services.match_service import check_similar_resources, search_operators
 
-    matched = await search_operators(request.prompt, top_k=5)
-    if not matched:
-        return SimilarOperatorCheckResponse(has_similar=False, operators=[])
-
-    shared_ids = await get_accessible_resource_ids(db, current_user.id, "operator")
-
-    owner_cache: dict = {}
-    items = []
-    for oid, score in matched:
-        if score < MATCH_THRESHOLD:
-            continue
-        result = await db.execute(select(Operator).where(Operator.id == oid))
-        op = result.scalar_one_or_none()
-        if not op:
-            continue
-        can_use = (
-            op.created_by == current_user.id
-            or op.visibility == "public"
-            or op.id in shared_ids
-        )
-        owner_name = None
-        owner_email = None
-        if not can_use and op.created_by:
-            if op.created_by not in owner_cache:
-                user_result = await db.execute(select(User).where(User.id == op.created_by))
-                owner_cache[op.created_by] = user_result.scalar_one_or_none()
-            owner = owner_cache[op.created_by]
-            if owner:
-                owner_name = owner.display_name or owner.username
-                owner_email = owner.email
-        items.append(SimilarOperatorItem(
-            id=str(op.id),
-            name=op.name,
-            display_name=op.display_name,
-            description=op.description,
-            category=op.category,
-            tags=op.tags,
-            similarity=score,
-            can_use=can_use,
-            owner_name=owner_name,
-            owner_email=owner_email,
-        ))
-    return SimilarOperatorCheckResponse(has_similar=len(items) > 0, operators=items)
+    items = await check_similar_resources(
+        request.prompt, search_operators, Operator, db, current_user.id, "operator",
+    )
+    op_items = [SimilarOperatorItem(**i) for i in items]
+    return SimilarOperatorCheckResponse(has_similar=len(op_items) > 0, operators=op_items)
 
 
 @router.post("/generate", response_model=OperatorResponse, status_code=status.HTTP_201_CREATED)
@@ -676,7 +618,6 @@ async def generate_operator(
         name=script_name,
         display_name=parsed.get("description") or func_name,
         description=parsed.get("description") or script_name,
-        category="ai_generated",
         inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
         outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
         parameters=parsed.get("parameters", []),
@@ -785,7 +726,6 @@ async def generate_operator_stream(
                 name=script_name,
                 display_name=parsed.get("description") or func_name,
                 description=parsed.get("description") or script_name,
-                category="ai_generated",
                 inputs=parsed.get("inputs", [{"name": "data", "type": "DataFrame", "required": True}]),
                 outputs=parsed.get("outputs", [{"name": "result", "type": "any"}]),
                 parameters=parsed.get("parameters", []),

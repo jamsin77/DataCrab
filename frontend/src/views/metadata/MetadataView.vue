@@ -35,17 +35,21 @@
           <el-input v-model="searchQuery" placeholder="搜索表名/业务名称/描述..." clearable style="width: 280px" @clear="loadMetadata" @keyup.enter="loadMetadata">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
+          <el-button type="success" @click="batchEnrich" :disabled="!selectedRows.length" :loading="batchEnriching">
+            批量AI增强<template v-if="selectedRows.length">({{ selectedRows.length }})</template>
+          </el-button>
           <el-button type="primary" @click="loadMetadata">刷新</el-button>
         </div>
       </div>
 
     <div class="stats-bar" v-if="stats">
       <el-tag type="info">总计 {{ stats.total }} 个数据集</el-tag>
-      <el-tag type="success">AI补充 {{ stats.ai_enriched }} 个</el-tag>
+      <el-tag type="success">AI增强 {{ stats.ai_enriched }} 个</el-tag>
       <el-tag v-for="(count, fmt) in stats.by_format" :key="fmt" type="warning">{{ fmt }}: {{ count }}</el-tag>
     </div>
 
-    <el-table :data="metadataList" v-loading="loading" style="width: 100%" @row-click="openDetail">
+    <el-table :data="metadataList" v-loading="loading" style="width: 100%" @row-click="openDetail" @selection-change="handleSelectionChange">
+      <el-table-column type="selection" width="42" />
       <el-table-column label="数据集名称" min-width="160">
         <template #default="{ row }">
           <span class="table-name">{{ row.business_name || row.table_name }}</span>
@@ -75,7 +79,7 @@
       <el-table-column label="操作" width="120" align="center">
         <template #default="{ row }">
           <el-button size="small" text type="primary" @click.stop="openDetail(row)">详情</el-button>
-          <el-button size="small" text type="success" @click.stop="aiEnrich(row)" :loading="row._enriching">AI补充</el-button>
+          <el-button size="small" text type="success" @click.stop="aiEnrich(row)" :loading="row._enriching">AI增强</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -119,7 +123,7 @@
         <div class="detail-section">
           <div class="section-header">
             <span>业务元数据</span>
-            <el-button size="small" type="success" @click="aiEnrich(detailData)" :loading="enriching">AI补充</el-button>
+            <el-button size="small" type="success" @click="aiEnrich(detailData)" :loading="enriching">AI增强</el-button>
           </div>
           <el-form label-width="100px">
             <el-form-item label="业务名称">
@@ -166,7 +170,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { Search, CircleCheckFilled, Connection, Refresh } from '@element-plus/icons-vue'
 import api from '@/api/index'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
 const metadataList = ref<any[]>([])
@@ -182,6 +186,8 @@ const saving = ref(false)
 const enriching = ref(false)
 const syncing = ref(false)
 const dsLoading = ref(false)
+const selectedRows = ref<any[]>([])
+const batchEnriching = ref(false)
 
 async function loadDatasources() {
   dsLoading.value = true
@@ -253,6 +259,15 @@ async function saveDetail() {
 }
 
 async function aiEnrich(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      'AI 将根据数据样本和技术信息自动推断业务名称、描述、标签等业务元数据，已填写的业务元数据将被覆盖。是否继续？',
+      'AI增强确认',
+      { confirmButtonText: '开始增强', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch {
+    return
+  }
   enriching.value = true
   row._enriching = true
   try {
@@ -272,13 +287,68 @@ async function aiEnrich(row: any) {
     }
     const idx = metadataList.value.findIndex(m => m.id === row.id)
     if (idx >= 0) Object.assign(metadataList.value[idx], res)
-    ElMessage.success('AI补充完成')
+    ElMessage.success('AI增强完成')
     loadStats()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || 'AI补充失败')
+    ElMessage.error(e.response?.data?.detail || 'AI增强失败')
   } finally {
     enriching.value = false
     row._enriching = false
+  }
+}
+
+function handleSelectionChange(rows: any[]) {
+  selectedRows.value = rows
+}
+
+async function batchEnrich() {
+  if (!selectedRows.value.length) return
+  const count = selectedRows.value.length
+  try {
+    await ElMessageBox.confirm(
+      `将对选中的 ${count} 个数据集逐个进行 AI 增强，已填写的业务元数据将被覆盖。是否继续？`,
+      '批量AI增强确认',
+      { confirmButtonText: '开始增强', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch {
+    return
+  }
+  batchEnriching.value = true
+  const rows = [...selectedRows.value]
+  let success = 0
+  let fail = 0
+  for (const row of rows) {
+    row._enriching = true
+    try {
+      const res = await api.post(`/metadata/${row.id}/ai-enrich`, {}, { timeout: 120000 })
+      Object.assign(row, res)
+      const idx = metadataList.value.findIndex(m => m.id === row.id)
+      if (idx >= 0) Object.assign(metadataList.value[idx], res)
+      success++
+    } catch (e: any) {
+      fail++
+      ElMessage.error(`${row.business_name || row.table_name}: ${e.response?.data?.detail || '增强失败'}`)
+    } finally {
+      row._enriching = false
+    }
+  }
+  batchEnriching.value = false
+  ElMessage.success(`批量AI增强完成：成功 ${success} 个${fail ? `，失败 ${fail} 个` : ''}`)
+  loadStats()
+  if (detailData.value) {
+    const updated = metadataList.value.find(m => m.id === detailData.value.id)
+    if (updated) {
+      detailData.value = updated
+      Object.assign(editForm, {
+        business_name: updated.business_name || '',
+        business_description: updated.business_description || '',
+        business_tags: updated.business_tags || [],
+        business_purpose: updated.business_purpose || '',
+        source_system: updated.source_system || '',
+        data_domain: updated.data_domain || '',
+        security_level: updated.security_level || 'internal',
+      })
+    }
   }
 }
 

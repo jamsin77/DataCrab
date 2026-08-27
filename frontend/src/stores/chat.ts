@@ -2,6 +2,16 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { chatApi, type ChatSession, type ChatMessage, type StreamEvent } from '@/api/chat'
 
+function nowStr(): string {
+  return new Date().toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function pushExecMsg(msg: any, text: string) {
+  if (!text) return
+  if (!msg.executingMsgs) msg.executingMsgs = []
+  msg.executingMsgs.push(`${nowStr()} ${text}`)
+}
+
 export const useChatStore = defineStore('chat', () => {
   const sessions = ref<ChatSession[]>([])
   const currentSessionId = ref<string | null>(null)
@@ -79,7 +89,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[], skipMatch?: boolean, skipSteps?: string[]) {
+  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]) {
     if (!currentSessionId.value) {
       await createSession()
     }
@@ -199,7 +209,9 @@ export const useChatStore = defineStore('chat', () => {
           }
           if (event.type === 'data_suggestion' || event.type === 'skill_suggestion' || event.type === 'target_suggestion') {
             const _data = event as any
-            msg.suggestion = { type: _data.type, matches: _data.matches || [] }
+            if (!msg.suggestions) msg.suggestions = []
+            msg.suggestions.push({ type: _data.type, msg_type: _data.msg_type, matches: _data.matches || [] })
+            msg.suggestion = { type: _data.type, msg_type: _data.msg_type, matches: _data.matches || [] }
             return
           }
           if (event.type === 'no_match') {
@@ -226,35 +238,31 @@ export const useChatStore = defineStore('chat', () => {
             streamingContent.value = msg.content
           } else if (event.type === 'progress' || event.type === 'executing') {
             const _m = event.message || event.content || ''
-            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
+            pushExecMsg(msg, _m)
           } else if (event.type === 'agent_switch') {
             const _name = (event as any).display_name || event.agent || ''
             const _reason = (event as any).reason_display || event.reason || ''
             const _m = _reason ? `${_name}：${_reason}` : _name
-            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
+            pushExecMsg(msg, _m)
             msg.agentName = _name
           } else if (event.type === 'tool_action') {
             const _actions = (event as any).actions || []
             const _lines = _actions.map((a: any) => `${a.icon || '🔧'} ${a.tool}${a.detail ? ': ' + a.detail : ''}`)
-            const _m = _lines.join(' | ')
-            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
+            pushExecMsg(msg, _lines.join(' | '))
           } else if (event.type === 'tool_summary') {
             const _summaries = (event as any).summaries || []
-            const _m = _summaries.join(' | ')
-            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
+            pushExecMsg(msg, _summaries.join(' | '))
           } else if (event.type === 'inspecting' || event.type === 'retry') {
             const _m = event.message || ''
-            if (_m) { if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m) }
+            pushExecMsg(msg, _m)
           } else if (event.type === 'round') {
             const _m = event.message || `第 ${event.round} 次修改`
-            if (!msg.executingMsgs) msg.executingMsgs = []; msg.executingMsgs.push(_m)
+            pushExecMsg(msg, _m)
           } else if (event.type === 'inspection_report') {
             msg.inspectionReport = event.report || ''
           }
         },
         attFilenames,
-        skipMatch,
-        skipSteps,
         _selDs,
         _selTbl,
       )
@@ -281,8 +289,8 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendDirectly(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[], skipSteps?: string[]) {
-    await sendMessage(content, attachments, false, skipSteps)
+  async function sendDirectly(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]) {
+    await sendMessage(content, attachments)
   }
 
   async function stopGeneration() {

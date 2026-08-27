@@ -15,7 +15,7 @@ from app.core.version import get_version
 # 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
 settings.APP_VERSION = get_version()
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", ""), rotation="1 MB")
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", ""), rotation="1 MB")
 
 
 @asynccontextmanager
@@ -76,6 +76,13 @@ def _migrate_skills(connection):
         if "skill_path" not in columns:
             connection.execute(text("ALTER TABLE skills ADD COLUMN skill_path VARCHAR(500)"))
             logger.info("skills表已添加 skill_path 列")
+        if "skill_type" not in columns:
+            connection.execute(text("ALTER TABLE skills ADD COLUMN skill_type VARCHAR(20)"))
+            # 从 tags 里的 skill_type:xxx 迁移数据
+            connection.execute(text("UPDATE skills SET skill_type = 'processing'"))
+            logger.info("skills表已添加 skill_type 列")
+        # 从 tags 中删除 skill_type:xxx 标记
+        connection.execute(text("UPDATE skills SET tags = '[]' WHERE tags IS NULL"))
     except Exception as e:
         logger.warning(f"Skills表迁移跳过: {e}")
 
@@ -111,8 +118,13 @@ def _migrate_builtin_flags(connection):
         if "related_skill_ids" not in columns:
             connection.execute(text("ALTER TABLE pipelines ADD COLUMN related_skill_ids JSON DEFAULT '[]'"))
             logger.info("pipelines表已添加 related_skill_ids 列")
+        if "pipeline_type" not in columns:
+            connection.execute(text("ALTER TABLE pipelines ADD COLUMN pipeline_type VARCHAR(20)"))
+            # 内置流程设 system，其他从关联技能推断
+            connection.execute(text("UPDATE pipelines SET pipeline_type = CASE WHEN is_builtin = 1 THEN 'system' ELSE 'processing' END"))
+            logger.info("pipelines表已添加 pipeline_type 列")
     except Exception as e:
-        logger.warning(f"pipelines表 related_skill_ids 迁移跳过: {e}")
+        logger.warning(f"pipelines表迁移跳过: {e}")
     try:
         result = connection.execute(text("PRAGMA table_info(schedules)"))
         columns = {row[1] for row in result.fetchall()}
@@ -378,8 +390,27 @@ async def _seed_skills_and_pipelines():
             await db.flush()
 
             existing_names = set()
-            result = await db.execute(sa_select(Skill.name))
-            existing_names = {r[0] for r in result.fetchall()}
+            result = await db.execute(sa_select(Skill))
+            all_skills = result.scalars().all()
+            existing_names = {s.name for s in all_skills}
+            # 同步已有技能的 skill_type（从 SKILL.md 读取）+ 清理 tags 里的 skill_type:xxx
+            for skill in all_skills:
+                folder_name = Path(skill.skill_path).name if skill.skill_path else ""
+                if not folder_name:
+                    continue
+                full_path = skill_base / folder_name
+                if not full_path.is_dir() or not (full_path / "SKILL.md").exists():
+                    continue
+                info = get_skill_info_from_path(full_path)
+                _st = info.get("skill_type") or "processing"
+                if skill.skill_type != _st:
+                    skill.skill_type = _st
+                # 清理 tags 里的 skill_type:xxx
+                if skill.tags:
+                    _clean_tags = [t for t in skill.tags if not str(t).startswith("skill_type:")]
+                    if len(_clean_tags) != len(skill.tags):
+                        skill.tags = _clean_tags
+            await db.flush()
             # 用 skill_path 中的文件夹名去重，避免同一文件夹创建多条记录
             result = await db.execute(sa_select(Skill.skill_path))
             existing_folders = {Path(r[0]).name for r in result.fetchall() if r[0]}
@@ -398,17 +429,44 @@ async def _seed_skills_and_pipelines():
                     continue
                 _seen_in_this_scan.add(skill_name)
                 _skill_type = info.get("skill_type") or "processing"
+                # tags 从 SKILL.md 读取，剔除 skill_type（存到 DB 列）
+                _tags = info.get("tags") or []
+                _tags = [t for t in _tags if not str(t).startswith("skill_type:")]
                 skill = Skill(
                     name=skill_name,
                     display_name=info.get("display_name") or folder_name,
                     description=info.get("description") or "",
                     skill_path=folder_name,
-                    tags=[f"skill_type:{_skill_type}"],
+                    tags=_tags,
+                    skill_type=_skill_type,
                     visibility="public",
                 )
                 db.add(skill)
                 logger.info(f"扫描到技能: {skill_name}")
             await db.flush()
+
+        # 同步已有流程的 pipeline_type（从关联技能推断）
+        all_pipes = (await db.execute(sa_select(Pipeline))).scalars().all()
+        # 查所有技能的 skill_type（用于推断）
+        all_skills_map = {}
+        if all_pipes:
+            _skills_result = await db.execute(sa_select(Skill.id, Skill.skill_type))
+            all_skills_map = {str(r[0]): r[1] for r in _skills_result.fetchall()}
+        for p in all_pipes:
+            if p.is_builtin:
+                if p.pipeline_type != "system":
+                    p.pipeline_type = "system"
+            elif not p.pipeline_type:
+                # 从关联技能推断
+                _related = p.related_skill_ids or []
+                _inferred = "processing"
+                for sid in _related:
+                    _st = all_skills_map.get(str(sid))
+                    if _st:
+                        _inferred = _st
+                        break
+                p.pipeline_type = _inferred
+        await db.flush()
 
         # 2. Seed 内置流程和调度（按 is_builtin 查重，用户删除后不复活）
         from app.models.schedule import Schedule
@@ -426,7 +484,7 @@ async def _seed_skills_and_pipelines():
                 parameters=[],
                 skill_calls=[],
                 tags=["system", "builtin"],
-                category="system",
+                pipeline_type="system",
                 visibility="public",
                 is_active=True,
                 is_builtin=True,

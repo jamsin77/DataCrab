@@ -22,7 +22,7 @@ class Skill(Base):
     skill_path = Column(String(500))
 
     tags = Column(JSON)
-    category = Column(String(50), index=True)
+    skill_type = Column(String(20), index=True)  # analysis / processing
 
     version = Column(String(20), default="1.0.0")
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))

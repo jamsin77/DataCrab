@@ -99,7 +99,6 @@ export const chatApi = {
     onEvent: (event: StreamEvent) => void,
     attachments?: string[],
     skipMatch?: boolean,
-    skipSteps?: string[],
     selectedDatasourceId?: string,
     selectedTableName?: string,
   ): Promise<void> {
@@ -116,7 +115,6 @@ export const chatApi = {
         content,
         attachments,
         skip_match: skipMatch || false,
-        skip_steps: skipSteps || [],
         selected_datasource_id: selectedDatasourceId || null,
         selected_table_name: selectedTableName || null,
       }),

@@ -11,7 +11,7 @@ class SkillCreate(BaseModel):
     display_name: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    skill_type: Optional[str] = None
     visibility: Optional[str] = "public"
 
 
@@ -20,7 +20,7 @@ class SkillUpdate(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    skill_type: Optional[str] = None
     visibility: Optional[str] = None
 
 
@@ -31,7 +31,7 @@ class SkillResponse(BaseModel):
     description: Optional[str] = None
     skill_path: Optional[str] = None
     tags: Optional[List[str]] = None
-    category: Optional[str] = None
+    skill_type: Optional[str] = None
     version: str = "1.0.0"
     visibility: Optional[str] = None
     usage_count: int = 0
@@ -53,7 +53,7 @@ class SkillDetailResponse(SkillResponse):
 class SkillSearchRequest(BaseModel):
     query: str
     top_k: int = 5
-    category: Optional[str] = None
+    skill_type: Optional[str] = None
     tags: Optional[List[str]] = None
 
 

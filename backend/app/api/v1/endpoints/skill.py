@@ -61,16 +61,9 @@ from app.models.datasource import DataSource
 router = APIRouter()
 
 
-def _merge_skill_type_tag(front_matter: dict, existing_tags: list = None) -> list:
-    """从 front_matter 提取 skill_type，作为 tag 注入（不新增 DB 列）。
-    返回的 tags 列表包含 skill_type:<value> 标记，便于路由层判断。
-    """
-    tags = list(existing_tags or [])
-    skill_type = (front_matter or {}).get("skill_type") or "processing"
-    _tag = f"skill_type:{skill_type}"
-    tags = [t for t in tags if not str(t).startswith("skill_type:")]
-    tags.append(_tag)
-    return tags
+def _clean_skill_type_tag(tags: list) -> list:
+    """从 tags 中剔除 skill_type:xxx 标记（skill_type 已存到 DB 列）"""
+    return [t for t in (tags or []) if not str(t).startswith("skill_type:")]
 
 
 async def _build_datasource_info(db: AsyncSession, user_id) -> str:
@@ -151,7 +144,7 @@ def _build_detail(skill: Skill) -> SkillDetailResponse:
         description=skill.description or info.get("description"),
         skill_path=str(folder) if folder.exists() else None,
         tags=skill.tags,
-        category=skill.category,
+        skill_type=skill.skill_type,
         version=skill.version,
         visibility=skill.visibility,
         usage_count=skill.usage_count,
@@ -167,7 +160,7 @@ def _build_detail(skill: Skill) -> SkillDetailResponse:
 
 @router.get("", response_model=list[SkillDetailResponse])
 async def list_skills(
-    category: str = None,
+    skill_type: str = None,
     sort_by: str = Query("created", pattern="^(created|updated)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -181,8 +174,8 @@ async def list_skills(
             Skill.id.in_(shared_ids) if shared_ids else False,
         )
     )
-    if category:
-        query = query.where(Skill.category == category)
+    if skill_type:
+        query = query.where(Skill.skill_type == skill_type)
     order_col = Skill.updated_at if sort_by == "updated" else Skill.created_at
     query = query.order_by(order_col.desc())
     result = await db.execute(query)
@@ -196,7 +189,7 @@ async def get_categories(
     current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(Skill.category).distinct().where(Skill.category.isnot(None))
+        select(Skill.skill_type).distinct().where(Skill.skill_type.isnot(None))
     )
     return [row[0] for row in result.all()]
 
@@ -240,7 +233,7 @@ async def create_skill(
         description=request.description,
         skill_path=str(folder),
         tags=request.tags,
-        category=request.category,
+        skill_type=request.skill_type,
         visibility=request.visibility or "public",
         created_by=current_user.id,
     )
@@ -274,21 +267,16 @@ async def update_skill(
     for key, value in update_data.items():
         setattr(skill, key, value)
 
-    # tags 变更时同步 skill_type 到 SKILL.md front matter
-    if "tags" in update_data:
-        new_type = "processing"
-        for t in (update_data.get("tags") or []):
-            if str(t).startswith("skill_type:"):
-                new_type = str(t).split(":", 1)[1]
-                break
+    # skill_type 变更时同步到 SKILL.md front matter
+    if "skill_type" in update_data and update_data["skill_type"]:
         folder = _resolve_skill_folder(skill)
         md_path = folder / "SKILL.md"
         if md_path.exists():
             md_content = md_path.read_text(encoding="utf-8")
             parsed = parse_skill_md(md_content)
             fm = dict(parsed.get("front_matter") or {})
-            if fm.get("skill_type") != new_type:
-                fm["skill_type"] = new_type
+            if fm.get("skill_type") != update_data["skill_type"]:
+                fm["skill_type"] = update_data["skill_type"]
                 from app.services.skill_parser import build_skill_md
                 md_path.write_text(build_skill_md(fm, parsed.get("body", "")), encoding="utf-8")
 
@@ -427,8 +415,8 @@ async def upload_skill(
             display_name=display_name,
             description=description,
             skill_path=str(folder),
-            tags=_merge_skill_type_tag(parsed.get("front_matter"), parsed.get("front_matter", {}).get("tags", [])),
-            category=parsed.get("front_matter", {}).get("category"),
+            tags=_clean_skill_type_tag(parsed.get("front_matter", {}).get("tags", [])),
+            skill_type=parsed.get("front_matter", {}).get("skill_type"),
             visibility="public",
             created_by=current_user.id,
         )
@@ -520,7 +508,10 @@ async def update_skill_md(
         skill.display_name = fm["name"]
     if fm.get("description"):
         skill.description = fm["description"]
-    skill.tags = _merge_skill_type_tag(fm, list(skill.tags or []))
+    skill.tags = _clean_skill_type_tag(fm.get("tags") or list(skill.tags or []))
+    _new_type = fm.get("skill_type") or "processing"
+    if skill.skill_type != _new_type:
+        skill.skill_type = _new_type
 
     await db.flush()
     await db.refresh(skill)
@@ -840,7 +831,7 @@ async def infer_skill_instruction(
                     "## 严格要求\n"
                     "1. 指令必须符合 SKILL.md 中「使用方式」的示例格式\n"
                     "2. 从对话上下文中提取具体的数据源名、表名等参数值，不要用「这个数据源」「这张表」等代词\n"
-                    "3. 指令要包含技能所需的关键参数（数据源名、表名、目标数据源名等）\n"
+                    "3. 只使用技能需要的参数，不需要的参数不要硬塞\n"
                     "4. 只输出一条指令，不要解释，不要输出 JSON\n"
                     "5. 如果对话上下文不足以确定某个参数，用「请指定」标注\n"
                 ),
@@ -1128,7 +1119,7 @@ async def debug_skill_chat(
     message = build_debug_message(request.message, context)
 
     # 按技能类型路由：分析类 → data_analyst，处理类 → data_processor
-    _is_analysis = any(str(t) == "skill_type:analysis" for t in (skill.tags or []))
+    _is_analysis = skill.skill_type == "analysis"
     _agent_name = "data_analyst" if _is_analysis else "data_processor"
 
     return StreamingResponse(
@@ -1267,52 +1258,14 @@ async def check_similar_skills(
     current_user: User = Depends(get_current_user),
 ):
     """检测是否有相似技能可复用（embedding 向量检索）"""
-    from app.services.permission_service import get_accessible_resource_ids
-    from app.services.match_service import search_skills, MATCH_THRESHOLD
+    from app.services.match_service import check_similar_resources, search_skills
 
-    matched = await search_skills(request.prompt, top_k=5)
-    if not matched:
-        return SimilarSkillCheckResponse(has_similar=False, skills=[])
-
-    shared_ids = await get_accessible_resource_ids(db, current_user.id, "skill")
-
-    owner_cache: dict = {}
-    items = []
-    for sid, score in matched:
-        if score < MATCH_THRESHOLD:
-            continue
-        result = await db.execute(select(Skill).where(Skill.id == sid))
-        skill = result.scalar_one_or_none()
-        if not skill:
-            continue
-        can_use = (
-            skill.created_by == current_user.id
-            or skill.visibility == "public"
-            or skill.id in shared_ids
-        )
-        owner_name = None
-        owner_email = None
-        if not can_use and skill.created_by:
-            if skill.created_by not in owner_cache:
-                user_result = await db.execute(select(User).where(User.id == skill.created_by))
-                owner_cache[skill.created_by] = user_result.scalar_one_or_none()
-            owner = owner_cache[skill.created_by]
-            if owner:
-                owner_name = owner.display_name or owner.username
-                owner_email = owner.email
-        items.append(SimilarSkillItem(
-            id=str(skill.id),
-            name=skill.name,
-            display_name=skill.display_name,
-            description=skill.description,
-            category=skill.category,
-            tags=skill.tags,
-            similarity=score,
-            can_use=can_use,
-            owner_name=owner_name,
-            owner_email=owner_email,
-        ))
-    return SimilarSkillCheckResponse(has_similar=len(items) > 0, skills=items)
+    items = await check_similar_resources(
+        request.prompt, search_skills, Skill, db, current_user.id, "skill",
+        extra_fields_fn=lambda s: {"skill_type": s.skill_type},
+    )
+    skill_items = [SimilarSkillItem(**i) for i in items]
+    return SimilarSkillCheckResponse(has_similar=len(skill_items) > 0, skills=skill_items)
 
 
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -1363,8 +1316,8 @@ async def generate_skill_endpoint(
         display_name=name,
         description=front_matter.get("description", ""),
         skill_path=str(folder),
-        tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
-        category=front_matter.get("category", "ai_generated"),
+        tags=_clean_skill_type_tag(front_matter.get("tags", [])),
+        skill_type=front_matter.get("skill_type", "processing"),
         visibility="private",
         created_by=current_user.id,
     )
@@ -1440,8 +1393,8 @@ async def generate_skill_stream_endpoint(
             display_name=name,
             description=front_matter.get("description", ""),
             skill_path=str(folder),
-            tags=_merge_skill_type_tag(front_matter, front_matter.get("tags", ["ai_generated"])),
-            category=front_matter.get("category", "ai_generated"),
+            tags=_clean_skill_type_tag(front_matter.get("tags", [])),
+            skill_type=front_matter.get("skill_type", "processing"),
             visibility="private",
             created_by=current_user.id,
         )
@@ -1485,7 +1438,7 @@ async def clone_skill(
         description=skill.description,
         skill_path=str(new_folder),
         tags=[*(skill.tags or [])],
-        category=skill.category,
+        skill_type=skill.skill_type,
         visibility=skill.visibility,
         created_by=current_user.id,
     )
@@ -1588,8 +1541,8 @@ async def search_skills(
     current_user: User = Depends(get_current_user),
 ):
     query = select(Skill)
-    if request.category:
-        query = query.where(Skill.category == request.category)
+    if request.skill_type:
+        query = query.where(Skill.skill_type == request.skill_type)
     query = query.limit(request.top_k)
     result = await db.execute(query)
     return [_build_detail(s) for s in result.scalars().all()]
