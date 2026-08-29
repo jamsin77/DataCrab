@@ -8,10 +8,10 @@
     "install:backend": "node scripts/install-backend.js",
     "postinstall": "npm run install:frontend && npm run install:backend",
     "dev:frontend": "cd frontend && npm run dev",
-    "dev:backend": "cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000",
+    "dev:backend": "node scripts/start-backend.js --reload --reload-dir app",
     "dev": "concurrently --names \"后端,前端\" --prefix-colors \"cyan,green\" \"npm:dev:backend\" \"npm:dev:frontend\"",
     "build:frontend": "cd frontend && npm run build",
-    "start:backend": "cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "start:backend": "node scripts/start-backend.js",
     "start": "concurrently --names \"后端,前端\" --prefix-colors \"cyan,green\" \"npm:start:backend\" \"npm:dev:frontend\""
   },
   "devDependencies": {
