@@ -925,6 +925,7 @@ async def stream_response(
                                 else:
                                     _detail += f" {request.content}"
                             _skill_info += f"\n\n📝 执行需求：{_detail}"
+                            full_response += _skill_info
                             yield f"data: {json.dumps({'type': 'content', 'content': _skill_info}, ensure_ascii=False)}\n\n"
                             _runtime = ensure_agent_runtime()
                             _debug_context = build_debug_context(
@@ -958,13 +959,29 @@ async def stream_response(
                                     _result = _agent_event.get("result", {})
                                     _result_content = _result.get("content", "") if isinstance(_result, dict) else str(_result)
                                     if _result_content:
+                                        full_response += _result_content
                                         yield f"data: {json.dumps({'type': 'content', 'content': _result_content}, ensure_ascii=False, default=str)}\n\n"
                                 elif _t == "agent_switch":
                                     _agent_display = _agent_event.get("display_name", _agent_event.get("agent", ""))
                                     _agent_reason = _agent_event.get("reason_display", _agent_event.get("reason", ""))
                                     yield f"data: {json.dumps({'type': 'agent_switch', 'agent': _agent_event.get('agent', ''), 'display_name': _agent_display, 'reason': _agent_event.get('reason', ''), 'reason_display': _agent_reason}, ensure_ascii=False)}\n\n"
-                                elif _t in ("content", "thinking", "model", "executing", "progress", "tool_action", "tool_summary", "run_result", "inspecting", "inspection_report", "retry", "round", "give_up"):
+                                elif _t == "content":
+                                    _c = _agent_event.get("content", "")
+                                    if _c:
+                                        full_response += _c
                                     yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                                elif _t in ("thinking", "model", "executing", "progress", "tool_action", "tool_summary", "run_result", "inspecting", "inspection_report", "retry", "round", "give_up"):
+                                    yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                            # 保存 assistant 消息到 DB
+                            async with _new_session() as save_session:
+                                save_session.add(ChatMessage(
+                                    session_id=request.session_id, role="assistant",
+                                    content=full_response or "技能执行完成",
+                                ))
+                                _sess = await save_session.get(ChatSession, request.session_id)
+                                if _sess:
+                                    _sess.context = dict(_session_ctx)
+                                await save_session.commit()
                             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                             return
                     except Exception as e:
