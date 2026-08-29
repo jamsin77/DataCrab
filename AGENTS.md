@@ -21,7 +21,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 |------|------|
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
 | `agent_config.py` | Agent 配置管理（加载 soul.md 人格、构建各 Agent system prompt 静态段） |
-| `chat_router.py` | 对话路由器——一次 LLM 调用判断消息类型(analysis/processing/chat) + 4 段 keep(keep_source/keep_target/keep_skill)；返回 `(msg_type, keep_source, keep_target, keep_skill, events)`；默认 keep，用户明确说换才 change |
+| `chat_router.py` | 对话路由器——一次 LLM 调用判断消息类型(analysis/processing/chat) + 4 段 keep(keep_source/keep_target/keep_skill)；返回 `(msg_type, keep_source, keep_target, keep_skill, events)`；**传当前已选数据上下文（源/目标/技能名）给 LLM 判断 keep/change**；默认 keep，用户明确说换才 change |
 | `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；删平台信号词匹配，靠 LLM 自主判断 + 3 次执行错误兜底 + StuckDetector 30 轮兜底** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
 | `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
@@ -58,7 +58,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
 17 个端点文件、共 192 条路由，主要：
-- `chat.py` — 对话/流式响应/数据处理；并行匹配（source/target/skill 各自独立）+ chat 类型直接 LLM 对话不走匹配 + skip_steps 机制已删除
+- `chat.py` — 对话/流式响应/数据处理；**classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）**；chat 类型直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（29 路由，最多）
 - `operator.py` — 算子 CRUD + 执行
@@ -79,17 +79,17 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 # 开发模式（前后端联动）
 npm run dev
 
-# 后端单独
-cd backend && pip install -e . && python -m uvicorn app.main:app --reload --port 8000
+# 后端单独（用 .venv Python 3.12，不用系统 Python）
+cd backend && .venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 
 # 前端单独
 cd frontend && npm install && npm run dev
 
 # 测试
-cd backend && python -m pytest tests/ -v
+cd backend && .venv\Scripts\python.exe -m pytest tests/ -v
 
 # 代码格式
-cd backend && black app/ && isort app/
+cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe -m isort app/
 ```
 
 ## 编码规范
@@ -838,6 +838,9 @@ cd backend && black app/ && isort app/
 | 第二十九轮 | "classify_message 返回 (msg_type, keep_data, events)" | 第三十轮（d2c13dd）已改为返回 `(msg_type, keep_source, keep_target, keep_skill, events)` 4 段 keep；keep_data 单段 keep 已不存在 |
 | 第二十九轮 | "skip_steps 机制（request.skip_steps 控制 tables/pipelines 跳过）" | 第三十轮已彻底删除 skip_steps（schema `ChatMessageCreate.skip_steps` + 前端 + 后端全清）；改用 4 段 keep + 已选跳过判断 |
 | 全局 | "skill/operator/pipeline 的 category 字段" | 第三十轮已删除 category 字段（skill→skill_type / pipeline→pipeline_type / operator 无分类字段）；schema + model + match_service 全清 |
+| 第三十轮 | "classify 不传 context 信息给 LLM（只靠用户消息语义判断）" | 第三十一轮已改为传当前已选数据上下文（源/目标/技能名）给 LLM，让它能判断 keep/change |
+| 第三十轮 | "有任意 suggestion → 保存 ChatMessage + yield done + return；无 suggestion → 走 Agent" | 第三十一轮已改为每路独立返回结果（含 no_match 类型），不再用 `_has_suggestion` 判断 |
+| 第三十轮 | "前端 suggestions 数组（data_suggestion/target_suggestion/skill_suggestion + missing_source/missing_target）" | 第三十一轮已改为 8 种独立事件类型（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match） |
 
 ### 第二十九轮（Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化 + 输入历史隔离）
 
@@ -950,3 +953,85 @@ cd backend && black app/ && isort app/
 **验证**：`app.main` 完整加载 192 路由（skills 30 / datasources 24 / operators 18 等）；`classify_message` 返回 5 元组（4 keep）；`llm_match_target_tables` grep 全空（已合并入 `llm_match_tables`）；`skip_steps` grep 全空（schema + 后端 + 前端）；`category` grep 全空（skill/pipeline/operator schema + model）；`check_similar_resources`/`_mlog` 存在。
 
 **与前轮关系**：第二十九轮的单段 `keep_data` + 串行匹配（源→目标→流程→技能，匹配到即 return）被本轮 4 段 keep + 并行匹配取代——支持「换源表保留目标表」等组合，且一次性展示所有匹配结果。第二十六轮的关键词路由在本轮彻底改为 classify LLM 语义判断（不再依赖关键词列表）。第二十一轮的 SSE 日志扩展（main.py filter 加 `[match-detail]`/`[match]`）。chat_router 的 `classify_message` 不再读 session_ctx（只靠用户消息语义判断），第二十九轮「prompt 给当前已选数据源+表名」已删除。
+
+### 第三十一轮（Chat 匹配流程完善 + 使用技能走调试模式 + 多智能体自愈闭环）
+
+**核心洞察**：第三十轮建立了 4 段 keep + 并行匹配框架，但前端卡片渲染、技能调用、参数上下文传递、directExecute 用户体验等多处未完善。本轮系统补齐匹配结果展示、技能调用链路、参数提示、前后端数据同步等问题。
+
+**classify 传上下文修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **classify prompt 注入已选数据** | chat_router.py | 把 `session_ctx` 里的源/目标/技能名注入 prompt，LLM 能对比"当前选的"和"用户想要的"判断 keep/change（之前不传上下文 LLM 无法判断"换"还是"继续用"） |
+| **classify 日志加文件 sink** | main.py | `debug_sse.log` filter 加 `[classify]`/`[direct_execute]`/`[route]`，日志写文件方便排查 |
+
+**每路独立返回结果**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **8 种事件类型** | chat.py | `data_suggestion`/`source_datasource_no_match`/`source_table_no_match`/`target_suggestion`/`target_datasource_no_match`/`target_table_no_match`/`skill_suggestion`/`skill_no_match`——每路匹配到/没匹配到独立返回，不返回 None |
+| **去掉 _has_suggestion 复杂判断** | chat.py | 每路独立 yield 事件，不再用 `_has_suggestion` 判断要不要补发 `no_match` |
+| **keep_skill 有技能也展示卡片** | chat.py | `keep_skill=True` 且有 `last_skill_id` 时，把已选技能作为 `skill_suggestion` 卡片加到结果里（之前跳过匹配不展示卡片，用户无法操作） |
+
+**前端卡片渲染**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **v-if/v-for 拆分** | ChatView.vue | `v-if` 和 `v-for` 从同一元素拆开（Vue 3 `v-if` 优先级高于 `v-for` 导致只渲染一个卡片） |
+| **卡片始终显示** | ChatView.vue | 去掉 `_suggestionConsumed`/`_consumedSuggestions` 关闭逻辑，卡片始终显示，可重复选择 |
+| **data_no_match/target_no_match 提示放 content** | chat.ts | 数据源/数据表未匹配到的提示放 `msg.content`（Chat 回复区），不渲染卡片；`skill_no_match` 渲染卡片（创建新技能+直接处理） |
+| **前端参数提示实时更新** | ChatView.vue | `updateParamsHint` 函数：选了数据/目标表后立刻更新 `msg.content` 的参数提示（✅ 已确定 + ⚠️ 还缺），不用等下次发消息 |
+| **suggestions 数组响应式修复** | chat.ts | `push` 后加 `messages.value = [...messages.value]` 触发 Vue 更新 |
+| **_syncFromDB 恢复 suggestions** | chat.ts | 保存 `_savedSuggestions` → DB 刷新后恢复 → `messages.value = [...messages.value]` 触发更新 |
+| **技能卡片四个蓝色按钮** | ChatView.vue | 使用技能/调试技能/创建新技能/直接处理，统一 `type="primary"` 对齐 |
+
+**使用技能走调试模式**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **使用技能走 run_debug** | chat.py | `use_skill=true` 时走 `build_debug_context` + `runtime.run()`，Agent 用 `run_script` 工具执行技能；RunTime 自动 Inspector handoff 自愈闭环 |
+| **use_skill 标记区分** | schemas/chat.py + chat.ts + ChatView.vue | `use_skill` 字段区分使用技能/直接处理；使用技能 `directExecute=true, useSkill=true`；直接处理 `directExecute=true, useSkill=false` |
+| **技能信息 + 数据参数 + 执行需求展示** | chat.py | yield 技能名/描述/已确定参数/拼好的执行需求（"把 文物库 的 xxx 表导出到 文物列表 的 xxx 表"）给用户 |
+| **_run_skill_nl 共享函数** | skill.py | `run_skill_nl` 端点的核心逻辑抽成 `_run_skill_nl`，供 chat.py 复用 |
+| **调试技能跳转传目标表** | ChatView.vue + SkillView.vue + skill.py | `debugSkill` 传 `target_ds_name`/`target_table_name`；SkillView 接收传给 `infer-instruction`；`SkillInferInstructionRequest` 加 `target_datasource_name`/`target_table_name` |
+
+**directExecute 用户体验修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **directExecute 不存用户消息** | chat.py | `directExecute=true` 时后端不存用户消息到 DB（避免刷新后重复弹出） |
+| **directExecute 复用 assistant 消息** | chat.ts | `directExecute=true` 时复用最后一条 assistant 消息（清空内容接收新流式数据），不 push 新的用户消息和 assistant 消息 |
+| **directExecute 跳过 _syncFromDB** | chat.ts | `directExecute` 时不从 DB 刷新消息列表（避免重复用户消息冒出） |
+| **后端报错前端明确提示** | chat.ts | `_syncFromDB` catch 从 `[已停止生成]` → `❌ 服务连接失败：xxx` |
+| **输入历史 onMounted 加载** | ChatView.vue | 页面首次加载时显式调 `loadInputHistory`（之前只 watch 切换时触发，首次进入不加载） |
+
+**参数上下文全链路**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **目标表/技能写入 session_ctx** | chat.py | `target_datasource_id`/`target_table_name`/`target_write_mode`/`selected_skill_id`/`selected_skill_name` 从前端传入后写入 `session_ctx`（之前只有源表写入，目标表/技能从不写入） |
+| **前端 selectedData 传 target/skill** | chat.ts + api/chat.ts | `sendMessage` 提取 `target_datasource_id`/`target_table_name`/`target_write_mode`/`skill_id`/`skill_name`/`skill_type` 传给后端 |
+| **switchSession 恢复目标表** | chat.ts | 切会话时从 `session.context` 恢复目标数据源名/表名到 `selectedData` |
+| **sendMessage 后不清空 selectedData** | chat.ts | 之前 `sendMessage` 后 `selectedData.value = null` 清空，之前聊的参数丢了；改为不清空保持 |
+| **_get_ready_params/_get_missing_params/_build_params_hint 共享函数** | chat.py | 三处参数展示/检查逻辑抽成共享函数，避免重复代码 |
+| **写入策略注入** | chat.py | `_get_ready_params` 加 `target_write_mode` 显示（"写入策略: 覆盖（if_table_exists=overwrite）"） |
+
+**匹配提示丰富化**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **匹配池规模提示** | chat.py | "正在从「文物库」匹配数据表（3 张表中）..."；只统计用户提到的数据源的表数（之前报全库 130 张表） |
+| **已选数据提示** | chat.py | "✓ 沿用上次选定的数据：文物库 → xxx" |
+| **匹配结果汇总** | chat.py | "✓ 数据表匹配到 2 个结果，✗ 技能/流程未匹配到结果" |
+| **匹配结果消息带参数** | chat.py | "检测到匹配结果，请选择操作。\n\n✅ 已确定参数：...\n\n⚠️ 还缺：..." |
+
+**Python 3.12 venv**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **package.json 用 .venv** | package.json | `dev:backend`/`start:backend` 用 `.venv\Scripts\python.exe` 替代系统 `python`（系统 Python 3.14 无依赖） |
+| **Python 3.12 venv 创建** | backend/.venv | 用 uv 的 Python 3.12 创建 venv，装 requirements.txt + chromadb + minio + pytest |
+
+**验证**：`app.main` 完整加载 192 路由；130 测试全通过；前端 vite build 通过；classify 传上下文后 keep/change 判断正确；使用技能走调试模式 Agent 用 run_script 执行；directExecute 不弹重复用户消息。
+
+**与前轮关系**：第三十轮的 4 段 keep + 并行匹配框架在本轮完善——每路独立返回结果类型、前端卡片渲染修复、技能调用走调试模式复用 `build_debug_context`。第二十三轮的 `build_debug_context`/`build_debug_message` 在本轮被 chat.py 复用（之前只有 skill.py/operator.py/pipeline.py 用）。第二十九轮的 `selectedData` 只传源表在本轮扩展到目标表+技能全链路。
