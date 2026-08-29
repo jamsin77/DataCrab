@@ -102,7 +102,8 @@
               </div>
               
               <!-- 技能/流程/数据匹配建议（可能多个同时出现） -->
-              <div v-for="(sug, sugIdx) in (msg.suggestions || (msg.suggestion ? [msg.suggestion] : []))" :key="sugIdx" v-if="msg.role === 'assistant' && !msg._suggestionConsumed" class="suggestion-card">
+              <template v-if="msg.role === 'assistant'">
+              <div v-for="(sug, sugIdx) in (msg.suggestions || (msg.suggestion ? [msg.suggestion] : []))" :key="sugIdx" class="suggestion-card">
                 <template v-if="sug.type === 'data_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><Coin /></el-icon>
@@ -126,7 +127,7 @@
                     <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
                   </div>
                   <div class="suggestion-actions" style="margin-top: 8px;">
-                    <el-button size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '放弃选择，继续分析' : '放弃选择，继续处理' }}</el-button>
+                    <el-button size="small" @click="abandonDataSuggestion(msg, sug, sugIdx)">放弃选择</el-button>
                   </div>
                 </template>
                 <template v-else-if="sug.type === 'target_suggestion'">
@@ -154,12 +155,13 @@
                       <el-button v-if="msg._writeMode" type="primary" size="small" style="margin-left: 8px;" @click="confirmTargetTable(msg, m)">{{ msg._writeMode === 'direct' ? '确认使用' : '确认' }}</el-button>
                     </div>
                   </div>
-                  <!-- 不选择：输入新表名 -->
+                  <!-- 不选择：新建目标表 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
+                    <span style="font-size: 12px; color: #909399;">新建目标表：</span>
                     <el-input v-model="msg._newTableName" size="small" placeholder="输入新表名" style="width: 200px;" :value="msg._newTableName || generateTableName(msg)"></el-input>
                   </div>
                 </template>
-                <template v-else>
+                <template v-else-if="sug.type === 'skill_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><MagicStick /></el-icon>
                     <span>检测到匹配{{ (sug.matches[0]?.type === 'pipeline') ? '流程' : '技能' }}（共 {{ sug.matches.length }} 个）</span>
@@ -167,9 +169,10 @@
                   <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.name }}</div>
                     <div class="suggestion-item-desc">{{ m.description }}</div>
-                    <div class="suggestion-actions">
-                      <el-button v-if="m.can_use" type="primary" size="small" @click="useMatched(m, msg)">使用{{ m.type === 'pipeline' ? '流程' : '技能' }}</el-button>
-                      <el-button v-else type="warning" size="small" @click="requestPermission(m.type, m.id, m)">申请权限</el-button>
+                    <div class="suggestion-actions" style="gap: 8px;">
+                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="useMatched(m, msg)">使用技能</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="debugSkill(m, msg)">调试技能</el-button>
+                      <el-button v-if="!m.can_use" type="warning" size="small" @click="requestPermission(m.type, m.id, m)">申请权限</el-button>
                     </div>
                   </div>
                   <div v-if="sug.matches.length > 3" class="suggestion-pager">
@@ -177,13 +180,25 @@
                     <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
                     <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
                   </div>
-                  <div class="suggestion-actions" style="margin-top: 8px;">
-                    <el-button size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
-                    <el-button size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
+                  <div class="suggestion-actions" style="margin-top: 8px; gap: 8px;">
+                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
+                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
+                  </div>
+                </template>
+                <!-- skill_no_match 渲染卡片，其余 no_match 类型提示在 content 里不渲染卡片 -->
+                <template v-else-if="sug.type === 'skill_no_match'">
+                  <div class="suggestion-header">
+                    <el-icon><WarningFilled /></el-icon>
+                    <span>未找到匹配的技能</span>
+                  </div>
+                  <div class="suggestion-actions" style="margin-top: 8px; gap: 8px;">
+                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
+                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
                   </div>
                 </template>
               </div>
-              <!-- 主要内容 -->
+              </template>
+                <!-- 主要内容 -->
               <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
               <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && (!msg.executingMsgs || !msg.executingMsgs.length) && !msg.inspectionReport" class="typing-indicator">
                 <span></span><span></span><span></span>
@@ -253,6 +268,17 @@
           </div>
           <div v-if="chatStore.selectedData" class="selected-data-bar">
             <el-tag
+              v-if="chatStore.selectedData.target_datasource_name"
+              closable
+              type="success"
+              size="default"
+              @close="chatStore.selectedData = null"
+            >
+              <el-icon style="vertical-align: middle; margin-right: 2px;"><Coin /></el-icon>
+              {{ chatStore.selectedData.target_datasource_name }} → {{ chatStore.selectedData.target_table_name }}
+            </el-tag>
+            <el-tag
+              v-else-if="chatStore.selectedData.datasource_name"
               closable
               type="success"
               size="default"
@@ -530,6 +556,8 @@ onMounted(async () => {
     if (chatStore.sessions.length > 0 && !chatStore.currentSessionId) {
       await chatStore.switchSession(chatStore.sessions[0].id)
     }
+    // 显式加载当前会话的输入历史（watch 只在切换时触发，首次进入需手动加载）
+    loadInputHistory(chatStore.currentSessionId)
   } catch {
     // 后端可能正在 reload（开发模式改代码触发 uvicorn 重启），静默处理
   }
@@ -647,6 +675,28 @@ function suggestionNextFor(sugIdx: number) {
 }
 
 function useMatched(m: any, msg: any) {
+  // 使用技能：存技能到 selectedData，走 classify 路径生成技能调用指令
+  const allMsgs = chatStore.messages
+  const msgIdx = allMsgs.findIndex(x => x === msg)
+  const userText = msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : ''
+  chatStore.selectedData = {
+    ...chatStore.selectedData,
+    skill_id: m.id,
+    skill_name: m.name,
+    skill_type: m.type,
+  } as any
+  const atts = (allMsgs[msgIdx - 1] as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
+  // 清空旧回复内容，保留 suggestions 卡片
+  msg.content = ''
+  msg.executingMsgs = []
+  msg.agentName = ''
+  msg.inspectionReport = ''
+  // 走 directExecute（复用消息不弹用户消息），use_skill=true 让后端走技能调试模式
+  chatStore.sendMessage(userText, atts.length ? atts : undefined, true, false, true)
+}
+
+function debugSkill(m: any, msg: any) {
+  // 调试技能：跳转到技能/流程调试页面
   const allMsgs = chatStore.messages
   const msgIdx = allMsgs.findIndex(x => x === msg)
   const userText = msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : ''
@@ -655,8 +705,12 @@ function useMatched(m: any, msg: any) {
   const query: Record<string, string> = { debug: m.id }
   const _dsName = sel?.datasource_name || m.datasource_name || ''
   const _tblName = sel?.table_name || m.table_name || ''
+  const _tgtDsName = sel?.target_datasource_name || ''
+  const _tgtTblName = sel?.target_table_name || ''
   if (_dsName) query.ds_name = _dsName
   if (_tblName) query.table_name = _tblName
+  if (_tgtDsName) query.target_ds_name = _tgtDsName
+  if (_tgtTblName) query.target_table_name = _tgtTblName
   if (sessionId) query.chat_session_id = sessionId
   query.instruction = encodeURIComponent(userText)
   if (m.type === 'pipeline') {
@@ -670,15 +724,54 @@ function viewTable(m: any) {
   window.open(router.resolve({ path: '/config', query: { tab: 'datasource', ds: m.datasource_id, table: m.table_name } }).href, '_blank')
 }
 
+function updateParamsHint(msg: any) {
+  const sel = chatStore.selectedData
+  const ready: string[] = []
+  const hasSource = !!sel?.datasource_id && !!sel?.table_name
+  if (sel?.datasource_name) ready.push(`源数据源: ${sel.datasource_name}`)
+  if (sel?.table_name) ready.push(`源表: ${sel.table_name}`)
+  if (sel?.target_datasource_name) ready.push(`目标数据源: ${sel.target_datasource_name}`)
+  if (sel?.target_table_name) ready.push(`目标表: ${sel.target_table_name}`)
+  if (sel?.skill_name) ready.push(`技能: ${sel.skill_name}`)
+  const missing: string[] = []
+  if (!hasSource) {
+    if (!sel?.datasource_id) missing.push('源数据源')
+    if (!sel?.table_name) missing.push('源数据表')
+  }
+  if (msg.suggestions) {
+    const hasTarget = (msg.suggestions as any[]).some(s => s.type === 'target_suggestion' || s.type === 'target_table_no_match' || s.type === 'target_datasource_no_match')
+    if (hasTarget) {
+      if (!sel?.target_datasource_id) missing.push('目标数据源')
+      if (!sel?.target_table_name) missing.push('目标数据表')
+    }
+  }
+  let hint = '检测到匹配结果，请选择操作。'
+  if (ready.length) hint += '\n\n✅ 已确定参数：' + ready.join('，')
+  if (missing.length) hint += '\n\n⚠️ 还缺：' + missing.join('、') + '，请补充'
+  msg.content = hint
+  chatStore.messages = [...chatStore.messages]
+}
+
 function selectData(msg: any, m: any) {
   chatStore.selectedData = {
+    ...chatStore.selectedData,
     datasource_id: m.datasource_id,
     datasource_name: m.datasource_name,
     table_name: m.table_name,
-  }
-  msg._suggestionConsumed = true
-  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.table_name}，请输入您的指令`)
-  // 聚焦输入框
+  } as any
+  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.table_name}`)
+  updateParamsHint(msg)
+  nextTick(() => {
+    const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
+    if (textarea) textarea.focus()
+  })
+}
+
+function abandonDataSuggestion(msg: any, sug: any, sugIdx: number) {
+  chatStore.selectedData = null
+  updateParamsHint(msg)
+  msg.content = (msg.content ? msg.content + '\n\n' : '') + '没有您想要的数据吗？请再描述一下数据的详细特征'
+  chatStore.messages = [...chatStore.messages]
   nextTick(() => {
     const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
     if (textarea) textarea.focus()
@@ -693,12 +786,17 @@ function selectTargetTable(msg: any, m: any, sugIdx: number) {
 function confirmTargetTable(msg: any, m: any) {
   const mode = msg._writeMode
   if (mode === 'direct') {
-    // 直接使用 = 结束对话，不处理
-    msg._suggestionConsumed = true
+    chatStore.selectedData = {
+      ...chatStore.selectedData,
+      target_datasource_id: m.datasource_id,
+      target_datasource_name: m.datasource_name,
+      target_table_name: m.table_name,
+      target_write_mode: 'direct',
+    } as any
     ElMessage.success(`已选择直接使用目标表：${m.datasource_name} → ${m.table_name}`)
+    updateParamsHint(msg)
     return
   }
-  // overwrite / append → 存目标数据到 selectedData
   chatStore.selectedData = {
     ...chatStore.selectedData,
     target_datasource_id: m.datasource_id,
@@ -706,12 +804,33 @@ function confirmTargetTable(msg: any, m: any) {
     target_table_name: m.table_name,
     target_write_mode: mode,
   } as any
-  msg._suggestionConsumed = true
   ElMessage.success(`已选择目标表：${m.datasource_name} → ${m.table_name}（${mode === 'overwrite' ? '覆盖' : '追加'}）`)
+  updateParamsHint(msg)
   nextTick(() => {
     const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
     if (textarea) textarea.focus()
   })
+}
+
+// 检查参数是否齐全（用于控制"使用技能"和"调试技能"按钮是否可点）
+function isParamsReady(msg: any, sug: any): boolean {
+  const sel = chatStore.selectedData
+  const hasSource = !!sel?.datasource_id && !!sel?.table_name
+  if (sug?.msg_type === 'analysis') {
+    return hasSource
+  }
+  return hasSource && (!!sel?.target_datasource_id || !!msg._newTableName)
+}
+
+function getMissingParams(msg: any, sug: any): string[] {
+  const sel = chatStore.selectedData
+  const missing = []
+  if (!sel?.datasource_id) missing.push('源数据源')
+  if (!sel?.table_name) missing.push('源数据表')
+  if (sug?.msg_type !== 'analysis') {
+    if (!sel?.target_datasource_id && !msg._newTableName) missing.push('目标数据表')
+  }
+  return missing
 }
 
 function generateTableName(msg: any) {
@@ -724,8 +843,19 @@ function generateTableName(msg: any) {
 }
 
 function goCreateSkill(msg: any) {
-  const desc = encodeURIComponent(msg.content || '')
-  window.open(router.resolve({ path: '/skill', query: { create: 'true', desc } }).href, '_blank')
+  const allMsgs = chatStore.messages
+  const msgIdx = allMsgs.findIndex(m => m === msg)
+  const userText = msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : ''
+  // 组装已选数据上下文 + 用户需求
+  const parts = []
+  const sel = chatStore.selectedData
+  if (sel?.datasource_name) parts.push(`数据源: ${sel.datasource_name}`)
+  if (sel?.table_name) parts.push(`表名: ${sel.table_name}`)
+  if (sel?.target_datasource_name) parts.push(`目标数据源: ${sel.target_datasource_name}`)
+  if (sel?.target_table_name) parts.push(`目标表名: ${sel.target_table_name}`)
+  if (userText) parts.push(`需求: ${userText}`)
+  const desc = encodeURIComponent(parts.join('\n'))
+  router.push({ path: '/skill', query: { create: 'true', desc } })
 }
 
 async function continueProcessing(msg: any) {
@@ -736,25 +866,21 @@ async function continueProcessing(msg: any) {
   const text = userMsg?.content || ''
   if (!text) return
   const atts = (userMsg as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
-  const suggestion = msg.suggestion
-  // 用户不选源表 → 提示必须选
-  if (suggestion && suggestion.type === 'data_suggestion') {
-    if (!chatStore.selectedData?.datasource_id) {
-      ElMessage.warning('请先选择源数据表，再继续处理')
-      return
-    }
+  // 检查是否有 data_suggestion 但用户没选源表
+  const hasDataSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'data_suggestion')
+  if (hasDataSuggestion && !chatStore.selectedData?.datasource_id) {
+    ElMessage.warning('请先选择源数据表，再继续处理')
+    return
   }
-  // 用户不选目标表 → 用输入的新表名（如有）
-  if (suggestion && suggestion.type === 'target_suggestion') {
-    if (!chatStore.selectedData?.target_datasource_id) {
-      if (msg._newTableName) {
-        // 用户输入了新表名 → 存为目标表（会创建新表）
-        chatStore.selectedData = {
-          ...chatStore.selectedData,
-          target_table_name: msg._newTableName,
-          target_write_mode: 'create',
-        } as any
-      }
+  // 检查 target_no_match 或 target_suggestion 时用户输入了新表名
+  const hasTargetSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'target_suggestion' || s.type === 'target_no_match')
+  if (hasTargetSuggestion && !chatStore.selectedData?.target_datasource_id) {
+    if (msg._newTableName) {
+      chatStore.selectedData = {
+        ...chatStore.selectedData,
+        target_table_name: msg._newTableName,
+        target_write_mode: 'create',
+      } as any
     }
   }
   await chatStore.sendDirectly(text, atts.length ? atts : undefined)
@@ -1335,6 +1461,11 @@ async function handleExportCurrent() {
       gap: 8px;
       margin-top: 6px;
       align-items: center;
+    }
+
+    .missing-hint {
+      color: var(--el-color-warning);
+      font-size: 12px;
     }
 
     .target-write-mode {

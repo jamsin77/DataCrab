@@ -23,9 +23,6 @@
           <el-option label="创建时间" value="created" />
           <el-option label="修改时间" value="updated" />
         </el-select>
-        <el-select v-model="filterCategory" placeholder="分类筛选" clearable style="width: 140px">
-          <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-        </el-select>
         <el-input
           v-model="searchQuery"
           placeholder="搜索算子"
@@ -41,7 +38,6 @@
           <template #header>
             <div class="card-header">
               <span class="op-name">{{ op.display_name || op.name }}</span>
-              <el-tag size="small" :type="categoryColor(op.category)">{{ op.category || '未分类' }}</el-tag>
             </div>
           </template>
           <p class="op-desc">{{ op.description || '暂无描述' }}</p>
@@ -368,7 +364,6 @@
       <div v-for="op in similarOperators" :key="op.id" class="similar-op-item">
         <div class="similar-op-header">
           <span class="similar-op-name">{{ op.display_name || op.name }}</span>
-          <el-tag v-if="op.category" size="small">{{ op.category }}</el-tag>
           <span class="similar-op-score">相似度 {{ (op.similarity * 100).toFixed(0) }}%</span>
         </div>
         <div class="similar-op-desc">{{ op.description || '(无描述)' }}</div>
@@ -489,16 +484,11 @@ function copyText(text: string) {
 }
 
 const operators = ref<any[]>([])
-const categories = ref<string[]>([])
-const filterCategory = ref('')
 const searchQuery = ref('')
 const sortBy = ref('created')
 
 const filteredOperators = computed(() => {
   let list = operators.value
-  if (filterCategory.value) {
-    list = list.filter((o: any) => o.category === filterCategory.value)
-  }
   if (searchQuery.value) {
     const q = searchQuery.value.toLowerCase()
     list = list.filter(
@@ -514,7 +504,6 @@ const filteredOperators = computed(() => {
 async function loadOperators() {
   try {
     operators.value = await api.get(`/operators?sort_by=${sortBy.value}`)
-    categories.value = await api.get('/operators/categories')
   } catch (e: any) {
     ElMessage.error('加载算子失败')
   }
@@ -523,9 +512,6 @@ async function loadOperators() {
 async function uploadOperator(options: any) {
   const formData = new FormData()
   formData.append('file', options.file)
-  if (filterCategory.value) {
-    formData.append('category', filterCategory.value)
-  }
   try {
     const res = await api.post('/operators/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -911,18 +897,6 @@ function formatResult(result: any): string {
   } catch {
     return String(result)
   }
-}
-
-function categoryColor(cat: string) {
-  const map: Record<string, string> = {
-    transform: 'primary',
-    aggregate: 'success',
-    join: 'warning',
-    clean: 'info',
-    analysis: 'danger',
-    custom: '',
-  }
-  return map[cat] || ''
 }
 
 const showGenerateDialog = ref(false)

@@ -804,8 +804,8 @@ async def infer_skill_instruction(
         ctx = chat_session.context if chat_session and chat_session.context else {}
         _src_ds = request.source_datasource_name or ctx.get("source_datasource_name")
         _src_tbl = request.source_table_name or ctx.get("source_table_name")
-        _tgt_ds = ctx.get("target_datasource_name")
-        _tgt_tbl = ctx.get("target_table_name")
+        _tgt_ds = request.target_datasource_name or ctx.get("target_datasource_name")
+        _tgt_tbl = request.target_table_name or ctx.get("target_table_name")
         ctx_lines = []
         if _src_ds:
             ctx_lines.append(f"源数据源: {_src_ds}")
@@ -875,23 +875,50 @@ async def run_skill_nl(
     current_user: User = Depends(get_current_user),
 ):
     """自然语言调用技能 - LLM 从自然语言推断执行参数"""
-    from app.services.skill_runner import run_skill_script
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(status_code=404, detail="技能不存在")
     await assert_resource_access(db, current_user, "skill", skill, "use")
 
-    folder = _resolve_skill_folder(skill)
-
-    skill_md = read_skill_md(folder) or ""
-    script_content = read_skill_script(folder, request.script_name)
-    if script_content is None:
-        raise HTTPException(status_code=400, detail=f"脚本 {request.script_name} 不存在")
-
     from app.services.llm import llm_manager, init_user_llm_context
     await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
+
+    exec_result = await _run_skill_nl(
+        skill=skill,
+        query=request.query,
+        script_name=request.script_name,
+        datasource_id=request.datasource_id,
+        table_name=request.table_name,
+        db=db,
+        current_user=current_user,
+    )
+
+    skill.usage_count = (skill.usage_count or 0) + 1
+    await db.flush()
+
+    return SkillRunResponse(**exec_result)
+
+
+async def _run_skill_nl(
+    skill: Skill,
+    query: str,
+    script_name: str,
+    datasource_id: str | None,
+    table_name: str | None,
+    db: AsyncSession,
+    current_user: User,
+) -> dict:
+    """自然语言调用技能核心逻辑：LLM 推断参数 + 执行技能。可被 chat.py 复用。"""
+    from app.services.skill_runner import run_skill_script
+    from app.services.llm import llm_manager
+
+    folder = _resolve_skill_folder(skill)
+    skill_md = read_skill_md(folder) or ""
+    script_content = read_skill_script(folder, script_name)
+    if script_content is None:
+        return {"success": False, "error": f"脚本 {script_name} 不存在"}
 
     messages = [
         {
@@ -920,8 +947,8 @@ async def run_skill_nl(
                 f"技能名称：{skill.display_name or skill.name}\n"
                 f"技能描述：{skill.description or ''}\n\n"
                 f"SKILL.md 内容：\n{skill_md[:2000]}\n\n"
-                f"脚本代码（{request.script_name}）：\n{script_content[:3000]}\n\n"
-                f"用户的自然语言调用指令：{request.query}\n\n"
+                f"脚本代码（{script_name}）：\n{script_content[:3000]}\n\n"
+                f"用户的自然语言调用指令：{query}\n\n"
                 f"请严格按 SKILL.md 参数规范推断执行参数，只输出 JSON。"
             ),
         },
@@ -931,7 +958,7 @@ async def run_skill_nl(
         nl_result = await llm_manager.chat_with_messages(messages, temperature=0.2, max_tokens=500)
     except Exception as e:
         logger.error(f"自然语言参数推断失败: {e}")
-        raise HTTPException(status_code=500, detail=f"参数推断失败: {str(e)}")
+        return {"success": False, "error": f"参数推断失败: {str(e)}"}
 
     nl_result = nl_result.strip()
     if nl_result.startswith("```"):
@@ -950,14 +977,12 @@ async def run_skill_nl(
         parsed = {"parameters": {}}
 
     parameters = parsed.get("parameters", {})
-    # 在剥离前捕获 LLM 推断的 datasource_name 和 table_name
     _llm_ds_name = parameters.get("datasource_name") or parameters.get("datasource") or parsed.get("datasource_name")
     _llm_table = parameters.get("table_name") or parameters.get("table") or parsed.get("table_name")
     for key in ["datasource_id", "datasource_name", "datasource", "table_name", "table_names", "tables", "table"]:
         parameters.pop(key, None)
 
-    inferred_table = _llm_table or request.table_name
-    datasource_id = request.datasource_id
+    inferred_table = _llm_table or table_name
     ds_name = None
 
     if datasource_id:
@@ -982,7 +1007,7 @@ async def run_skill_nl(
     exec_result = await _asyncio2.to_thread(
         run_skill_script,
         skill_path=folder,
-        script_name=request.script_name,
+        script_name=script_name,
         parameters=parameters,
         input_data=None,
         datasource_id=datasource_id,
@@ -991,10 +1016,7 @@ async def run_skill_nl(
         user_id=str(current_user.id),
     )
 
-    skill.usage_count = (skill.usage_count or 0) + 1
-    await db.flush()
-
-    return SkillRunResponse(**exec_result)
+    return exec_result
 
 
 

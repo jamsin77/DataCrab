@@ -235,7 +235,7 @@
       <div v-for="skill in similarSkills" :key="skill.id" class="similar-skill-item">
         <div class="similar-skill-header">
           <span class="similar-skill-name">{{ skill.display_name || skill.name }}</span>
-          <el-tag v-if="skill.category" size="small">{{ skill.category }}</el-tag>
+          <el-tag v-if="skill.skill_type" size="small">{{ skill.skill_type === 'analysis' ? '分析' : '处理' }}</el-tag>
           <span class="similar-skill-score">相似度 {{ (skill.similarity * 100).toFixed(0) }}%</span>
         </div>
         <div class="similar-skill-desc">{{ skill.description || '(无描述)' }}</div>
@@ -2846,6 +2846,8 @@ onMounted(async () => {
     const userMessage = route.query.instruction ? decodeURIComponent(route.query.instruction as string) : ''
     const dsName = route.query.ds_name as string || ''
     const tblName = route.query.table_name as string || ''
+    const tgtDsName = route.query.target_ds_name as string || ''
+    const tgtTblName = route.query.target_table_name as string || ''
     const chatSessionId = route.query.chat_session_id as string || ''
     router.replace({ query: {} })
     if (skill) {
@@ -2856,12 +2858,14 @@ onMounted(async () => {
       let instruction = userMessage
       if (chatSessionId && userMessage) {
         try {
-          console.log('[infer-instruction] 调用端点:', { skill_id: skill.id, chat_session_id: chatSessionId, user_message: userMessage, dsName, tblName })
+          console.log('[infer-instruction] 调用端点:', { skill_id: skill.id, chat_session_id: chatSessionId, user_message: userMessage, dsName, tblName, tgtDsName, tgtTblName })
           const res = await api.post(`/skills/${skill.id}/infer-instruction`, {
             chat_session_id: chatSessionId,
             user_message: userMessage,
             source_datasource_name: dsName || undefined,
             source_table_name: tblName || undefined,
+            target_datasource_name: tgtDsName || undefined,
+            target_table_name: tgtTblName || undefined,
           })
           console.log('[infer-instruction] 返回:', res)
           if (res?.instruction) instruction = res.instruction

@@ -773,7 +773,7 @@ async function handleImportJson(options: any) {
       parameters: data.parameters || [],
       skill_calls: data.skill_calls || [],
       tags: data.tags || [],
-      category: data.category || null,
+      pipeline_type: data.pipeline_type || null,
       visibility: data.visibility || 'private',
     }
     const res = await api.post('/pipelines/import', payload)
@@ -845,7 +845,7 @@ function downloadPipeline(pl: Pipeline) {
     parameters: pl.parameters || [],
     skill_calls: pl.skill_calls || [],
     tags: pl.tags || [],
-    category: pl.category || null,
+    pipeline_type: pl.pipeline_type || null,
     visibility: pl.visibility || 'private',
   }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })

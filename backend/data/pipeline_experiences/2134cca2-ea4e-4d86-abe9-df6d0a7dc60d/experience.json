@@ -126,6 +126,34 @@
       "script_name": "_pipeline_entry",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260825_160020', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-26T16:00:50.295839",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260826_160005', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-27T16:01:06.880789",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260827_160020', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-28T16:01:16.339826",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260828_160038', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-08-29T16:01:01.841050",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 3, 'target_table': 'credential_ocr_results_20260829_160018', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": ""

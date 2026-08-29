@@ -908,6 +908,26 @@
       "parameters": {},
       "stdout_preview": "debug start\n============================================================\n📥 main() 被调用，收到参数: {'source_datasource_name': '文物列表', 'source_table_name': '全国重点文物保护单位', 'target_datasource_name': '文物库', 'auto",
       "context_summary": "工具: run_script\nAI输出: 用户要求把「文物列表」数据源的「全国重点文物保护单位」表迁移到「文物库」，表名列名换成英文，中文作为备注。这正好对应脚本的 `auto_translate=True` 功能。直接运行："
+    },
+    {
+      "timestamp": "2026-08-29T17:48:10.281770",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "非脚本错误：数据源服务不可达（timed out）",
+      "parameters": {},
+      "stdout_preview": "debug start\n============================================================\n📥 main() 被调用，收到参数: {'source_datasource_name': '文物库', 'source_table_name': 'national_key_cultural_relic_protection_units', 'targ",
+      "context_summary": "工具: run_script\nAI输出: 我先了解一下当前技能的上下文。从结果看，「导出数据」技能关联的源是 PostgreSQL 的 `文物库` 表 `national_key_cultural_relic_protection_units`，目标是 Excel 的 `文物列表` 表 `全国文物`。\n\n当前 `main.py` 是数据迁移脚本，我先直接跑一次看实际行为和数据：\n\n"
+    },
+    {
+      "timestamp": "2026-08-29T17:49:05.701259",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "非脚本错误：数据源服务不可达（timed out）",
+      "parameters": {},
+      "stdout_preview": "debug start\n============================================================\n📥 main() 被调用，收到参数: {'source_datasource_name': '文物库', 'source_table_name': 'national_key_cultural_relic_protection_units', 'targ",
+      "context_summary": "工具: run_script\nAI输出: 上次运行报错是「数据源服务不可达（timed out）」，这是基础设施临时超时，不是脚本逻辑错误。我先重试一次看服务"
     }
   ],
   "positive": [
@@ -2368,6 +2388,20 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'migrated_rows': 5058, 'columns': ['批次', '分类', '名称', '年代', '地址', '备注', '代码', '时间戳'], 'target_table': '全国文物', 'table_remark': None, 'column_remarks': {}}"
+    },
+    {
+      "timestamp": "2026-08-29T17:42:28.896391",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5058, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'col"
+    },
+    {
+      "timestamp": "2026-08-29T18:42:41.753940",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'migrated_rows': 5297, 'columns': ['batch', 'classification', 'name', 'era', 'address', 'remark', 'code', 'timestamp'], 'target_table': 'national_relic', 'table_remark': '全国文物', 'col"
     }
   ],
   "lessons": "",

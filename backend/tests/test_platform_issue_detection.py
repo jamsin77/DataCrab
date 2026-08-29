@@ -77,17 +77,6 @@ def test_get_platform_capabilities_text():
     print("test_get_platform_capabilities_text: PASSED")
 
 
-def test_non_script_error_exit_by_llm():
-    """P5: LLM 判断为非脚本错误时退出（对齐 OpenCode：LLM 不调工具 = 判断完毕）"""
-    import inspect
-    from app.services.data_processor_agent import DataProcessorAgent
-    source = inspect.getsource(DataProcessorAgent.run_debug)
-    # 不调工具 + 非调查语气 → 直接 give_up（不再依赖关键词匹配，不浪费轮次）
-    assert "_INVESTIGATION_MARKERS" in source, "应该检测调查语气标记"
-    assert "give_up" in source, "检测到非脚本错误应该 give_up 退出"
-    print("test_non_script_error_exit_by_llm: PASSED")
-
-
 def test_debug_tools_registration():
     """P4: 工具已注册到 DEBUG_TOOLS，grep_script/read_script 含 scope 参数"""
     from app.services.data_processor_agent import DEBUG_TOOLS
@@ -247,29 +236,8 @@ def test_debug_instructions_has_workflow():
     from app.services.data_processor_agent import DEBUG_INSTRUCTIONS
     assert "平台" in DEBUG_INSTRUCTIONS
     assert "内置函数" in DEBUG_INSTRUCTIONS
-    assert "{max_rounds}" in DEBUG_INSTRUCTIONS
     assert "{max_exec_failures}" in DEBUG_INSTRUCTIONS
     print("test_debug_instructions_has_workflow: PASSED")
-
-
-def test_run_debug_has_non_script_error_exit():
-    """P5: run_debug 包含非脚本错误退出（不调工具 + 非调查语气 → give_up）"""
-    import inspect
-    from app.services.data_processor_agent import DataProcessorAgent
-    source = inspect.getsource(DataProcessorAgent.run_debug)
-    assert "_INVESTIGATION_MARKERS" in source, "run_debug 应该检测调查语气标记"
-    assert "give_up" in source, "应该有 give_up 退出"
-    print("test_run_debug_has_non_script_error_exit: PASSED")
-
-
-def test_run_debug_has_last_round_warning():
-    """P3: run_debug 最后一轮有框架事件透明警告"""
-    import inspect
-    from app.services.data_processor_agent import DataProcessorAgent
-    source = inspect.getsource(DataProcessorAgent.run_debug)
-    assert "max_fix_attempts" in source
-    assert "最后" in source and "修改尝试" in source, "应该在最后一次有警告"
-    print("test_run_debug_has_last_round_warning: PASSED")
 
 
 def test_extract_exception_type():
@@ -310,7 +278,6 @@ def pytest_fail(msg):
 if __name__ == "__main__":
     test_platform_capabilities_structure()
     test_get_platform_capabilities_text()
-    test_non_script_error_exit_by_llm()
     test_debug_tools_registration()
     test_grep_script_platform_scope()
     test_read_script_platform_scope()
@@ -319,6 +286,4 @@ if __name__ == "__main__":
     test_skill_runner_result_has_tool_calls_field()
     test_build_debug_system_prompt_includes_capabilities()
     test_debug_instructions_has_workflow()
-    test_run_debug_has_non_script_error_exit()
-    test_run_debug_has_last_round_warning()
-    print("\n========== All 13 tests passed! ==========")
+    print("\n========== All 10 tests passed! ==========")

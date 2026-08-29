@@ -419,12 +419,11 @@ async def search_tables(query: str, top_k: int = 3) -> List[Tuple[str, float]]:
 # ---------- LLM 匹配（技能/流程/数据表，直接全列表给 LLM 判断）----------
 
 async def llm_match_tables(
-    user_message: str, db, exclude_datasource_id: str = "",
+    user_message: str, db,
 ) -> Tuple[List[Tuple[str, float, dict]], List[str], List[Dict]]:
     """自适应 LLM 匹配数据表。返回 (result, ds_names, events)。
 
     先按数据源名过滤（字符串匹配），只把相关数据源的表给 LLM。
-    exclude_datasource_id 非空时排除该数据源（目标表匹配时排除已选源数据源）。
     - ds_names 非空 = 用户提到了数据源（即使没匹配到表）
     - ds_names 空 = 用户没提到数据源
     """
@@ -432,16 +431,14 @@ async def llm_match_tables(
     from sqlalchemy import select
 
     _mlog(f"\n{'#'*60}")
-    _mlog(f"# llm_match_tables 入口: user_message={user_message} exclude={exclude_datasource_id}")
+    _mlog(f"# llm_match_tables 入口: user_message={user_message}")
     ds_rows = (await db.execute(select(DataSource))).scalars().all()
     ds_map = {str(ds.id): ds.name for ds in ds_rows}
 
-    # 字符串匹配数据源名，排除指定数据源
+    # 字符串匹配数据源名
     mentioned_ds_ids = set()
     mentioned_ds_names = []
     for ds in ds_rows:
-        if exclude_datasource_id and str(ds.id) == exclude_datasource_id:
-            continue
         if ds.name and ds.name in user_message:
             mentioned_ds_ids.add(str(ds.id))
             mentioned_ds_names.append(ds.name)
@@ -564,6 +561,7 @@ async def _llm_parse_response(prompt: str, items: List[Dict], top_k: int = None,
         return matched, events
     except Exception as e:
         _mlog(f"[LLM 匹配失败]: {e}")
+        events.append({"type": "error", "content": f"❌ 匹配失败: {e}"})
         return [], events
 
 

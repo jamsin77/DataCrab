@@ -105,6 +105,8 @@ class SkillInferInstructionRequest(BaseModel):
     user_message: str = Field(..., description="用户原始消息")
     source_datasource_name: Optional[str] = Field(None, description="源数据源名（前端从跳转 URL 传入，优先于 ChatSession.context）")
     source_table_name: Optional[str] = Field(None, description="源表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+    target_datasource_name: Optional[str] = Field(None, description="目标数据源名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+    target_table_name: Optional[str] = Field(None, description="目标表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
 
 
 class SkillDebugChatRequest(BaseModel):
@@ -148,7 +150,7 @@ class SimilarSkillItem(BaseModel):
     name: str
     display_name: Optional[str] = None
     description: Optional[str] = None
-    category: Optional[str] = None
+    skill_type: Optional[str] = None
     tags: Optional[List[str]] = None
     similarity: float = Field(..., description="相似度 0~1")
     can_use: bool = Field(..., description="当前用户是否有权限使用")

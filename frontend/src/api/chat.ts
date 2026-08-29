@@ -28,6 +28,8 @@ export interface ChatMessage {
   attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]  // 用户消息附件元信息
   suggestion?: { type: string; matches: any[] }  // 技能/流程/数据匹配建议
   noMatch?: boolean  // 无匹配标记
+  missingParams?: string[]  // 缺少的参数
+  msgType?: string  // 消息类型（analysis/processing/chat）
   _suggestionConsumed?: boolean  // 前端标记：建议已被消费（如选择了数据）
 }
 
@@ -98,9 +100,16 @@ export const chatApi = {
     signal: AbortSignal,
     onEvent: (event: StreamEvent) => void,
     attachments?: string[],
-    skipMatch?: boolean,
+    directExecute?: boolean,
     selectedDatasourceId?: string,
     selectedTableName?: string,
+    targetDatasourceId?: string,
+    targetTableName?: string,
+    targetWriteMode?: string,
+    selectedSkillId?: string,
+    selectedSkillName?: string,
+    selectedSkillType?: string,
+    useSkill?: boolean,
   ): Promise<void> {
     const token = localStorage.getItem('access_token')
 
@@ -114,21 +123,44 @@ export const chatApi = {
         session_id: sessionId,
         content,
         attachments,
-        skip_match: skipMatch || false,
+        direct_execute: directExecute || false,
+        use_skill: useSkill || false,
         selected_datasource_id: selectedDatasourceId || null,
         selected_table_name: selectedTableName || null,
+        target_datasource_id: targetDatasourceId || null,
+        target_table_name: targetTableName || null,
+        target_write_mode: targetWriteMode || null,
+        selected_skill_id: selectedSkillId || null,
+        selected_skill_name: selectedSkillName || null,
+        selected_skill_type: selectedSkillType || null,
       }),
       signal,
     })
 
     if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(errText || `HTTP ${response.status}`)
+      let errText = ''
+      try {
+        errText = await response.text()
+        try {
+          const errJson = JSON.parse(errText)
+          if (errJson.detail) {
+            if (Array.isArray(errJson.detail)) {
+              errText = errJson.detail.map((d: any) => `${d.loc?.join('.') || d.type}: ${d.msg}`).join('; ')
+            } else {
+              errText = typeof errJson.detail === 'string' ? errJson.detail : JSON.stringify(errJson.detail)
+            }
+          }
+        } catch { /* not JSON, keep raw */ }
+      } catch { /* read body failed */ }
+      // 通过 onEvent 推送 error 事件，确保前端能显示
+      onEvent({ type: 'error', content: errText || `HTTP ${response.status}` })
+      return
     }
 
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let gotDone = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -147,12 +179,18 @@ export const chatApi = {
           onEvent(data)
 
           if (data.type === 'done' || data.type === 'error' || data.type === 'cancelled') {
+            gotDone = true
             return
           }
         } catch {
           // skip malformed JSON lines
         }
       }
+    }
+
+    // 流结束但没收到 done/error 事件 → 后端异常断开
+    if (!gotDone) {
+      throw new Error('服务端连接异常断开，未收到完整响应')
     }
   },
 }

@@ -1,0 +1,13 @@
+步骤	指令	预期类型	keep	预期动作
+1	帮我查一下在文物库数据源，那个数据表更像合并后的文物信息列表？	analysis	-	选数据
+2	我要把这个数据导出一份？可以吗？	processing	true	无建议
+3	导出到 文物列表 数据源	processing	true	选目标表
+4	导出到 文物列表 数据源	processing	true	用技能
+5	再看看文物列表数据源，哪个数据是迁移过来的数据	analysis	false	无建议
+6	好的，那我们就分析这个数据表	analysis	true	无建议
+7	我想把这张表按照地址提取出地级市作为新的一列，可以吗？	processing	true	用技能
+8	这些数据迁移到另一个数据源	processing	true	无建议
+9	统计一下有多少行	analysis	true	无建议
+10	分析这个数据表	analysis	true	无建议
+11	统计下Top50的地级市文物数量	analysis	true	无建议
+12	你好	chat	-	无建议

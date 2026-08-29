@@ -31,11 +31,22 @@ class ChatMessageCreate(BaseModel):
     content: str
     # 用户本次对话上传的附件（datasource_id 列表），后端注入到 user message 前缀让 Agent 知道
     attachments: Optional[List[str]] = None
-    # 跳过技能/流程/数据匹配（用户点「直接对话」或「继续处理」时为 True）
-    skip_match: bool = False
+    # 用户点「直接处理」时为 True，跳过 classify+匹配直接走 Agent
+    direct_execute: bool = False
+    # 用户点「使用技能」时为 True，走技能调试模式调用技能
+    use_skill: bool = False
     # 用户从 data_suggestion 中选择的数据（点"选择此数据"后发送消息时带上，跳过名称匹配和表匹配）
     selected_datasource_id: Optional[str] = None
     selected_table_name: Optional[str] = None
+    # 用户从 target_suggestion 中选择的目标表
+    target_datasource_id: Optional[str] = None
+    target_datasource_name: Optional[str] = None
+    target_table_name: Optional[str] = None
+    target_write_mode: Optional[str] = None
+    # 用户从 skill_suggestion 中选择的技能/流程
+    selected_skill_id: Optional[str] = None
+    selected_skill_name: Optional[str] = None
+    selected_skill_type: Optional[str] = None  # "skill" / "pipeline"
 
 
 class ChatMessageResponse(BaseModel):
