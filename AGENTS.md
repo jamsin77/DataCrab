@@ -57,7 +57,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 > 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-17 个端点文件、共 192 条路由，主要：
+17 个端点文件、共 188 条路由，主要：
 - `chat.py` — 对话/流式响应/数据处理；**classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）**；chat 类型直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（29 路由，最多）
@@ -816,7 +816,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **flash_model 列迁移修复** | main.py | 旧列 `fast_model`→`flash_model` 数据迁移 + 新数据库无条件添加 `flash_model`/`vision_model`/`embedding_model` 列 |
 | **单 Agent 服务删除** | agent.py | 删除 `agent.py`（284 行，非流式 /chat），无残留引用 |
 
-**验证**：`app.main` 完整加载 187 路由（+5 资产端点）；`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空（已删除）；`docker-compose.yml`/`Dockerfile`/`nginx.conf` 均不存在；`asset_io.py`/`match_service.py`/`assets.py` 存在；`.env.example` 无 LLM 硬编码。（注：路由数在第三十轮增至 192）
+**验证**：`app.main` 完整加载 187 路由（+5 资产端点）；`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空（已删除）；`docker-compose.yml`/`Dockerfile`/`nginx.conf` 均不存在；`asset_io.py`/`match_service.py`/`assets.py` 存在；`.env.example` 无 LLM 硬编码。（注：路由数在第三十轮为 187 API + 1 health = 188）
 
 **与前轮关系**：第二十五轮添加的 Docker 部署在本轮被删除（回归开发模式）。第二十七轮记录的"平台信号词匹配"在本轮被彻底删除。第十四轮的 `create_new_file` Excel 平台能力标记为 False 在本轮由 `create_new` 写入策略实现（5 种连接器支持自动找新表名）。第十五轮的 seed 算子/流程加载逻辑在本轮删除（改用资产导入导出替代 seed 文件）。
 
@@ -831,7 +831,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个：`DEBUG_TOOLS`（line 149）含 4 核心（edit_script/run_script/read_script/grep_script）+ 第 151 行追加 `list_user_datasources`（从 SHARED_TOOL_SCHEMAS 提取） |
 | 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数：`run_skill_script`（631）/`run_skill_script_async`（659）/`run_skill_script_streaming`（898）/`run_skill_script_streaming_async`（995）/`run_skill_script_by_content`（1043）/`run_skill_script_by_content_async`（1066），含 async 包装器 |
 | 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | 第二十八轮已删除 seed 算子/流程加载逻辑（改用资产导入导出替代）；`data/seed/operators.json` 不存在；`main.py` `_seed_skills_and_pipelines` 仅保留技能磁盘扫描 + 内置流程/调度 seed（按 is_builtin 查重） |
-| 路由数 | 第二十一轮记录"183 条路由" | 实际 192 条路由（第三十轮：skills 30 / datasources 24 / operators 18 / permissions 18 / config 16 / pipelines 13 / chat 12 / schedules 12 / filelinks 9 / metadata 7 / auth 6 / agents 5 / knowledge 5 / connectors 4 / assets 4 / providers 2 / filesystem 1 / llm 1） |
+| 路由数 | 第二十一轮记录"183 条路由" | 实际 188 条路由（187 API + 1 health；第三十轮：skills 30 / datasources 24 / operators 18 / permissions 18 / config 16 / pipelines 13 / chat 12 / schedules 12 / filelinks 9 / metadata 7 / auth 6 / agents 5 / knowledge 5 / custom_extension 6（含 connectors+providers）/ assets 4 / filesystem 1 / llm 1 / health 1） |
 | 第二十五轮 | "Docker 一键部署：前端多阶段构建 nginx 托管 + SSE 长连接支持" | 第二十八轮（2bd1a58）已删除 Docker/nginx 全部配置（`docker-compose.yml`/`Dockerfile`×2/`nginx/nginx.conf` 均不存在），回归开发模式 |
 | 第二十七轮 | "当前错误处理机制含平台信号词匹配（_PLATFORM_FAILURE_SIGNALS）" | 第二十八轮（2bd1a58）已彻底删除平台信号词匹配（`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空），靠 LLM 自主判断 + 执行错误计数 + 修改次数上限三层兜底 |
 | 第二十六轮 | "关键词路由：含查询/统计/分析…→ DataAnalyst" | 第三十轮已删除关键词路由，改为 `classify_message` LLM 语义判断 msg_type（analysis/processing/chat）→ 选 Agent；chat_router 不再依赖关键词列表 |
@@ -950,7 +950,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **目标表写入策略** | ChatView.vue | 目标表匹配：覆盖/追加/直接使用 + 新表名输入框（自动生成可修改） |
 | **executing 可折叠** | ChatView.vue | executing 提示改为可折叠默认展开 |
 
-**验证**：`app.main` 完整加载 192 路由（skills 30 / datasources 24 / operators 18 等）；`classify_message` 返回 5 元组（4 keep）；`llm_match_target_tables` grep 全空（已合并入 `llm_match_tables`）；`skip_steps` grep 全空（schema + 后端 + 前端）；`category` grep 全空（skill/pipeline/operator schema + model）；`check_similar_resources`/`_mlog` 存在。
+**验证**：`app.main` 完整加载 188 路由（skills 30 / datasources 24 / operators 18 等）；`classify_message` 返回 5 元组（4 keep）；`llm_match_target_tables` grep 全空（已合并入 `llm_match_tables`）；`skip_steps` grep 全空（schema + 后端 + 前端）；`category` grep 全空（skill/pipeline/operator schema + model）；`check_similar_resources`/`_mlog` 存在。
 
 **与前轮关系**：第二十九轮的单段 `keep_data` + 串行匹配（源→目标→流程→技能，匹配到即 return）被本轮 4 段 keep + 并行匹配取代——支持「换源表保留目标表」等组合，且一次性展示所有匹配结果。第二十六轮的关键词路由在本轮彻底改为 classify LLM 语义判断（不再依赖关键词列表）。第二十一轮的 SSE 日志扩展（main.py filter 加 `[match-detail]`/`[match]`）。chat_router 的 `classify_message` 不再读 session_ctx（只靠用户消息语义判断），第二十九轮「prompt 给当前已选数据源+表名」已删除。
 
@@ -1032,6 +1032,6 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **package.json 用 .venv** | package.json | `dev:backend`/`start:backend` 用 `.venv\Scripts\python.exe` 替代系统 `python`（系统 Python 3.14 无依赖） |
 | **Python 3.12 venv 创建** | backend/.venv | 用 uv 的 Python 3.12 创建 venv，装 requirements.txt + chromadb + minio + pytest |
 
-**验证**：`app.main` 完整加载 192 路由；130 测试全通过；前端 vite build 通过；classify 传上下文后 keep/change 判断正确；使用技能走调试模式 Agent 用 run_script 执行；directExecute 不弹重复用户消息。
+**验证**：`app.main` 完整加载 188 路由；130 测试全通过；前端 vite build 通过；classify 传上下文后 keep/change 判断正确；使用技能走调试模式 Agent 用 run_script 执行；directExecute 不弹重复用户消息。
 
 **与前轮关系**：第三十轮的 4 段 keep + 并行匹配框架在本轮完善——每路独立返回结果类型、前端卡片渲染修复、技能调用走调试模式复用 `build_debug_context`。第二十三轮的 `build_debug_context`/`build_debug_message` 在本轮被 chat.py 复用（之前只有 skill.py/operator.py/pipeline.py 用）。第二十九轮的 `selectedData` 只传源表在本轮扩展到目标表+技能全链路。

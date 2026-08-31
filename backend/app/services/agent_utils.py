@@ -148,7 +148,6 @@ class StuckDetector:
     def reset(self):
         self._call_history.clear()
         self._idle_count = 0
-        self._investigate_count = 0
         self._total_rounds = 0
 
 
@@ -333,9 +332,6 @@ def extract_identifiers_from_messages(messages: List[Dict[str, Any]]) -> str:
             args = tc.get("function", {}).get("arguments", "")
             if args:
                 identifiers |= extract_identifiers(args)
-        tool_content = m.get("content", "")
-        if isinstance(tool_content, str) and tool_content:
-            identifiers |= extract_identifiers(tool_content)
     return "\n".join(sorted(identifiers)) if identifiers else ""
 
 
@@ -488,6 +484,7 @@ _TOOL_ICON_MAP = {
     "save_file_to_link": "💾",
     "write_table_data": "✍️",
     "kb_search": "🔎",
+    "web_fetch": "🔗",
     # Inspector 工具
     "profile_data": "📈",
     "check_data_standards": "📐",
@@ -498,18 +495,11 @@ _TOOL_ICON_MAP = {
     "grep_script": "🔍",
     "edit_script": "✏️",
     "run_script": "▶️",
-    "modify_script": "📝",
-    "modify_and_run": "📝▶️",
-    "edit_and_run": "✏️▶️",
     # 扩展工具
     "call_operator": "⚙️",
-    "handoff_to_inspector": "🔁",
-    "handoff_to_processor": "🔁",
     "get_llm_config": "🤖",
     "save_llm_adapter": "🤖",
-    "create_llm_provider": "🤖",
-    "update_llm_provider": "🤖",
-    "delete_llm_provider": "🤖",
+    "delete_llm_adapter": "🗑️",
 }
 
 

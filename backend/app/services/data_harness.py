@@ -38,13 +38,6 @@ class ConvergenceGuard:
         tables = set((s[1], s[2]) for s in recent)
         return len(tables) == 1 and recent[0][0] != recent[-1][0]
 
-    @property
-    def signature_count(self) -> int:
-        return len(self._signatures)
-
-    def reset(self) -> None:
-        self._signatures.clear()
-
 
 def collect_experience(
     base: Path,

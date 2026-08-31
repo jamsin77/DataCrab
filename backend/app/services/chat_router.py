@@ -47,8 +47,8 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
             "判断用户消息，输出四个词用 | 分隔，不要解释：\n"
             "1. 类型：analysis / processing / chat\n"
             "   - analysis：只读分析（查看/统计/查找/浏览数据，不修改）\n"
-            "   - processing：数据处理（清洗/转换/导入导出/脱敏等修改）\n"
-            "   - chat：闲聊/问候/设置\n"
+            "   - processing：数据处理（清洗/转换/加工/导入/导出/迁移/修改/合并等数据操作）\n"
+            "   - chat：闲聊/问候/提问/咨询/平台配置管理（模型Provider/数据源连接器等配置操作）\n"
             "2. 源数据表：keep 或 change（用户要换另一张表/数据源才 change，继续用当前表才 keep）\n"
             "3. 目标数据表：keep 或 change（用户要换另一张目标表才 change）\n"
             "4. 技能：keep 或 change（用户要换技能才 change）\n"
@@ -70,18 +70,22 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
         logger.info(f"[classify] ctx_block={_ctx_block!r}")
         logger.info(f"[classify] LLM raw resp={resp!r}")
 
-        _type = "processing"
+        _type = "chat"
         _keep_source = True
         _keep_target = True
         _keep_skill = True
 
-        if "analysis" in resp:
-            _type = "analysis"
-        elif "chat" in resp:
-            _type = "chat"
-
         parts = resp.split("|")
         logger.info(f"[classify] parts={parts}")
+        if parts and parts[0].strip():
+            _first = parts[0].strip()
+            if "analysis" in _first:
+                _type = "analysis"
+            elif "processing" in _first:
+                _type = "processing"
+            elif "chat" in _first:
+                _type = "chat"
+
         if len(parts) >= 2:
             _keep_source = "change" not in parts[1].strip()
         if len(parts) >= 3:
@@ -94,4 +98,4 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
     except Exception as e:
         logger.error(f"[classify] LLM 调用失败: {e}")
         events = [{"type": "error", "content": f"❌ 路由判断失败: {e}"}]
-        return "processing", False, False, False, events
+        return "chat", False, False, False, events

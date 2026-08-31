@@ -31,6 +31,7 @@ from app.api.deps import get_current_user
 from app.services.llm import llm_manager
 from app.services.agent_config import agent_config
 from app.services.agent_utils import estimate_tokens, build_identifier_hint
+from app.services.tool_registry import execute_tool, get_tool_schemas
 
 router = APIRouter()
 
@@ -1064,31 +1065,50 @@ async def stream_response(
 
             compressed_history = await _compress_history(history_messages, session_id)
 
-            # ===== chat 类型：直接 LLM 对话 =====
+            # ===== chat 类型：走 ChatAgent =====
             if _msg_type == "chat" and not request.direct_execute:
+                from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, stream_agent_events_sse
+                _runtime = ensure_agent_runtime()
+                _chat_context = {
+                    "db": db,
+                    "user_id": current_user.id,
+                    "history": compressed_history,
+                    "has_preinjected_data": False,
+                    "last_config_target": _session_ctx.get("last_config_target", ""),
+                }
+                _chat_msg = AgentMessage(
+                    from_agent="user",
+                    to_agent="chat_agent",
+                    reason=HandoffReason.DELEGATE,
+                    payload={"user_message": _user_msg, "history": compressed_history},
+                    context=_chat_context,
+                )
                 yield f"data: {json.dumps({'type': 'executing', 'message': '正在思考...'}, ensure_ascii=False)}\n\n"
                 try:
-                    async for event in llm_manager.chat_stream_with_thinking(
-                        messages=[
-                            {"role": "system", "content": ASSISTANT_PERSONA},
-                            *compressed_history,
-                            {"role": "user", "content": _user_msg},
-                        ],
-                    ):
-                        if event.get("type") == "content":
-                            full_response += event["content"]
-                            yield f"data: {json.dumps({'type': 'content', 'content': event['content']}, ensure_ascii=False)}\n\n"
-                        elif event.get("type") == "thinking":
-                            yield f"data: {json.dumps({'type': 'thinking', 'content': event['content']}, ensure_ascii=False)}\n\n"
+                    async for event in stream_agent_events_sse(_runtime, _chat_msg, _chat_context, user_id=current_user.id, agent_name="chat_agent"):
+                        if event.startswith("data: "):
+                            _parsed = json.loads(event[6:])
+                            if _parsed.get("type") == "content" and _parsed.get("content"):
+                                full_response += _parsed["content"]
+                            elif _parsed.get("type") == "done":
+                                if not full_response and _parsed.get("result", {}).get("content"):
+                                    full_response = _parsed["result"]["content"]
+                        yield event
                 except Exception as e:
                     logger.error(f"chat LLM 调用失败: {e}")
                     full_response += f"\n\n❌ 响应出错: {e}"
                     yield f"data: {json.dumps({'type': 'content', 'content': f'❌ 响应出错: {e}'}, ensure_ascii=False)}\n\n"
+                # 把 last_config_target 写回 session_ctx（持久化到 DB，下次对话能用）
+                if _chat_context.get("last_config_target"):
+                    _session_ctx["last_config_target"] = _chat_context["last_config_target"]
                 async with _new_session() as save_session:
                     save_session.add(ChatMessage(
                         session_id=request.session_id, role="assistant",
                         content=full_response,
                     ))
+                    _sess = await save_session.get(ChatSession, request.session_id)
+                    if _sess:
+                        _sess.context = dict(_session_ctx)
                     await save_session.commit()
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 return

@@ -23,7 +23,7 @@ from loguru import logger
 
 from app.services.multi_agent import BaseAgent, AgentMessage
 from app.services.llm import llm_manager
-from app.services.shared_tools import execute_shared_tool, ANALYSIS_TOOLS
+from app.services.tool_registry import execute_tool, get_tool_schemas
 from app.services.agent_utils import (
     truncate_tool_result,
     StuckDetector,
@@ -122,7 +122,10 @@ class DataAnalystAgent(BaseAgent):
     display_name = "数据分析智能体"
     description = "只读数据查询、统计分析、分布洞察"
     instructions = DATA_ANALYST_INSTRUCTIONS
-    tools = ANALYSIS_TOOLS
+    tools = get_tool_schemas([
+        "web_fetch", "kb_search", "list_user_datasources",
+        "query_table_data", "get_table_schema", "execute_sql",
+    ])
     capabilities = ["data_query", "data_analysis"]
 
     async def run(
@@ -181,7 +184,7 @@ class DataAnalystAgent(BaseAgent):
             except json.JSONDecodeError:
                 func_args = {}
             try:
-                result = await execute_shared_tool(tc["function"]["name"], func_args, db, user_id)
+                result = await execute_tool(tc["function"]["name"], func_args, db, user_id, context)
                 return {"tool_call_id": tc["id"], "content": result}
             except Exception as e:
                 logger.error(f"DataAnalyst 工具异常 {tc['function']['name']}: {e}")
@@ -199,7 +202,9 @@ class DataAnalystAgent(BaseAgent):
                 model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
-                if t == "thinking":
+                if t == "model":
+                    yield event
+                elif t == "thinking":
                     yield event
                 elif t == "content":
                     content += event["content"]
@@ -333,16 +338,6 @@ class DataAnalystAgent(BaseAgent):
             parts.append(f"用户所有可用数据源：\n{_ds_list}")
         return "\n\n".join(parts) if parts else ""
 
-    _tool_executor = None
-
-    @classmethod
-    def _get_tool_executor(cls):
-        """复用 DataProcessorAgent 的工具执行逻辑（edit_script/run_script/read_script/grep_script）"""
-        if cls._tool_executor is None:
-            from app.services.data_processor_agent import DataProcessorAgent
-            cls._tool_executor = DataProcessorAgent()
-        return cls._tool_executor
-
     async def run_debug(
         self,
         message: AgentMessage,
@@ -364,17 +359,16 @@ class DataAnalystAgent(BaseAgent):
 
         await llm_manager.initialize()
 
-        # 导入调试工具 schema + 辅助函数（复用 DataProcessor 的）
+        # 导入辅助函数（schema 从 tool_registry 取）
         from app.services.data_processor_agent import (
-            EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
-            _LIST_DATASOURCES_TOOL, _slim_run_script_result,
+            _slim_run_script_result,
             classify_execution_result,
             _build_give_up_reason, _record_negative,
         )
-        from app.services.prompt_docs import SAFETY_RULES_DOC
 
-        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL, _LIST_DATASOURCES_TOOL]
-        executor = self._get_tool_executor()
+        debug_tools = get_tool_schemas([
+            "edit_script", "run_script", "read_script", "grep_script", "list_user_datasources",
+        ])
 
         system_prompt = self.build_debug_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
@@ -422,7 +416,9 @@ class DataAnalystAgent(BaseAgent):
                 model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
-                if t == "thinking":
+                if t == "model":
+                    yield event
+                elif t == "thinking":
                     yield event
                 elif t == "content":
                     content += event["content"]
@@ -497,10 +493,19 @@ class DataAnalystAgent(BaseAgent):
                     yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
                     break
 
-            # 执行工具（复用 DataProcessorAgent 的执行逻辑）
-            async for _prog_evt in executor._execute_tools_with_progress(tool_calls, db, user_id, context):
-                yield _prog_evt
-            results = context.pop("_last_tool_results", [])
+            # 执行工具（通过 tool_registry 统一分发）
+            import asyncio as _asyncio
+            async def _safe_exec(tc):
+                try:
+                    _args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    _args = {}
+                try:
+                    _r = await execute_tool(tc["function"]["name"], _args, db, user_id, context)
+                    return {"tool_call_id": tc["id"], "content": _r}
+                except Exception as e:
+                    return {"tool_call_id": tc["id"], "content": json.dumps({"error": str(e)}, ensure_ascii=False)}
+            results = await _asyncio.gather(*[_safe_exec(tc) for tc in tool_calls])
 
             # 工具结果摘要
             _result_lines = []

@@ -77,17 +77,6 @@ class EventStore:
             payload={"to_agent": to_agent, "reason": reason},
         ))
 
-    def record_tool_call(self, agent_name: str, tool_name: str, arguments: Dict, result: str, trace_id: str):
-        self.record(AgentEvent(
-            id=str(uuid.uuid4()),
-            trace_id=trace_id,
-            parent_trace_id="",
-            agent_name=agent_name,
-            event_type="tool_call",
-            timestamp=datetime.now(),
-            payload={"tool_name": tool_name, "arguments": arguments, "result_preview": result[:500]},
-        ))
-
     def get_trace(self, trace_id: str) -> List[AgentEvent]:
         return [e for e in self._events if e.trace_id == trace_id]
 
@@ -237,6 +226,9 @@ class AgentRuntime:
         if agent_name == "data_analyst":
             return None
 
+        if agent_name == "chat_agent":
+            return None
+
         if agent_name == "data_processor":
             # Processor 执行成功 → 交 Inspector 检查
             if not done_result.get("execution_success"):
@@ -318,6 +310,7 @@ def ensure_agent_runtime() -> "AgentRuntime":
     from app.services.data_processor_agent import DataProcessorAgent
     from app.services.data_inspector_agent import DataInspectorAgent
     from app.services.data_analyst_agent import DataAnalystAgent
+    from app.services.chat_agent import ChatAgent
 
     if not agent_registry.get("data_processor"):
         agent_registry.register(DataProcessorAgent())
@@ -325,6 +318,8 @@ def ensure_agent_runtime() -> "AgentRuntime":
         agent_registry.register(DataInspectorAgent())
     if not agent_registry.get("data_analyst"):
         agent_registry.register(DataAnalystAgent())
+    if not agent_registry.get("chat_agent"):
+        agent_registry.register(ChatAgent())
     return AgentRuntime(agent_registry, llm_manager)
 
 
@@ -442,10 +437,6 @@ async def stream_agent_events_sse(
                 _reason = event.get("reason")
                 _inspector_active = (agent == "data_inspector")
                 logger.info(f"[SSE-DEBUG] agent_switch to={agent} reason={_reason} inspector_active={_inspector_active}")
-                # 临时调试：记录所有 agent_switch 事件到文件
-                import os as _os
-                with open(_os.path.join(_os.path.dirname(__file__), "..", "..", "agent_switch_debug.log"), "a", encoding="utf-8") as _f:
-                    _f.write(f"agent={agent} reason={_reason} handoff_reason_display={event.get('reason_display','')}\n")
                 # 仅在真实 handoff（非首轮 delegate）时合成 inspecting/retry
                 # 首轮 agent_switch（reason=delegate）是「开始 xxx」，不是「执行成功后检查」或「检查发现问题后修复」
                 if agent == "data_inspector" and _reason != HandoffReason.DELEGATE.value:
@@ -474,7 +465,7 @@ async def stream_agent_events_sse(
             elif _inspector_active and t == "tool_result":
                 pass  # 不转发 Inspector 工具原始 JSON（报告已通过 inspection_report 格式化发送）
             else:
-                if t in ("executing", "progress", "run_result", "inspecting", "inspection_result"):
+                if t in ("executing", "progress", "run_result", "inspecting", "inspection_report"):
                     logger.info(f"[SSE] 转发 type={t}")
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 

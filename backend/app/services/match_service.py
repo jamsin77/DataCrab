@@ -220,18 +220,6 @@ async def index_operator(operator, raise_on_error=False):
             raise
 
 
-async def update_skill_index(skill):
-    await index_skill(skill)
-
-
-async def update_pipeline_index(pipeline, db=None):
-    await index_pipeline(pipeline, db)
-
-
-async def update_operator_index(operator):
-    await index_operator(operator)
-
-
 async def index_table(table_meta, ds_name: str = "", raise_on_error=False):
     text = _build_table_text(table_meta, ds_name)
     if not text.strip():

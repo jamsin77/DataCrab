@@ -17,7 +17,7 @@ from loguru import logger
 
 from app.services.multi_agent import BaseAgent, AgentMessage, HandoffReason
 from app.services.llm import llm_manager
-from app.services.inspector_tools import inspector_tools
+from app.services.tool_registry import execute_tool, get_tool_schemas
 from app.services.agent_utils import (
     StuckDetector,
     should_warn_ungrounded_claim,
@@ -30,68 +30,6 @@ from app.services.agent_utils import (
     compact_messages,
     truncate_tool_result,
 )
-
-
-def _collect_severe_issues(local_messages):
-    """从工具结果中收集 error/critical 级问题；存在 fatal 时不强制交接（按指令应停止）。"""
-    severe = []
-    has_fatal = False
-    for m in local_messages:
-        if m.get("role") != "tool":
-            continue
-        try:
-            data = json.loads(m.get("content", ""))
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        for issue in data.get("issues", []) or []:
-            sev = str(issue.get("severity", "")).lower()
-            if sev == "fatal":
-                has_fatal = True
-            elif sev in ("error", "critical"):
-                severe.append(issue)
-    if has_fatal:
-        return []
-    return severe
-
-
-def _collect_all_tool_issues(local_messages):
-    """从工具结果中收集所有 issues（保留原始 severity，作为 severity 校验基准）。"""
-    all_issues = []
-    for m in local_messages:
-        if m.get("role") != "tool":
-            continue
-        try:
-            data = json.loads(m.get("content", ""))
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        for issue in data.get("issues", []) or []:
-            if isinstance(issue, dict) and issue.get("severity"):
-                all_issues.append(issue)
-    return all_issues
-
-
-def _correct_severity(llm_issues, local_messages):
-    """用工具返回的原始 severity 修正 LLM 可能篡改的 severity。"""
-    tool_issues = _collect_all_tool_issues(local_messages)
-    if not tool_issues:
-        return llm_issues
-    corrected = []
-    for li in llm_issues:
-        _li_desc = str(li.get("description", ""))
-        _matched = False
-        for ti in tool_issues:
-            _ti_desc = str(ti.get("description", ""))
-            if _li_desc and _ti_desc and (_li_desc in _ti_desc or _ti_desc in _li_desc):
-                corrected.append({**li, "severity": ti.get("severity", li.get("severity"))})
-                _matched = True
-                break
-        if not _matched:
-            corrected.append(li)
-    return corrected
 
 
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的 DataInspector（数据检查智能体），一位数据质量专家。
@@ -125,71 +63,15 @@ DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的 DataInspector（数据检�
 - 其他问题：在内容中列出（含严重等级、影响范围、修复建议），由用户决定是否修复
 """
 
-DATA_INSPECTOR_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "profile_data",
-            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据。无需传参，自动检查当前数据源和表",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_data_standards",
-            "description": "检查数据是否符合命名规范、类型标准、编码规范。无需传参，自动检查当前数据源和表",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "standard_rules": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "检查规则列表，如 ['naming_convention', 'type_consistency', 'encoding_check']",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_data_quality",
-            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性。无需传参，自动检查当前数据源和表",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "quality_dimensions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "质量维度，如 ['completeness', 'uniqueness', 'validity', 'consistency']",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_data_security",
-            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性。无需传参，自动检查当前数据源和表",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-]
-
 class DataInspectorAgent(BaseAgent):
     name = "data_inspector"
     display_name = "数据检查智能体"
     description = "对加工后的数据进行标准检查、质量检查、安全检查，发现错误后记录并反馈"
     instructions = DATA_INSPECTOR_INSTRUCTIONS
-    tools = DATA_INSPECTOR_TOOLS
+    tools = get_tool_schemas([
+        "web_fetch", "kb_search", "list_user_datasources",
+        "profile_data", "check_data_standards", "check_data_quality", "check_data_security",
+    ])
     capabilities = ["data_quality", "data_standards", "data_security", "inspection"]
 
     def build_system_prompt(self, context: Dict[str, Any]) -> str:
@@ -231,7 +113,7 @@ class DataInspectorAgent(BaseAgent):
 
         system_prompt = self.build_system_prompt(context)
         local_messages = [{"role": "system", "content": system_prompt}]
-        context["_local_messages"] = local_messages  # 供 _execute_tool 中 _correct_severity 使用
+        context["_local_messages"] = local_messages
 
         if message.reason == HandoffReason.INSPECT_RESULT or message.reason == HandoffReason.DELEGATE:
             ds_id = message.payload.get("datasource_id", "")
@@ -305,7 +187,9 @@ class DataInspectorAgent(BaseAgent):
                 model=llm_manager._flash, tool_choice="auto",
             ):
                 t = event["type"]
-                if t == "thinking":
+                if t == "model":
+                    yield event
+                elif t == "thinking":
                     yield event
                 elif t == "content":
                     content += event["content"]
@@ -359,7 +243,36 @@ class DataInspectorAgent(BaseAgent):
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
-            results = await self._execute_tool_calls_parallel(tool_calls, db, context)
+            results = []
+            for tc in tool_calls:
+                try:
+                    func_args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    func_args = {}
+                # 自动从 context 填充数据源和表名（LLM 无需手动传参）
+                ds_id = context.get("current_datasource_id", "") or func_args.get("datasource_id", "")
+                tbl = context.get("current_table_name", "")
+                if ds_id:
+                    func_args["datasource_id"] = ds_id
+                if tbl:
+                    func_args["table_name"] = tbl
+                # UUID 解析（如果 ds_id 是名称而非 UUID）
+                if ds_id:
+                    try:
+                        import uuid as _uuid
+                        _uuid.UUID(str(ds_id))
+                    except (ValueError, AttributeError):
+                        try:
+                            from app.models.datasource import DataSource as _DS
+                            from sqlalchemy import select as _select
+                            _r = await db.execute(_select(_DS).where(_DS.name == str(ds_id)))
+                            _ds = _r.scalar_one_or_none()
+                            if _ds:
+                                func_args["datasource_id"] = str(_ds.id)
+                        except Exception:
+                            pass
+                _r = await execute_tool(tc["function"]["name"], func_args, db, context.get("_user_id"), context)
+                results.append({"tool_call_id": tc["id"], "content": _r})
             for r in results:
                 local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": truncate_tool_result(r["content"])})
                 yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
@@ -377,60 +290,3 @@ class DataInspectorAgent(BaseAgent):
         yield {"type": "content", "content": "检查超时，请稍后重试。"}
         yield {"type": "done", "result": {"agent": self.name, "content": "检查超时", "success": False, "check_results": context.get("_check_results")}}
 
-    async def _execute_tool_calls_parallel(self, tool_calls: list, db, context: Dict) -> list:
-        async def _safe_execute(tc):
-            try:
-                func_args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
-                func_args = {}
-            result = await self._execute_tool(tc["function"]["name"], func_args, db, context)
-            return {"tool_call_id": tc["id"], "content": result}
-
-        results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
-        return list(results)
-
-    async def _execute_tool(self, name: str, arguments: dict, db, context: Dict) -> str:
-        logger.info(f"DataInspector执行工具: {name}")
-
-        # 自动从 context 填充数据源和表名（LLM 无需手动传参，避免中文表名复制错误）
-        # 优先用 context 值（可靠 UUID），不信任 LLM 传的 datasource_id（可能是中文名）
-        ds_id = context.get("current_datasource_id", "") or arguments.get("datasource_id", "")
-        tbl = context.get("current_table_name", "")
-        if not ds_id or not tbl:
-            return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
-
-        # 如果 ds_id 不是合法 UUID，尝试按数据源名称解析
-        try:
-            import uuid as _uuid
-            _uuid.UUID(str(ds_id))
-        except (ValueError, AttributeError):
-            try:
-                from app.models.datasource import DataSource as _DS
-                from sqlalchemy import select as _select
-                _r = await db.execute(_select(_DS).where(_DS.name == str(ds_id)))
-                _ds = _r.scalar_one_or_none()
-                if _ds:
-                    ds_id = str(_ds.id)
-                else:
-                    return json.dumps({"error": f"数据源 '{ds_id}' 不存在或不是有效的UUID"}, ensure_ascii=False)
-            except Exception as e:
-                return json.dumps({"error": f"数据源ID格式错误: {ds_id}，解析失败: {e}"}, ensure_ascii=False)
-
-        if name == "profile_data":
-            result = await inspector_tools.profile_data(ds_id, tbl, db)
-            return json.dumps(result, ensure_ascii=False, default=str)
-        elif name == "check_data_standards":
-            result = await inspector_tools.check_data_standards(
-                ds_id, tbl, db, arguments.get("standard_rules"),
-            )
-            return json.dumps(result, ensure_ascii=False, default=str)
-        elif name == "check_data_quality":
-            result = await inspector_tools.check_data_quality(
-                ds_id, tbl, db, arguments.get("quality_dimensions"),
-            )
-            return json.dumps(result, ensure_ascii=False, default=str)
-        elif name == "check_data_security":
-            result = await inspector_tools.check_data_security(ds_id, tbl, db)
-            return json.dumps(result, ensure_ascii=False, default=str)
-        else:
-            return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)

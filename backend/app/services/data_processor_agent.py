@@ -22,12 +22,9 @@ from loguru import logger
 
 from app.services.multi_agent import BaseAgent, AgentMessage, HandoffReason
 from app.services.llm import llm_manager
-from app.services.shared_tools import SHARED_TOOL_SCHEMAS, execute_shared_tool
+from app.services.tool_registry import execute_tool, get_tool_schemas
 from app.services.agent_utils import (
     truncate_tool_result,
-    estimate_tokens,
-    extract_identifiers,
-    build_identifier_hint,
     get_anti_hallucination_section,
     StuckDetector,
     SearchSaturationDetector,
@@ -71,182 +68,15 @@ DataCrab 只能处理用户数据，绝不能修改平台自身。
 - delete_llm_adapter：用户说"删除 Provider"时调用，传入 provider_name
 """
 
-# 调试模式工具（对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep）
-RUN_SCRIPT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "run_script",
-        "description": "运行当前调试的技能/脚本（在沙箱中执行），返回执行结果。\n\n用法：\n- parameters 是业务参数（数据源名、表名、策略等），须符合 SKILL.md 参数规范\n- 必选参数不可缺失，系统会校验并告警\n- 返回执行结果：成功返回 stdout + result，失败返回错误信息 + traceback\n- 成功时 stdout 过长会截断（如打印大量数据行）；失败时错误信息和 traceback 完整保留\n- 脚本执行超时（300秒）不是 bug——说明运行时间过长，修复方向是减少 LLM 调用量（加规则预过滤/增大批次/并发），不是找逻辑 bug\n- edit_script 修改后调 run_script 验证修复是否正确\n\n场景：\n- 修改后验证：edit_script 改完 → run_script 跑一遍看结果\n- 复现问题：用原始参数 run_script 看错误是否还在",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "parameters": {"type": "object", "description": "执行参数（业务参数，如数据源名、表名、策略等），须符合 SKILL.md 参数规范"},
-            },
-            "required": [],
-        },
-    },
-}
-
-EDIT_SCRIPT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "edit_script",
-        "description": "精确字符串替换，修改脚本。提供 old_string 和 new_string，系统精确定位并替换。\n\n用法：\n- 修改前必须先调 read_script 查看逐字内容，获取精确的 old_string\n- old_string 必须逐字匹配（包括缩进、空格、注释），不能凭记忆编写\n- old_string 在脚本中必须唯一；不唯一时多带几行上下文使其唯一\n- old_string 未找到或多次匹配时会报错——多带上下文行使其唯一\n- 保持 new_string 的缩进与周围代码一致",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "script_name": {"type": "string", "description": "脚本文件名，如 main.py"},
-                "old_string": {"type": "string", "description": "脚本中要被替换的原文片段（逐字复制，必须唯一匹配）。多带几行上下文以保证唯一。"},
-                "new_string": {"type": "string", "description": "替换后的新内容（保持正确缩进）"},
-                "skill_md": {"type": "string", "description": "（仅技能调试）更新后的完整 SKILL.md 全文。需要改参数规范/描述时提供。"},
-            },
-            "required": ["old_string", "new_string"],
-        },
-    },
-}
-
-READ_SCRIPT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_script",
-        "description": "读取代码的逐字内容（带行号）。\n\n用法：\n- 默认返回前 2000 行，大文件用 offset 翻页读取后续内容\n- 避免反复读小片段（70 行以下），需要更多上下文时读更大的窗口\n- 内容格式为 \"L行号: 代码\"，行号可用于 edit_script 的定位\n- function_name 可只读指定函数（如 function_name=\"_write_result\"）\n- 行级补丁前调用获取精确 old_string（逐字复制，不要凭记忆）\n- 可同时读取多个文件/函数，并行调用\n- 先读脚本本身（scope=script）定位 bug，确认脚本逻辑无误后再查平台源码（scope=platform）",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=用户脚本（默认），platform=平台源码"},
-                "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
-                "function_name": {"type": "string", "description": "可选，仅 scope=script 时读取指定函数"},
-                "file_path": {"type": "string", "description": "平台源码文件名（仅 scope=platform，如 connectors.py）"},
-                "offset": {"type": "integer", "description": "起始行号（1-indexed）"},
-                "limit": {"type": "integer", "description": "读取行数（不传时默认返回前 2000 行）"},
-            },
-            "required": [],
-        },
-    },
-}
-
-GREP_SCRIPT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "grep_script",
-        "description": "在代码中搜索关键词或正则表达式，返回匹配行+行号+上下文。\n\n用法：\n- pattern 是正则表达式（默认大小写不敏感），如 \"write_table_data\" 或 \"batch.*append\"\n- 返回每个匹配的行号和内容，附带上下文行（默认 3 行）\n- 搜平台源码时用 file_filter 限定文件（如 \"connectors.py\"）",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "正则表达式（默认大小写不敏感）"},
-                "scope": {"type": "string", "enum": ["script", "platform"], "description": "script=搜用户脚本（默认），platform=搜平台源码"},
-                "script_name": {"type": "string", "description": "脚本文件名（仅 scope=script）"},
-                "function_name": {"type": "string", "description": "可选，仅 scope=script 时限定函数范围"},
-                "file_filter": {"type": "string", "description": "可选，仅 scope=platform 时限定文件名（如 connectors.py）"},
-                "context_lines": {"type": "integer", "description": "上下文行数（默认 3）"},
-                "case_sensitive": {"type": "boolean", "description": "是否大小写敏感（默认 false）"},
-            },
-            "required": ["pattern"],
-        },
-    },
-}
-
-DEBUG_TOOLS = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL]
-_LIST_DATASOURCES_TOOL = next(t for t in SHARED_TOOL_SCHEMAS if t["function"]["name"] == "list_user_datasources")
-DEBUG_TOOLS.append(_LIST_DATASOURCES_TOOL)
-
-# 自定义扩展工具（save_connector + save_llm_adapter）
-
-# BaseConnector 契约规范——save_connector 生成代码时必须严格遵守
-CONNECTOR_CONTRACT = """BaseConnector 契约（所有方法必须是 async def）：
-- async def connect(self) -> bool  # 建立连接，返回 True/False
-- async def test_connection(self) -> bool  # 测试连接，返回 True/False（不是元组）
-- async def get_schema(self) -> list[dict]  # 返回表列表，每个 dict 必须含 {"table_name": "xxx", "table_type": "xxx"}，不能返回单个 dict
-- async def get_table_data(self, table: str, page: int = 1, page_size: int = 20, filters: dict = None, sort: dict = None) -> "pd.DataFrame"  # 签名必须含 page 和 page_size 参数，返回 pandas DataFrame（不是 list）
-- async def get_table_stats(self, table: str) -> dict  # 返回 {"row_count": N}
-- async def close(self) -> None  # 关闭连接
-execute_query 可选，非结构化数据源无需实现（基类有默认空实现返回空 DataFrame）。"""
-
-SAVE_CONNECTOR_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "save_connector",
-        "description": "保存数据源连接器（新建或更新）。用户提供自然语言描述，你生成继承 BaseConnector 的 Python 类代码，系统验证后注册。注册后用户即可在数据源管理中创建该类型的数据源。同名或同显示名称的连接器会被覆盖更新，不会产生重复。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "连接器类型名（英文小写，如 mongodb、redis）。更新已有连接器时尽量沿用原 name"},
-                "display_name": {"type": "string", "description": "显示名称（如 MongoDB）"},
-                "description": {"type": "string", "description": "连接器描述"},
-                "code": {"type": "string", "description": CONNECTOR_CONTRACT},
-                "config_template": {"type": "array", "description": "配置项模板，前端据此动态渲染表单。每项 {name,label,type,required,default?,options?,depends_on?}。type 支持：string(文本)、number(数字)、password(密码)、boolean(开关)、select(下拉选择，需配 options:[{label,value}])、filepath(文件路径选择器，带浏览按钮)、folderpath(文件夹路径选择器)、filepath_list(多文件路径列表，可增删)。文件类连接器务必用 filepath/folderpath/filepath_list 而非 string，这样前端会显示文件浏览按钮。depends_on 可选，条件显隐，如 {\"mode\":\"files\"}", "items": {"type": "object", "properties": {"name": {"type": "string"}, "label": {"type": "string"}, "type": {"type": "string"}, "required": {"type": "boolean"}}}},
-            },
-            "required": ["name", "display_name", "code"],
-        },
-    },
-}
-
-SAVE_LLM_ADAPTER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "save_llm_adapter",
-        "description": "注册或更新大模型 Provider。已存在的 Provider 会被刷新更新。注册后可在模型配置中选择该 Provider。所有 Provider 地位平等。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "provider_name": {"type": "string", "description": "厂商标识（英文小写，如 anthropic、google、moonshot）"},
-                "display_name": {"type": "string", "description": "显示名称（如 Anthropic Claude）"},
-                "description": {"type": "string", "description": "Provider 描述"},
-                "api_base": {"type": "string", "description": "API 基础地址（如 https://api.moonshot.cn/v1）"},
-                "models": {"type": "array", "description": "可用模型列表", "items": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}}}},
-                "default_model": {"type": "string", "description": "默认深度模型名（用于深度推理场景，如 glm-5.2、moonshot-v1-128k）"},
-                "code": {"type": "string", "description": "适配器类代码（OpenAI 兼容厂商可不传，非兼容厂商必须传）。类必须实现 chat_completion(messages, model, temperature, max_tokens, stream) 方法"},
-            },
-            "required": ["provider_name", "display_name", "api_base"],
-        },
-    },
-}
-
-GET_LLM_CONFIG_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "get_llm_config",
-        "description": "查询当前平台的 LLM 配置信息，包括当前使用的 Provider、模型、API地址、所有已注册的 Provider 列表。用户要求添加或更新模型时，先调用此工具了解现有配置。",
-        "parameters": {"type": "object", "properties": {}},
-    },
-}
-
-DELETE_LLM_ADAPTER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "delete_llm_adapter",
-        "description": "删除指定的 LLM Provider。用户要求删除、移除某个 Provider 时调用此工具。删除后该 Provider 不可用。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "provider_name": {"type": "string", "description": "要删除的 Provider 标识（如 moonshot、deepseek）"},
-            },
-            "required": ["provider_name"],
-        },
-    },
-}
-
-DELETE_CONNECTOR_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "delete_connector",
-        "description": "删除指定的数据源连接器。用户要求删除、移除某个连接器时调用此工具。已被数据源使用的连接器无法删除。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "要删除的连接器类型名（如 universal_file、generic_file）"},
-            },
-            "required": ["name"],
-        },
-    },
-}
-
-EXTENSION_TOOLS = [SAVE_CONNECTOR_TOOL, DELETE_CONNECTOR_TOOL, SAVE_LLM_ADAPTER_TOOL, GET_LLM_CONFIG_TOOL, DELETE_LLM_ADAPTER_TOOL]
-
-# 加载统一技能规范（单一真相源）
-_SPEC_PATH = Path(__file__).resolve().parent.parent / "defaults" / "SKILL_SPEC.md"
-_SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else ""
+# 工具列表声明（schema + 实现统一在 tool_registry.py 注册中心管理）
+MAIN_TOOLS = [
+    "web_fetch", "kb_search", "list_user_datasources",
+    "query_table_data", "get_table_schema", "execute_sql",
+    "list_user_file_links", "save_file_to_link",
+]
+DEBUG_TOOL_NAMES = [
+    "edit_script", "run_script", "read_script", "grep_script", "list_user_datasources",
+]
 
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_script 读代码定位问题，用 edit_script 修改，用 run_script 执行验证。
@@ -263,17 +93,6 @@ VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否�
 - 下方「内置工具函数」文档列出了所有可用函数和签名，修改脚本前先看
 """
 
-# 技能调试额外说明：把调试对象从「脚本」提升为「技能」整体（SKILL.md 规范 + 脚本）
-SKILL_DEBUG_EXTRA = """
-
-## 技能级操作说明（你正在调试技能，不是孤立脚本）
-技能 = SKILL.md 规范（参数定义/描述/处理类型）+ scripts/main.py 脚本。你的修改和运行都应面向技能整体：
-- **修改技能**：用 edit_script 修改脚本（行级补丁）；若需新增/修改参数规范、描述等技能元信息，通过 `skill_md` 提供**更新后的完整 SKILL.md 全文**，系统会一并写入。
-- **运行技能**：`run_script` 的 parameters 必须符合 SKILL.md 参数规范表（必选参数不可缺失，系统会校验并告警）。
-- **保持一致**：修改函数签名（增减参数）时，务必同步更新 SKILL.md 的参数规范表，使脚本与技能规范一致。
-- SKILL.md 全文已在下方展示，需要修改时输出完整新版本到 skill_md 参数。
-"""
-
 # 调试 system prompt 静态前缀缓存（借鉴 DeepAnalyze sectionCache：字节稳定 → 命中 prefix cache）
 # key = (is_skill, max_rounds, max_inspections)；一次会话内不变
 _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
@@ -281,8 +100,6 @@ _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
 # 主对话 system prompt 静态缓存（persona + instructions + 沙箱文档 + 工具指引 + 反幻觉）
 # 纯静态，进程级 memoize → 字节稳定命中 GLM prefix cache
 _MAIN_STATIC_PROMPT_CACHE: Optional[str] = None
-
-DATA_PROCESSOR_TOOLS = SHARED_TOOL_SCHEMAS + EXTENSION_TOOLS
 
 
 
@@ -446,7 +263,7 @@ class DataProcessorAgent(BaseAgent):
     display_name = "数据处理智能体"
     description = "理解用户意图、生成/修改算子和技能、调度执行、溯源修复"
     instructions = DATA_PROCESSOR_INSTRUCTIONS
-    tools = DATA_PROCESSOR_TOOLS
+    tools = get_tool_schemas(MAIN_TOOLS)
     capabilities = ["data_processing", "data_query", "operator_generation"]
 
     async def run(
@@ -503,8 +320,6 @@ class DataProcessorAgent(BaseAgent):
         pressure_warned = False
         has_preinjected_data = context.get("has_preinjected_data", False)
 
-        from app.services.llm import _circuit
-
         for i in range(max_iterations):
             logger.info(f"[run] 第{i+1}轮开始, budget={max_iterations}")
 
@@ -520,7 +335,9 @@ class DataProcessorAgent(BaseAgent):
                 temperature=0.3, tool_choice="auto",
             ):
                 t = event["type"]
-                if t == "thinking":
+                if t == "model":
+                    yield event
+                elif t == "thinking":
                     yield event
                 elif t == "content":
                     content += event["content"]
@@ -631,7 +448,7 @@ class DataProcessorAgent(BaseAgent):
             except json.JSONDecodeError:
                 func_args = {}
             try:
-                result = await self._execute_tool(tc["function"]["name"], func_args, db, user_id, context)
+                result = await execute_tool(tc["function"]["name"], func_args, db, user_id, context)
                 return {"tool_call_id": tc["id"], "content": result}
             except Exception as e:
                 logger.error(f"平台工具异常 {tc['function']['name']}: {e}")
@@ -696,46 +513,6 @@ class DataProcessorAgent(BaseAgent):
         context["_last_tool_results"] = results
 
     @staticmethod
-    def _script_summary(script: str, script_name: str = "main.py") -> str:
-        """生成脚本摘要：函数名+行号+docstring 首行，不放假代码。agent 按需用 grep_script/read_script 查看。"""
-        lines = script.splitlines()
-        total = len(lines)
-        try:
-            import ast
-            tree = ast.parse(script)
-            funcs = []
-            imports = []
-            for node in ast.iter_child_nodes(tree):
-                if isinstance(node, (ast.Import, ast.ImportFrom)):
-                    seg = ast.get_source_segment(script, node) or ""
-                    imports.append(seg.strip())
-                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    doc = ast.get_docstring(node) or ""
-                    doc_first = doc.split('\n')[0].strip() if doc else ""
-                    # 完整签名：含 *args/**kwargs，不截断（截断会让 LLM 重写时漏 **kwargs → runner 传参 TypeError）
-                    sig_parts = [a.arg for a in node.args.args]
-                    if node.args.vararg:
-                        sig_parts.append(f"*{node.args.vararg.arg}")
-                    elif node.args.kwonlyargs:
-                        sig_parts.append("*")
-                    sig_parts.extend(a.arg for a in node.args.kwonlyargs)
-                    if node.args.kwarg:
-                        sig_parts.append(f"**{node.args.kwarg.arg}")
-                    args = ", ".join(sig_parts)
-                    funcs.append(f"- L{node.lineno} {node.name}({args}){' — ' + doc_first if doc_first else ''}")
-            result = f"## 当前脚本（{script_name}，共 {total} 行）\n"
-            if imports:
-                result += f"导入: {'; '.join(imports[:5])}{'...' if len(imports) > 5 else ''}\n"
-            if funcs:
-                result += "函数列表:\n" + "\n".join(funcs)
-            else:
-                result += "(无可解析的函数)"
-            result += "\n需要查看具体代码时用 read_script（看某函数全文）或 grep_script（搜关键词）。"
-            return result
-        except SyntaxError:
-            return f"## 当前脚本（{script_name}，共 {total} 行）\n脚本有语法错误，用 read_script 查看逐字内容。"
-
-    @staticmethod
     def _check_required_params(context: Dict[str, Any], parameters: Dict[str, Any]) -> str:
         """按 SKILL.md 参数规范表校验必选参数是否缺失。返回告警字符串（无缺失返回空串）。
 
@@ -787,672 +564,6 @@ class DataProcessorAgent(BaseAgent):
             return ""
         return f"SKILL.md 规范要求必选参数 {required}，当前缺失：{missing}。请补齐后运行。"
 
-    async def _finalize_script_change(self, merged: str, current: str, script_name: str,
-                                       arguments: dict, db: AsyncSession, context: Dict) -> str:
-        """持久化合并后的脚本（operator/pipeline/skill）+ skill_md + AST 语法检查 + diff。
-        edit_script 共用此方法，返回 JSON 结果字符串。"""
-        context["debug_script_content"] = merged
-
-        # 写入对应存储
-        if context.get("debug_type") == "operator":
-            from app.models.operator import Operator
-            from sqlalchemy import select as sa_select
-            op_id = context.get("debug_operator_id")
-            op_result = await db.execute(sa_select(Operator).where(Operator.id == op_id))
-            op = op_result.scalar_one_or_none()
-            if op:
-                op.script_content = merged
-                from app.services.operator_parser import parse_python_script
-                try:
-                    parsed = parse_python_script(merged)
-                    if parsed.get("function_name"):
-                        op.function_name = parsed["function_name"]
-                        op.inputs = parsed.get("inputs", op.inputs)
-                        op.outputs = parsed.get("outputs", op.outputs)
-                        op.parameters = parsed.get("parameters", op.parameters)
-                except Exception:
-                    pass
-                await db.flush()
-        elif context.get("debug_type") == "pipeline":
-            from app.models.pipeline import Pipeline
-            from sqlalchemy import select as sa_select
-            pipe_id = context.get("debug_pipeline_id")
-            pipe_result = await db.execute(sa_select(Pipeline).where(Pipeline.id == pipe_id))
-            pipe = pipe_result.scalar_one_or_none()
-            if pipe:
-                pipe.main_code = merged
-                await db.flush()
-        else:
-            folder = context.get("debug_folder")
-            if folder:
-                from app.services.skill_parser import write_skill_script
-                write_skill_script(folder, script_name, merged)
-
-        # skill_md 同步
-        _skill_md_updated = False
-        _new_md = (arguments.get("skill_md") or "").strip()
-        if _new_md and context.get("debug_type") in (None, "skill"):
-            folder = context.get("debug_folder")
-            if folder:
-                from app.services.skill_parser import write_skill_md as _wsm
-                _wsm(folder, _new_md)
-                context["debug_skill_md_full"] = _new_md
-                context["debug_skill_md"] = _new_md[:1200]
-                _skill_md_updated = True
-                logger.info(f"debug edit_script: SKILL.md 已更新 ({len(_new_md)} 字符)")
-
-        logger.info(f"debug edit_script: {script_name} 已更新 ({len(merged)} 字符)")
-
-        # AST 语法预检
-        import ast as _ast
-        try:
-            _ast.parse(merged)
-        except SyntaxError as _se:
-            logger.warning(f"edit_script 语法错误: {_se}")
-            return json.dumps({
-                "success": False,
-                "error": f"语法错误（第{_se.lineno}行）: {_se.msg}",
-                "syntax_error": True,
-            }, ensure_ascii=False)
-
-        diff_lines = _compute_diff_summary(current, merged)
-        return json.dumps({
-            "success": True,
-            "script_name": script_name,
-            "message": "脚本已更新，语法检查通过",
-            "skill_md_updated": _skill_md_updated,
-            "changed_lines": diff_lines,
-        }, ensure_ascii=False)
-
-    async def _execute_tool(self, name: str, arguments: dict, db: AsyncSession, user_id, context: Dict) -> str:
-        logger.info(f"DataProcessor执行工具: {name}")
-
-        # ---- 调试模式工具 ----
-        if name == "edit_script":
-            if not context.get("_script_has_been_read"):
-                return json.dumps({"success": False, "error": "必须先调用 read_script 查看脚本内容，再修改。"}, ensure_ascii=False)
-            # 行级补丁（对齐 OpenCode edit）：小修改只输出 old/new 片段，不重写整函数
-            old_string = arguments.get("old_string", "")
-            new_string = arguments.get("new_string", "")
-            if not old_string:
-                return json.dumps({"success": False, "error": "缺少 old_string"}, ensure_ascii=False)
-            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            try:
-                from app.services.operator_parser import apply_patch
-                current = context.get("debug_script_content", "")
-                patch = apply_patch(current, old_string, new_string)
-                if not patch.get("success"):
-                    return json.dumps({"success": False, "error": patch.get("message", "补丁失败"), "patch_error": True}, ensure_ascii=False)
-                return await self._finalize_script_change(patch["code"], current, script_name, arguments, db, context)
-            except Exception as e:
-                logger.warning(f"edit_script 失败: {e}")
-                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-
-        if name == "read_script":
-            scope = arguments.get("scope", "script")
-            if scope == "platform":
-                file_path = arguments.get("file_path", "")
-                if not file_path:
-                    return json.dumps({"success": False, "error": "缺少 file_path"}, ensure_ascii=False)
-                search_dir = Path(__file__).resolve().parent.parent
-                candidates = [
-                    search_dir / file_path,
-                    search_dir / "services" / file_path,
-                    search_dir / "api" / "v1" / "endpoints" / file_path,
-                ]
-                resolved = None
-                for c in candidates:
-                    try:
-                        rp = c.resolve()
-                        if str(rp).startswith(str(search_dir.resolve())) and rp.exists():
-                            resolved = rp
-                            break
-                    except Exception:
-                        continue
-                if not resolved:
-                    return json.dumps({"success": False, "error": f"文件未找到: {file_path}"}, ensure_ascii=False)
-                offset = max(1, int(arguments.get("offset", 1)))
-                limit = min(200, int(arguments.get("limit", 50)))
-                try:
-                    with open(resolved, encoding="utf-8") as f:
-                        all_lines = f.readlines()
-                    start = offset - 1
-                    end = min(len(all_lines), start + limit)
-                    seg_lines = [f"L{i+1}: {all_lines[i].rstrip()}" for i in range(start, end)]
-                    return json.dumps({"success": True, "file": os.path.relpath(str(resolved), str(search_dir)),
-                                       "offset": offset, "limit": limit, "total_lines": len(all_lines),
-                                       "content": "\n".join(seg_lines)}, ensure_ascii=False)
-                except Exception as e:
-                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-            # scope='script' — 读当前脚本逐字内容（带行号，对齐 OpenCode Read）
-            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            # 每次从磁盘刷新（确保行号和文件一致，不受内存旧版本影响）
-            _folder = context.get("debug_folder")
-            if _folder:
-                _file_path = Path(_folder) / "scripts" / script_name
-                if _file_path.exists():
-                    current = _file_path.read_text(encoding="utf-8")
-                    context["debug_script_content"] = current
-                else:
-                    current = context.get("debug_script_content", "")
-            else:
-                current = context.get("debug_script_content", "")
-            function_name = arguments.get("function_name")
-            offset = int(arguments.get("offset", 0))
-            limit = int(arguments.get("limit", 0))
-            # 标记脚本已读（edit_script 前必须先 read）
-            context["_script_has_been_read"] = True
-
-            if function_name:
-                try:
-                    import ast as _ast
-                    tree = _ast.parse(current)
-                    for node in _ast.iter_child_nodes(tree):
-                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == function_name:
-                            seg = _ast.get_source_segment(current, node) or ""
-                            seg_lines = seg.splitlines()
-                            start_line = node.lineno
-                            total = len(seg_lines)
-                            # 支持 offset/limit（对齐 OpenCode Read），不传则返回整个函数
-                            if offset > 0 or limit > 0:
-                                s = max(0, (offset - 1) if offset > 0 else 0)
-                                e = min(total, s + limit) if limit > 0 else total
-                            else:
-                                s = 0
-                                e = total
-                            numbered = "\n".join(f"L{start_line + i}: {seg_lines[i]}" for i in range(s, e))
-                            return json.dumps({"success": True, "script_name": script_name, "function": function_name,
-                                               "start_line": start_line, "content": numbered, "total_lines": total,
-                                               "shown_lines": e - s}, ensure_ascii=False)
-                    return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
-                except SyntaxError as _se:
-                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。用 edit_script 修复语法。"}, ensure_ascii=False)
-            # 默认返回前 2000 行（对齐 OpenCode Read），传 offset/limit 读指定范围
-            _DEFAULT_READ_CAP = 2000
-            all_lines = current.splitlines()
-            _total = len(all_lines)
-            if offset > 0 or limit > 0:
-                start = max(0, (offset - 1) if offset > 0 else 0)
-                end = min(_total, start + limit) if limit > 0 else min(_total, start + _DEFAULT_READ_CAP)
-            else:
-                start = 0
-                end = min(_total, _DEFAULT_READ_CAP)
-            numbered = "\n".join(f"L{i+1}: {all_lines[i]}" for i in range(start, end))
-            result = {"success": True, "script_name": script_name, "offset": start + 1,
-                      "limit": end - start, "total_lines": _total, "content": numbered}
-            if end < _total:
-                result["has_more"] = True
-                result["hint"] = f"还有 {_total - end} 行未显示，用 offset={end + 1} 翻页读取后续内容"
-            return json.dumps(result, ensure_ascii=False)
-
-        if name == "grep_script":
-            scope = arguments.get("scope", "script")
-            pattern = arguments.get("pattern", "")
-            if not pattern:
-                return json.dumps({"success": False, "error": "缺少 pattern"}, ensure_ascii=False)
-            context_lines = int(arguments.get("context_lines", 3))
-            import re as _grep_re
-
-            if scope == "platform":
-                file_filter = arguments.get("file_filter", "*.py")
-                import glob as _glob
-                search_dir = Path(__file__).resolve().parent.parent
-                files = _glob.glob(str(search_dir / "**" / file_filter), recursive=True)
-                flags = 0 if arguments.get("case_sensitive") else _grep_re.IGNORECASE
-                try:
-                    regex = _grep_re.compile(pattern, flags)
-                except _grep_re.error as e:
-                    return json.dumps({"success": False, "error": f"正则表达式错误: {e}"}, ensure_ascii=False)
-                all_matches = []
-                for fpath in sorted(files):
-                    try:
-                        with open(fpath, encoding="utf-8") as f:
-                            lines = f.readlines()
-                    except Exception:
-                        continue
-                    for i, line in enumerate(lines):
-                        if regex.search(line):
-                            start = max(0, i - context_lines)
-                            end = min(len(lines), i + context_lines + 1)
-                            snippet_lines = []
-                            for j in range(start, end):
-                                prefix = ">>" if j == i else "  "
-                                snippet_lines.append(f"{prefix} L{j+1}: {lines[j].rstrip()}")
-                            all_matches.append({"file": str(Path(fpath).relative_to(search_dir)), "line": i + 1,
-                                                "snippet": "\n".join(snippet_lines)})
-                if not all_matches:
-                    return json.dumps({"success": True, "pattern": pattern, "scope": "platform",
-                                       "matches": [], "total_matches": 0, "message": "未找到匹配"}, ensure_ascii=False)
-                _MAX = 50
-                truncated = len(all_matches) > _MAX
-                result = {"success": True, "pattern": pattern, "scope": "platform",
-                          "matches": all_matches[:_MAX], "total_matches": len(all_matches)}
-                if truncated:
-                    result["truncated"] = True
-                    result["message"] = f"匹配数超过 {_MAX}，仅显示前 {_MAX} 个。请用 file_filter 限定文件或用更精确的 pattern。"
-                return json.dumps(result, ensure_ascii=False)
-
-            # scope='script' — 搜当前脚本
-            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            current = context.get("debug_script_content", "")
-            case_sensitive = arguments.get("case_sensitive", False)
-            function_name = arguments.get("function_name")
-            all_lines = current.splitlines()
-            if function_name:
-                try:
-                    import ast as _ast
-                    tree = _ast.parse(current)
-                    func_start = None
-                    func_end = None
-                    for node in _ast.iter_child_nodes(tree):
-                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == function_name:
-                            func_start = node.lineno
-                            func_end = getattr(node, "end_lineno", func_start)
-                            break
-                    if func_start is None:
-                        return json.dumps({"success": False, "error": f"未找到函数 {function_name}"}, ensure_ascii=False)
-                    search_lines = all_lines[func_start - 1: func_end]
-                    line_offset = func_start
-                except SyntaxError as _se:
-                    return json.dumps({"success": False, "error": f"脚本语法错误，无法解析函数：{_se.msg}（第{_se.lineno}行）。用 edit_script 修复语法。"}, ensure_ascii=False)
-            else:
-                search_lines = all_lines
-                line_offset = 1
-            flags = 0 if case_sensitive else _grep_re.IGNORECASE
-            try:
-                regex = _grep_re.compile(pattern, flags)
-            except _grep_re.error as e:
-                return json.dumps({"success": False, "error": f"正则表达式错误: {e}"}, ensure_ascii=False)
-            match_indices = [i for i, line in enumerate(search_lines) if regex.search(line)]
-            if not match_indices:
-                return json.dumps({"success": True, "pattern": pattern, "script_name": script_name,
-                                   "function": function_name, "matches": [], "total_matches": 0,
-                                   "message": "未找到匹配"}, ensure_ascii=False)
-            _MAX_MATCHES = 20
-            truncated = len(match_indices) > _MAX_MATCHES
-            match_blocks = []
-            for idx in match_indices[:_MAX_MATCHES]:
-                start = max(0, idx - context_lines)
-                end = min(len(search_lines), idx + context_lines + 1)
-                snippet_lines = []
-                for j in range(start, end):
-                    prefix = ">>" if j == idx else "  "
-                    snippet_lines.append(f"{prefix} L{line_offset + j}: {search_lines[j]}")
-                match_blocks.append({"line": line_offset + idx, "snippet": "\n".join(snippet_lines)})
-            result = {"success": True, "pattern": pattern, "script_name": script_name,
-                      "function": function_name, "matches": match_blocks, "total_matches": len(match_indices)}
-            if truncated:
-                result["truncated"] = True
-                result["message"] = f"匹配数超过 {_MAX_MATCHES}，仅显示前 {_MAX_MATCHES} 个。请用更精确的 pattern 或指定 function_name 缩小范围。"
-            return json.dumps(result, ensure_ascii=False)
-
-        if name == "run_script":
-            script_name = arguments.get("script_name") or context.get("debug_script_name", "main.py")
-            parameters = arguments.get("parameters", {})
-            # 只 strip 内部 ID 类参数（防 Agent 覆盖系统数据源），datasource_name 保留（脚本别名映射+UUID 校验兜底）
-            for key in ["datasource_id", "source_datasource_id", "target_datasource_id"]:
-                parameters.pop(key, None)
-            try:
-                if context.get("debug_type") == "operator":
-                    # 算子：exec() 沙箱执行
-                    import io, time as _time, inspect as _inspect
-                    from app.api.v1.endpoints.operator import _build_operator_namespace, _sanitize_op
-                    script = context.get("debug_script_content", "")
-                    func_name = context.get("debug_function_name", "")
-                    captured = io.StringIO()
-                    exec_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
-                    exec_ns.update(_build_operator_namespace(user_id))
-                    exec(script, exec_ns)
-                    debug_func = exec_ns.get(func_name)
-                    if not debug_func:
-                        return json.dumps({"success": False, "error": f"脚本中未找到函数: {func_name}"})
-                    exec_start = _time.time()
-                    is_async = _inspect.iscoroutinefunction(debug_func)
-                    exec_result = await debug_func(**parameters) if is_async else debug_func(**parameters)
-                    if hasattr(exec_result, "to_dict"):
-                        exec_result = exec_result.to_dict(orient="records")
-                    elapsed = (_time.time() - exec_start) * 1000
-                    result = {"success": True, "result": _sanitize_op(exec_result), "stdout": captured.getvalue() or None, "execution_time_ms": round(elapsed, 2)}
-                    context["debug_last_success_params"] = parameters
-                    logger.info(f"debug run_script (operator): success=True")
-                    return json.dumps(result, ensure_ascii=False, default=str)
-                elif context.get("debug_type") == "pipeline":
-                    # 流程：复用 skill_runner 子进程沙箱（与技能执行同一框架）
-                    from app.services.skill_runner import run_skill_script_by_content_async
-                    result = await run_skill_script_by_content_async(
-                        script_content=context.get("debug_script_content", ""),
-                        parameters=parameters,
-                        user_id=str(user_id) if user_id else None,
-                        entry_function=context.get("debug_function_name"),
-                        timeout=600,
-                    )
-                    _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
-                    _failed = (not result.get("success")
-                               or ("success" in _inner and not _inner["success"])
-                               or (result.get("error") and str(result.get("error")).strip())
-                               or (_inner.get("error") and str(_inner.get("error")).strip()))
-                    if not _failed:
-                        context["debug_last_success_params"] = parameters
-                    else:
-                        _err = str(result.get("error") or _inner.get("error") or "")
-                        logger.info(f"debug run_script (pipeline): success=False, error={_err[:500]}")
-                    logger.info(f"debug run_script (pipeline): success={not _failed}")
-                    return json.dumps(result, ensure_ascii=False, default=str)
-                else:
-                    # 技能：subprocess 沙箱（流式，进度通过 context 推给前端）
-                    folder = context.get("debug_folder")
-                    if not folder:
-                        return json.dumps({"success": False, "error": "缺少 folder"})
-                    from app.services.skill_runner import run_skill_script_streaming_async
-                    ds_id = context.get("debug_source_datasource_id") or context.get("debug_datasource_id")
-                    ds_name = context.get("debug_source_datasource_name") or context.get("debug_datasource_name")
-                    tbl = context.get("debug_source_table_name") or context.get("debug_table_name")
-                    # 技能级运行：按 SKILL.md 参数规范校验必选参数（非阻断，仅告警）
-                    _param_warning = self._check_required_params(context, parameters)
-                    result = None
-                    _progress_queue = context.get("_progress_queue")
-                    async for _item in run_skill_script_streaming_async(
-                        skill_path=folder, script_name=script_name, parameters=parameters,
-                        input_data=None, datasource_id=ds_id, datasource_name=ds_name, table_name=tbl,
-                        user_id=str(user_id) if user_id else None,
-                    ):
-                        _it = _item.get("type")
-                        if _it == "progress":
-                            _msg = _item.get("message", "")
-                            _prog_list = context.setdefault("_execution_progress", [])
-                            _prog_list.append(_msg)
-                            if _progress_queue is not None:
-                                _progress_queue.put_nowait(_msg)
-                        elif _it == "result":
-                            result = _item["result"]
-                    if result is None:
-                        result = {"success": False, "error": "执行无结果返回"}
-                    if _param_warning:
-                        result["param_warning"] = _param_warning
-                    _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
-                    _failed = (not result.get("success")
-                               or ("success" in _inner and not _inner["success"])
-                               or (result.get("error") and str(result.get("error")).strip())
-                               or (_inner.get("error") and str(_inner.get("error")).strip()))
-                    if not _failed:
-                        context["debug_last_success_params"] = parameters
-                    else:
-                        _err = str(result.get("error") or _inner.get("error") or "")
-                        _err_type = result.get("error_type") or _inner.get("error_type") or ""
-                        logger.info(f"debug run_script (skill): success=False, error_type={_err_type}, error={repr(_err[:800])}")
-                    return json.dumps(result, ensure_ascii=False, default=str)
-            except Exception as e:
-                import traceback as _tb
-                _err = _tb.format_exc()
-                logger.warning(f"run_script 失败: {_err[:500]}")
-                return json.dumps({"success": False, "error": _err, "error_type": type(e).__name__}, ensure_ascii=False)
-
-        # ---- 自定义扩展工具 ----
-        if name == "save_connector":
-            return await self._handle_save_connector(arguments, db, user_id)
-
-        if name == "delete_connector":
-            return await self._handle_delete_connector(arguments, db, user_id)
-
-        if name == "save_llm_adapter":
-            return await self._handle_save_llm_adapter(arguments, db, user_id)
-
-        if name == "delete_llm_adapter":
-            return await self._handle_delete_llm_adapter(arguments)
-
-        if name == "get_llm_config":
-            return await self._handle_get_llm_config()
-
-        return await execute_shared_tool(name, arguments, db, user_id)
-
-    async def _handle_save_connector(self, arguments: dict, db: AsyncSession, user_id) -> str:
-        """保存数据源连接器：验证代码 → 存 DB → 注册缓存"""
-        import json as _json
-        connector_name = arguments.get("name", "").strip().lower()
-        display_name = arguments.get("display_name", connector_name)
-        description = arguments.get("description", "")
-        code = arguments.get("code", "")
-        config_template = arguments.get("config_template", [])
-
-        if not connector_name or not code:
-            return _json.dumps({"success": False, "error": "缺少 name 或 code"}, ensure_ascii=False)
-
-        # 验证代码：能 exec + 找到 BaseConnector 子类
-        from app.services.connectors import register_custom_connector
-        try:
-            register_custom_connector(connector_name, code)
-        except Exception as e:
-            return _json.dumps({"success": False, "error": f"代码验证失败: {e}"}, ensure_ascii=False)
-
-        # 存入数据库（覆盖同名或同 display_name，避免重复）— 用独立 session 避免与流式 session 冲突
-        from app.core.database import async_session
-        from app.models.custom_extension import CustomConnector
-        from sqlalchemy import select as sa_select, or_
-        async with async_session() as save_session:
-            existing = await save_session.execute(
-                sa_select(CustomConnector).where(
-                    or_(CustomConnector.name == connector_name, CustomConnector.display_name == display_name),
-                    CustomConnector.is_active == True,
-                )
-            )
-            # 用 first() 而非 scalar_one_or_none()，避免已有重复记录时报 MultipleResultsFound
-            record = existing.scalars().first()
-            if record:
-                # 覆盖已有记录（保持原 name 不变，避免破坏已创建的数据源引用）
-                record.display_name = display_name
-                record.description = description
-                record.code = code
-                record.config_template = config_template
-                record.is_active = True
-                # 若存在其他同 display_name 的重复记录，停用它们
-                dup_result = await save_session.execute(
-                    sa_select(CustomConnector).where(
-                        CustomConnector.display_name == display_name,
-                        CustomConnector.is_active == True,
-                        CustomConnector.id != record.id,
-                    )
-                )
-                for dup in dup_result.scalars().all():
-                    dup.is_active = False
-            else:
-                record = CustomConnector(
-                    name=connector_name,
-                    display_name=display_name,
-                    description=description,
-                    code=code,
-                    config_template=config_template,
-                    created_by=user_id,
-                )
-                save_session.add(record)
-            await save_session.commit()
-            logger.info(f"连接器已保存: {record.name} (display={display_name})")
-            return _json.dumps({"success": True, "message": f"连接器 '{display_name}' 已注册，现在可以在数据源管理中创建该类型的数据源"}, ensure_ascii=False)
-
-    async def _handle_delete_connector(self, arguments: dict, db: AsyncSession, user_id) -> str:
-        """删除数据源连接器：校验所有权 + 数据源使用 → 软删除 + 移除注册"""
-        import json as _json
-        connector_name = arguments.get("name", "").strip().lower()
-        if not connector_name:
-            return _json.dumps({"success": False, "error": "缺少 name"}, ensure_ascii=False)
-
-        from app.core.database import async_session
-        from app.models.custom_extension import CustomConnector
-        from app.models.datasource import DataSource
-        from app.models.user import User
-        from sqlalchemy import select as sa_select, func
-        async with async_session() as del_session:
-            result = await del_session.execute(
-                sa_select(CustomConnector).where(CustomConnector.name == connector_name, CustomConnector.is_active == True)
-            )
-            record = result.scalar_one_or_none()
-            if not record:
-                return _json.dumps({"success": False, "error": f"连接器 '{connector_name}' 不存在"}, ensure_ascii=False)
-
-            # 所有权：仅所有者或超管可删
-            user_result = await del_session.execute(sa_select(User).where(User.id == user_id))
-            cur_user = user_result.scalar_one_or_none()
-            is_super = bool(cur_user and cur_user.is_superuser)
-            if record.created_by != user_id and not is_super:
-                return _json.dumps({"success": False, "error": "无权删除此连接器（仅所有者或管理员可删）"}, ensure_ascii=False)
-
-            # 限制：已被数据源使用的连接器不能删除
-            ds_count = await del_session.scalar(
-                sa_select(func.count(DataSource.id)).where(
-                    DataSource.type == connector_name,
-                    DataSource.is_active == True,
-                )
-            )
-            if ds_count and ds_count > 0:
-                return _json.dumps({"success": False, "error": f"该连接器已被 {ds_count} 个数据源使用，无法删除。请先删除或迁移相关数据源"}, ensure_ascii=False)
-
-            display_name = record.display_name or connector_name
-            record.is_active = False
-            await del_session.commit()
-
-        # 从内存注册表移除
-        from app.services.connectors import _connector_registry, _sync_supported_types
-        _connector_registry.pop(connector_name, None)
-        _sync_supported_types()
-
-        logger.info(f"连接器已删除: {connector_name}")
-        return _json.dumps({"success": True, "message": f"连接器 '{display_name}' ({connector_name}) 已删除"}, ensure_ascii=False)
-
-    async def _handle_save_llm_adapter(self, arguments: dict, db: AsyncSession, user_id) -> str:
-        """注册或更新 LLM Provider：验证代码 → 存 DB → 注册缓存（已存在则刷新）"""
-        import json as _json
-        provider_name = arguments.get("provider_name", "").strip().lower()
-        display_name = arguments.get("display_name", provider_name)
-        description = arguments.get("description", "")
-        api_base = arguments.get("api_base", "")
-        models = arguments.get("models", [])
-        default_model = arguments.get("default_model", "")
-        code = arguments.get("code", "")
-
-        if not provider_name or not api_base:
-            return _json.dumps({"success": False, "error": "缺少 provider_name 或 api_base"}, ensure_ascii=False)
-
-        # 如果有适配器代码，验证；OpenAI 兼容厂商可不传 code
-        if code:
-            from app.services.llm import register_custom_adapter
-            try:
-                register_custom_adapter(provider_name, code)
-            except Exception as e:
-                return _json.dumps({"success": False, "error": f"适配器代码验证失败: {e}"}, ensure_ascii=False)
-
-        # 存入数据库（已存在则更新）— 用独立 session 避免与流式 session 冲突
-        from app.core.database import async_session
-        from app.models.custom_extension import LLMProvider
-        from sqlalchemy import select as sa_select
-        async with async_session() as save_session:
-            existing = await save_session.execute(sa_select(LLMProvider).where(LLMProvider.provider_name == provider_name))
-            record = existing.scalar_one_or_none()
-            if record:
-                record.display_name = display_name
-                record.description = description
-                record.api_base = api_base
-                record.models = models
-                record.default_model = default_model
-                if code:
-                    record.code = code
-                record.is_active = True
-            else:
-                record = LLMProvider(
-                    provider_name=provider_name,
-                    display_name=display_name,
-                    description=description,
-                    api_base=api_base,
-                    models=models,
-                    default_model=default_model,
-                    code=code or None,
-                    created_by=user_id,
-                )
-                save_session.add(record)
-            await save_session.commit()
-
-        # 刷新内存缓存
-        from app.services.llm import refresh_provider
-        refresh_provider(provider_name, {
-            "display_name": display_name,
-            "description": description,
-            "api_base": api_base,
-            "models": models,
-            "default_model": default_model,
-            "code": code or None,
-        })
-
-        logger.info(f"Provider 已保存: {provider_name}")
-        return _json.dumps({"success": True, "message": f"Provider '{display_name}' 已注册，可在模型配置中使用"}, ensure_ascii=False)
-
-    async def _handle_get_llm_config(self) -> str:
-        """查询当前 LLM 配置（用户配置优先于全局）"""
-        import json as _json
-        from app.services.llm import get_all_providers, get_provider_api_base, get_user_llm_config
-
-        all_providers = []
-        for name, info in get_all_providers().items():
-            all_providers.append({
-                "name": name,
-                "display_name": info.get("display_name", name),
-                "description": info.get("description", ""),
-                "api_base": info.get("api_base", "") or "",
-                "models": info.get("models", []),
-                "default_model": info.get("default_model", ""),
-            })
-
-        # 可用模型列表
-        available_models = [
-            {"model": m, "description": "快速" if "flash" in m.lower() else "深度"}
-            for m in llm_manager._available_models()
-        ]
-
-        # 用户配置（无全局回退）
-        user_cfg = get_user_llm_config()
-        if not user_cfg:
-            return _json.dumps({"error": "未配置 LLM Provider，请在配置页面设置"}, ensure_ascii=False)
-        cur_provider = user_cfg.get("provider", "")
-        cur_model = user_cfg.get("model", "")
-        cur_api_base = user_cfg.get("api_base", "") or get_provider_api_base(cur_provider) or ""
-        api_key_set = bool(user_cfg.get("api_key"))
-
-        return _json.dumps({
-            "current_provider": cur_provider,
-            "current_model": cur_model,
-            "current_api_base": cur_api_base,
-            "available_models": available_models,
-            "api_key_configured": api_key_set,
-            "providers": all_providers,
-            "hint": "用户要求注册或更新 Provider 时，始终调用 save_llm_adapter 工具。已存在的 Provider 会被刷新更新。所有 Provider 地位平等。用户要求删除 Provider 时，调用 delete_llm_adapter 工具。"
-        }, ensure_ascii=False)
-
-    async def _handle_delete_llm_adapter(self, arguments: dict) -> str:
-        """删除 LLM Provider"""
-        import json as _json
-        provider_name = arguments.get("provider_name", "").strip().lower()
-        if not provider_name:
-            return _json.dumps({"success": False, "error": "缺少 provider_name"}, ensure_ascii=False)
-
-        from app.core.database import async_session
-        from app.models.custom_extension import LLMProvider
-        from sqlalchemy import select as sa_select
-        async with async_session() as session:
-            result = await session.execute(
-                sa_select(LLMProvider).where(LLMProvider.provider_name == provider_name, LLMProvider.is_active == True)
-            )
-            record = result.scalar_one_or_none()
-            if not record:
-                return _json.dumps({"success": False, "error": f"Provider '{provider_name}' 不存在"}, ensure_ascii=False)
-
-            display_name = record.display_name or provider_name
-            record.is_active = False
-            await session.commit()
-
-        # 从内存缓存移除
-        from app.services.llm import _custom_adapter_cache, _provider_registry
-        _custom_adapter_cache.pop(provider_name, None)
-        _provider_registry.pop(provider_name, None)
-
-        logger.info(f"Provider 已删除: {provider_name}")
-        return _json.dumps({"success": True, "message": f"Provider '{display_name}' ({provider_name}) 已删除"}, ensure_ascii=False)
 
     # ==================== 调试模式 ====================
 
@@ -1606,8 +717,7 @@ class DataProcessorAgent(BaseAgent):
         # read_script=Read, grep_script=Grep, edit_script=Edit, run_script=Bash
         # 交接不在工具里——执行成功后 RunTime 自动交接 DataInspector
         # 4 个工具对齐 OpenCode：edit_script=Edit / run_script=Bash / read_script=Read / grep_script=Grep
-        debug_tools = [EDIT_SCRIPT_TOOL, RUN_SCRIPT_TOOL, READ_SCRIPT_TOOL, GREP_SCRIPT_TOOL,
-                       _LIST_DATASOURCES_TOOL]
+        debug_tools = get_tool_schemas(DEBUG_TOOL_NAMES)
 
         _fix_attempts = context.get("debug_total_rounds", 0)  # 跨 Agent 持久化，只数 run_script（一次修改尝试=一次修改+执行）
         _total_llm_calls = 0  # 仅用于日志
@@ -1616,7 +726,7 @@ class DataProcessorAgent(BaseAgent):
         _execution_succeeded = context.get("debug_execution_succeeded", False)
         _just_succeeded = False
         script_name = context.get("debug_script_name", "main.py")
-        _stuck = StuckDetector(max_total_rounds=30)
+        _stuck = StuckDetector(max_total_rounds=50)
         _last_round_had_fix = False
         _tool_call_meta: Dict[str, tuple] = {}
 
@@ -1646,30 +756,14 @@ class DataProcessorAgent(BaseAgent):
             tool_calls = []
 
             logger.info("[run_debug] LLM调用#" + str(_total_llm_calls) + "（修改尝试" + str(_fix_attempts + 1) + "）")
-            # 记录传给 LLM 的完整 messages（调试用，写文件）
-            try:
-                import os as _os
-                _dbg_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "debug_messages.log")
-                with open(_dbg_path, "w", encoding="utf-8") as _df:
-                    _df.write(f"=== LLM调用#{_total_llm_calls} 修改尝试{_fix_attempts + 1} ===\n")
-                    _df.write(f"tools: {[t.get('function',{}).get('name','?') for t in debug_tools]}\n\n")
-                    for _mi, _m in enumerate(local_messages):
-                        _mc = _m.get("content", "") or ""
-                        _role = _m.get("role", "")
-                        _tool_calls = _m.get("tool_calls")
-                        _df.write(f"--- messages[{_mi}] role={_role} len={len(_mc)} ---\n")
-                        _df.write(_mc[:2000] + ("\n...(truncated)" if len(_mc) > 2000 else "") + "\n")
-                        if _tool_calls:
-                            _df.write(f"tool_calls: {json.dumps(_tool_calls, ensure_ascii=False)[:500]}\n")
-                        _df.write("\n")
-            except Exception:
-                pass
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=debug_tools, temperature=0.1,
                 model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
-                if t == "thinking":
+                if t == "model":
+                    yield event
+                elif t == "thinking":
                     yield event
                 elif t == "content":
                     content += event["content"]

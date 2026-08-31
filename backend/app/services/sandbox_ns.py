@@ -87,8 +87,8 @@ def build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("query_table_data", args, db, current_user_id)
+                from app.services.tool_registry import execute_tool
+                return await execute_tool("query_table_data", args, db, current_user_id, {})
 
         result = json.loads(run_async_in_thread(_run()))
         if isinstance(result, dict) and "rows" in result and "columns" in result:
@@ -102,8 +102,8 @@ def build_operator_namespace(current_user_id):
 
         async def _run():
             async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
+                from app.services.tool_registry import execute_tool
+                return await execute_tool("get_table_schema", args, db, current_user_id, {})
 
         return json.loads(run_async_in_thread(_run()))
 

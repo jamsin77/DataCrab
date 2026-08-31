@@ -9,7 +9,7 @@ import time
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from loguru import logger
 
@@ -578,14 +578,6 @@ _builtins.log = log
 _builtins.get_datasource_id_by_name = _wrap_tool_log("get_datasource_id_by_name", _dc_get_datasource_id_by_name)
 _builtins.get_table_schema = _wrap_tool_log("get_table_schema", _dc_get_table_schema)
 _builtins.resolve_column = resolve_column
-
-_INJECTED_FUNCTIONS = [
-    "get_table_data", "query_table_data", "write_table_data", "execute_sql",
-    "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision", "extract_video_info", "extract_keyframes",
-    "log", "read_file", "write_file", "compute_map", "call_operator",
-    "get_datasource_id_by_name", "resolve_column",
-    "extract_video_info", "extract_keyframes",
-]
 
 # atexit 确保脚本崩溃时也输出 tool_call_log（供调试 agent 追踪错误来源）
 import atexit as _atexit

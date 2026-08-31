@@ -402,11 +402,6 @@ def register_custom_adapter(provider_name: str, code: str) -> type:
     return cls
 
 
-def get_custom_adapter_providers() -> List[str]:
-    """获取所有已注册的自定义适配器 provider 名"""
-    return list(_custom_adapter_cache.keys())
-
-
 def _require_user_cfg() -> Dict[str, Any]:
     """获取用户 LLM 配置；若未配置则抛出错误。无全局回退。"""
     cfg = get_user_llm_config()
@@ -453,15 +448,6 @@ class LLMManager:
     def _flash(self) -> str:
         """快速模型（未配置则回退默认模型）"""
         return self._eff_model("flash_model") or self._eff_model("default_model")
-
-    def _eff_vision_model(self, provider: str = "") -> str:
-        """视觉模型（兼容旧签名；优先用 fallback cfg）"""
-        cfg = _require_user_cfg()
-        if provider and provider != cfg.get("provider", ""):
-            for fb in (cfg.get("fallback_models") or []):
-                if fb.get("provider") == provider:
-                    return self._eff_model("vision_model", fb)
-        return self._eff_model("vision_model", cfg)
 
     # ---------- 客户端管理 ----------
     def _client_for(self, cfg: Dict[str, str]):
@@ -743,43 +729,6 @@ class LLMManager:
                 continue
         raise self._format_chain_error(errors, "LLM 调用")
 
-    async def chat_stream_with_messages(
-        self,
-        messages: List[Dict[str, str]],
-        model: Optional[str] = None,
-        temperature: float = 0.7,
-    ) -> AsyncGenerator[str, None]:
-        """多轮流式对话。"""
-        if not self._initialized:
-            await self.initialize()
-
-        errors = []
-        for cfg in self._model_configs():
-            actual_model = self._resolve_model_for_cfg(cfg, model)
-            try:
-                logger.info(f"LLM chat_stream_with_messages: provider={cfg['provider']}, model={actual_model}, messages={len(messages)}")
-                stream = await self._acreate(
-                    cfg,
-                    model=actual_model,
-                    messages=messages,
-                    temperature=temperature,
-                    stream=True,
-                )
-            except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"LLM chat_stream_with_messages创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
-                continue
-            try:
-                async for chunk in _stream_with_timeout(stream):
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
-                return
-            except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
-                continue
-        raise self._format_chain_error(errors, "LLM 调用")
-
     async def chat_stream_with_thinking(
         self,
         messages: List[Dict[str, str]],
@@ -826,50 +775,6 @@ class LLMManager:
                 logger.warning(f"模型 {actual_model} 流式中断: {e}，尝试备用 Provider")
                 continue
 
-        raise self._format_chain_error(errors, "LLM 调用")
-
-    async def chat_stream_with_tools(
-        self,
-        messages: List[Dict[str, str]],
-        tools: List[Dict[str, Any]],
-        model: Optional[str] = None,
-        temperature: float = 0.7,
-    ) -> AsyncGenerator[str, None]:
-        """带工具调用的流式对话"""
-        if not self._initialized:
-            await self.initialize()
-
-        errors = []
-        for cfg in self._model_configs():
-            actual_model = self._resolve_model_for_cfg(cfg, model)
-            try:
-                logger.info(f"LLM chat_stream_with_tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
-                stream = await self._acreate(
-                    cfg,
-                    model=actual_model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=temperature,
-                    stream=True,
-                )
-            except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"LLM chat_stream_with_tools创建失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
-                continue
-            try:
-                async for chunk in _stream_with_timeout(stream):
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        yield f"data: {json.dumps({'type': 'content', 'content': delta.content}, ensure_ascii=False)}\n\n"
-                    if delta.tool_calls:
-                        for tc in delta.tool_calls:
-                            yield f"data: {json.dumps({'type': 'tool_call', 'id': tc.id, 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}}, ensure_ascii=False)}\n\n"
-                return
-            except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"模型 {actual_model} 流式超时/中断: {e}，尝试下一个模型")
-                continue
         raise self._format_chain_error(errors, "LLM 调用")
 
     async def chat_stream_with_tools_and_thinking(
@@ -972,15 +877,6 @@ class LLMManager:
         raise self._format_chain_error(errors, "LLM 调用")
 
     # ---------- 嵌入 ----------
-    def _eff_embedding_model(self, provider: str = "") -> str:
-        """向量模型（兼容旧签名；优先用 fallback cfg）"""
-        cfg = _require_user_cfg()
-        if provider and provider != cfg.get("provider", ""):
-            for fb in (cfg.get("fallback_models") or []):
-                if fb.get("provider") == provider:
-                    return self._eff_model("embedding_model", fb)
-        return self._eff_model("embedding_model", cfg)
-
     _embed_skip_providers: set = set()  # 缓存 embed 失败的 (provider, embedding_model) 组合，不重复试
 
     async def embed(self, text: str) -> list:

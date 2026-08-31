@@ -48,6 +48,7 @@ export const useChatStore = defineStore('chat', () => {
     sessions.value.unshift(session)
     currentSessionId.value = session.id
     messages.value = []
+    selectedData.value = null
     return session
   }
 
@@ -344,9 +345,25 @@ export const useChatStore = defineStore('chat', () => {
         _skillType,
         useSkill,
       )
-      // directExecute 时跳过 _syncFromDB（后端会存用户消息，刷新会导致用户消息重复出现）
       if (!directExecute) {
         await _syncFromDB()
+      } else {
+        // directExecute 跳过从 DB 刷新（避免重复用户消息），但仍持久化 meta（executingMsgs/suggestions 等）
+        const msg = messages.value[aiIndex]
+        if (msg) {
+          const _meta: Record<string, any> = {}
+          if (msg.executingMsgs?.length) _meta.executingMsgs = msg.executingMsgs
+          if (msg.model) _meta.model = msg.model
+          if (msg.agentName) _meta.agentName = msg.agentName
+          if (msg.suggestion) _meta.suggestion = msg.suggestion
+          if (msg.suggestions?.length) _meta.suggestions = msg.suggestions
+          if (msg.inspectionReport) _meta.inspectionReport = msg.inspectionReport
+          if (msg.noMatch) _meta.noMatch = true
+          const _realId = msg.id.startsWith('temp-') ? null : msg.id
+          if (_realId && Object.keys(_meta).length > 0) {
+            chatApi.updateMessageMetadata(_realId, _meta).catch(() => {})
+          }
+        }
       }
     } catch (e: any) {
       console.error('[chat] sendMessage error:', e)

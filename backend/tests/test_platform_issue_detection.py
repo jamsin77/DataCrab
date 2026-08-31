@@ -1,10 +1,9 @@
-"""Test platform issue detection capabilities:
+"""Test platform capabilities and debug tools:
 1. get_platform_capabilities — 能力清单生成
-2. _is_platform_issue_report — 平台问题检测
-3. grep_script scope=platform — 平台代码搜索
-4. read_script scope=platform — 平台代码读取
-5. skill_runner tool_call_log — 工具调用日志
-6. DEBUG_TOOLS 注册 — 工具注册完整性
+2. grep_script scope=platform — 平台代码搜索
+3. read_script scope=platform — 平台代码读取
+4. skill_runner tool_call_log — 工具调用日志
+5. DEBUG_TOOLS 注册 — 工具注册完整性
 """
 import json
 import os
@@ -78,8 +77,9 @@ def test_get_platform_capabilities_text():
 
 
 def test_debug_tools_registration():
-    """P4: 工具已注册到 DEBUG_TOOLS，grep_script/read_script 含 scope 参数"""
-    from app.services.data_processor_agent import DEBUG_TOOLS
+    """P4: 调试工具已注册到 tool_registry，grep_script/read_script 含 scope 参数"""
+    from app.services.tool_registry import get_tool_schemas
+    DEBUG_TOOLS = get_tool_schemas(["edit_script", "run_script", "read_script", "grep_script", "list_user_datasources"])
     names = [t["function"]["name"] for t in DEBUG_TOOLS]
 
     assert "grep_script" in names
@@ -178,8 +178,6 @@ def test_skill_runner_template_has_tool_call_log():
     assert "_wrap_tool_log" in SKILL_RUNNER_TEMPLATE
     # 应该有 __TOOL_CALL_LOG__ 输出标记
     assert "__TOOL_CALL_LOG__" in SKILL_RUNNER_TEMPLATE
-    # 应该有 _INJECTED_FUNCTIONS 列表
-    assert "_INJECTED_FUNCTIONS" in SKILL_RUNNER_TEMPLATE
     # 注入的函数应该被包裹
     assert "_wrap_tool_log" in SKILL_RUNNER_TEMPLATE
     assert '"write_table_data"' in SKILL_RUNNER_TEMPLATE or "'write_table_data'" in SKILL_RUNNER_TEMPLATE
