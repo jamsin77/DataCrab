@@ -77,7 +77,22 @@ async def run_agent(
 
     async def generate():
         try:
-            async for event in runtime.run(agent_name, message, context):
+            import asyncio as _aio
+            agen = runtime.run(agent_name, message, context).__aiter__()
+            while True:
+                _task = _aio.ensure_future(agen.__anext__())
+                done, _pending = await _aio.wait({_task}, timeout=20.0)
+                if _task not in done:
+                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                    done, _pending = await _aio.wait({_task}, timeout=120.0)
+                    if _task not in done:
+                        _task.cancel()
+                        yield f"data: {json.dumps({'type': 'error', 'content': '等待智能体响应超时'}, ensure_ascii=False)}\n\n"
+                        break
+                try:
+                    event = _task.result()
+                except StopAsyncIteration:
+                    break
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         except Exception as e:

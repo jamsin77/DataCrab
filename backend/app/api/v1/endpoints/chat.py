@@ -953,8 +953,30 @@ async def stream_response(
                             _is_analysis = _sk.skill_type == "analysis"
                             _agent_name = "data_analyst" if _is_analysis else "data_processor"
                             logger.info(f"[direct_execute] 走调试模式调用技能: {_sk.name} agent={_agent_name}")
-                            # 直接走 runtime.run()，RunTime 自动处理 Inspector handoff
-                            async for _agent_event in _runtime.run(_agent_name, _debug_msg, _debug_context):
+                            # SSE 保活：20 秒无事件则发 ping，防止长时间执行导致 network error
+                            _agen = _runtime.run(_agent_name, _debug_msg, _debug_context).__aiter__()
+                            _exec_failed = False
+                            while True:
+                                _fut = asyncio.ensure_future(_agen.__anext__())
+                                done, pending = await asyncio.wait({_fut}, timeout=20)
+                                if not done:
+                                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                                    done, pending = await asyncio.wait({_fut}, timeout=120)
+                                    if not done:
+                                        _fut.cancel()
+                                        logger.error(f"[direct_execute] 技能执行超时: {_sk.name}")
+                                        yield f"data: {json.dumps({'type': 'error', 'content': '技能执行超时，请稍后重试'}, ensure_ascii=False)}\n\n"
+                                        _exec_failed = True
+                                        break
+                                try:
+                                    _agent_event = _fut.result()
+                                except StopAsyncIteration:
+                                    break
+                                except Exception as e:
+                                    logger.error(f"[direct_execute] Agent 执行异常: {e}", exc_info=True)
+                                    yield f"data: {json.dumps({'type': 'error', 'content': f'技能执行出错: {e}'}, ensure_ascii=False)}\n\n"
+                                    _exec_failed = True
+                                    break
                                 _t = _agent_event.get("type")
                                 if _t == "done":
                                     _result = _agent_event.get("result", {})
@@ -970,14 +992,15 @@ async def stream_response(
                                     _c = _agent_event.get("content", "")
                                     if _c:
                                         full_response += _c
-                                    yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                                        yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
                                 elif _t in ("thinking", "model", "executing", "progress", "tool_action", "tool_summary", "run_result", "inspecting", "inspection_report", "retry", "round", "give_up"):
                                     yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
-                            # 保存 assistant 消息到 DB
+                            # 保存 assistant 消息到 DB（含异常时部分内容恢复）
                             async with _new_session() as save_session:
+                                _save_content = full_response or ("技能执行失败" if _exec_failed else "技能执行完成")
                                 save_session.add(ChatMessage(
                                     session_id=request.session_id, role="assistant",
-                                    content=full_response or "技能执行完成",
+                                    content=_save_content,
                                 ))
                                 _sess = await save_session.get(ChatSession, request.session_id)
                                 if _sess:
