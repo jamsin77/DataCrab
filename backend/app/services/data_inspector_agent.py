@@ -170,6 +170,10 @@ class DataInspectorAgent(BaseAgent):
         max_iterations = get_turn_budget(complexity)
         logger.info(f"DataInspector: complexity={complexity}, budget={max_iterations} turns")
 
+        # 预执行分支（INSPECT_RESULT/FIX_COMPLETED）报告已注入，LLM 只需分析报告，不需要调工具
+        _has_preexecuted = message.reason in (HandoffReason.INSPECT_RESULT, HandoffReason.FIX_COMPLETED, HandoffReason.DELEGATE)
+        _tools = [] if _has_preexecuted else self.tools
+
         had_any_tool_calls = False
         pressure_warned = False
 
@@ -183,7 +187,7 @@ class DataInspectorAgent(BaseAgent):
             finish_reason = None
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools, temperature=0.3,
+                messages=local_messages, tools=_tools, temperature=0.3,
                 model=llm_manager._flash, tool_choice="auto",
             ):
                 t = event["type"]

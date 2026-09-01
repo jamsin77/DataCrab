@@ -49,9 +49,9 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
             "   - analysis：只读分析（查看/统计/查找/浏览数据，不修改）\n"
             "   - processing：数据处理（清洗/转换/加工/导入/导出/迁移/修改/合并等数据操作）\n"
             "   - chat：闲聊/问候/提问/咨询/平台配置管理（模型Provider/数据源连接器等配置操作）\n"
-            "2. 源数据表：keep 或 change（用户要换另一张表/数据源才 change，继续用当前表才 keep）\n"
-            "3. 目标数据表：keep 或 change（用户要换另一张目标表才 change）\n"
-            "4. 技能：keep 或 change（用户要换技能才 change）\n"
+            "2. 源数据表：keep 或 change（当前数据表不适合当前需求时 change，继续用才 keep）\n"
+            "3. 目标数据表：keep 或 change（当前目标表不适合当前需求时 change）\n"
+            "4. 技能：keep 或 change（当前技能不适合当前需求时 change）\n"
             f"\n当前已选数据：\n{_ctx_block}\n"
             f"\n用户消息：{user_message}"
         )

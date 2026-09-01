@@ -84,9 +84,12 @@ DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_scri
 执行错误最多 {max_exec_failures} 次。
 推理过程用中文。
 
+## 输出规范（关键）
+调工具前，先完整输出本次修改的说明（改了什么、为什么改）。写完整一句话再调工具，不要写到一半就切到工具调用——用户会看到截断的文字。说明要简洁但完整，不要长篇大论。
+
 ## 错误处理（对齐 OpenCode）
 VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否正确。不要在没验证的情况下连续修改多次。
-收到执行错误后，看 traceback 自主判断：能修就修，修不了就说明原因停止。不要反复尝试同一个修改。
+收到执行错误后，看 error 信息自主判断：能通过修改脚本修复的就修（如加进度输出防超时、修 bug、加参数校验），修不了的就说明原因停止。不要反复尝试同一个修改。
 
 ## 平台规范
 - 平台已内置 llm_vision/llm_chat/call_operator/query_table_data/write_table_data 等函数，优先使用内置函数，不要在脚本中安装数据库扩展、不要直接调用外部 API
@@ -194,6 +197,30 @@ def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
         _exp.append_negative(folder, **_kwargs)
     except Exception as e:
         logger.warning(f"记录反例失败(非致命): {e}")
+
+
+def _record_give_up(folder: str, reason: str, content: str, script_name: str) -> None:
+    """记录 LLM give_up 时的归因到经验库（LLM 对错误的判断 + 放弃理由）。
+
+    与 _record_negative 的区别：
+    - _record_negative 记的是"错误事实"（执行失败的 error_message）
+    - _record_give_up 记的是"LLM 归因"（LLM 判断为非脚本问题/平台问题后放弃的理由）
+    """
+    if not folder:
+        return
+    try:
+        from app.services import experience as _exp
+        _exp.append_negative(
+            folder,
+            source="debug-chat",
+            error_type="llm_give_up",
+            error_message=reason[:500],
+            script_name=script_name,
+            context_summary=f"LLM归因: {content[:800]}",
+        )
+        logger.info(f"[give_up] 已记录 LLM 归因到经验库: {reason[:100]}")
+    except Exception as e:
+        logger.warning(f"记录 give_up 归因失败(非致命): {e}")
 
 
 def _slim_run_script_result(content: str) -> str:
@@ -817,6 +844,7 @@ class DataProcessorAgent(BaseAgent):
 
             if not tool_calls:
                 # LLM 无工具调用 = 判断完毕（对齐 OpenCode）
+                _record_give_up(context.get("debug_folder", ""), content[:500] or "未执行工具操作", content, _script_name)
                 yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
                 yield {"type": "done", "result": {"agent": self.name, "content": content or "未执行工具操作"}}
                 return
@@ -981,6 +1009,7 @@ class DataProcessorAgent(BaseAgent):
                                 logger.warning(f"记录正例失败(非致命): {e}")
                     else:
                         _err_msg = _cls["err_msg"]
+                        logger.info(f"[run_debug] run_script失败: err_msg={_err_msg[:200]}")
                         # 执行错误计数：首次成功前连续失败达上限 → give_up
                         if not _execution_succeeded:
                             _exec_failures_before_success += 1
@@ -1028,5 +1057,6 @@ class DataProcessorAgent(BaseAgent):
 
 
         # 循环正常退出（LLM 主动停止或 StuckDetector 兜底）
+        _record_give_up(context.get("debug_folder", ""), content[:500] if content else "调试结束", content, _script_name)
         yield {"type": "give_up", "reason": content[:500] if content else "调试结束"}
         yield {"type": "done", "result": {"agent": self.name, "content": content or "调试失败"}}

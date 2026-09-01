@@ -34,7 +34,8 @@ tags:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `video_path` | str | ✅ | - | 视频文件路径（须在授权目录内） |
+| `video_path` | str | ❌ | - | 视频文件路径（可选，与 video_link 二选一，须在授权目录内） |
+| `video_link` | str | ❌ | - | 视频数据链接（DataCrab 文件链接，与 video_path 二选一） |
 | `datasource_name` | str | ❌ | 凭证检索库 | 输出数据源名称 |
 | `table_name` | str | ❌ | training_knowledge | 输出表名 |
 | `max_frames` | int | ❌ | 8 | 最大抽取帧数 |

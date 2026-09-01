@@ -15,7 +15,7 @@ from app.core.version import get_version
 # 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
 settings.APP_VERSION = get_version()
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", ""), rotation="1 MB")
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", "") or "[run_debug]" in r.get("message", "") or "[non_script_check]" in r.get("message", ""), rotation="1 MB")
 
 
 @asynccontextmanager

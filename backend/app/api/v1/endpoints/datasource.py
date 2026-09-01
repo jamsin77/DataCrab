@@ -523,7 +523,7 @@ async def internal_get_schema(
 async def internal_list_datasources(db: AsyncSession = Depends(get_db)):
     """内部列出数据源（无认证，仅供技能执行器子进程本机调用）"""
     result = await db.execute(select(DataSource).where(DataSource.is_active == True))
-    return [{"id": str(s.id), "name": s.name, "type": s.type} for s in result.scalars().all()]
+    return [{"id": str(s.id), "name": s.name, "type": s.type, "connection_config": s.connection_config} for s in result.scalars().all()]
 
 
 @router.post("/internal/datasources/{datasource_id}/tables/{table_name}/data")
@@ -534,6 +534,14 @@ async def internal_write_table_data(
     db: AsyncSession = Depends(get_db),
 ):
     """内部写入端点（无认证，仅供技能执行器子进程本机调用）"""
+    from app.services.llm import init_user_llm_context, reset_user_llm_config
+    user_id = body.get("user_id")
+    if user_id:
+        try:
+            from uuid import UUID as _UUID
+            await init_user_llm_context(_UUID(str(user_id)))
+        except Exception:
+            pass
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
@@ -592,6 +600,9 @@ async def internal_write_table_data(
     except Exception as e:
         logger.error(f"内部写入异常: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if user_id:
+            reset_user_llm_config()
 
 
 @router.post("/internal/llm/chat")

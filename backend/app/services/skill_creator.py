@@ -146,6 +146,33 @@ if not result.get("success"):
     raise ValueError(f"SQL 执行失败: {result.get('error')}")
 df = pd.DataFrame(result["data"], columns=result["columns"])
 ```
+
+### 9. 每一步关键操作必须 print 进度（防止超时 + 用户可感知）
+```python
+# ❌ 错误：耗时操作期间无输出，框架判定卡死 → 超时杀进程
+frames = extract_keyframes(video_path, max_frames=8)
+result = llm_vision(image_path, prompt)
+write_table_data(ds_id, table, records=data)
+
+# ✅ 正确：每步操作前 print 进度，框架持续收到输出不判定超时
+print(f"[1/5] 开始抽取关键帧（最多 {max_frames} 帧）...")
+frames = extract_keyframes(video_path, max_frames=max_frames)
+print(f"[1/5] 抽取完成: {len(frames)} 帧")
+
+print(f"[2/5] 开始分析第 {i+1}/{len(frames)} 帧 (时间戳: {frame['timestamp']:.1f}s)...")
+result = llm_vision(image_path, prompt)
+print(f"[2/5] 帧 {i+1} 分析完成: {len(result)} 字符")
+
+print(f"[3/5] 开始写入 {len(records)} 条记录到 {datasource_name}.{table_name}...")
+write_table_data(ds_id, table, records=data)
+print(f"[3/5] 写入完成")
+
+# 规范：
+# 1. 每个耗时操作（llm_vision/llm_chat/extract_keyframes/write_table_data/query_table_data）前后都 print
+# 2. 循环体内也要 print（如"正在处理第 3/10 条"）
+# 3. 格式: [步骤号/总步骤] 描述... → 完成描述: 数量/结果
+# 4. 耗时超过 30 秒的操作必须加中间进度 print（如批量写入每 100 条打一次）
+```
 """
 
 

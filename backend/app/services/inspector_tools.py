@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid as _uuid
+import asyncio
 import warnings
 from typing import Dict, Any, List
 
@@ -1036,6 +1037,169 @@ class DataInspectorTools:
             logger.error(f"_check_security_from_df 失败: {e}")
             return {"dimension": "security", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
+    async def _run_chroma_checks(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
+        """ChromaDB 向量库专用检查（结构化 STD/DQ/SEC 规则不适用）。
+
+        5 条确定性检查：
+        - VEC-001 集合存在性 + 文档数 > 0（error）
+        - VEC-002 文档内容非空率（warning，阈值 50%）
+        - VEC-003 文档重复率（warning，阈值 30%）
+        - VEC-004 metadata 完整性（warning）
+        - VEC-005 embedding 非零验证（error，抽 10 条）
+        """
+        import pandas as pd
+        try:
+            ds_result = await db.execute(select(DataSource).where(DataSource.id == _uuid.UUID(datasource_id)))
+            datasource = ds_result.scalar_one_or_none()
+            if not datasource:
+                return {"error": "数据源不存在", "profile": None, "standards": None, "quality": None, "security": None}
+
+            connector = get_connector(datasource.type, datasource.connection_config or {})
+            try:
+                # 加载 collection 数据
+                df = await connector.get_table_data(table_name, page=1, page_size=50000)
+            except Exception as e:
+                return {"error": f"集合加载失败: {e}", "profile": None, "standards": None, "quality": None, "security": None}
+            finally:
+                await connector.close()
+
+            issues: List[Dict[str, Any]] = []
+            row_count = len(df)
+
+            # VEC-001: 集合存在性 + 文档数
+            if row_count == 0:
+                issues.append({
+                    "rule_id": "VEC-001", "severity": "error",
+                    "description": f"集合 '{table_name}' 为空或不存在，未写入任何文档",
+                    "affected": row_count,
+                })
+            else:
+                issues.append({
+                    "rule_id": "VEC-001", "severity": "info",
+                    "description": f"集合 '{table_name}' 存在，共 {row_count} 条文档",
+                    "affected": row_count,
+                })
+
+            if row_count > 0:
+                # VEC-002: 文档内容非空率
+                doc_col = "document" if "document" in df.columns else None
+                if doc_col:
+                    empty_docs = df[doc_col].isna().sum() + (df[doc_col] == "").sum()
+                    empty_rate = empty_docs / row_count if row_count else 0
+                    if empty_rate > 0.5:
+                        issues.append({
+                            "rule_id": "VEC-002", "severity": "warning",
+                            "description": f"文档内容空值率 {empty_rate:.1%}（超过 50%），大量文档无文本内容",
+                            "affected": int(empty_docs),
+                        })
+                    else:
+                        issues.append({
+                            "rule_id": "VEC-002", "severity": "info",
+                            "description": f"文档内容空值率 {empty_rate:.1%}",
+                            "affected": int(empty_docs),
+                        })
+                else:
+                    issues.append({
+                        "rule_id": "VEC-002", "severity": "warning",
+                        "description": "未找到 document 列，无法检查文档内容",
+                        "affected": 0,
+                    })
+
+                # VEC-003: 文档重复率
+                if doc_col:
+                    dup_count = df[doc_col].duplicated().sum()
+                    dup_rate = dup_count / row_count if row_count else 0
+                    if dup_rate > 0.3:
+                        issues.append({
+                            "rule_id": "VEC-003", "severity": "warning",
+                            "description": f"文档重复率 {dup_rate:.1%}（超过 30%），存在大量重复内容",
+                            "affected": int(dup_count),
+                        })
+                    else:
+                        issues.append({
+                            "rule_id": "VEC-003", "severity": "info",
+                            "description": f"文档重复率 {dup_rate:.1%}",
+                            "affected": int(dup_count),
+                        })
+
+                # VEC-004: metadata 完整性（meta_ 前缀列的非空率）
+                meta_cols = [c for c in df.columns if c.startswith("meta_")]
+                if meta_cols:
+                    low_fill_cols = []
+                    for mc in meta_cols:
+                        fill_rate = df[mc].notna().sum() / row_count if row_count else 0
+                        if fill_rate < 0.5:
+                            low_fill_cols.append(f"{mc}({fill_rate:.0%})")
+                    if low_fill_cols:
+                        issues.append({
+                            "rule_id": "VEC-004", "severity": "warning",
+                            "description": f"metadata 字段填充率低: {', '.join(low_fill_cols[:5])}",
+                            "affected": len(low_fill_cols),
+                        })
+                    else:
+                        issues.append({
+                            "rule_id": "VEC-004", "severity": "info",
+                            "description": f"metadata 完整性正常（{len(meta_cols)} 个字段）",
+                            "affected": 0,
+                        })
+                else:
+                    issues.append({
+                        "rule_id": "VEC-004", "severity": "info",
+                        "description": "无 metadata 字段（纯文档集合）",
+                        "affected": 0,
+                    })
+
+                # VEC-005: embedding 非零验证（抽 10 条）
+                try:
+                    sample_count = min(10, row_count)
+                    client = connector._get_client()
+                    collection = await asyncio.to_thread(client.get_collection, table_name)
+                    sample = await asyncio.to_thread(
+                        collection.get,
+                        include=["embeddings"],
+                        limit=sample_count,
+                    )
+                    embeddings = sample.get("embeddings") or []
+                    zero_count = sum(1 for e in embeddings if e and all(v == 0 for v in e))
+                    if zero_count > 0:
+                        issues.append({
+                            "rule_id": "VEC-005", "severity": "error",
+                            "description": f"{zero_count}/{len(embeddings)} 条文档 embedding 为全零向量（向量化失败）",
+                            "affected": zero_count,
+                        })
+                    else:
+                        issues.append({
+                            "rule_id": "VEC-005", "severity": "info",
+                            "description": f"embedding 非零验证通过（抽样 {len(embeddings)} 条）",
+                            "affected": 0,
+                        })
+                except Exception as e:
+                    issues.append({
+                        "rule_id": "VEC-005", "severity": "warning",
+                        "description": f"embedding 验证跳过（无法获取 embedding: {e}）",
+                        "affected": 0,
+                    })
+
+            return {
+                "profile": {
+                    "row_count": row_count,
+                    "column_count": len(df.columns),
+                    "columns": {c: {"dtype": str(df[c].dtype), "null_count": int(df[c].isna().sum()),
+                                     "null_rate": float(df[c].isna().sum() / row_count if row_count else 0),
+                                     "unique_count": int(df[c].nunique())} for c in df.columns},
+                    "data_source_type": "chroma",
+                },
+                "standards": {"dimension": "standards", "passed": True, "issues": [],
+                              "note": "ChromaDB 向量库不适用结构化标准检查"},
+                "quality": {"dimension": "quality", "passed": not any(i["severity"] == "error" for i in issues),
+                            "issues": issues},
+                "security": {"dimension": "security", "passed": True, "issues": [],
+                             "note": "ChromaDB 向量库不适用结构化安全检查"},
+            }
+        except Exception as e:
+            logger.error(f"ChromaDB 检查失败: {e}")
+            return {"error": f"ChromaDB 检查失败: {e}", "profile": None, "standards": None, "quality": None, "security": None}
+
     async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession, skill_rules=None) -> dict:
         """预执行入口：加载数据1次 → 跑4项检查 → 返回紧凑报告
 
@@ -1045,7 +1209,13 @@ class DataInspectorTools:
         # 清缓存（复查时需要最新数据）
         cache_key = f"{datasource_id}:{table_name}"
         self._cache.pop(cache_key, None)
-        
+
+        # ChromaDB 向量库走专用检查（结构化规则不适用）
+        ds_result = await db.execute(select(DataSource).where(DataSource.id == _uuid.UUID(datasource_id)))
+        datasource = ds_result.scalar_one_or_none()
+        if datasource and datasource.type == "chroma":
+            return await self._run_chroma_checks(datasource_id, table_name, db)
+
         try:
             df = await self._load_data(datasource_id, table_name, db, use_cache=True)
         except Exception as e:

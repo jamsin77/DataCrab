@@ -1300,12 +1300,21 @@ class ChromaConnector(BaseConnector):
         collection = await asyncio.to_thread(client.get_or_create_collection, table)
         ids = [r.get("id", str(i)) for i, r in enumerate(records)]
         documents = [r.get("document", r.get("text", "")) for r in records]
-        metadatas = [r.get("metadata", r.get("metadatas", {})) for r in records]
+        metadatas = [r.get("metadata") or r.get("metadatas") or {"_source": "datacrab"} for r in records]
         embeddings = [r.get("embedding") for r in records]
-        has_embeddings = any(e is not None for e in embeddings)
+        # 无 embedding 时用平台 LLM embedding API 预计算（避免 ChromaDB 默认 sentence-transformers 模型加载慢/不一致）
+        if not any(e is not None for e in embeddings):
+            try:
+                from app.services.llm import llm_manager
+                texts = [d if d else " " for d in documents]
+                embeddings = await llm_manager.embed(texts)
+                embeddings = [list(e) for e in embeddings]
+            except Exception as e:
+                logger.warning(f"ChromaDB embedding 预计算失败，回退 ChromaDB 默认: {e}")
+                embeddings = None
         kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
-        if has_embeddings:
-            kwargs["embeddings"] = [e for e in embeddings]
+        if embeddings and any(e is not None for e in embeddings):
+            kwargs["embeddings"] = [e for e in embeddings if e is not None]
         await asyncio.to_thread(collection.upsert, **kwargs)
         return {"success": True, "rows_written": len(ids)}
 

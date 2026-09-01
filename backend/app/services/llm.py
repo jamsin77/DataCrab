@@ -945,6 +945,24 @@ class LLMManager:
                 )
                 return resp.choices[0].message.content
             except Exception as e:
+                _err_str = str(e)
+                # max_tokens 超模型上限 → clamp 到 1024 重试（对齐 OpenCode：错误信号驱动，不维护模型上限表）
+                if "max_tokens" in _err_str and ("1024" in _err_str or "非法" in _err_str or "limit" in _err_str.lower()):
+                    _clamped = min(max_tokens, 1024)
+                    if _clamped != max_tokens:
+                        logger.warning(f"LLM vision max_tokens={max_tokens} 超限，clamp 到 {_clamped} 重试 [{vis_model}]")
+                        try:
+                            resp = await client.chat.completions.create(
+                                model=vis_model,
+                                messages=messages,
+                                temperature=temperature,
+                                max_tokens=_clamped,
+                            )
+                            return resp.choices[0].message.content
+                        except Exception as e2:
+                            errors.append(f"[{cfg['provider']}/{vis_model}] {e2}")
+                            logger.warning(f"LLM vision clamp 重试仍失败 [{cfg['provider']}/{vis_model}]: {e2}，尝试下一个配置")
+                            continue
                 errors.append(f"[{cfg['provider']}/{vis_model}] {e}")
                 logger.warning(f"LLM vision失败 [{cfg['provider']}/{vis_model}]: {e}，尝试下一个配置")
                 continue

@@ -225,10 +225,13 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">
-                  {{ msg.content }}
-                  <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
-                </div>
+                <template v-if="msg.role === 'user'">
+                  <div class="debug-msg-user">
+                    {{ msg.content }}
+                    <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                  </div>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+                </template>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -953,20 +956,37 @@ function formatParamValue(v: any): string {
 const debugPinnedToBottom = ref(true)
 
 // 输入历史
-const HISTORY_KEY = 'dc_pipeline_debug_history'
+let _curPlId = ''
 const HISTORY_MAX = 100
-const debugHistory = ref<string[]>(loadDebugHistory())
+const debugHistory = ref<string[]>([])
 const debugHistoryIdx = ref(-1)
 const debugDraft = ref('')
 
 function loadDebugHistory(): string[] {
+  if (!_curPlId) return []
+  const newKey = `dc_pipeline_debug_history_${_curPlId}`
+  const oldKey = 'dc_pipeline_debug_history'
   try {
-    const raw = localStorage.getItem(HISTORY_KEY)
-    return raw ? JSON.parse(raw) : []
+    const raw = localStorage.getItem(newKey)
+    if (raw) return JSON.parse(raw)
+    const legacy = localStorage.getItem(oldKey)
+    if (legacy) {
+      const parsed = JSON.parse(legacy)
+      localStorage.setItem(newKey, JSON.stringify(parsed))
+      localStorage.removeItem(oldKey)
+      return parsed
+    }
+    return []
   } catch { return [] }
 }
 function saveDebugHistory(list: string[]) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(-HISTORY_MAX))) } catch {}
+  if (!_curPlId) return
+  try { localStorage.setItem(`dc_pipeline_debug_history_${_curPlId}`, JSON.stringify(list.slice(-HISTORY_MAX))) } catch {}
+}
+function reloadPlHistories(plId: string | number) {
+  _curPlId = String(plId)
+  debugHistory.value = loadDebugHistory()
+  debugHistoryIdx.value = -1
 }
 
 function scrollDebugToBottom(force = false) {
@@ -996,6 +1016,7 @@ function openDebug(pl: Pipeline) {
   flushPipelineDebugSave()
   debugPipeline.value = { ...pl }
   debugMessages.value = loadPipelineDebugMsgs((pl as any).id)
+  reloadPlHistories((pl as any).id)
   debugInput.value = ''
 
   if (pl.entry_function === '_pipeline_entry') {

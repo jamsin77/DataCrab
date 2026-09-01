@@ -180,10 +180,13 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">
-                  {{ msg.content }}
-                  <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
-                </div>
+                <template v-if="msg.role === 'user'">
+                  <div class="debug-msg-user">
+                    {{ msg.content }}
+                    <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                  </div>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+                </template>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -325,7 +328,10 @@
             <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
           <div class="debug-msg-body">
-            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <template v-if="msg.role === 'user'">
+              <div class="debug-msg-user">{{ msg.content }}</div>
+              <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+            </template>
             <div v-else class="debug-msg-assistant">
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -409,7 +415,10 @@
             <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
           <div class="debug-msg-body">
-            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <template v-if="msg.role === 'user'">
+              <div class="debug-msg-user">{{ msg.content }}</div>
+              <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+            </template>
             <div v-else class="debug-msg-assistant">
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -684,6 +693,7 @@ function openDebug(op: any, restore?: Partial<OpDebugSession>) {
     restore = loadOpDebugSession(op.id) || undefined
   }
   debugOperator.value = op
+  reloadOpHistories(op.id)
 
   for (const key of Object.keys(debugInputValues)) {
     delete debugInputValues[key]
@@ -1197,17 +1207,29 @@ async function handleClone() {
 const HISTORY_MAX = 100
 
 function loadOpHistory(key: string): string[] {
+  if (!_curOpId) return []
+  const newKey = `dc_op_history_${_curOpId}_${key}`
+  const oldKey = `dc_op_history_${key}`
   try {
-    const raw = localStorage.getItem(`dc_op_history_${key}`)
-    return raw ? JSON.parse(raw) : []
+    const raw = localStorage.getItem(newKey)
+    if (raw) return JSON.parse(raw)
+    const legacy = localStorage.getItem(oldKey)
+    if (legacy) {
+      const parsed = JSON.parse(legacy)
+      localStorage.setItem(newKey, JSON.stringify(parsed))
+      localStorage.removeItem(oldKey)
+      return parsed
+    }
+    return []
   } catch {
     return []
   }
 }
 
 function saveOpHistory(key: string, list: string[]) {
+  if (!_curOpId) return
   try {
-    localStorage.setItem(`dc_op_history_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
+    localStorage.setItem(`dc_op_history_${_curOpId}_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
   } catch {}
 }
 
@@ -1272,17 +1294,33 @@ function handleParamHistoryKey(e: KeyboardEvent, fieldKey: string, paramName: st
   onOpHistoryKey(e, fieldKey, () => debugParamValues[paramName], (v) => { debugParamValues[paramName] = v })
 }
 
-const generateHistory = ref<string[]>(loadOpHistory('generate'))
+const generateHistory = ref<string[]>([])
 const generateHistoryIdx = ref(-1)
 const generateDraft = ref('')
 
-const modifyHistory = ref<string[]>(loadOpHistory('modify'))
+const modifyHistory = ref<string[]>([])
 const modifyHistoryIdx = ref(-1)
 const modifyDraft = ref('')
 
-const opChatHistory = ref<string[]>(loadOpHistory('op_chat'))
+const opChatHistory = ref<string[]>([])
 const opChatHistoryIdx = ref(-1)
 const opChatDraft = ref('')
+
+let _curOpId = ''
+function reloadOpHistories(opId: number | string) {
+  _curOpId = String(opId)
+  for (const key of Object.keys(inputHistories)) {
+    delete inputHistories[key]
+    delete inputHistoryIdxs[key]
+    delete inputDrafts[key]
+  }
+  generateHistory.value = loadOpHistory('generate')
+  modifyHistory.value = loadOpHistory('modify')
+  opChatHistory.value = loadOpHistory('op_chat')
+  generateHistoryIdx.value = -1
+  modifyHistoryIdx.value = -1
+  opChatHistoryIdx.value = -1
+}
 
 function onGenerateHistoryKey(e: KeyboardEvent) {
   onHistoryKeyGeneric(e, generateHistory, generateHistoryIdx, generatePrompt, generateDraft)

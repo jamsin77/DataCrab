@@ -179,7 +179,7 @@ def _dc_get_table_schema(datasource_id, table_name):
     _ds = urllib.parse.quote(str(datasource_id), safe='')
     url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/schema"
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
+        with urllib.request.urlopen(url, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
     except urllib.error.HTTPError as e:
@@ -194,7 +194,7 @@ def _dc_get_datasource_id_by_name(name):
     import urllib.request
     url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources"
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        with urllib.request.urlopen(url, timeout=30) as resp:
             sources = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         raise RuntimeError(f"非脚本错误：数据源服务不可达（{{e}}）")
@@ -260,7 +260,7 @@ def write_table_data(datasource_id, table_name, records=None, data=None, if_tabl
     _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables/{{_tn}}/data"
     _req = urllib.request.Request(_url, data=_payload, headers={{"Content-Type": "application/json"}}, method="POST")
     try:
-        with urllib.request.urlopen(_req, timeout=120) as resp:
+        with urllib.request.urlopen(_req, timeout=300) as resp:
             _resp_data = json.loads(resp.read().decode("utf-8"))
             _WRITTEN_TABLES.append({{"datasource_id": str(datasource_id), "table_name": str(table_name)}})
             return _resp_data
@@ -289,7 +289,7 @@ def list_tables(datasource_id):
     _ds = urllib.parse.quote(str(datasource_id), safe='')
     _url = f"{{_API_BASE}}/api/v1/datasources/internal/datasources/{{_ds}}/tables"
     try:
-        with urllib.request.urlopen(_url, timeout=15) as resp:
+        with urllib.request.urlopen(_url, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("tables", [])
     except urllib.error.HTTPError as e:

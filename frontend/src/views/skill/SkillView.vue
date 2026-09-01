@@ -199,7 +199,10 @@
             <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
           </div>
           <div class="debug-msg-body">
-            <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+            <template v-if="msg.role === 'user'">
+              <div class="debug-msg-user">{{ msg.content }}</div>
+              <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+            </template>
             <div v-else class="debug-msg-assistant">
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -311,7 +314,10 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">{{ msg.content }}</div>
+                <template v-if="msg.role === 'user'">
+                  <div class="debug-msg-user">{{ msg.content }}</div>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+                </template>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -585,10 +591,13 @@
                 <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
               </div>
               <div class="debug-msg-body">
-                <div v-if="msg.role === 'user'" class="debug-msg-user">
-                  {{ msg.content }}
-                  <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
-                </div>
+                <template v-if="msg.role === 'user'">
+                  <div class="debug-msg-user">
+                    {{ msg.content }}
+                    <el-button text size="small" @click="copyText(msg.content)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                  </div>
+                  <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
+                </template>
                 <div v-else class="debug-msg-assistant">
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
@@ -801,7 +810,7 @@ const router = useRouter()
 const route = useRoute()
 const skills = ref<any[]>([])
 const searchQuery = ref('')
-const sortBy = ref('created')
+const sortBy = ref('updated')
 const agentName = ref('DC')
 
 async function loadAgentConfig() {
@@ -2042,30 +2051,58 @@ async function readDebugSSEStream(
 const HISTORY_MAX = 100
 
 function loadHistory(key: string): string[] {
+  if (!_curSkillId) return []
+  const newKey = `dc_skill_history_${_curSkillId}_${key}`
+  const oldKey = `dc_skill_history_${key}`
   try {
-    const raw = localStorage.getItem(`dc_skill_history_${key}`)
-    return raw ? JSON.parse(raw) : []
+    const raw = localStorage.getItem(newKey)
+    if (raw) return JSON.parse(raw)
+    // 迁移：旧全局历史被首个打开的技能领走
+    const legacy = localStorage.getItem(oldKey)
+    if (legacy) {
+      const parsed = JSON.parse(legacy)
+      localStorage.setItem(newKey, JSON.stringify(parsed))
+      localStorage.removeItem(oldKey)
+      return parsed
+    }
+    return []
   } catch {
     return []
   }
 }
 
 function saveHistory(key: string, list: string[]) {
+  if (!_curSkillId) return
   try {
-    localStorage.setItem(`dc_skill_history_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
+    localStorage.setItem(`dc_skill_history_${_curSkillId}_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
   } catch {}
 }
 
-const nlHistory = ref<string[]>(loadHistory('nl'))
+let _curSkillId = ''
+function reloadSkillHistories(skillId: string | number) {
+  _curSkillId = String(skillId)
+  nlHistory.value = loadHistory('nl')
+  cmdHistory.value = loadHistory('cmd')
+  chatHistory.value = loadHistory('chat')
+  genHistory.value = loadHistory('generate')
+  modifyHistory.value = loadHistory('modify')
+  nlHistoryIdx.value = -1
+  cmdHistoryIdx.value = -1
+  chatHistoryIdx.value = -1
+  genHistoryIdx.value = -1
+  modifyHistoryIdx.value = -1
+}
+
+const nlHistory = ref<string[]>([])
 const nlHistoryIdx = ref(-1)
-const cmdHistory = ref<string[]>(loadHistory('cmd'))
+const cmdHistory = ref<string[]>([])
 const cmdHistoryIdx = ref(-1)
-const chatHistory = ref<string[]>(loadHistory('chat'))
+const chatHistory = ref<string[]>([])
 const chatHistoryIdx = ref(-1)
-const genHistory = ref<string[]>(loadHistory('generate'))
+const genHistory = ref<string[]>([])
 const genHistoryIdx = ref(-1)
 const genDraft = ref('')
-const modifyHistory = ref<string[]>(loadHistory('modify'))
+const modifyHistory = ref<string[]>([])
 const modifyHistoryIdx = ref(-1)
 const modifyDraft = ref('')
 
@@ -2382,6 +2419,7 @@ async function openDebug(skill: any, scriptName?: string) {
   execTab.value = 'nl'
   skillParams.value = []
   debugMessages.value = loadSkillDebugMsgs(freshSkill.id)
+  reloadSkillHistories(freshSkill.id)
   debugInput.value = ''
   debugStreaming.value = false
   debugDrawer.value = true
