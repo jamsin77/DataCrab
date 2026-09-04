@@ -44,6 +44,9 @@ yarn-error.log*
 # Runtime data (regenerable from defaults)
 backend/data/standards/
 backend/data/operator_experiences/
+backend/data/match_chroma/
+backend/data/pipeline_experiences/
+backend/data/uploads/
 
 # Environment
 .env

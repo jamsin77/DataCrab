@@ -1,5 +1,14 @@
 """DataCrab 数据工程智能体 - 主入口"""
 
+# SQLite 版本替换：系统自带 3.26.0 太旧，ChromaDB 要求 >=3.35.0
+# pysqlite3-binary 自带 3.51.1，在所有 import sqlite3 之前替换标准库模块
+try:
+    import pysqlite3
+    import sys
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -55,7 +64,11 @@ async def _load_custom_extensions():
     # 加载有适配器代码的 Provider
     async with async_session() as session:
         result = await session.execute(
-            sa_select(LLMProvider).where(LLMProvider.is_active == True, LLMProvider.code != None)
+            sa_select(LLMProvider).where(
+                LLMProvider.is_active == True,
+                LLMProvider.code != None,
+                LLMProvider.code != "",
+            )
         )
         for p in result.scalars().all():
             try:

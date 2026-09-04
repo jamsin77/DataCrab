@@ -395,6 +395,8 @@ def _load_custom_adapter(code: str, provider_name: str) -> type:
 
 def register_custom_adapter(provider_name: str, code: str) -> type:
     """注册自定义 LLM 适配器"""
+    if not code or not code.strip():
+        raise ValueError(f"适配器代码为空: {provider_name}")
     cls = _load_custom_adapter(code, provider_name)
     _custom_adapter_cache[provider_name] = cls
     logger.info(f"自定义 LLM 适配器已注册: {provider_name} → {cls.__name__}")
