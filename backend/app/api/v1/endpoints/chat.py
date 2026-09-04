@@ -1769,7 +1769,9 @@ async def stream_response(
                 elif event.get("type") == "done":
                     result = event.get("result") or {}
                     _done_content = result.get("content", "") if isinstance(result, dict) else ""
-                    if _done_content and _done_content.strip() not in full_response.strip():
+                    # content 已在流式过程中逐 token 推给前端并累加到 full_response；
+                    # 仅当 full_response 尚未包含该内容时才补发（兜底，防止漏发）
+                    if _done_content and full_response.strip() != _done_content.strip() and _done_content.strip() not in full_response.strip():
                         full_response += _done_content
                         yield f"data: {json.dumps({'type': 'content', 'content': _done_content}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"

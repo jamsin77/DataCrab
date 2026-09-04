@@ -544,7 +544,7 @@ class DataProcessorAgent(BaseAgent):
                     yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
 
                 if content:
-                    yield {"type": "content", "content": content}
+                    pass  # content 已在流式过程中逐 token yield，不重复发
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
                 return
 
@@ -568,8 +568,7 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
                 return
 
-            if content:
-                yield {"type": "content", "content": content}
+            # content 已在流式过程中逐 token yield，不重复发
 
             local_messages.append({
                 "role": "assistant",
