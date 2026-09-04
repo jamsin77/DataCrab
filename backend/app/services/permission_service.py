@@ -325,15 +325,15 @@ async def get_role_members(db: AsyncSession, role_id: uuid.UUID) -> List[dict]:
     ]
 
 
-# 资源类型 → 公开字段名（visibility / is_public）；None 表示无公开豁免
+# 资源类型 → 公开字段名（visibility / is_seed）；None 表示无公开豁免
 _PUBLIC_FIELD = {
     "skill": "visibility",
     "operator": "visibility",
     "pipeline": "visibility",
     "datasource": None,  # 数据源无公开字段，靠显式授权
     "schedule": None,
-    "connector": "is_public",
-    "llmprovider": "is_public",
+    "connector": "is_seed",
+    "llmprovider": "is_seed",
 }
 
 

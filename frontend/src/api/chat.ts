@@ -58,6 +58,10 @@ export const chatApi = {
     return api.put(`/chat/sessions/${sessionId}`, { title })
   },
 
+  updateSessionContext(sessionId: string, context: Record<string, any>): Promise<ChatSession> {
+    return api.patch(`/chat/sessions/${sessionId}/context`, context)
+  },
+
   deleteSession(sessionId: string): Promise<void> {
     return api.delete(`/chat/sessions/${sessionId}`)
   },
@@ -78,7 +82,7 @@ export const chatApi = {
     return api.post('/chat/stop', null, { params: { session_id: sessionId } })
   },
 
-  uploadAttachment(file: File): Promise<{
+  uploadAttachment(file: File, sessionId?: string): Promise<{
     datasource_id: string
     name: string
     filename: string
@@ -89,7 +93,8 @@ export const chatApi = {
   }> {
     const formData = new FormData()
     formData.append('file', file)
-    return api.post('/chat/upload', formData, {
+    const params = sessionId ? `?session_id=${sessionId}` : ''
+    return api.post(`/chat/upload${params}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
@@ -99,7 +104,6 @@ export const chatApi = {
     content: string,
     signal: AbortSignal,
     onEvent: (event: StreamEvent) => void,
-    attachments?: string[],
     directExecute?: boolean,
     selectedDatasourceId?: string,
     selectedTableName?: string,
@@ -122,13 +126,12 @@ export const chatApi = {
       body: JSON.stringify({
         session_id: sessionId,
         content,
-        attachments,
         direct_execute: directExecute || false,
         use_skill: useSkill || false,
         selected_datasource_id: selectedDatasourceId || null,
         selected_table_name: selectedTableName || null,
         target_datasource_id: targetDatasourceId || null,
-        target_table_name: targetTableName || null,
+        target_data_name: targetTableName || null,
         target_write_mode: targetWriteMode || null,
         selected_skill_id: selectedSkillId || null,
         selected_skill_name: selectedSkillName || null,

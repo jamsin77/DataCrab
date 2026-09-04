@@ -132,7 +132,7 @@ async def list_datasources(
         ),
     )
     if datasource_type:
-        query = query.where(DataSource.type == datasource_type)
+        query = query.where(or_(DataSource.type == datasource_type, DataSource.is_virtual == True))
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
     all_ds = list(result.scalars().all())
@@ -468,417 +468,7 @@ async def get_table_quality(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/data")
-async def internal_get_table_data(
-    datasource_id: UUID,
-    table_name: str,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(1000, ge=1, le=10000),
-    db: AsyncSession = Depends(get_db),
-):
-    """内部查询端点（无认证，仅供技能执行器子进程本机调用）"""
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        connector = _get_connector(datasource.type, datasource.connection_config or {})
-        df = await connector.get_table_data(table_name, page=page, page_size=page_size)
-        stats = await connector.get_table_stats(table_name)
-        await connector.close()
-        columns = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
-        rows = df.fillna("").to_dict(orient="records")
-        for r in rows:
-            for k, v in list(r.items()):
-                if hasattr(v, "isoformat"):
-                    r[k] = v.isoformat()
-                elif not isinstance(v, (str, int, float, bool, type(None))):
-                    r[k] = str(v)
-        return {"columns": columns, "rows": rows, "total": stats.get("row_count", len(rows))}
-    except Exception as e:
-        logger.error(f"内部查询异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/internal/datasources/{datasource_id}/schema")
-async def internal_get_schema(
-    datasource_id: UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """内部获取表结构（无认证，仅供技能执行器子进程本机调用）"""
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        connector = _get_connector(datasource.type, datasource.connection_config or {})
-        schema = await connector.get_schema()
-        await connector.close()
-        return {"tables": schema}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/internal/datasources")
-async def internal_list_datasources(db: AsyncSession = Depends(get_db)):
-    """内部列出数据源（无认证，仅供技能执行器子进程本机调用）"""
-    result = await db.execute(select(DataSource).where(DataSource.is_active == True))
-    return [{"id": str(s.id), "name": s.name, "type": s.type, "connection_config": s.connection_config} for s in result.scalars().all()]
-
-
-@router.post("/internal/datasources/{datasource_id}/tables/{table_name}/data")
-async def internal_write_table_data(
-    datasource_id: UUID,
-    table_name: str,
-    body: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    """内部写入端点（无认证，仅供技能执行器子进程本机调用）"""
-    from app.services.llm import init_user_llm_context, reset_user_llm_config
-    user_id = body.get("user_id")
-    if user_id:
-        try:
-            from uuid import UUID as _UUID
-            await init_user_llm_context(_UUID(str(user_id)))
-        except Exception:
-            pass
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        from app.services.connectors import ConnectorManager
-        mgr = ConnectorManager(db)
-        kwargs = {}
-        if body.get("if_table_exists") and body["if_table_exists"] != "fail":
-            kwargs["if_table_exists"] = body["if_table_exists"]
-        if body.get("table_remark"):
-            kwargs["table_remark"] = body["table_remark"]
-        if body.get("column_remarks"):
-            kwargs["column_remarks"] = body["column_remarks"]
-        result = await mgr.write_table(
-            str(datasource_id),
-            table_name,
-            body.get("records", []),
-            **kwargs,
-        )
-        # 写入成功后更新 TableMetadata.data_updated_at，使浏览树显示最新修改时间
-        # 使用独立 session + 重试，避免与 task_runner 调度扫描器并发争抢系统库写锁
-        if isinstance(result, dict) and result.get("success", True):
-            from datetime import datetime as _dt
-            from app.core.database import async_session as _meta_session
-            import asyncio as _asyncio
-            _meta_err = None
-            for _attempt in range(3):
-                try:
-                    async with _meta_session() as meta_db:
-                        meta_result = await meta_db.execute(
-                            select(TableMetadata).where(
-                                TableMetadata.data_source_id == datasource_id,
-                                TableMetadata.table_name == table_name,
-                            )
-                        )
-                        meta = meta_result.scalar_one_or_none()
-                        if meta:
-                            meta.data_updated_at = _dt.utcnow()
-                        else:
-                            meta_db.add(TableMetadata(
-                                data_source_id=datasource_id,
-                                table_name=table_name,
-                                data_updated_at=_dt.utcnow(),
-                            ))
-                        await meta_db.commit()
-                        _meta_err = None
-                        break
-                except Exception as e:
-                    _meta_err = e
-                    if _attempt < 2:
-                        await _asyncio.sleep(0.5 * (_attempt + 1))
-            if _meta_err:
-                logger.warning(f"更新 TableMetadata.data_updated_at 失败（不影响写入结果）: {_meta_err}")
-        return result
-    except Exception as e:
-        logger.error(f"内部写入异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if user_id:
-            reset_user_llm_config()
-
-
-@router.post("/internal/llm/chat")
-async def internal_llm_chat(body: dict):
-    """内部 LLM 对话端点（无认证，仅供技能执行器子进程本机调用）。
-    通过 user_id 加载用户级 LLM 配置（含私有 API Key），确保技能脚本中的
-    llm_chat() 使用用户自己的模型和额度。"""
-    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config
-    user_id = body.get("user_id")
-    try:
-        if user_id:
-            await init_user_llm_context(user_id)
-        await llm_manager.initialize()
-        messages = []
-        system_prompt = body.get("system_prompt")
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": body.get("prompt", "")})
-        result = await llm_manager.chat_with_messages(
-            messages,
-            temperature=body.get("temperature", 0.7),
-            max_tokens=int(body.get("max_tokens", 2000)),
-        )
-        return {"content": result}
-    except Exception as e:
-        logger.error(f"内部 LLM 对话异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        reset_user_llm_config()
-
-
-@router.post("/internal/llm/vision")
-async def internal_llm_vision(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部 LLM 视觉端点（无认证，仅供技能执行器子进程本机调用）。
-    读取图片 → base64 编码 → 发送给视觉大模型 → 返回文本。"""
-    import base64
-    from pathlib import Path
-    from app.models.filelink import FileLink
-    from app.services.llm import llm_manager, init_user_llm_context, reset_user_llm_config, get_user_llm_config
-
-    user_id = body.get("user_id")
-    user_id = UUID(str(user_id)) if user_id else None
-    image_path = body.get("image_path", "")
-    prompt = body.get("prompt", "")
-    if not image_path or not prompt:
-        raise HTTPException(status_code=400, detail="image_path 和 prompt 必填")
-
-    allowed_dirs = await _collect_allowed_dirs(db, user_id)
-    validated = _validate_file_path(image_path, allowed_dirs)
-    p = Path(validated)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="图片文件不存在")
-
-    ext = p.suffix.lower()
-    if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"):
-        raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext}")
-
-    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
-    mime = mime_map.get(ext, "image/jpeg")
-
-    try:
-        # 图片压缩：缩到最大宽度 1024px，OCR 不需要原始分辨率，省 60-70% token
-        raw_bytes = p.read_bytes()
-        try:
-            import io as _io
-            from PIL import Image as _PILImage
-            img = _PILImage.open(_io.BytesIO(raw_bytes))
-            if img.width > 1024 or img.height > 1024:
-                ratio = min(1024 / img.width, 1024 / img.height)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, _PILImage.LANCZOS)
-            buf = _io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(buf, format="JPEG", quality=85)
-            image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
-            mime = "image/jpeg"
-        except Exception:
-            image_data = base64.b64encode(raw_bytes).decode("utf-8")
-        if user_id:
-            await init_user_llm_context(user_id)
-        await llm_manager.initialize()
-
-        _user_cfg = get_user_llm_config()
-        if not _user_cfg:
-            raise HTTPException(status_code=400, detail="未配置 LLM Provider，请在配置页面设置")
-
-        result_text = await llm_manager.vision(
-            image_data, mime,
-            prompt,
-            system_prompt=body.get("system_prompt"),
-            temperature=body.get("temperature", 0.3),
-            max_tokens=int(body.get("max_tokens", 2000)),
-        )
-        return {"content": result_text}
-    except Exception as e:
-        logger.error(f"内部 LLM 视觉异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        reset_user_llm_config()
-
-
-# ==================== 内部视频处理端点 ====================
-
-@router.post("/internal/video/info")
-async def internal_video_info(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部视频信息提取端点（无认证，仅供技能执行器子进程本机调用）。
-    提取视频元数据：时长、分辨率、帧率、编码等。"""
-    from pathlib import Path
-    from app.services.video_utils import probe_video, is_video_file
-
-    user_id = body.get("user_id")
-    user_id = UUID(str(user_id)) if user_id else None
-    video_path = body.get("video_path", "")
-    if not video_path:
-        raise HTTPException(status_code=400, detail="video_path 必填")
-
-    allowed_dirs = await _collect_allowed_dirs(db, user_id)
-    validated = _validate_file_path(video_path, allowed_dirs)
-    p = Path(validated)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="视频文件不存在")
-
-    if not is_video_file(str(p)):
-        raise HTTPException(status_code=400, detail=f"不支持的视频格式: {p.suffix}")
-
-    try:
-        result = probe_video(str(p))
-        result["video_path"] = str(p)
-        return result
-    except Exception as e:
-        logger.error(f"内部视频信息提取异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/internal/video/keyframes")
-async def internal_video_keyframes(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部视频关键帧抽取端点（无认证，仅供技能执行器子进程本机调用）。
-    抽取关键帧为 JPEG 图片，返回帧列表（含时间戳和图片路径）。"""
-    from pathlib import Path
-    from app.services.video_utils import extract_keyframes, is_video_file
-
-    user_id = body.get("user_id")
-    user_id = UUID(str(user_id)) if user_id else None
-    video_path = body.get("video_path", "")
-    if not video_path:
-        raise HTTPException(status_code=400, detail="video_path 必填")
-
-    max_frames = int(body.get("max_frames", 8))
-    output_dir = body.get("output_dir")
-    method = body.get("method", "auto")
-
-    allowed_dirs = await _collect_allowed_dirs(db, user_id)
-    validated = _validate_file_path(video_path, allowed_dirs)
-    p = Path(validated)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="视频文件不存在")
-
-    if not is_video_file(str(p)):
-        raise HTTPException(status_code=400, detail=f"不支持的视频格式: {p.suffix}")
-
-    # output_dir 须在授权目录内（如果指定了）
-    if output_dir:
-        _validate_file_path(output_dir, allowed_dirs)
-
-    try:
-        frames = extract_keyframes(
-            str(p),
-            max_frames=max_frames,
-            output_dir=output_dir,
-            method=method,
-        )
-        return {"success": True, "frames": frames, "count": len(frames)}
-    except Exception as e:
-        logger.error(f"内部视频关键帧抽取异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/internal/datasources/{datasource_id}/sql")
-async def internal_execute_sql(
-    datasource_id: UUID,
-    body: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    """内部 SQL 执行端点（无认证，仅供技能执行器子进程本机调用）。
-    支持 DB 型连接器的原生 SQL，文件型连接器返回不支持错误。"""
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        connector = _get_connector(datasource.type, datasource.connection_config or {})
-        await connector.connect()
-        df = await connector.execute_query(body.get("sql", ""))
-        await connector.close()
-        if df is None or df.empty:
-            return {"columns": list(df.columns) if df is not None else [], "rows": [], "row_count": 0}
-        limit = int(body.get("limit", 10000))
-        if len(df) > limit:
-            df = df.head(limit)
-        columns = list(df.columns)
-        rows = df.fillna("").to_dict(orient="records")
-        for r in rows:
-            for k, v in list(r.items()):
-                if hasattr(v, "isoformat"):
-                    r[k] = v.isoformat()
-                elif not isinstance(v, (str, int, float, bool, type(None))):
-                    r[k] = str(v)
-        return {"columns": columns, "rows": rows, "row_count": len(rows)}
-    except Exception as e:
-        logger.error(f"内部 SQL 执行异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/internal/datasources/{datasource_id}/tables")
-async def internal_list_tables(
-    datasource_id: UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """内部列出表列表端点（无认证，仅供技能执行器子进程本机调用）"""
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        connector = _get_connector(datasource.type, datasource.connection_config or {})
-        schema = await connector.get_schema()
-        await connector.close()
-        return {"tables": [t.get("table_name", str(t)) if isinstance(t, dict) else str(t) for t in schema]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/internal/datasources/{datasource_id}/tables/{table_name}/chunks")
-async def internal_iter_table_data(
-    datasource_id: UUID,
-    table_name: str,
-    chunk_size: int = Query(10000, ge=1, le=100000),
-    page: int = Query(1, ge=1),
-    db: AsyncSession = Depends(get_db),
-):
-    """内部分块读取端点（无认证，仅供技能执行器子进程本机调用）。
-    返回指定 chunk 的数据，技能沙箱通过翻页实现迭代。"""
-    result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
-    datasource = result.scalar_one_or_none()
-    if not datasource:
-        raise HTTPException(status_code=404, detail="数据源不存在")
-    try:
-        connector = _get_connector(datasource.type, datasource.connection_config or {})
-        df = await connector.get_table_data(table_name, page=page, page_size=chunk_size)
-        stats = await connector.get_table_stats(table_name)
-        await connector.close()
-        total = stats.get("row_count", len(df))
-        columns = list(df.columns)
-        rows = df.fillna("").to_dict(orient="records")
-        for r in rows:
-            for k, v in list(r.items()):
-                if hasattr(v, "isoformat"):
-                    r[k] = v.isoformat()
-                elif not isinstance(v, (str, int, float, bool, type(None))):
-                    r[k] = str(v)
-        return {
-            "columns": columns,
-            "rows": rows,
-            "chunk_size": chunk_size,
-            "page": page,
-            "total": total,
-            "total_pages": (total + chunk_size - 1) // chunk_size if chunk_size > 0 else 1,
-            "has_next": page * chunk_size < total,
-        }
-    except Exception as e:
-        logger.error(f"内部分块读取异常: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== 内部文件 I/O 端点 ====================
+# ==================== 沙箱工具辅助函数（供 tool_registry handler 调用）====================
 
 def _validate_file_path(path: str, allowed_dirs: list) -> str:
     """验证文件路径在授权目录范围内，返回 resolved 路径或抛异常"""
@@ -927,104 +517,49 @@ async def _collect_allowed_dirs(db: AsyncSession, user_id) -> list[str]:
     return allowed
 
 
-@router.get("/internal/file-links")
-async def internal_list_file_links(
-    user_id: str = Query(...),
-    db: AsyncSession = Depends(get_db),
-):
-    """内部文件链接列表端点（无认证，仅供技能执行器子进程本机调用）"""
-    from app.models.filelink import FileLink
-    _uid = UUID(str(user_id)) if user_id else None
-    result = await db.execute(
-        select(FileLink).where(FileLink.is_active == True, FileLink.created_by == _uid)
-    )
-    return [
-        {"id": str(f.id), "name": f.name, "path": f.path, "link_type": f.link_type}
-        for f in result.scalars().all()
-    ]
+# ==================== 内部统一工具执行端点 ====================
 
+@router.post("/internal/execute-tool")
+async def internal_execute_tool(body: dict, db: AsyncSession = Depends(get_db)):
+    """内部统一工具执行端点（无认证，仅供技能/算子沙箱子进程本机调用）。
+    
+    接收 {tool_name, args, user_id}，调用 tool_registry handler 统一分发。
+    所有沙箱工具调用都通过此端点，替代之前分散的 /internal/* 端点。
+    直接调 handler（不经 execute_tool），跳过 LRU 缓存和截断（脚本需要完整数据）。
+    """
+    from app.services.tool_registry import _REGISTRY, _ensure_registered
+    from app.core.database import async_session as _tool_session
+    from uuid import UUID as _UUID
 
-@router.post("/internal/files/read")
-async def internal_read_file(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部文件读取端点（无认证，仅供技能执行器子进程本机调用）。
-    自动检测格式：txt/md/log/py/json/csv/xlsx → 对应解析"""
-    from pathlib import Path
-    from app.models.filelink import FileLink
-
+    tool_name = body.get("tool_name")
+    args = body.get("args", {})
     user_id = body.get("user_id")
-    user_id = UUID(str(user_id)) if user_id else None
-    file_path = body.get("path", "")
 
-    allowed_dirs = await _collect_allowed_dirs(db, user_id)
-    validated = _validate_file_path(file_path, allowed_dirs)
-    p = Path(validated)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="tool_name 必填")
 
-    ext = p.suffix.lower()
+    _ensure_registered()
+    td = _REGISTRY.get(tool_name)
+    if not td:
+        raise HTTPException(status_code=400, detail=f"未知工具: {tool_name}")
+
+    _uid = None
+    if user_id:
+        try:
+            _uid = _UUID(str(user_id))
+        except (ValueError, TypeError):
+            pass
+
+    _ctx = {"_sandbox_call": True}
     try:
-        if ext in (".txt", ".md", ".log", ".py", ".js", ".ts", ".html", ".xml", ".yml", ".yaml", ".sql", ".csv"):
-            if ext == ".csv":
-                import pandas as _pd
-                df = _pd.read_csv(p)
-                return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
-            return {"format": "text", "content": p.read_text(encoding="utf-8")}
-        elif ext == ".json":
-            return {"format": "json", "content": json.loads(p.read_text(encoding="utf-8"))}
-        elif ext in (".xlsx", ".xls"):
-            import pandas as _pd
-            df = _pd.read_excel(p)
-            return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
-        elif ext == ".parquet":
-            import pandas as _pd
-            df = _pd.read_parquet(p)
-            return {"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
-        elif ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
-            # 图片/二进制 fail-fast：绝不返回 UTF-8 乱码（会掩盖错误信号，诱导 LLM 把乱码当数据传给 llm_vision）
-            raise HTTPException(status_code=400, detail=f"read_file 不支持读取图片文件({ext})。请直接将图片路径传给 llm_vision(image_path, prompt) 进行 OCR/识别。")
-        elif ext in (".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp"):
-            raise HTTPException(status_code=400, detail=f"read_file 不支持读取视频文件({ext})。请使用 extract_video_info(video_path) 提取视频信息，或 extract_keyframes(video_path) 抽取关键帧。")
-        else:
-            return {"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}
+        async with _tool_session() as tool_db:
+            result_str = await td.handler(args, tool_db, _uid, _ctx)
+            await tool_db.commit()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取文件失败: {e}")
+        logger.error(f"internal_execute_tool({tool_name}) 异常: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.post("/internal/files/write")
-async def internal_write_file(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部文件写入端点（无认证，仅供技能执行器子进程本机调用）。
-    自动检测格式：txt/json/csv → 对应序列化"""
-    from pathlib import Path
-    from app.models.filelink import FileLink
-    import json as _json
-
-    user_id = body.get("user_id")
-    user_id = UUID(str(user_id)) if user_id else None
-    file_path = body.get("path", "")
-    data = body.get("data")
-    fmt = body.get("format")
-
-    allowed_dirs = await _collect_allowed_dirs(db, user_id)
-    validated = _validate_file_path(file_path, allowed_dirs)
-    p = Path(validated)
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    ext = p.suffix.lower()
     try:
-        if ext == ".json" or fmt == "json":
-            p.write_text(_json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-        elif ext == ".csv" or fmt == "csv":
-            import pandas as _pd
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                _pd.DataFrame(data).to_csv(p, index=False, encoding="utf-8-sig")
-            else:
-                p.write_text(str(data), encoding="utf-8")
-        else:
-            # 默认文本写入
-            if isinstance(data, (dict, list)):
-                p.write_text(_json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            else:
-                p.write_text(str(data), encoding="utf-8")
-        return {"success": True, "path": str(p), "size": p.stat().st_size}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"写入文件失败: {e}")
+        return json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return {"result": result_str}

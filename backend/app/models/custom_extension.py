@@ -19,7 +19,7 @@ class CustomConnector(Base):
     description = Column(Text)
     code = Column(Text, nullable=False)
     config_template = Column(JSON, default=list)
-    is_public = Column(Boolean, default=False)  # 内置/公共连接器所有用户可见；用户创建默认私有
+    is_seed = Column(Boolean, default=False)  # seed=预置的，所有用户可见；非 seed=用户自建，私有
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -42,7 +42,7 @@ class LLMProvider(Base):
     embedding_model = Column(String(100))
     api_key_encrypted = Column(Text)
     code = Column(Text)
-    is_public = Column(Boolean, default=False)  # 内置/公共 Provider 所有用户可见；用户创建默认私有
+    is_seed = Column(Boolean, default=False)  # seed=预置的，所有用户可见；非 seed=用户自建，私有
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

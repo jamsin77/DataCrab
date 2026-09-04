@@ -8,6 +8,8 @@ import glob
 from typing import List, Dict, Any, Optional
 import os
 import io
+import pathlib
+import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -525,7 +527,7 @@ class ExcelConnector(BaseConnector):
     """Excel文件连接器 — 支持单文件、多文件、文件夹模式"""
 
     def _get_excel_files(self) -> List[str]:
-        """根据 config 返回所有 Excel 文件路径"""
+        """根据 config 返回所有 Excel 文件路径（仅 .xlsx/.xls，其他文件由 get_schema 标注 data_type）"""
         mode = self.config.get("mode", "file")
         file_path = self.config.get("file_path", "")
         file_paths = self.config.get("file_paths", [])
@@ -589,20 +591,45 @@ class ExcelConnector(BaseConnector):
         return len(files) > 0
 
     async def get_schema(self) -> List[Dict[str, Any]]:
-        """返回所有文件所有Sheet的列表
-        table_name 规则:
-          - 文件的第一个Sheet: 文件名(不含扩展名)
-          - 文件的其他Sheet: 文件名_Sheet名
+        """返回所有文件列表（含非 Excel 文件，按 data_type 标注类型）。
+        
+        Excel 文件展开为 sheet 级表，其他文件（图片/PDF/Word 等）作为单条目列出。
+        data_type: excel_sheet / image / document / unknown
         """
         import pandas as pd
         files = self._get_excel_files()
         if not files:
             return []
 
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
+        _DOC_EXTS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".txt", ".md"}
+
         result = []
         for fpath in files:
             base = os.path.splitext(os.path.basename(fpath))[0]
+            ext = os.path.splitext(fpath)[1].lower()
             file_data_updated_at = _mtime_to_utc(fpath)
+
+            # 非 Excel 文件：按类型标注，不尝试读 sheet
+            if ext not in (".xlsx", ".xls"):
+                if ext in _IMAGE_EXTS:
+                    data_type = "image"
+                elif ext in _DOC_EXTS:
+                    data_type = "document"
+                else:
+                    data_type = "unknown"
+                item = {
+                    "table_name": base,
+                    "data_type": data_type,
+                    "file_path": fpath,
+                    "file_ext": ext,
+                }
+                if file_data_updated_at:
+                    item["data_updated_at"] = file_data_updated_at
+                result.append(item)
+                continue
+
+            # Excel 文件：展开 sheet
             try:
                 xl = pd.ExcelFile(fpath)
                 for i, sheet in enumerate(xl.sheet_names):
@@ -612,7 +639,7 @@ class ExcelConnector(BaseConnector):
                         table_name = f"{base}_{sheet}"
                     item = {
                         "table_name": table_name,
-                        "table_type": "excel_sheet",
+                        "data_type": "excel_sheet",
                         "file_path": fpath,
                         "sheet_name": sheet,
                         "sheet_index": i,
@@ -623,7 +650,7 @@ class ExcelConnector(BaseConnector):
             except Exception:
                 item = {
                     "table_name": base,
-                    "table_type": "excel",
+                    "data_type": "excel_sheet",
                     "file_path": fpath,
                     "sheet_name": None,
                     "sheet_index": 0,
@@ -1295,9 +1322,63 @@ class ChromaConnector(BaseConnector):
         except Exception:
             return {"row_count": 0}
 
-    async def write_table_data(self, table: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def write_table_data(
+        self, table: str, records: List[Dict[str, Any]],
+        if_table_exists: str = "fail",
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """写入数据到 ChromaDB 集合。
+
+        if_table_exists 策略:
+          - fail:        集合已存在则报错（默认）
+          - append:      直接 upsert（ChromaDB 原生 id-based）
+          - replace:     删除集合并重建（等同清空）
+          - overwrite:   清空集合所有条目后 upsert（保留集合）
+          - truncate:    同 overwrite
+          - delete_rows: 同 overwrite（ChromaDB 无表结构概念）
+          - upsert:      按 id upsert（ChromaDB 原生行为）
+          - create_new:  集合已存在时自动创建新集合（名加 _1, _2 后缀）
+        """
+        if not records:
+            return {"success": True, "rows_written": 0}
+
         client = self._get_client()
-        collection = await asyncio.to_thread(client.get_or_create_collection, table)
+
+        # 检查集合是否存在（list_collections 返回 Collection 对象列表，取 .name）
+        _collections = await asyncio.to_thread(client.list_collections)
+        _existing_names = set()
+        for c in _collections:
+            if isinstance(c, str):
+                _existing_names.add(c)
+            elif hasattr(c, 'name'):
+                _existing_names.add(c.name)
+        table_exists = table in _existing_names
+        actual_table = table
+
+        if table_exists:
+            if if_table_exists == "fail":
+                return {"success": False, "message": f"集合 '{table}' 已存在 (if_table_exists=fail)"}
+            elif if_table_exists == "create_new":
+                base = table
+                suffix = 1
+                while True:
+                    candidate = f"{base}_{suffix}"
+                    if candidate not in _existing_names:
+                        actual_table = candidate
+                        break
+                    suffix += 1
+            elif if_table_exists == "replace":
+                await asyncio.to_thread(client.delete_collection, table)
+                table_exists = False
+            elif if_table_exists in ("overwrite", "truncate", "delete_rows"):
+                collection = await asyncio.to_thread(client.get_collection, table)
+                existing = await asyncio.to_thread(collection.get, include=[])
+                existing_ids = existing.get("ids", [])
+                if existing_ids:
+                    await asyncio.to_thread(collection.delete, ids=existing_ids)
+            # append / upsert: 直接走 upsert
+
+        collection = await asyncio.to_thread(client.get_or_create_collection, actual_table)
         ids = [r.get("id", str(i)) for i, r in enumerate(records)]
         documents = [r.get("document", r.get("text", "")) for r in records]
         metadatas = [r.get("metadata") or r.get("metadatas") or {"_source": "datacrab"} for r in records]
@@ -1312,11 +1393,11 @@ class ChromaConnector(BaseConnector):
             except Exception as e:
                 logger.warning(f"ChromaDB embedding 预计算失败，回退 ChromaDB 默认: {e}")
                 embeddings = None
-        kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
+        upsert_kwargs = {"ids": ids, "documents": documents, "metadatas": metadatas}
         if embeddings and any(e is not None for e in embeddings):
-            kwargs["embeddings"] = [e for e in embeddings if e is not None]
-        await asyncio.to_thread(collection.upsert, **kwargs)
-        return {"success": True, "rows_written": len(ids)}
+            upsert_kwargs["embeddings"] = [e for e in embeddings if e is not None]
+        await asyncio.to_thread(collection.upsert, **upsert_kwargs)
+        return {"success": True, "rows_written": len(ids), "collection": actual_table}
 
     async def close(self) -> None:
         self._client = None
@@ -1501,19 +1582,253 @@ class SQLiteConnector(BaseConnector):
             self._connection = None
 
 
+class GenericFileConnector(BaseConnector):
+    """通用文件连接器 — 列出文件夹下的所有文件（按扩展名过滤）。
+
+    支持 mode=files（file_paths 列表，聊天上传用）和 file_path（单文件/文件夹）。
+    不解析文件内容，只返回文件列表（文件名/路径/大小/扩展名/修改时间）。
+    """
+
+    def _get_files(self) -> list:
+        mode = self.config.get("mode", "file")
+        file_path = self.config.get("file_path", "")
+        file_paths = self.config.get("file_paths", [])
+        file_filter = self.config.get("file_filter", "")
+
+        exts = None
+        if file_filter:
+            exts = set(e.strip().lower().lstrip(".") for e in file_filter.split(",") if e.strip())
+
+        if mode == "files" and file_paths:
+            return [pathlib.Path(f) for f in file_paths if pathlib.Path(f).exists()]
+        elif file_path:
+            p = pathlib.Path(file_path)
+            if not p.exists():
+                return []
+            if p.is_file():
+                return [p]
+            files = []
+            for f in p.rglob("*"):
+                if f.is_file():
+                    if exts is None or f.suffix.lower().lstrip(".") in exts:
+                        files.append(f)
+            return files
+        return []
+
+    async def connect(self) -> bool:
+        return len(self._get_files()) > 0
+
+    async def test_connection(self) -> bool:
+        try:
+            return await self.connect()
+        except Exception:
+            return False
+
+    async def get_schema(self) -> list:
+        files = self._get_files()
+        return [
+            {
+                "table_name": f.stem,
+                "table_type": "file",
+                "data_type": f.suffix.lower().lstrip("."),
+                "file_path": str(f),
+            }
+            for f in files
+        ]
+
+    async def get_table_data(self, table, page=1, page_size=20, filters=None, sort=None):
+        import pandas as pd
+        files = self._get_files()
+        if not files:
+            return pd.DataFrame()
+
+        # table 是文件 stem（get_schema 返回的 table_name = f.stem）
+        # 选中具体文件时，解析该文件内容；未选中时返回文件列表
+        target = None
+        if table:
+            target = next((f for f in files if f.stem == table), None)
+
+        if target:
+            ext = target.suffix.lower().lstrip(".")
+            try:
+                if ext == "csv":
+                    df = pd.read_csv(target)
+                    offset = (page - 1) * page_size
+                    return df.iloc[offset:offset + page_size]
+                elif ext in ("xlsx", "xls"):
+                    # table 可能是 "stem_sheetname" 格式
+                    sheet_name = 0
+                    if "_" in table and table.rsplit("_", 1)[-1] != target.stem:
+                        candidate_sheet = table.rsplit("_", 1)[-1]
+                        try:
+                            xls = pd.ExcelFile(target)
+                            if candidate_sheet in xls.sheet_names:
+                                sheet_name = candidate_sheet
+                        except Exception:
+                            pass
+                    df = pd.read_excel(target, sheet_name=sheet_name)
+                    offset = (page - 1) * page_size
+                    return df.iloc[offset:offset + page_size]
+                elif ext == "json":
+                    df = pd.read_json(target)
+                    offset = (page - 1) * page_size
+                    return df.iloc[offset:offset + page_size]
+                elif ext == "parquet":
+                    df = pd.read_parquet(target)
+                    offset = (page - 1) * page_size
+                    return df.iloc[offset:offset + page_size]
+            except Exception:
+                pass  # 解析失败则回退到文件详情
+
+            # 非结构化文件：返回单文件详情
+            stat = target.stat()
+            size = stat.st_size
+            if size >= 1073741824:
+                size_h = f"{size / 1073741824:.2f} GB"
+            elif size >= 1048576:
+                size_h = f"{size / 1048576:.2f} MB"
+            elif size >= 1024:
+                size_h = f"{size / 1024:.2f} KB"
+            else:
+                size_h = f"{size} B"
+            return pd.DataFrame([{
+                "file_name": target.name,
+                "file_path": str(target),
+                "extension": ext,
+                "size_bytes": size,
+                "size_human": size_h,
+                "modified_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+            }])
+
+        # 未选中具体文件：返回文件列表
+        rows = []
+        for f in files:
+            stat = f.stat()
+            size = stat.st_size
+            if size >= 1073741824:
+                size_h = f"{size / 1073741824:.2f} GB"
+            elif size >= 1048576:
+                size_h = f"{size / 1048576:.2f} MB"
+            elif size >= 1024:
+                size_h = f"{size / 1024:.2f} KB"
+            else:
+                size_h = f"{size} B"
+            rows.append({
+                "file_name": f.name,
+                "file_path": str(f),
+                "extension": f.suffix.lower().lstrip("."),
+                "size_bytes": size,
+                "size_human": size_h,
+                "modified_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                "parent_dir": str(f.parent),
+            })
+        df = pd.DataFrame(rows)
+        offset = (page - 1) * page_size
+        return df.iloc[offset:offset + page_size]
+
+    async def get_table_stats(self, table):
+        files = self._get_files()
+        if table:
+            target = next((f for f in files if f.stem == table), None)
+            if target:
+                ext = target.suffix.lower().lstrip(".")
+                try:
+                    import pandas as pd
+                    if ext == "csv":
+                        return {"row_count": len(pd.read_csv(target)), "table_name": table}
+                    elif ext in ("xlsx", "xls"):
+                        df = pd.read_excel(target)
+                        return {"row_count": len(df), "table_name": table}
+                    elif ext == "json":
+                        return {"row_count": len(pd.read_json(target)), "table_name": table}
+                    elif ext == "parquet":
+                        return {"row_count": len(pd.read_parquet(target)), "table_name": table}
+                except Exception:
+                    pass
+                return {"row_count": 1, "table_name": table}
+        return {"row_count": len(files), "table_name": table}
+
+    async def write_table_data(self, table: str, records: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """写入数据到文件。根据 table 名的扩展名决定写入格式。
+        策略: fail(默认) / append / overwrite / replace / create_new"""
+        import pandas as pd
+        mode = kwargs.get("if_table_exists", "fail")
+        df = pd.DataFrame(records)
+
+        # table 是文件名（带后缀），在文件列表所在目录写
+        files = self._get_files()
+        if files:
+            out_dir = files[0].parent
+        else:
+            out_dir = pathlib.Path(os.path.join(os.environ.get("TEMP", "/tmp"), "datacrab_output"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = out_dir / table
+        if not out_path.suffix:
+            out_path = out_path.with_suffix(".xlsx")
+        ext = out_path.suffix.lower().lstrip(".")
+
+        # create_new: 文件已存在时自动找新文件名
+        if out_path.exists() and mode == "create_new":
+            base = out_path.stem
+            suffix = 1
+            while True:
+                candidate = out_dir / f"{base}_{suffix}{out_path.suffix}"
+                if not candidate.exists():
+                    out_path = candidate
+                    break
+                suffix += 1
+            mode = "fail"  # 新文件不存在，改 fail 直接写
+
+        if out_path.exists():
+            if mode == "fail":
+                return {"success": False, "message": f"文件已存在: {out_path.name} (if_table_exists=fail)"}
+            elif mode == "replace":
+                out_path.unlink()
+
+        try:
+            if ext == "csv":
+                if mode == "append" and out_path.exists():
+                    old = pd.read_csv(out_path)
+                    df = pd.concat([old, df], ignore_index=True)
+                df.to_csv(out_path, index=False, encoding="utf-8-sig")
+            elif ext in ("xlsx", "xls"):
+                if mode == "append" and out_path.exists():
+                    old = pd.read_excel(out_path)
+                    df = pd.concat([old, df], ignore_index=True)
+                df.to_excel(out_path, index=False)
+            elif ext == "json":
+                if mode == "append" and out_path.exists():
+                    old = pd.read_json(out_path)
+                    df = pd.concat([old, df], ignore_index=True)
+                df.to_json(out_path, orient="records", force_ascii=False)
+            else:
+                return {"success": False, "message": f"generic_file 不支持写入 {ext} 格式文件"}
+
+            return {"success": True, "rows_written": len(df), "file_path": str(out_path)}
+        except Exception as e:
+            return {"success": False, "message": str(e), "error_type": type(e).__name__}
+
+    async def close(self):
+        pass
+
+
 # ========== 统一连接器注册表 ==========
 # 所有连接器地位平等：启动时统一从 DB 加载、exec() 装载到本注册表。
-# 内置连接器的类定义保留在本文件作为源码来源，启动时用 inspect.getsource 提取源码 seed 进 DB。
+# seed 连接器的类定义保留在本文件作为源码来源，启动时用 inspect.getsource 提取源码 seed 进 DB。
 _connector_registry: Dict[str, type] = {}
 
 # 支持的数据源类型列表（启动时从注册表 in-place 填充，保持外部模块引用同步）
 SUPPORTED_DATASOURCE_TYPES: List[str] = []
 
-# 沙箱禁止 import 的危险模块（其余模块允许，以满足内置连接器对 os/glob/io/httpx 等的依赖）
+# 沙箱禁止 import 的危险模块（其余模块允许，以满足 seed 连接器对 os/glob/io/httpx 等的依赖）
 _DANGER_IMPORTS = {"subprocess", "shutil", "ctypes", "sys", "socket", "pickle", "threading", "multiprocessing"}
 
-# 内置连接器元信息：name → {display_name, description, config_template, class}
-_BUILTIN_CONNECTORS: Dict[str, Dict[str, Any]] = {
+# seed 连接器元信息：name → {display_name, description, config_template, class}
+# 启动时 seed 到 DB（is_seed=True），运行时直接用类加载（跳过 exec 提速）
+
+# seed 连接器元信息：name → {display_name, description, config_template, class}
+_SEED_CONNECTORS: Dict[str, Dict[str, Any]] = {
     "postgresql": {
         "display_name": "PostgreSQL",
         "description": "基于 asyncpg 的异步 PostgreSQL 连接",
@@ -1600,11 +1915,23 @@ _BUILTIN_CONNECTORS: Dict[str, Dict[str, Any]] = {
             {"name": "persist_directory", "label": "数据目录", "type": "folderpath", "required": True, "default": "d:/chroma-data"},
         ],
     },
+    "generic_file": {
+        "display_name": "通用文件",
+        "description": "通用文件连接器，列出文件夹/文件列表，支持扩展名过滤和多文件模式",
+        "class": GenericFileConnector,
+        "config_template": [
+            {"name": "mode", "label": "模式", "type": "select", "required": True, "default": "file",
+             "options": [{"label": "单文件/文件夹", "value": "file"}, {"label": "多文件", "value": "files"}]},
+            {"name": "file_path", "label": "文件/文件夹路径", "type": "folderpath", "required": True, "depends_on": {"mode": "file"}},
+            {"name": "file_paths", "label": "文件列表", "type": "filepath_list", "required": True, "depends_on": {"mode": "files"}},
+            {"name": "file_filter", "label": "文件过滤（逗号分隔扩展名，如 jpg,png,gif；留空表示所有文件）", "type": "string", "required": False},
+        ],
+    },
 }
 
 
 def _build_exec_namespace() -> dict:
-    """构建连接器 exec 命名空间（提供内置连接器所需的模块与工具函数）"""
+    """构建连接器 exec 命名空间（提供 seed 连接器所需的模块与工具函数）"""
     import pandas as _pd
     import numpy as _np
     return {
@@ -1715,8 +2042,8 @@ def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector
     """获取连接器实例（注册表 → 内置类 → 按需 DB 加载，兼容子进程）"""
     connector_class = _connector_registry.get(datasource_type)
     if not connector_class:
-        # 降级 1：内置连接器直接用类（子进程中注册表为空时）
-        meta = _BUILTIN_CONNECTORS.get(datasource_type)
+        # 降级 1：seed 连接器直接用类（子进程中注册表为空时）
+        meta = _SEED_CONNECTORS.get(datasource_type)
         if meta:
             connector_class = meta["class"]
             _connector_registry[datasource_type] = connector_class
@@ -1729,14 +2056,14 @@ def get_connector(datasource_type: str, config: Dict[str, Any]) -> BaseConnector
 
 
 async def load_connectors_from_db() -> None:
-    """启动时从 DB 加载所有连接器；内置连接器首次启动时自动写入 DB"""
+    """启动时从 DB 加载所有连接器；seed 连接器首次启动时自动写入 DB"""
     import inspect
     from app.core.database import async_session
     from app.models.custom_extension import CustomConnector
     from sqlalchemy import select as sa_select
 
     async with async_session() as session:
-        # 查询超级管理员，作为内置连接器的 created_by（与用户创建的连接器无区别）
+        # 查询超级管理员，作为 seed 连接器的 created_by（与用户创建的连接器无区别）
         from app.models.user import User
         admin = await session.execute(
             sa_select(User).where(User.is_superuser == True, User.is_active == True).order_by(User.id).limit(1)
@@ -1744,8 +2071,8 @@ async def load_connectors_from_db() -> None:
         admin_user = admin.scalar_one_or_none()
         admin_id = admin_user.id if admin_user else None
 
-        # seed 内置连接器（仅在 DB 无记录时写入；用户删除后不会复活）
-        for name, meta in _BUILTIN_CONNECTORS.items():
+        # seed 连接器（仅在 DB 无记录时写入；用户删除后不会复活）
+        for name, meta in _SEED_CONNECTORS.items():
             existing = await session.execute(
                 sa_select(CustomConnector).where(CustomConnector.name == name)
             )
@@ -1759,23 +2086,23 @@ async def load_connectors_from_db() -> None:
                     code=source,
                     config_template=meta["config_template"],
                     created_by=admin_id,
-                    is_public=True,
+                    is_seed=True,
                 )
                 session.add(record)
             else:
-                # 已存在的内置连接器确保标记为公共
-                record.is_public = True
+                # 已存在的 seed 连接器确保标记为 seed
+                record.is_seed = True
         await session.commit()
 
-        # 加载所有活跃连接器到注册表（内置的直接用类，跳过 exec 提速）
+        # 加载所有活跃连接器到注册表（seed 的直接用类，跳过 exec 提速）
         result = await session.execute(
             sa_select(CustomConnector).where(CustomConnector.is_active == True)
         )
         _connector_registry.clear()
         for c in result.scalars().all():
             try:
-                if c.name in _BUILTIN_CONNECTORS:
-                    _connector_registry[c.name] = _BUILTIN_CONNECTORS[c.name]["class"]
+                if c.name in _SEED_CONNECTORS:
+                    _connector_registry[c.name] = _SEED_CONNECTORS[c.name]["class"]
                 else:
                     _connector_registry[c.name] = _load_connector_class(c.code, c.name)
             except Exception as e:

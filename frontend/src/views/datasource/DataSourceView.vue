@@ -132,16 +132,20 @@
               <span v-if="item.metadata?.data_updated_at" class="browse-table-time">{{ formatUpdateTime(item.metadata.data_updated_at) }}</span>
             </div>
           </el-tooltip>
-          <el-empty v-if="browseTree.length === 0 && !browseLoading" description="暂无数据表" :image-size="60" />
+          <el-empty v-if="browseTree.length === 0 && !browseLoading" :description="isFileSource ? '详见右侧' : '暂无数据表'" :image-size="60" />
         </div>
         <div class="browse-content">
-          <div v-if="selectedTable" class="browse-content-header">
+          <div v-if="selectedTable && !isFileSource" class="browse-content-header">
             <el-tooltip :content="selectedTable" placement="top" :show-after="300">
               <span class="browse-table-name">{{ selectedTable }}</span>
             </el-tooltip>
             <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
           </div>
-          <el-table v-if="selectedTable" :data="browseRows" stripe border max-height="80vh" style="width: 100%;">
+          <div v-if="isFileSource && browseTree.length > 0" class="browse-content-header">
+            <span class="browse-table-name">文件列表</span>
+            <span class="browse-row-count">共 {{ browseTotal }} 个文件</span>
+          </div>
+          <el-table v-if="(selectedTable || isFileSource) && browseRows.length > 0" :data="browseRows" stripe border max-height="80vh" style="width: 100%;">
             <el-table-column
               v-for="col in browseColumns"
               :key="col.name"
@@ -151,7 +155,7 @@
               show-overflow-tooltip
             />
           </el-table>
-          <div v-if="!selectedTable && !browseLoading" class="browse-placeholder">
+          <div v-if="!selectedTable && !isFileSource && !browseLoading" class="browse-placeholder">
             <el-empty description="请从左侧选择一张数据表" :image-size="80" />
           </div>
           <div v-if="browseLoading" class="browse-placeholder">
@@ -171,9 +175,9 @@
         <el-table-column prop="display_name" label="名称" width="160" />
         <el-table-column prop="name" label="标识" width="140" />
         <el-table-column prop="description" label="描述" show-overflow-tooltip />
-        <el-table-column label="共享" width="80">
+        <el-table-column label="类型" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.is_public ? 'success' : 'info'" size="small">{{ row.is_public ? '公开' : '私有' }}</el-tag>
+            <el-tag :type="row.is_seed ? 'success' : 'info'" size="small">{{ row.is_seed ? '预置' : '自建' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="160">
@@ -202,10 +206,6 @@
         <el-form-item label="配置模板">
           <el-input v-model="connectorEditForm.config_template" type="textarea" :rows="6" placeholder='JSON 数组，如 [{"name":"host","label":"主机","type":"string","required":true}]' style="font-family: monospace; font-size: 12px;" />
         </el-form-item>
-        <el-form-item label="公开共享">
-          <el-switch v-model="connectorEditForm.is_public" />
-          <span style="margin-left: 8px; color: #909399; font-size: 12px;">开启后所有用户可见可用</span>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showConnectorEditDialog = false">取消</el-button>
@@ -228,7 +228,7 @@ import { ref, onMounted, reactive, computed, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, FolderOpened, Refresh, Setting, Delete } from '@element-plus/icons-vue'
+import { Document, FolderOpened, Refresh, Setting, Delete, Grid } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 import { formatTime } from '@/utils/time'
 
@@ -242,6 +242,7 @@ const browseRows = ref<any[]>([])
 const browseTotal = ref(0)
 const selectedTable = ref('')
 const browseLoading = ref(false)
+const isFileSource = computed(() => browsingSource.value?.type === 'generic_file')
 const typeFilter = ref('')
 const connectors = ref<any[]>([])
 const editId = ref<string | null>(null)
@@ -271,7 +272,6 @@ const connectorEditForm = reactive({
   description: '',
   code: '',
   config_template: '',
-  is_public: false,
 })
 
 const currentConfigTemplate = computed(() => {
@@ -514,9 +514,17 @@ async function onBrowseOpened() {
   browseLoading.value = true
   try {
     const tree = await api.get(`/datasources/${browsingSource.value.id}/tree`)
-    browseTree.value = tree || []
-    if (tree && tree.length > 0) {
+    browseTree.value = isFileSource.value ? [] : (tree || [])
+    if (!isFileSource.value && tree && tree.length > 0) {
       selectBrowseTable(tree[0].label)
+    } else if (isFileSource.value) {
+      // 文件源：直接拉文件列表数据（不依赖选中项）
+      const data = await api.get(`/datasources/${browsingSource.value.id}/tables/_/data`, {
+        params: { page: 1, page_size: 20 },
+      })
+      browseColumns.value = data.columns || []
+      browseRows.value = data.rows || []
+      browseTotal.value = data.total || 0
     }
   } catch (e: any) {
     ElMessage.error(extractError(e))
@@ -622,7 +630,6 @@ function openConnectorCreate() {
   connectorEditForm.description = ''
   connectorEditForm.code = ''
   connectorEditForm.config_template = ''
-  connectorEditForm.is_public = false
   showConnectorEditDialog.value = true
 }
 
@@ -633,7 +640,6 @@ function openConnectorEdit(c: any) {
   connectorEditForm.description = c.description
   connectorEditForm.code = c.code || ''
   connectorEditForm.config_template = c.config_template ? JSON.stringify(c.config_template, null, 2) : ''
-  connectorEditForm.is_public = !!c.is_public
   showConnectorEditDialog.value = true
 }
 
@@ -653,7 +659,6 @@ async function saveConnector() {
       description: connectorEditForm.description,
       code: connectorEditForm.code,
       config_template,
-      is_public: connectorEditForm.is_public,
     }
     if (connectorEditForm.id) {
       await api.put(`/connectors/custom/${connectorEditForm.id}`, payload)

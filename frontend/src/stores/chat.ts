@@ -66,10 +66,16 @@ export const useChatStore = defineStore('chat', () => {
       selectedData.value = {
         datasource_id: _ctx.source_datasource_id,
         datasource_name: _ctx.source_datasource_name,
-        table_name: _ctx.source_table_name || '',
+        table_name: _ctx.source_data_name || _ctx.source_table_name || '',
+        filename: _ctx.source_filename || _ctx.source_data_name || _ctx.source_table_name || '',
         target_datasource_id: _ctx.target_datasource_id || undefined,
         target_datasource_name: _ctx.target_datasource_name || undefined,
-        target_table_name: _ctx.target_table_name || undefined,
+        target_table_name: _ctx.target_data_name || _ctx.target_table_name || undefined,
+        target_filename: _ctx.target_filename || _ctx.target_data_name || _ctx.target_table_name || undefined,
+        target_write_mode: _ctx.target_write_mode || undefined,
+        skill_id: _ctx.last_skill_id || undefined,
+        skill_name: _ctx.last_skill_name || undefined,
+        skill_type: _ctx.last_skill_type || undefined,
       }
     } else {
       selectedData.value = null
@@ -95,7 +101,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
-  async function sendMessage(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[], directExecute = false, reuseLastMessage = false, useSkill = false) {
+  async function sendMessage(content: string, directExecute = false, reuseLastMessage = false, useSkill = false) {
     if (!currentSessionId.value) {
       await createSession()
     }
@@ -113,6 +119,11 @@ export const useChatStore = defineStore('chat', () => {
         lastMsg.executingMsgs = []
         lastMsg.agentName = ''
         lastMsg.inspectionReport = ''
+        lastMsg.suggestions = undefined
+        lastMsg.suggestion = undefined
+        lastMsg._newTableName = undefined
+        lastMsg._selectedTarget = undefined
+        lastMsg._writeMode = undefined
         aiIndex = lastIdx
       } else {
         // 没有 assistant 消息可复用，push 一条
@@ -136,7 +147,6 @@ export const useChatStore = defineStore('chat', () => {
         table_data: null,
         charts: null,
         created_at: new Date().toISOString(),
-        attachments: attachments && attachments.length ? attachments : undefined,
       }
       messages.value.push(userMessage)
 
@@ -163,8 +173,6 @@ export const useChatStore = defineStore('chat', () => {
 
     abortController = new AbortController()
 
-    // 提取文件名给后端
-    const attFilenames = attachments?.map(a => a.filename)
     // 携带用户选择的数据（从 data_suggestion / target_suggestion / skill_suggestion 选择后发送消息时带上）
     const _selDs = selectedData.value?.datasource_id
     const _selTbl = selectedData.value?.table_name
@@ -191,7 +199,6 @@ export const useChatStore = defineStore('chat', () => {
       const _savedConsumedSuggestions = msg._consumedSuggestions
       const _savedSuggestionConsumed = msg._suggestionConsumed
       const _savedNoMatch = msg.noMatch
-      const _savedUserAtts = messages.value[aiIndex - 1]?.attachments
       try {
         messages.value = await chatApi.listMessages(currentSessionId.value!)
         _restoreMetadata(messages.value)
@@ -221,10 +228,6 @@ export const useChatStore = defineStore('chat', () => {
           if (Object.keys(_meta).length > 0) {
             chatApi.updateMessageMetadata(_lastAssistant.id, _meta).catch(() => {})
           }
-        }
-        const _lastUser = [...messages.value].reverse().find(m => m.role === 'user')
-        if (_lastUser && _savedUserAtts) {
-          _lastUser.attachments = _savedUserAtts
         }
         // 恢复完临时字段后触发响应式更新
         messages.value = [...messages.value]
@@ -267,7 +270,7 @@ export const useChatStore = defineStore('chat', () => {
             messages.value = [...messages.value]
             return
           }
-          if (event.type === 'source_datasource_no_match' || event.type === 'source_table_no_match' || event.type === 'target_datasource_no_match' || event.type === 'target_table_no_match') {
+          if (event.type === 'source_datasource_no_match' || event.type === 'source_table_no_match' || event.type === 'target_datasource_no_match') {
             const _data = event as any
             // 数据源/数据表未匹配到：提示放 content，不渲染卡片
             if (_data.type === 'source_datasource_no_match') {
@@ -276,9 +279,14 @@ export const useChatStore = defineStore('chat', () => {
               msg.content = (msg.content ? msg.content + '\n\n' : '') + '缺少源数据表，请指定'
             } else if (_data.type === 'target_datasource_no_match') {
               msg.content = (msg.content ? msg.content + '\n\n' : '') + '缺少目标数据源，请指定'
-            } else if (_data.type === 'target_table_no_match') {
-              msg.content = (msg.content ? msg.content + '\n\n' : '') + '缺少目标表，请指定'
             }
+            messages.value = [...messages.value]
+            return
+          }
+          if (event.type === 'target_table_no_match') {
+            // 目标表不存在 → 渲染新建表名输入框卡片
+            if (!msg.suggestions) msg.suggestions = []
+            msg.suggestions.push({ type: 'target_table_no_match', msg_type: (event as any).msg_type })
             messages.value = [...messages.value]
             return
           }
@@ -333,7 +341,6 @@ export const useChatStore = defineStore('chat', () => {
             msg.inspectionReport = event.report || ''
           }
         },
-        attFilenames,
         directExecute,
         _selDs,
         _selTbl,
@@ -391,8 +398,8 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendDirectly(content: string, attachments?: { filename: string; table_name_prefix?: string; sheets?: string[] }[]) {
-    await sendMessage(content, attachments, true)
+  async function sendDirectly(content: string) {
+    await sendMessage(content, true)
   }
 
   async function stopGeneration() {

@@ -84,7 +84,7 @@ class ChatAgent(BaseAgent):
     description = "闲聊/咨询/系统配置管理（Provider/连接器）"
     instructions = CHAT_INSTRUCTIONS
     tools = get_tool_schemas([
-        "web_fetch", "kb_search", "list_user_datasources",
+        "web_fetch",
         "get_llm_config", "save_llm_adapter", "delete_llm_adapter",
         "save_connector", "delete_connector",
     ])
@@ -106,11 +106,11 @@ class ChatAgent(BaseAgent):
         context: Dict[str, Any],
     ) -> AsyncGenerator[Dict, None]:
         from sqlalchemy.ext.asyncio import AsyncSession
-        db: AsyncSession = context.get("db")
+        db: AsyncSession = context.get("db")  # 保留兼容（execute_tool 内部用独立 session）
         user_id = context.get("user_id")
 
-        if not db or not user_id:
-            yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
+        if not user_id:
+            yield {"type": "done", "result": {"error": "缺少用户ID"}}
             return
 
         await llm_manager.initialize()

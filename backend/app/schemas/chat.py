@@ -41,7 +41,7 @@ class ChatMessageCreate(BaseModel):
     # 用户从 target_suggestion 中选择的目标表
     target_datasource_id: Optional[str] = None
     target_datasource_name: Optional[str] = None
-    target_table_name: Optional[str] = None
+    target_data_name: Optional[str] = None
     target_write_mode: Optional[str] = None
     # 用户从 skill_suggestion 中选择的技能/流程
     selected_skill_id: Optional[str] = None

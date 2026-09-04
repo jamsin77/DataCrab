@@ -33,10 +33,10 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
         # 构建当前已选数据上下文（让 LLM 能判断用户是否在要求换）
         _ctx_lines = []
         if session_ctx:
-            if session_ctx.get("source_datasource_name") and session_ctx.get("source_table_name"):
-                _ctx_lines.append(f"当前源表：{session_ctx['source_datasource_name']} → {session_ctx['source_table_name']}")
-            if session_ctx.get("target_datasource_name") and session_ctx.get("target_table_name"):
-                _ctx_lines.append(f"当前目标表：{session_ctx['target_datasource_name']} → {session_ctx['target_table_name']}")
+            if session_ctx.get("source_datasource_name") and session_ctx.get("source_data_name"):
+                _ctx_lines.append(f"当前源表：{session_ctx['source_datasource_name']} → {session_ctx['source_data_name']}")
+            if session_ctx.get("target_datasource_name") and session_ctx.get("target_data_name"):
+                _ctx_lines.append(f"当前目标表：{session_ctx['target_datasource_name']} → {session_ctx['target_data_name']}")
             if session_ctx.get("last_skill_name"):
                 _ctx_lines.append(f"当前技能：{session_ctx['last_skill_name']}")
             elif session_ctx.get("last_pipeline_name"):

@@ -1,5 +1,6 @@
 import os
 import re
+import difflib
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 
@@ -106,11 +107,11 @@ def _extract_target_names(source_df, source_field, llm_batch_size=20):
         extracted[idx] = result[idx]
 
     unmatched_indices = [idx for idx in source_df.index if not matched_mask[idx]]
-    log("info", f"正则匹配成功: {matched_mask.sum()}/{len(source_df)}, 未匹配: {len(unmatched_indices)}")
+    print(f"正则匹配成功: {matched_mask.sum()}/{len(source_df)}, 未匹配: {len(unmatched_indices)}")
 
     # ===== 对正则无法匹配的记录用 LLM（并行，返回结果而非副作用）=====
     if unmatched_indices:
-        log("info", f"正则未匹配 {len(unmatched_indices)} 条，使用 LLM 并行提取...")
+        print(f"正则未匹配 {len(unmatched_indices)} 条，使用 LLM 并行提取...")
         chunk_size = llm_batch_size
         chunks = []
         for start in range(0, len(unmatched_indices), chunk_size):
@@ -143,7 +144,7 @@ def _extract_target_names(source_df, source_field, llm_batch_size=20):
 {{"results": [{{"index": 1, "target_name": "清远楼"}}, {{"index": 2, "target_name": null}}]}}
 
 只返回 JSON，不要其他内容。"""
-            result = llm_chat(prompt, temperature=0.1, max_tokens=2000)
+            result = call_tool("llm_generate", prompt=prompt, temperature=0.1, max_tokens=2000)["content"]
             chunk_results = {}
             try:
                 result = result.strip()
@@ -159,7 +160,7 @@ def _extract_target_names(source_df, source_field, llm_batch_size=20):
                         actual_idx = items[idx_pos - 1][0]
                         chunk_results[actual_idx] = target_name
             except Exception as e:
-                log("warn", f"LLM 提取失败: {e}")
+                print(f"LLM 提取失败: {e}")
             return chunk_results
 
         with ThreadPoolExecutor(max_workers=16) as executor:
@@ -169,7 +170,7 @@ def _extract_target_names(source_df, source_field, llm_batch_size=20):
                     chunk_results = future.result()
                     extracted.update(chunk_results)
                 except Exception as e:
-                    log("warn", f"LLM 提取批次 {futures[future]} 异常: {e}")
+                    print(f"LLM 提取批次 {futures[future]} 异常: {e}")
 
     return extracted
 
@@ -268,36 +269,43 @@ def main(input_data=None, **kwargs):
     uuid_pattern = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', _re.IGNORECASE)
     if uuid_pattern.match(str(datasource_name)):
         ds_id = datasource_name
-        log("info", f"数据源参数为UUID，直接使用: {ds_id}")
+        print(f"数据源参数为UUID，直接使用: {ds_id}")
     else:
-        ds_id = get_datasource_id_by_name(datasource_name)
+        _r = call_tool("list_user_datasources", by_name=datasource_name)
+        ds_id = _r.get("id") if isinstance(_r, dict) else None
         if not ds_id:
             return {"success": False, "error": f"找不到数据源: {datasource_name}"}
-        log("info", f"通过名称找到数据源: {datasource_name} -> {ds_id}")
+        print(f"通过名称找到数据源: {datasource_name} -> {ds_id}")
 
     # 确定输出数据源：Excel 类型不支持 write_table_data 创建新表，需回退到 PostgreSQL
     write_ds_id = ds_id  # 默认同源写入
     if output_datasource_name:
-        output_ds_id = get_datasource_id_by_name(output_datasource_name)
+        _r2 = call_tool("list_user_datasources", by_name=output_datasource_name)
+        output_ds_id = _r2.get("id") if isinstance(_r2, dict) else None
         if output_ds_id:
             write_ds_id = output_ds_id
-            log("info", f"使用指定输出数据源: {output_datasource_name} -> {write_ds_id}")
+            print(f"使用指定输出数据源: {output_datasource_name} -> {write_ds_id}")
         else:
-            log("warn", f"输出数据源 '{output_datasource_name}' 未找到，将尝试同源写入")
+            print(f"输出数据源 '{output_datasource_name}' 未找到，将尝试同源写入")
 
     # 读取数据（分块读取，避免漏行）
     all_rows = []
     columns = None
-    for chunk in iter_table_data(ds_id, table_name, chunk_size=20000):
+    page = 1
+    while True:
+        chunk = call_tool("iter_table_data", datasource_id=ds_id, table_name=table_name, page=page, page_size=20000)
         if not columns:
             columns = chunk.get("columns", [])
         all_rows.extend(chunk.get("rows", []))
+        if not chunk.get("has_next", False):
+            break
+        page += 1
     if not all_rows:
         return {"success": True, "message": "无数据", "count": 0}
     df = pd.DataFrame(all_rows, columns=columns)
 
-    log("info", f"总数据量: {len(df)} 行")
-    log("info", f"列名: {list(df.columns)}")
+    print(f"总数据量: {len(df)} 行")
+    print(f"列名: {list(df.columns)}")
 
     # 解析筛选条件，支持 ==, !=, contains（含 | 分隔的多值OR）
     source_mask = pd.Series([False] * len(df), index=df.index)
@@ -311,7 +319,7 @@ def main(input_data=None, **kwargs):
                 source_mask = df[col].astype(str) == val
                 filter_used = True
             else:
-                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+                print(f"筛选列 '{col}' 不存在，将使用关键词搜索")
         elif '!=' in filter_condition:
             col, val = filter_condition.split('!=', 1)
             col, val = col.strip(), val.strip()
@@ -319,7 +327,7 @@ def main(input_data=None, **kwargs):
                 source_mask = df[col].astype(str) != val
                 filter_used = True
             else:
-                log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+                print(f"筛选列 '{col}' 不存在，将使用关键词搜索")
         elif 'contains' in filter_condition:
             # 支持 "col contains val1 or col contains val2" 语法
             # 也支持 "col contains val1|val2" 语法
@@ -345,7 +353,7 @@ def main(input_data=None, **kwargs):
                             source_mask = source_mask | col_mask
                             filter_used = True
                         else:
-                            log("warn", f"筛选列 '{col}' 不存在")
+                            print(f"筛选列 '{col}' 不存在")
             else:
                 parts = filter_condition.split('contains', 1)
                 col = parts[0].strip()
@@ -356,13 +364,13 @@ def main(input_data=None, **kwargs):
                     source_mask = df[col].astype(str).str.contains(pattern, na=False)
                     filter_used = True
                 else:
-                    log("warn", f"筛选列 '{col}' 不存在，将使用关键词搜索")
+                    print(f"筛选列 '{col}' 不存在，将使用关键词搜索")
 
     if not filter_used:
         # 关键词搜索：在所有文本列中搜索归并/合并相关关键词（向量化批量 str.contains）
         keywords = ['归并', '合并', '归入', '并入']
         pattern = '|'.join(re.escape(kw) for kw in keywords)
-        log("info", f"在所有列中搜索关键词: {keywords}")
+        print(f"在所有列中搜索关键词: {keywords}")
         for col in df.columns:
             try:
                 col_mask = df[col].astype(str).str.contains(pattern, na=False, regex=True)
@@ -372,7 +380,7 @@ def main(input_data=None, **kwargs):
 
     source_df = df[source_mask].copy()
     target_df = df[~source_mask].copy()
-    log("info", f"源数据(待归并): {len(source_df)} 行, 目标数据: {len(target_df)} 行")
+    print(f"源数据(待归并): {len(source_df)} 行, 目标数据: {len(target_df)} 行")
 
     if source_df.empty:
         return {"success": True, "message": "无源数据需要归并", "count": len(df)}
@@ -382,7 +390,7 @@ def main(input_data=None, **kwargs):
     if actual_merge_field not in source_df.columns:
         actual_merge_field = _resolve_column_smart(source_df, merge_field)
         if actual_merge_field:
-            log("info", f"归并字段 '{merge_field}' 解析为: {actual_merge_field}")
+            print(f"归并字段 '{merge_field}' 解析为: {actual_merge_field}")
         else:
             return {"success": False, "error": f"归并字段 '{merge_field}' 不存在，现有列: {list(source_df.columns)}"}
 
@@ -400,13 +408,13 @@ def main(input_data=None, **kwargs):
     if not name_col:
         name_col = actual_merge_field
 
-    log("info", f"使用 '{actual_merge_field}' 提取目标名称，用 '{name_col}' 匹配目标记录")
+    print(f"使用 '{actual_merge_field}' 提取目标名称，用 '{name_col}' 匹配目标记录")
 
     extracted = _extract_target_names(source_df, actual_merge_field, llm_batch_size)
     matched = _fuzzy_match_names(extracted, target_df, name_col)
 
     matched_count = sum(1 for v in matched.values() if v is not None)
-    log("info", f"匹配成功: {matched_count}/{len(source_df)}")
+    print(f"匹配成功: {matched_count}/{len(source_df)}")
 
     # 合并逻辑：把被合并行各列信息用 LLM 组织成通顺文字，放入目标行备注列
     # 预提取 source_df 和 target_df 为 dict（避免 ProcessPoolExecutor 中 .loc 的 GIL 开销）
@@ -435,7 +443,7 @@ def main(input_data=None, **kwargs):
                 for future in as_completed(futures):
                     merge_pairs.extend(future.result())
 
-    log("info", f"需要生成归并描述: {len(merge_pairs)} 条")
+    print(f"需要生成归并描述: {len(merge_pairs)} 条")
 
     # 用 LLM 批量生成通顺文字（并行）
     merge_texts = {}  # tgt_idx -> 通顺描述文字
@@ -466,7 +474,7 @@ def main(input_data=None, **kwargs):
 
 只返回 JSON，不要其他内容。"""
             try:
-                result = llm_chat(prompt, temperature=0.3, max_tokens=4000)
+                result = call_tool("llm_generate", prompt=prompt, temperature=0.3, max_tokens=4000)["content"]
                 result = result.strip()
                 if result.startswith("```"):
                     lines = result.split("\n")
@@ -482,7 +490,7 @@ def main(input_data=None, **kwargs):
                         chunk_results[tgt_idx] = desc
                 return chunk_results
             except Exception as e:
-                log("warn", f"LLM 生成描述失败: {e}")
+                print(f"LLM 生成描述失败: {e}")
                 # 降级：用原始拼接
                 return {p[0]: f"【已归并信息】{p[1]}" for p in chunk}
 
@@ -495,9 +503,9 @@ def main(input_data=None, **kwargs):
                     merge_texts.update(chunk_results)
                     completed += len(chunk_results)
                     if completed % 100 == 0 or completed == len(merge_pairs):
-                        log("info", f"已生成 {completed}/{len(merge_pairs)} 条归并描述")
+                        print(f"已生成 {completed}/{len(merge_pairs)} 条归并描述")
                 except Exception as e:
-                    log("warn", f"LLM 生成描述批次 {futures[future]} 异常: {e}")
+                    print(f"LLM 生成描述批次 {futures[future]} 异常: {e}")
 
     # 将生成的描述批量写入目标行备注列（向量化操作，避免逐行 .loc）
     if merge_texts:
@@ -513,12 +521,12 @@ def main(input_data=None, **kwargs):
             else:
                 new_remarks.append(f"{str(existing).strip()}{merge_texts_list[i]}")
         target_df.loc[merge_indices, actual_merge_field] = new_remarks
-        log("info", f"批量更新 {len(merge_indices)} 行备注列完成")
+        print(f"批量更新 {len(merge_indices)} 行备注列完成")
 
     # 修复列名：将 'ID' 转为 snake_case 的 'id'
     if 'ID' in target_df.columns:
         target_df = target_df.rename(columns={'ID': 'id'})
-        log("info", "列名 'ID' 已重命名为 'id' (snake_case)")
+        print("列名 'ID' 已重命名为 'id' (snake_case)")
 
     output_table = output_table_name or f"{table_name}_merged"
     records = target_df.to_dict(orient="records")
@@ -534,19 +542,20 @@ def main(input_data=None, **kwargs):
         elif batch_num == 1 and if_table_exists == "overwrite":
             # overwrite 不清除旧列结构，改用 replace 确保列名干净
             current_strategy = "replace"
-        write_result = write_table_data(ds_id, output_table, records=batch, if_table_exists=current_strategy)
+        write_result = call_tool("write_table_data", datasource_id=ds_id, table_name=output_table, records=batch, if_table_exists=current_strategy)
         if not write_result.get("success"):
             return {"success": False, "error": f"写入失败(批次{batch_num}): {write_result.get('message', write_result)}"}
-        log("info", f"批次 {batch_num} 写入成功: {len(batch)} 行 (策略={current_strategy})")
+        print(f"批次 {batch_num} 写入成功: {len(batch)} 行 (策略={current_strategy})")
 
-    log("info", f"归并完成: {len(df)} → {len(target_df)} 行，写入表: {output_table}")
+    print(f"归并完成: {len(df)} → {len(target_df)} 行，写入表: {output_table}")
     return {
         "success": True,
         "original_count": len(df),
         "source_count": len(source_df),
         "merged_count": matched_count,
         "final_count": len(target_df),
-        "output_table": output_table,
+        "target_table": output_table,
+        "target_datasource": output_datasource_name or datasource_name,
     }
 
 
@@ -560,8 +569,12 @@ def _resolve_column_smart(df, name):
     Returns:
         str: 匹配到的实际列名，或 None
     """
-    # 1. 先用内置 resolve_column（精确→忽略大小写→模糊→翻译匹配）
-    col = resolve_column(df, name)
+    # 1. 先用 difflib 精确/模糊匹配
+    if name in df.columns:
+        col = name
+    else:
+        matches = difflib.get_close_matches(name, [str(c) for c in df.columns], n=1, cutoff=0.6)
+        col = matches[0] if matches else None
     if col:
         return col
     
@@ -574,14 +587,14 @@ def _resolve_column_smart(df, name):
 只返回最匹配的列名（必须是上面列表中的一个），如果没有匹配的返回 null。只返回列名本身，不要其他内容。"""
     
     try:
-        result = llm_chat(prompt, temperature=0.1, max_tokens=100)
+        result = call_tool("llm_generate", prompt=prompt, temperature=0.1, max_tokens=100)["content"]
         result = result.strip().strip('"').strip("'").strip()
         
         if result and result.lower() != 'null' and result in actual_cols:
-            log("info", f"列名 '{name}' 通过翻译匹配到 '{result}'")
+            print(f"列名 '{name}' 通过翻译匹配到 '{result}'")
             return result
     except Exception as e:
-        log("warn", f"翻译匹配列名失败: {e}")
+        print(f"翻译匹配列名失败: {e}")
     
-    log("warn", f"无法找到与 '{name}' 匹配的列，可用列: {actual_cols}")
+    print(f"无法找到与 '{name}' 匹配的列，可用列: {actual_cols}")
     return None

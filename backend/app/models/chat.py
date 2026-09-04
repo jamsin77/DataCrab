@@ -17,7 +17,7 @@ class ChatSession(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     title = Column(String(200))
-    context = Column(JSON)  # 会话级上下文：{source_datasource_id, source_datasource_name, source_table_name, target_datasource_id, target_datasource_name, target_table_name}
+    context = Column(JSON)  # 会话级上下文：{source_datasource_id, source_datasource_name, source_data_name, target_datasource_id, target_datasource_name, target_data_name}
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

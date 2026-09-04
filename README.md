@@ -37,9 +37,10 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 |--------|------|----------|
 | **DataProcessor**（Orchestrator） | 理解用户意图、修改/执行脚本、调度数据处理、交接检查 | 聊天页面 + 技能/算子/流程调试助手 |
 | **DataInspector**（Worker） | 对加工后的数据进行标准检查、质量检查、安全检查 | DataProcessor 执行成功后 RunTime 自动 handoff |
-| **DataAnalyst** | 只读分析：查询、统计、分布、洞察（不修改数据） | 只读分析类问题（查询/统计/分析），靠 chat_router 关键词路由 |
+| **DataAnalyst** | 只读分析：查询、统计、分布、洞察（不修改数据） | 只读分析类问题（查询/统计/分析），靠 chat_router.classify_message 语义判断路由 |
+| **ChatAgent** | 闲聊/问候/系统配置/提问咨询等非数据操作 | chat 类消息，classify_message 判断后直接 LLM 对话（无 handoff） |
 
-- **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走多智能体流程；主对话经 chat_router 路由判断走 DataAnalyst（只读）或 DataProcessor（修改）
+- **统一架构**：聊天页面和所有调试页面（技能/算子/流程）都走多智能体流程；主对话经 chat_router.classify_message 语义判断走 ChatAgent（闲聊）/ DataAnalyst（只读）/ DataProcessor（修改）
 - **Handoff 由 RunTime 决策**：Agent 不感知 handoff 存在，RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决定是否交接（调试模式自动，主对话靠人判断）
 - **Orchestrator-Worker 粒度**：简单操作（edit_script / run_script）是 DataProcessor 的工具，复杂推理（质量检查）delegate 给 DataInspector Agent
 - **流式工具调用**：`chat_stream_with_tools_and_thinking()` 同时输出推理过程 + 工具调用
@@ -51,7 +52,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 
 ### 3. 数据源管理
 
-- 插件化连接器架构，支持 8 种数据源：
+- 插件化连接器架构，支持 9 种数据源：
 
 | 连接器 | 说明 |
 |--------|------|
@@ -60,6 +61,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 | SQLite | 基于 aiosqlite 的异步连接 |
 | CSV | 本地 CSV 文件 |
 | Excel | 多 Sheet 支持（最长前缀匹配解析表名） |
+| GenericFile | 通用文件连接器（mode=files 多文件模式，聊天上传用，接受任意文件类型） |
 | OBS/S3 | 华为云 OBS 对象存储 |
 | HDFS | Hadoop HDFS（WebHDFS REST API） |
 | ChromaDB | 向量数据库 |
@@ -84,7 +86,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 - **AI 生成**：自然语言描述 → LLM 生成 Python 脚本 → 自动解析创建
 - **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
-- **调试/执行**：在沙盒命名空间中运行算子，注入工具函数（query_table_data、llm_chat 等）
+- **调试/执行**：在子进程沙箱中运行算子，通过 `call_tool("tool_name", ...)` 统一入口注入工具能力（query_table_data/llm_generate 等 29 个工具）
 - **AI 调试助手**：Chat 风格交互式调试，4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；执行成功后 RunTime 自动交接 DataInspector 质量检查；Inspector 报告通过独立事件格式化展示
 - **下载**：导出为 `.py` 文件
 - **自我进化经验库**：调试失败自动记录反例、修错后成功采集正例，LLM 归纳经验（常见错误+成功模式）并注入后续生成/修改/调试提示词，越用越聪明
@@ -139,7 +141,7 @@ assets/           # 静态资源
 |------|------|
 | `POST /llm/embeddings` | 生成文本嵌入向量 |
 
-- 算子和技能脚本中可直接调用 `llm_chat()` 函数
+- 算子和技能脚本中可通过 `call_tool("llm_generate", ...)` 统一入口调用平台大模型
 
 ### 10. 文件链接管理
 
@@ -251,7 +253,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型）
-│   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，188 条路由）
+│   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，140 个 OpenAPI paths）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
@@ -261,14 +263,14 @@ DataCrab/
 │   │       ├── data_inspector_agent.py  # DataInspector 智能体
 │   │       ├── data_analyst_agent.py  # DataAnalyst 只读分析智能体
 │   │       ├── skill_parser.py   # SKILL.md 解析器
-│   │       ├── skill_runner.py   # 子进程沙盒执行器
+│   │       ├── skill_runner.py   # 子进程沙箱执行器（call_tool 统一入口 + 安全隔离）
 │   │       ├── skill_creator.py  # AI 技能包生成器
-│   │       ├── sandbox_ns.py     # 算子沙箱命名空间（从 operator.py 抽出）
 │   │       ├── task_runner.py    # 调度任务后台执行器 + 定时扫描器
 │   │       ├── pipeline_builder.py  # 流程生成器
 │   │       ├── pipeline_executor.py # 流程执行引擎
-│   │       ├── connectors.py    # 8 种数据源连接器
-│   │       ├── shared_tools.py  # 7 个公共工具统一入口（LRU 缓存）
+│   │       ├── connectors.py    # 9 种数据源连接器（含 GenericFileConnector）
+│   │       ├── tool_registry.py # 29 个工具统一注册中心（schema + handler + LRU 缓存）
+│   │       ├── shared_tools.py  # 向后兼容层（委托 tool_registry）
 │   │       ├── asset_io.py      # 资产导出/导入服务（7 类资产一键 ZIP 迁移）
 │   │       ├── match_service.py # 向量索引服务（ChromaDB 语义检索 + LLM 自适应匹配）
 │   │       ├── agent_utils.py   # Agent 工程工具（反幻觉/轮次预算/压力告警/压缩等）
@@ -356,12 +358,12 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 
 ## 架构亮点
 
-1. **多智能体协作闭环**：DataProcessor + DataInspector + DataAnalyst 三智能体，Handoff 由 RunTime 自动决策（Agent 不感知 handoff），处理+检查形成自愈闭环；只读分析走 DataAnalyst 无需 handoff（Multi-Agent Collaboration）
+1. **多智能体协作闭环**：DataProcessor + DataInspector + DataAnalyst + ChatAgent 四智能体，Handoff 由 RunTime 自动决策（Agent 不感知 handoff），处理+检查形成自愈闭环；只读分析走 DataAnalyst、闲聊走 ChatAgent 均无 handoff（Multi-Agent Collaboration）
 2. **插件化连接器**：`BaseConnector` 抽象类 + 注册表模式，轻松扩展新数据源类型
 3. **技能包标准**：结构化文件夹格式（SKILL.md + scripts），兼顾人类可读与机器可解析，Skill 即资产可沉淀可复用
 4. **流程 = Python 主函数**：抛弃 DAG 模型，每个流程就是一个可独立运行的 Python 函数
 5. **自我进化经验库**：算子与技能统一 `experience.json` 经验库——失败记录反例、修错后成功采集正例，LLM 归纳为「常见错误+成功模式」并注入生成/修改/调试提示词，形成"执行→记录→归纳→注入"闭环，越用越聪明
-6. **LLM 能力注入**：算子和技能脚本中可直接调用 `llm_chat()` 函数，无需走 HTTP 请求
+6. **LLM 能力注入**：算子和技能脚本中可通过 `call_tool("llm_generate", ...)` 统一入口调用平台大模型，无需走 HTTP 请求
 7. **元数据管理**：技术元数据一键同步 + 业务元数据 AI 补充，统一数据目录
 8. **流式优先架构**：多处端点支持 SSE 流式响应，提供实时反馈
 9. **AST 脚本自省**：Python AST 解析自动提取函数签名和文档，零配置注册算子

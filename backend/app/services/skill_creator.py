@@ -7,7 +7,7 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 from app.services.skill_parser import parse_skill_md, build_skill_md
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC
+from app.services.prompt_docs import SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC
 from app.services.tool_guidance import get_tool_guidance
 from app.services.agent_utils import get_anti_hallucination_section
 
@@ -21,14 +21,14 @@ SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else 
 _COMMON_PITFALLS = """
 ## 常见陷阱（必须避免）
 
-### 1. query_table_data 返回 dict，不是 DataFrame
+### 1. call_tool("query_table_data", ...) 返回 dict，不是 DataFrame
 ```python
 # ❌ 错误：直接当 DataFrame 用
-result = query_table_data(ds_id, table_name)
+result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
 print(result.columns)  # AttributeError: 'dict' object has no attribute 'columns'
 
 # ✅ 正确：从 dict 取出 data 构造 DataFrame
-result = query_table_data(ds_id, table_name)
+result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
 if not result.get("success"):
     raise ValueError(f"查询失败: {result.get('error')}")
 df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -56,23 +56,23 @@ if df is not None and not df.empty:
     process(df)
 ```
 
-### 4. write_table_data 的 records 参数是 list[dict]，不是 DataFrame
+### 4. call_tool("write_table_data", ...) 的 records 参数是 list[dict]，不是 DataFrame
 ```python
 # ❌ 错误（传 DataFrame）
-write_table_data(ds_id, table_name, records=df)
+call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=df)
 
 # ✅ 正确（转成 list[dict]）
-write_table_data(ds_id, table_name, records=df.to_dict(orient="records"), if_table_exists="replace")
+call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=df.to_dict(orient="records"), if_table_exists="replace")
 ```
 
-### 5. write_table_data 返回 dict，检查 success 字段
+### 5. call_tool("write_table_data", ...) 返回 dict，检查 success 字段
 ```python
 # ❌ 错误
-write_table_data(ds_id, table_name, records=data)
+call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=data)
 print("写入成功")
 
 # ✅ 正确
-result = write_table_data(ds_id, table_name, records=data, if_table_exists="replace")
+result = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=data, if_table_exists="replace")
 if not result.get("success"):
     raise ValueError(f"写入失败: {result.get('message')}")
 ```
@@ -80,12 +80,12 @@ if not result.get("success"):
 ### 6. 完整端到端示例：查询 → 处理 → 写回
 ```python
 def main(datasource_name, table_name, output_table=None):
-    ds_id = get_datasource_id_by_name(datasource_name)
+    ds_id = call_tool("list_user_datasources", by_name=datasource_name)["id"]
     if not ds_id:
         raise ValueError(f"找不到数据源: {datasource_name}")
 
     # 查询
-    result = query_table_data(ds_id, table_name)
+    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"查询失败: {result.get('error')}")
     df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -98,50 +98,50 @@ def main(datasource_name, table_name, output_table=None):
 
     # 写回
     target = output_table or table_name
-    write_result = write_table_data(
-        ds_id, target,
+    write_result = call_tool("write_table_data",
+        datasource_id=ds_id, table_name=target,
         records=df.to_dict(orient="records"),
         if_table_exists="replace",
     )
     if not write_result.get("success"):
         raise ValueError(f"写入失败: {write_result.get('message')}")
 
-    return {"success": True, "count": len(df), "target_table": target}
+    return {"success": True, "count": len(df), "target_table": target, "target_datasource": datasource_name}
 ```
 
 ### 7. 不要用 try-except 吞掉 llm_chat/llm_vision 的异常
 ```python
 # ❌ 错误：吞掉异常，返回 success=True 掩盖平台错误
 try:
-    result = llm_vision(image_path, prompt)
+    result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]
 except Exception as e:
     warnings.append(f"llm_vision 调用失败: {e}")
     result = ""  # 空值继续跑
 return {"success": True, "warnings": warnings}  # ← LLM 未配置时 OCR 全空但仍报成功
 
 # ✅ 正确：让异常传播，框架捕获后交给调试助手判断
-result = llm_vision(image_path, prompt)  # 失败时 raise，脚本中止
+result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]  # 失败时 raise，脚本中止
 
 # ✅ 正确（批量处理允许个别失败）：统计失败率，全失败时 raise
 results = []
 fail_count = 0
 for img in images:
     try:
-        results.append(llm_vision(img, prompt))
+        results.append(call_tool("llm_vision", image_path=img, prompt=prompt)["result"])
     except Exception:
         fail_count += 1
 if fail_count == len(images):
     raise RuntimeError(f"全部 {len(images)} 个 llm_vision 调用失败，可能 LLM 未配置")
 ```
 
-### 8. execute_sql / call_operator 返回 dict，检查 success
+### 8. call_tool("execute_sql", ...) / call_tool("write_table_data", ...) 返回 dict，检查 success
 ```python
 # ❌ 错误：不检查返回值
-result = execute_sql(ds_id, "SELECT * FROM users")
+result = call_tool("execute_sql", datasource_id=ds_id, sql="SELECT * FROM users")
 df = pd.DataFrame(result["data"])  # 如果 execute_sql 失败，data=[] → 空 DataFrame 静默继续
 
 # ✅ 正确
-result = execute_sql(ds_id, "SELECT * FROM users")
+result = call_tool("execute_sql", datasource_id=ds_id, sql="SELECT * FROM users")
 if not result.get("success"):
     raise ValueError(f"SQL 执行失败: {result.get('error')}")
 df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -150,21 +150,21 @@ df = pd.DataFrame(result["data"], columns=result["columns"])
 ### 9. 每一步关键操作必须 print 进度（防止超时 + 用户可感知）
 ```python
 # ❌ 错误：耗时操作期间无输出，框架判定卡死 → 超时杀进程
-frames = extract_keyframes(video_path, max_frames=8)
-result = llm_vision(image_path, prompt)
-write_table_data(ds_id, table, records=data)
+frames = call_tool("extract_keyframes", video_path=video_path, max_frames=8)["frames"]
+result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]
+call_tool("write_table_data", datasource_id=ds_id, table_name=table, records=data)
 
 # ✅ 正确：每步操作前 print 进度，框架持续收到输出不判定超时
 print(f"[1/5] 开始抽取关键帧（最多 {max_frames} 帧）...")
-frames = extract_keyframes(video_path, max_frames=max_frames)
+frames = call_tool("extract_keyframes", video_path=video_path, max_frames=max_frames)["frames"]
 print(f"[1/5] 抽取完成: {len(frames)} 帧")
 
 print(f"[2/5] 开始分析第 {i+1}/{len(frames)} 帧 (时间戳: {frame['timestamp']:.1f}s)...")
-result = llm_vision(image_path, prompt)
+result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]
 print(f"[2/5] 帧 {i+1} 分析完成: {len(result)} 字符")
 
 print(f"[3/5] 开始写入 {len(records)} 条记录到 {datasource_name}.{table_name}...")
-write_table_data(ds_id, table, records=data)
+call_tool("write_table_data", datasource_id=ds_id, table_name=table, records=data)
 print(f"[3/5] 写入完成")
 
 # 规范：
@@ -181,8 +181,6 @@ SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab
 ## 技能规范（必须严格遵守）
 
 """ + SKILL_SPEC + """
-
-""" + SANDBOX_TOOLS_DOC + """
 
 """ + PLATFORM_CONVENTIONS_DOC + """
 
@@ -273,10 +271,10 @@ from typing import Dict, Any, Optional, List
 
 def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
     # 从数据源加载表数据
-    ds_id = get_datasource_id_by_name(datasource_name)
+    ds_id = call_tool("list_user_datasources", by_name=datasource_name)["id"]
     if not ds_id:
         raise ValueError(f"找不到数据源: {datasource_name}")
-    result = query_table_data(ds_id, table_name)
+    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"读取数据失败: {result.get('error')}")
     return pd.DataFrame(result["data"], columns=result["columns"])
@@ -364,7 +362,7 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 ## 当前用户的数据源
 {datasource_info}
 
-请在脚本中使用上述真实的数据源名称和表名，使用 get_datasource_id_by_name("数据源名称") 获取数据源ID。
+请在脚本中使用上述真实的数据源名称和表名，使用 call_tool("list_user_datasources", by_name="数据源名称")["id"] 获取数据源ID。
 """
 
     lessons_section = ""
@@ -507,7 +505,7 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 ## 当前用户的数据源
 {datasource_info}
 
-请在脚本中使用上述真实的数据源名称和表名，使用 get_datasource_id_by_name("数据源名称") 获取数据源ID。
+请在脚本中使用上述真实的数据源名称和表名，使用 call_tool("list_user_datasources", by_name="数据源名称")["id"] 获取数据源ID。
 """
 
     lessons_section = ""

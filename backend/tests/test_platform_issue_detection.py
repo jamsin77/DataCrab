@@ -40,7 +40,7 @@ def test_platform_capabilities_structure():
 
     # 沙箱层
     assert PLATFORM_CAPABILITIES["sandbox"]["async_support"] is False
-    assert "write_table_data" in PLATFORM_CAPABILITIES["sandbox"]["available_functions"]
+    assert "call_tool" in PLATFORM_CAPABILITIES["sandbox"]["available_functions"]
 
     # LLM 层
     assert "thinking" in PLATFORM_CAPABILITIES["llm"]
@@ -174,13 +174,10 @@ def test_skill_runner_template_has_tool_call_log():
 
     # 模板中应该有 _TOOL_CALL_LOG 定义
     assert "_TOOL_CALL_LOG" in SKILL_RUNNER_TEMPLATE
-    # 应该有 _wrap_tool_log 函数
-    assert "_wrap_tool_log" in SKILL_RUNNER_TEMPLATE
     # 应该有 __TOOL_CALL_LOG__ 输出标记
     assert "__TOOL_CALL_LOG__" in SKILL_RUNNER_TEMPLATE
-    # 注入的函数应该被包裹
-    assert "_wrap_tool_log" in SKILL_RUNNER_TEMPLATE
-    assert '"write_table_data"' in SKILL_RUNNER_TEMPLATE or "'write_table_data'" in SKILL_RUNNER_TEMPLATE
+    # 应该有 _logged_call_tool 函数（统一日志包裹）
+    assert "_logged_call_tool" in SKILL_RUNNER_TEMPLATE
     print("test_skill_runner_template_has_tool_call_log: PASSED")
 
 
@@ -233,7 +230,7 @@ def test_debug_instructions_has_workflow():
     """P2: DEBUG_INSTRUCTIONS 包含关键指引"""
     from app.services.data_processor_agent import DEBUG_INSTRUCTIONS
     assert "平台" in DEBUG_INSTRUCTIONS
-    assert "内置函数" in DEBUG_INSTRUCTIONS
+    assert "call_tool" in DEBUG_INSTRUCTIONS
     assert "{max_exec_failures}" in DEBUG_INSTRUCTIONS
     print("test_debug_instructions_has_workflow: PASSED")
 

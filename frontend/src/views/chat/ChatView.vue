@@ -158,7 +158,19 @@
                   <!-- 不选择：新建目标表 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
                     <span style="font-size: 12px; color: #909399;">新建目标表：</span>
-                    <el-input v-model="msg._newTableName" size="small" placeholder="输入新表名" style="width: 200px;" :value="msg._newTableName || generateTableName(msg)"></el-input>
+                    <el-input v-model="msg._newTableName" size="small" placeholder="输入新表名" style="width: 200px;"></el-input>
+                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">确认</el-button>
+                  </div>
+                </template>
+                <template v-else-if="sug.type === 'target_table_no_match'">
+                  <div class="suggestion-header">
+                    <el-icon><WarningFilled /></el-icon>
+                    <span>目标表不存在，将新建表</span>
+                  </div>
+                  <div class="suggestion-actions">
+                    <span style="font-size: 12px; color: #909399;">新建目标表名：</span>
+                    <el-input v-model="msg._newTableName" size="small" :placeholder="defaultNewTableName()" style="width: 200px;"></el-input>
+                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">确认</el-button>
                   </div>
                 </template>
                 <template v-else-if="sug.type === 'skill_suggestion'">
@@ -250,35 +262,9 @@
 
         <!-- 输入区域 -->
         <div class="chat-input-wrap">
-          <div v-if="attachments.length" class="attachment-bar">
-            <el-tag
-              v-for="att in attachments"
-              :key="att.filename"
-              closable
-              type="info"
-              size="small"
-              @close="removeAttachment(att.filename)"
-            >
-              <el-icon style="vertical-align: middle; margin-right: 2px;"><Document /></el-icon>
-              {{ att.filename }}
-              <span v-if="att.sheets.length" style="color: #909399; margin-left: 4px;">
-                ({{ att.sheets.length }} 表)
-              </span>
-            </el-tag>
-          </div>
           <div v-if="chatStore.selectedData" class="selected-data-bar">
             <el-tag
-              v-if="chatStore.selectedData.target_datasource_name"
-              closable
-              type="success"
-              size="default"
-              @close="chatStore.selectedData = null"
-            >
-              <el-icon style="vertical-align: middle; margin-right: 2px;"><Coin /></el-icon>
-              {{ chatStore.selectedData.target_datasource_name }} → {{ chatStore.selectedData.target_table_name }}
-            </el-tag>
-            <el-tag
-              v-else-if="chatStore.selectedData.datasource_name"
+              v-if="chatStore.selectedData.datasource_name"
               closable
               type="success"
               size="default"
@@ -302,14 +288,14 @@
               <el-upload
                 :show-file-list="false"
                 :http-request="handleUpload"
-                accept=".xlsx,.xls"
+                accept="*/*"
                 :disabled="chatStore.isStreaming || uploading"
               >
                 <el-button
                   circle
                   :loading="uploading"
                   :disabled="chatStore.isStreaming"
-                  title="上传 Excel 附件（≤5MB）"
+                  title="上传文件附件（≤5MB）"
                 >
                   <el-icon v-if="!uploading"><Paperclip /></el-icon>
                 </el-button>
@@ -326,7 +312,7 @@
                 v-else
                 type="primary"
                 circle
-                :disabled="!inputText.trim() && attachments.length === 0"
+                :disabled="!inputText.trim() && !chatStore.selectedData"
                 @click="handleSend"
               >
                 <el-icon><Promotion /></el-icon>
@@ -340,11 +326,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import api from '@/api/index'
@@ -357,13 +343,7 @@ const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
 
-// 聊天附件：所有上传的 Excel 归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
-interface Attachment {
-  filename: string          // 原始文件名，作为附件唯一标识
-  table_name_prefix: string // 表名前缀（basename without extension）
-  sheets: string[]
-}
-const attachments = ref<Attachment[]>([])
+// 聊天附件：所有上传的文件归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
 const uploading = ref(false)
 
 // 输入历史（↑↓ 浏览）— 按会话 ID 隔离
@@ -491,21 +471,6 @@ function toggleReasoning(msgId: string) {
   reasoningExpanded.value[msgId] = !reasoningExpanded.value[msgId]
 }
 
-// 点击历史消息里的文件卡片，重新引用该文件
-function reuseAttachment(att: { filename: string; table_name_prefix?: string; sheets?: string[] }) {
-  const exists = attachments.value.some(a => a.filename === att.filename)
-  if (exists) {
-    ElMessage.info(`${att.filename} 已在附件列表中`)
-    return
-  }
-  attachments.value.push({
-    filename: att.filename,
-    table_name_prefix: att.table_name_prefix || '',
-    sheets: att.sheets || [],
-  })
-  ElMessage.success(`已引用: ${att.filename}`)
-}
-
 async function handleCopy(content: string) {
   try {
     await navigator.clipboard.writeText(content)
@@ -552,9 +517,12 @@ onMounted(async () => {
       loadAgentConfig()
     ])
 
-    // 如果有会话，自动选中第一个并滚动到底部
-    if (chatStore.sessions.length > 0 && !chatStore.currentSessionId) {
-      await chatStore.switchSession(chatStore.sessions[0].id)
+    // 如果有会话，自动选中第一个或恢复当前会话
+    if (chatStore.sessions.length > 0) {
+      const sid = chatStore.currentSessionId || chatStore.sessions[0].id
+      await chatStore.switchSession(sid)
+      // switchSession 加载完消息后立刻滚一次
+      scrollToBottom(false)
     }
     // 显式加载当前会话的输入历史（watch 只在切换时触发，首次进入需手动加载）
     loadInputHistory(chatStore.currentSessionId)
@@ -562,9 +530,26 @@ onMounted(async () => {
     // 后端可能正在 reload（开发模式改代码触发 uvicorn 重启），静默处理
   }
 
-  // 初始化时滚动到底部 + 渲染 chart 块
-  scrollToBottom(false)
-  nextTick(() => renderPendingChartBlocks())
+  // 初始化时滚动到底部 + 渲染 chart 块（延迟等消息渲染完）
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      scrollToBottom(false)
+      setTimeout(() => {
+        scrollToBottom(false)
+        nextTick(() => renderPendingChartBlocks())
+      }, 200)
+    })
+  })
+})
+
+// keep-alive 后退回来时，onMounted 不触发，用 onActivated 滚到底部
+onActivated(() => {
+  nextTick(() => {
+    scrollToBottom(false)
+    // el-main 也可能被重置，延迟再滚一次
+    setTimeout(() => scrollToBottom(false), 50)
+    nextTick(() => renderPendingChartBlocks())
+  })
 })
 
 // 监听消息变化，自动滚动到底部 + 渲染 chart 块
@@ -587,6 +572,22 @@ watch(
   }
 )
 
+// 监听 selectedData 变化，自动更新最后一条带 suggestions 的消息提示
+watch(
+  () => chatStore.selectedData,
+  () => {
+    // 找最后一条有 suggestions 的 assistant 消息
+    for (let i = chatStore.messages.length - 1; i >= 0; i--) {
+      const m = chatStore.messages[i]
+      if (m.role === 'assistant' && (m.suggestions || m.suggestion)) {
+        updateParamsHint(m)
+        break
+      }
+    }
+  },
+  { deep: true }
+)
+
 // 监听会话切换，滚动到底部 + 加载该会话的输入历史
 watch(
   () => chatStore.currentSessionId,
@@ -607,9 +608,8 @@ async function handleNewSession() {
 
   async function handleSend() {
   if (chatStore.isStreaming) return
-  if (!inputText.value.trim() && attachments.value.length === 0) return
+  if (!inputText.value.trim() && !chatStore.selectedData) return
   const text = inputText.value
-  const atts = attachments.value.map(a => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets }))
   // 保存到输入历史（按会话 ID 隔离）
   const _sid = chatStore.currentSessionId
   if (_sid) {
@@ -619,10 +619,7 @@ async function handleNewSession() {
   }
   historyIdx.value = -1
   inputText.value = ''
-  attachments.value = []
-  // 用户不点「选择」也不点「继续」→ 说明之前的匹配结果不对，重新匹配，不跳过任何步骤
-  const _autoSkip: string[] = []
-  await chatStore.sendMessage(text, atts.length ? atts : undefined, undefined, _autoSkip.length ? _autoSkip : undefined)
+  await chatStore.sendMessage(text)
 }
 
 // ===== 匹配建议导航 =====
@@ -685,14 +682,13 @@ function useMatched(m: any, msg: any) {
     skill_name: m.name,
     skill_type: m.type,
   } as any
-  const atts = (allMsgs[msgIdx - 1] as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
   // 清空旧回复内容，保留 suggestions 卡片
   msg.content = ''
   msg.executingMsgs = []
   msg.agentName = ''
   msg.inspectionReport = ''
   // 走 directExecute（复用消息不弹用户消息），use_skill=true 让后端走技能调试模式
-  chatStore.sendMessage(userText, atts.length ? atts : undefined, true, false, true)
+  chatStore.sendMessage(userText, true, false, true)
 }
 
 function debugSkill(m: any, msg: any) {
@@ -758,9 +754,23 @@ function selectData(msg: any, m: any) {
     datasource_id: m.datasource_id,
     datasource_name: m.datasource_name,
     table_name: m.table_name,
+    filename: m.filename || m.table_name,
   } as any
-  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.table_name}`)
+  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.filename || m.table_name}`)
   updateParamsHint(msg)
+  // 持久化源数据上下文
+  const sid = chatStore.currentSessionId
+  if (sid) {
+    chatApi.updateSessionContext(sid, {
+      source_datasource_id: m.datasource_id,
+      source_datasource_name: m.datasource_name,
+      source_data_name: m.table_name,
+    }).catch(() => {})
+    const s = chatStore.sessions.find(s => s.id === sid)
+    if (s) {
+      s.context = { ...(s.context || {}), source_datasource_id: m.datasource_id, source_datasource_name: m.datasource_name, source_data_name: m.table_name }
+    }
+  }
   nextTick(() => {
     const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
     if (textarea) textarea.focus()
@@ -783,6 +793,36 @@ function selectTargetTable(msg: any, m: any, sugIdx: number) {
   msg._writeMode = ''
 }
 
+async function _persistTargetContext() {
+  const sid = chatStore.currentSessionId
+  if (!sid) {
+    console.warn('[persistTargetContext] no currentSessionId')
+    return
+  }
+  const sel = chatStore.selectedData
+  if (!sel) {
+    console.warn('[persistTargetContext] no selectedData')
+    return
+  }
+  const payload = {
+    target_datasource_id: sel.target_datasource_id || '',
+    target_datasource_name: sel.target_datasource_name || '',
+    target_data_name: sel.target_table_name || '',
+    target_write_mode: sel.target_write_mode || '',
+  }
+  console.log('[persistTargetContext] sid=', sid, 'payload=', payload)
+  try {
+    const resp = await chatApi.updateSessionContext(sid, payload)
+    console.log('[persistTargetContext] success, context=', resp.context)
+    const s = chatStore.sessions.find(s => s.id === sid)
+    if (s) {
+      s.context = { ...(s.context || {}), ...payload }
+    }
+  } catch (e: any) {
+    console.error('[persistTargetContext] error:', e?.response?.status, e?.response?.data || e?.message)
+  }
+}
+
 function confirmTargetTable(msg: any, m: any) {
   const mode = msg._writeMode
   if (mode === 'direct') {
@@ -791,10 +831,12 @@ function confirmTargetTable(msg: any, m: any) {
       target_datasource_id: m.datasource_id,
       target_datasource_name: m.datasource_name,
       target_table_name: m.table_name,
+      target_filename: m.filename || m.table_name,
       target_write_mode: 'direct',
     } as any
     ElMessage.success(`已选择直接使用目标表：${m.datasource_name} → ${m.table_name}`)
     updateParamsHint(msg)
+    _persistTargetContext()
     return
   }
   chatStore.selectedData = {
@@ -802,10 +844,31 @@ function confirmTargetTable(msg: any, m: any) {
     target_datasource_id: m.datasource_id,
     target_datasource_name: m.datasource_name,
     target_table_name: m.table_name,
+    target_filename: m.filename || m.table_name,
     target_write_mode: mode,
   } as any
   ElMessage.success(`已选择目标表：${m.datasource_name} → ${m.table_name}（${mode === 'overwrite' ? '覆盖' : '追加'}）`)
   updateParamsHint(msg)
+  _persistTargetContext()
+  nextTick(() => {
+    const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
+    if (textarea) textarea.focus()
+  })
+}
+
+function confirmNewTargetTable(msg: any) {
+  if (!msg._newTableName) generateTableName(msg)
+  chatStore.selectedData = {
+    ...chatStore.selectedData,
+    target_datasource_id: chatStore.selectedData?.datasource_id,
+    target_datasource_name: chatStore.selectedData?.datasource_name,
+    target_table_name: msg._newTableName,
+    target_filename: msg._newTableName,
+    target_write_mode: 'create',
+  } as any
+  ElMessage.success(`已确认目标表：${chatStore.selectedData?.target_datasource_name} → ${msg._newTableName}（新建）`)
+  updateParamsHint(msg)
+  _persistTargetContext()
   nextTick(() => {
     const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
     if (textarea) textarea.focus()
@@ -833,11 +896,15 @@ function getMissingParams(msg: any, sug: any): string[] {
   return missing
 }
 
+function defaultNewTableName() {
+  const now = new Date()
+  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  return `result_${ts}`
+}
+
 function generateTableName(msg: any) {
   if (!msg._newTableName) {
-    const now = new Date()
-    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
-    msg._newTableName = `result_${ts}`
+    msg._newTableName = defaultNewTableName()
   }
   return msg._newTableName
 }
@@ -845,16 +912,34 @@ function generateTableName(msg: any) {
 function goCreateSkill(msg: any) {
   const allMsgs = chatStore.messages
   const msgIdx = allMsgs.findIndex(m => m === msg)
-  const userText = msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : ''
-  // 组装已选数据上下文 + 用户需求
-  const parts = []
+  // 收集最近几轮对话，归纳技能需求
+  const recentUserMsgs: string[] = []
+  for (let i = 0; i <= msgIdx; i++) {
+    const m = allMsgs[i]
+    if (m.role === 'user' && m.content && !m.content.startsWith('检测到匹配结果')) {
+      recentUserMsgs.push(m.content.trim())
+    }
+  }
+  const userText = recentUserMsgs.pop() || (msgIdx > 0 ? (allMsgs[msgIdx - 1]?.content || '') : '')
+  // 组装技能需求描述
   const sel = chatStore.selectedData
-  if (sel?.datasource_name) parts.push(`数据源: ${sel.datasource_name}`)
-  if (sel?.table_name) parts.push(`表名: ${sel.table_name}`)
-  if (sel?.target_datasource_name) parts.push(`目标数据源: ${sel.target_datasource_name}`)
-  if (sel?.target_table_name) parts.push(`目标表名: ${sel.target_table_name}`)
-  if (userText) parts.push(`需求: ${userText}`)
-  const desc = encodeURIComponent(parts.join('\n'))
+  const lines: string[] = []
+  if (userText) lines.push(userText)
+  // 附带历史上下文（最近 2 条用户消息作为背景）
+  if (recentUserMsgs.length > 0) {
+    const recent = recentUserMsgs.slice(-2)
+    if (recent.length > 0) {
+      lines.push(`（对话背景：${recent.join('；')}）`)
+    }
+  }
+  // 数据上下文
+  if (sel?.datasource_name && (sel.table_name)) {
+    lines.push(`数据来源：${sel.datasource_name} 的 ${sel.table_name}`)
+  }
+  if (sel?.target_datasource_name && sel?.target_table_name) {
+    lines.push(`输出目标：${sel.target_datasource_name} 的 ${sel.target_table_name}`)
+  }
+  const desc = encodeURIComponent(lines.join('\n'))
   router.push({ path: '/skill', query: { create: 'true', desc } })
 }
 
@@ -865,25 +950,29 @@ async function continueProcessing(msg: any) {
   const userMsg = allMsgs[msgIdx - 1]
   const text = userMsg?.content || ''
   if (!text) return
-  const atts = (userMsg as any)?.attachments?.map((a: any) => ({ filename: a.filename, table_name_prefix: a.table_name_prefix, sheets: a.sheets })) || []
   // 检查是否有 data_suggestion 但用户没选源表
   const hasDataSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'data_suggestion')
   if (hasDataSuggestion && !chatStore.selectedData?.datasource_id) {
     ElMessage.warning('请先选择源数据表，再继续处理')
     return
   }
-  // 检查 target_no_match 或 target_suggestion 时用户输入了新表名
-  const hasTargetSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'target_suggestion' || s.type === 'target_no_match')
+  // 检查 target_table_no_match 或 target_suggestion 时用户输入了新表名
+  const hasTargetSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'target_suggestion' || s.type === 'target_table_no_match')
   if (hasTargetSuggestion && !chatStore.selectedData?.target_datasource_id) {
+    // 自动生成表名（如果用户没输入）
+    if (!msg._newTableName) generateTableName(msg)
     if (msg._newTableName) {
+      // 目标数据源 = 源数据源（聊天上传数据）
       chatStore.selectedData = {
         ...chatStore.selectedData,
+        target_datasource_id: chatStore.selectedData?.datasource_id,
+        target_datasource_name: chatStore.selectedData?.datasource_name,
         target_table_name: msg._newTableName,
         target_write_mode: 'create',
       } as any
     }
   }
-  await chatStore.sendDirectly(text, atts.length ? atts : undefined)
+  await chatStore.sendDirectly(text)
 }
 
 async function requestPermission(resourceType: string, resourceId: string, m: any) {
@@ -906,10 +995,6 @@ async function requestPermission(resourceType: string, resourceId: string, m: an
 }
 
 function beforeUpload(file: File): boolean {
-  if (!/\.(xlsx|xls)$/i.test(file.name)) {
-    ElMessage.error('只支持 Excel 文件 (.xlsx / .xls)')
-    return false
-  }
   if (file.size > 5 * 1024 * 1024) {
     ElMessage.error(`文件大小超过 5MB 限制（当前 ${(file.size / 1024 / 1024).toFixed(1)}MB）`)
     return false
@@ -925,13 +1010,21 @@ async function handleUpload(opt: any) {
   }
   uploading.value = true
   try {
-    const res = await chatApi.uploadAttachment(file)
-    attachments.value.push({
+    const res = await chatApi.uploadAttachment(file, chatStore.currentSessionId || undefined)
+    const _isImage = res.is_image || false
+    // 上传文件后设 selectedData（合并 attachments 语义：上传即选数据源）
+    chatStore.selectedData = {
+      datasource_id: res.datasource_id,
+      datasource_name: res.name,
+      table_name: res.table_name_prefix,
       filename: res.filename,
-      table_name_prefix: res.table_name_prefix,
-      sheets: res.sheets,
-    })
-    ElMessage.success(`已上传: ${res.filename}（${res.sheets.length} 个工作表）`)
+      is_image: _isImage,
+    } as any
+    if (_isImage) {
+      ElMessage.success(`已上传图片: ${res.filename}`)
+    } else {
+      ElMessage.success(`已上传: ${res.filename}`)
+    }
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || String(e)
     ElMessage.error(`上传失败: ${detail}`)
@@ -940,8 +1033,14 @@ async function handleUpload(opt: any) {
   }
 }
 
-function removeAttachment(filename: string) {
-  attachments.value = attachments.value.filter(a => a.filename !== filename)
+// 点击历史消息里的文件卡片，重新引用该文件
+function reuseAttachment(att: { filename: string; table_name_prefix?: string; sheets?: string[] }) {
+  chatStore.selectedData = {
+    datasource_name: '聊天上传数据',
+    table_name: att.table_name_prefix || att.filename,
+    filename: att.filename,
+  } as any
+  ElMessage.success(`已引用: ${att.filename}`)
 }
 
 async function handleClearMessages() {

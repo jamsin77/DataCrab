@@ -496,7 +496,6 @@ _TOOL_ICON_MAP = {
     "edit_script": "✏️",
     "run_script": "▶️",
     # 扩展工具
-    "call_operator": "⚙️",
     "get_llm_config": "🤖",
     "save_llm_adapter": "🤖",
     "delete_llm_adapter": "🗑️",

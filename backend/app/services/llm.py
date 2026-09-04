@@ -275,14 +275,13 @@ async def load_providers_from_db():
                     vision_model=info.get("vision_model", ""),
                     embedding_model=info.get("embedding_model", ""),
                     code=None,
-                    is_public=True,
+                    is_seed=True,
                     created_at=_seed_time,
                     updated_at=_seed_time,
                 )
                 session.add(record)
             else:
-                # 已存在的内置 Provider 确保标记为公共，更新默认模型
-                record.is_public = True
+                # 已存在的 seed Provider：只补缺失的模型字段，不覆盖 is_seed
                 if info.get("flash_model") and not record.flash_model:
                     record.flash_model = info["flash_model"]
                 if info.get("vision_model") and not record.vision_model:
@@ -911,7 +910,7 @@ class LLMManager:
                 continue
         raise self._format_chain_error(errors, "LLM 调用")
 
-    async def vision(self, image_b64: str, mime: str, prompt: str, system_prompt: str = None, temperature: float = 0.3, max_tokens: int = 2000) -> str:
+    async def vision(self, image_b64: str, mime: str, prompt: str, system_prompt: str = None, temperature: float = 0.3, max_tokens: int = 8000) -> str:
         """视觉模型调用（主模型，失败则降级到备用 provider 的视觉模型）"""
         if not self._initialized:
             await self.initialize()

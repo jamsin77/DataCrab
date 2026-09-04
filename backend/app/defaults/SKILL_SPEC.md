@@ -160,19 +160,29 @@ def main(**params):
 | **返回值必须含 `success` 字段** | `{"success": True, ...}` 或 `{"success": False, "error": "..."}` |
 | **有类型注解和 docstring** | 函数参数标注类型，函数有文档字符串 |
 | **处理边界情况** | 空表、列不存在、数据源不可达等 |
-| **不得吞掉平台错误** | `llm_chat`/`llm_vision` 等内置函数的异常**不得用 try-except 吞掉后返回 `success=True`**。LLM 不可用、API key 未配置、连接失败等属于平台错误，应让异常传播（脚本崩溃），而非降级为空值继续执行 |
-| **工具返回值必须检查 success** | `query_table_data`/`write_table_data`/`execute_sql`/`call_operator` 等返回 `{success: bool, ...}`，调用后必须检查 `success` 字段，失败时 `raise`，不得静默继续 |
+| **不得吞掉平台错误** | `call_tool("llm_generate")`/`call_tool("llm_vision")` 等工具调用的异常**不得用 try-except 吞掉后返回 `success=True`**。LLM 不可用、API key 未配置、连接失败等属于平台错误，应让异常传播（脚本崩溃），而非降级为空值继续执行 |
+| **工具返回值必须检查 success** | `call_tool("query_table_data")`/`call_tool("write_table_data")`/`call_tool("execute_sql")` 等返回 `{success: bool, ...}`，调用后必须检查 `success` 字段，失败时 `raise`，不得静默继续 |
 | **只有核心操作完成才能 success=True** | 如果脚本的核心操作（如 OCR、翻译、分类）全部失败，即使脚本没崩溃也必须返回 `success=False`，不得用空值/默认值冒充结果 |
 
 ### 3.3 返回值格式
 
+**processing 类技能**（会写表）成功时**必须**返回 `target_table` 和 `target_datasource`，平台用这两个字段定位写入结果并自动触发 DataInspector 检查。缺失会导致 Inspector 不启动。
+
 ```python
-# 成功
+# 成功（processing 类——会写表）
 return {
     "success": True,
     "migrated_rows": 5296,
     "columns": ["name", "era", "address"],
-    "target_table": "table_name"
+    "target_table": "clean_relics",           # 写入的表名
+    "target_datasource": "文物列表",            # 写入的数据源名（或 ID）
+}
+
+# 成功（analysis 类——只读不写表）
+return {
+    "success": True,
+    "row_count": 5296,
+    "summary": "共 5296 条记录，缺失率 3.2%",
 }
 
 # 失败
@@ -182,6 +192,8 @@ return {
     "message": "参数校验失败"
 }
 ```
+
+> `target_table` 和 `target_datasource` 的值应与 `call_tool("write_table_data", ...)` 实际写入的表名/数据源一致。如果脚本写了多张表，返回主输出表即可。
 
 ### 3.4 参数兼容映射
 
@@ -199,24 +211,37 @@ def main(**kwargs):
 
 ## 4. 沙箱可用函数
 
-> 以下函数由运行环境自动注入到全局作用域，**直接调用，无需 import**。
+> 所有平台能力通过统一入口 `call_tool(tool_name, **args)` 调用。`call_tool` 由运行环境自动注入到全局作用域，**无需 import**。返回值均为 `dict`，含 `success`（查询/写入类）或其他状态字段。
 
-### 4.1 数据查询
+### 4.1 统一调用入口
 
-| 函数 | 签名 | 返回 |
-|------|------|------|
-| `query_table_data` | `(datasource_id_or_name, table_name, limit=1000)` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
-| `get_table_data` | 同上 | 同上（别名） |
-| `get_table_schema` | `(datasource_id_or_name, table_name)` | `{"columns": [...], "row_count": int}` |
-| `get_datasource_id_by_name` | `(name)` | `str` 数据源UUID |
+```python
+result = call_tool(tool_name, **args)
+# result 始终是 dict，字段随 tool_name 不同而不同
+```
 
-### 4.2 数据写入
+调用前无需关心函数是否存在，`call_tool` 会校验 `tool_name` 并在参数缺失时报错。所有工具名见下表。
 
-| 函数 | 签名 | 说明 |
-|------|------|------|
-| `write_table_data` | `(datasource_id_or_name, table_name, records=None, data=None, if_table_exists="fail", table_remark="", column_remarks=None)` | 写入数据到数据源 |
+### 4.2 可用工具一览
 
-**`if_table_exists` 策略**：
+| 工具名 | 用途 | 关键参数 | 返回 |
+|--------|------|----------|------|
+| `query_table_data` | 查询表数据 | `datasource_id`, `table_name`, `limit=1000` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
+| `iter_table_data` | 分块读取大表 | `datasource_id`, `table_name`, `page=1`, `page_size=10000` | `{"columns": [...], "rows": [...], "page": int, "total": int, "has_next": bool}` |
+| `get_table_schema` | 获取表结构 | `datasource_id`, `table_name` | `{"columns": [...], "row_count": int}` |
+| `execute_sql` | 执行 SQL 查询 | `datasource_id`, `sql` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
+| `write_table_data` | 写入数据到表 | `datasource_id`, `table_name`, `records=None`, `data=None`, `if_table_exists="fail"`, `table_remark=""`, `column_remarks=None` | `{"success": bool, "rows_written": int, "message": str}` |
+| `list_user_datasources` | 列出/查找数据源 | `by_name=None`（按名称查找，不传则列出全部） | `{"id": "uuid", "name": "...", "type": "..."}`（按名称查找时）或列表 |
+| `llm_generate` | 大模型文本生成 | `prompt`, `system_prompt=None`, `temperature=0.7`, `max_tokens=2000` | `{"content": "回复文本"}` |
+| `llm_vision` | 大模型视觉理解 | `image_path`, `prompt` | `{"result": "分析文本"}` |
+| `read_file` | 读取文件 | `path` | `{"format": "text/json/csv", "content": ...}` |
+| `write_file` | 写入文件 | `path`, `data`, `format="csv"` | `{"success": True, "path": "...", "size": int}` |
+| `extract_video_info` | 视频元数据提取 | `video_path` | `{"duration": float, "width": int, "height": int, "fps": float, ...}` |
+| `extract_keyframes` | 视频关键帧抽取 | `video_path`, `max_frames=8` | `{"frames": [...], "count": int}` |
+
+### 4.3 写入策略（`if_table_exists`）
+
+适用于 `call_tool("write_table_data", ..., if_table_exists=...)`：
 
 | 策略 | 说明 | 会清空已有数据 |
 |------|------|:---:|
@@ -227,19 +252,31 @@ def main(**kwargs):
 | `truncate` | 清空不补列+写入 | ✅ |
 | `upsert` | 按ID更新或插入 | ❌ |
 
-### 4.3 大模型调用
+### 4.4 调用示例
 
 ```python
-result = llm_chat(
-    prompt,                    # 用户消息（必填）
-    system_prompt=None,        # 系统提示词（可选）
-    temperature=0.7,           # 温度 0.0-2.0
-    max_tokens=2000            # 最大生成 token 数
-)
-# 返回: str（大模型的文本回复）
+# 查询数据
+res = call_tool("query_table_data", datasource_id=ds_id, table_name="relics", limit=100)
+if not res["success"]:
+    raise RuntimeError(res.get("message", "查询失败"))
+df = pd.DataFrame(res["data"], columns=res["columns"])
+
+# 写入数据
+res = call_tool("write_table_data", datasource_id=target_ds, table_name="clean_relics",
+                records=records, if_table_exists="overwrite")
+if not res["success"]:
+    raise RuntimeError(res.get("message", "写入失败"))
+
+# 大模型生成
+resp = call_tool("llm_generate", prompt="给这段文字分类：...", system_prompt="你是分类助手")
+text = resp["content"]
+
+# 视觉理解
+resp = call_tool("llm_vision", image_path=img_path, prompt="提取图中文字")
+desc = resp["result"]
 ```
 
-### 4.4 日志
+### 4.5 日志
 
 ```python
 log("info", "开始处理...")
@@ -248,7 +285,7 @@ log("error", "写入失败")
 # 输出: [INFO] 开始处理...
 ```
 
-### 4.5 内置变量
+### 4.6 内置变量
 
 - `pd` (pandas) 和 `json` 已内置，无需 import
 - **禁止** `import datacrab` 或 `pip install datacrab`，datacrab 包不存在
@@ -267,7 +304,8 @@ def _write_records(records, table_name, if_table_exists, batch_size=1000):
         current_strategy = if_table_exists
         if batch_num > 1 and if_table_exists in clearing_strategies:
             current_strategy = "append"  # 后续批次追加，避免清空前面批次
-        write_table_data(target_ds, table_name, records=batch, if_table_exists=current_strategy)
+        call_tool("write_table_data", datasource_id=target_ds, table_name=table_name,
+                  records=batch, if_table_exists=current_strategy)
 ```
 
 ## 6. 安全红线
@@ -317,7 +355,8 @@ df["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 ### 8.4 数据源名称→ID
 
 ```python
-ds_id = get_datasource_id_by_name("文物列表")
+ds = call_tool("list_user_datasources", by_name="文物列表")
+ds_id = ds["id"] if ds else None
 if not ds_id:
     raise ValueError(f"找不到数据源: 文物列表")
 ```

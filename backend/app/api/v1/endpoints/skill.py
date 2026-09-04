@@ -783,7 +783,7 @@ async def infer_skill_instruction(
     流程：读技能 SKILL.md（参数规范 + 使用示例）→ 读 Chat 会话 context（数据源/表名）→ LLM 生成符合技能格式的指令。
     """
     try:
-        logger.info(f"[infer-instruction] 收到请求: skill_id={skill_id} chat_session_id={request.chat_session_id} user_message={request.user_message[:80]!r} source_ds={request.source_datasource_name!r} source_tbl={request.source_table_name!r}")
+        logger.info(f"[infer-instruction] 收到请求: skill_id={skill_id} chat_session_id={request.chat_session_id} user_message={request.user_message[:80]!r} source_ds={request.source_datasource_name!r} source_tbl={request.source_data_name!r}")
         result = await db.execute(select(Skill).where(Skill.id == skill_id))
         skill = result.scalar_one_or_none()
         if not skill:
@@ -803,9 +803,9 @@ async def infer_skill_instruction(
         chat_session = chat_session_result.scalar_one_or_none()
         ctx = chat_session.context if chat_session and chat_session.context else {}
         _src_ds = request.source_datasource_name or ctx.get("source_datasource_name")
-        _src_tbl = request.source_table_name or ctx.get("source_table_name")
+        _src_tbl = request.source_data_name or ctx.get("source_data_name")
         _tgt_ds = request.target_datasource_name or ctx.get("target_datasource_name")
-        _tgt_tbl = request.target_table_name or ctx.get("target_table_name")
+        _tgt_tbl = request.target_data_name or ctx.get("target_data_name")
         ctx_lines = []
         if _src_ds:
             ctx_lines.append(f"源数据源: {_src_ds}")
@@ -1046,9 +1046,9 @@ async def debug_skill_chat(
 
     # 双数据源：源端 + 目标端（向后兼容：旧 datasource_id/table_name → 源端）
     src_ds_id = request.source_datasource_id or request.datasource_id
-    src_table = request.source_table_name or request.table_name
+    src_table = request.source_data_name or request.table_name
     tgt_ds_id = request.target_datasource_id
-    tgt_table = request.target_table_name
+    tgt_table = request.target_data_name
 
     src_ds_name = None
     tgt_ds_name = None
@@ -1123,10 +1123,10 @@ async def debug_skill_chat(
         last_success_params=last_success_params,
         source_datasource_id=src_ds_id,
         source_datasource_name=src_ds_name,
-        source_table_name=src_table,
+        source_data_name=src_table,
         target_datasource_id=tgt_ds_id,
         target_datasource_name=tgt_ds_name,
-        target_table_name=tgt_table,
+        target_data_name=tgt_table,
         debug_folder=folder,
         debug_skill_path=folder,
         debug_skill_md=skill_md_excerpt,

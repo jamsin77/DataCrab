@@ -38,7 +38,7 @@ from app.services.agent_utils import (
     build_tool_action_event,
 )
 from app.services.tool_guidance import get_tool_guidance
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC, PLATFORM_CONVENTIONS_DOC
+from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC
 
 # 分析场景更大的截断阈值（需要看更多数据做分析）
 ANALYSIS_MAX_TOOL_RESULT_CHARS = 30000
@@ -76,6 +76,7 @@ DATA_ANALYST_INSTRUCTIONS = """你是 DataCrab 的 DataAnalyst（数据分析智
 - 擅长数据查询、统计分析、数据分布洞察
 - 能编写 SQL 进行复杂查询（聚合、分组、窗口函数）
 - 能理解数据结构并给出分析结论
+- 能用 llm_vision 分析图片内容（OCR、图表识别、画面描述）
 
 ## 工作准则
 1. 只读不写：你只负责查询和分析，不修改数据、不生成脚本、不创建算子
@@ -124,7 +125,9 @@ class DataAnalystAgent(BaseAgent):
     instructions = DATA_ANALYST_INSTRUCTIONS
     tools = get_tool_schemas([
         "web_fetch", "kb_search", "list_user_datasources",
-        "query_table_data", "get_table_schema", "execute_sql",
+        "query_table_data", "get_table_schema", "execute_sql", "llm_vision",
+        "iter_table_data", "read_file", "llm_generate",
+        "edit_script", "run_script", "read_script", "grep_script",
     ])
     capabilities = ["data_query", "data_analysis"]
 
@@ -133,22 +136,29 @@ class DataAnalystAgent(BaseAgent):
         message: AgentMessage,
         context: Dict[str, Any],
     ) -> AsyncGenerator[Dict, None]:
-        # 调试模式：分派到 run_debug()，走简化循环（3 次错误上限，无 Inspector）
-        if context.get("debug_mode"):
-            async for event in self.run_debug(message, context):
-                yield event
-            return
-
-        db: AsyncSession = context.get("db")
+        db: AsyncSession = context.get("db")  # 保留兼容（execute_tool 内部用独立 session）
         user_id = context.get("user_id")
 
-        if not db or not user_id:
-            yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
+        if not user_id:
+            yield {"type": "done", "result": {"error": "缺少用户ID"}}
             return
 
         await llm_manager.initialize()
 
-        system_prompt = self.build_system_prompt(context)
+        # 调试上下文
+        _is_debug = bool(context.get("debug_folder") or context.get("debug_script_content"))
+        _MAX_EXEC_FAILURES = context.get("debug_max_exec_failures", 3)
+        _exec_failures = 0
+        _tool_call_meta: Dict[str, tuple] = {}
+        _last_round_had_fix = False
+        script_name = context.get("debug_script_name", "main.py")
+
+        # system prompt
+        if _is_debug:
+            system_prompt = self.build_debug_system_prompt(context)
+        else:
+            system_prompt = self.build_system_prompt(context)
+
         local_messages = [{"role": "system", "content": system_prompt}]
 
         history = context.get("history", [])
@@ -159,10 +169,16 @@ class DataAnalystAgent(BaseAgent):
 
         if message.payload:
             user_msg = message.payload.get("user_message", message.payload.get("content", ""))
-            if user_msg:
-                if _datasource_ctx:
-                    user_msg = _datasource_ctx + "\n\n---\n\n" + user_msg
-                local_messages.append({"role": "user", "content": user_msg})
+            if not user_msg:
+                yield {"type": "done", "result": {"error": "空消息"}}
+                return
+            if _is_debug:
+                _dynamic_hints = self.build_debug_dynamic_hints(context, user_msg)
+                if _dynamic_hints:
+                    user_msg = user_msg + "\n\n" + _dynamic_hints
+            if _datasource_ctx:
+                user_msg = _datasource_ctx + "\n\n---\n\n" + user_msg
+            local_messages.append({"role": "user", "content": user_msg})
         else:
             yield {"type": "done", "result": {"error": "空消息"}}
             return
@@ -172,11 +188,20 @@ class DataAnalystAgent(BaseAgent):
         user_msg = message.payload.get("user_message", message.payload.get("content", ""))
         complexity = estimate_complexity(user_msg)
         max_iterations = get_turn_budget(complexity)
-        logger.info(f"DataAnalyst: complexity={complexity}, budget={max_iterations} turns")
+        if _is_debug:
+            max_iterations = 50
+        logger.info(f"DataAnalyst: complexity={complexity}, budget={max_iterations} turns, debug={_is_debug}")
 
         had_any_tool_calls = False
         pressure_warned = False
         has_preinjected_data = context.get("has_preinjected_data", False)
+
+        # 导入辅助函数
+        from app.services.data_processor_agent import (
+            _slim_run_script_result,
+            classify_execution_result,
+            _build_give_up_reason, _record_negative,
+        )
 
         async def _safe_execute(tc):
             try:
@@ -198,7 +223,8 @@ class DataAnalystAgent(BaseAgent):
             tool_calls = []
 
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools, temperature=0.3,
+                messages=local_messages, tools=self.tools,
+                temperature=0.1 if _is_debug else 0.3,
                 model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
@@ -208,8 +234,44 @@ class DataAnalystAgent(BaseAgent):
                     yield event
                 elif t == "content":
                     content += event["content"]
+                    yield event
                 elif t == "tool_calls":
                     tool_calls = event["tool_calls"]
+
+            # 修改尝试检测
+            _has_fix = tool_calls and any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
+            if _has_fix:
+                _last_round_had_fix = True
+
+            # 工具调用显示
+            if tool_calls:
+                _actions = []
+                for tc in tool_calls:
+                    _name = tc["function"]["name"]
+                    _icon = {"read_script": "📖", "grep_script": "🔍", "edit_script": "✏️", "run_script": "▶️"}.get(_name, "🔧")
+                    _act = {"tool": _name, "icon": _icon, "script": script_name}
+                    try:
+                        _args = json.loads(tc["function"]["arguments"])
+                        if _name == "read_script":
+                            _offset = _args.get("offset", 0)
+                            _limit = _args.get("limit", 0)
+                            if _offset and _limit:
+                                _act["detail"] = f"L{_offset}-L{_offset + _limit - 1}"
+                        elif _name == "grep_script":
+                            _pattern = _args.get("pattern", "")
+                            if _pattern:
+                                _act["detail"] = f'"{_pattern[:40]}"'
+                        elif _name == "edit_script":
+                            _old = _args.get("old_string", "")
+                            _new = _args.get("new_string", "")
+                            if _old or _new:
+                                _diff_lines = [f"- {l}" for l in _old.splitlines()[:20]]
+                                _diff_lines += [f"+ {l}" for l in _new.splitlines()[:20]]
+                                _act["diff"] = "\n".join(_diff_lines)
+                    except Exception:
+                        pass
+                    _actions.append(_act)
+                yield {"type": "tool_action", "actions": _actions}
 
             if not tool_calls:
                 if not had_any_tool_calls and not has_preinjected_data:
@@ -225,6 +287,10 @@ class DataAnalystAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
+                if _is_debug:
+                    _record_negative(context.get("debug_folder", ""), content[:500] or "未执行工具操作", content, script_name)
+                    yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
+
                 if content:
                     yield {"type": "content", "content": content}
                 yield {"type": "done", "result": {"agent": self.name, "content": content}}
@@ -232,21 +298,25 @@ class DataAnalystAgent(BaseAgent):
 
             had_any_tool_calls = True
 
+            # StuckDetector
+            _stuck_hint = None
             for tc in tool_calls:
                 try:
                     args = json.loads(tc["function"]["arguments"])
                 except json.JSONDecodeError:
                     args = {}
-                intervention = stuck_detector.record_tool_call(tc["function"]["name"], args)
-                if intervention:
-                    local_messages.append({"role": "user", "content": intervention})
+                _hint = stuck_detector.record_tool_call(tc["function"]["name"], args)
+                if _hint:
+                    _stuck_hint = _hint
+                    break
+
+            if _stuck_hint and "总轮次上限" in _stuck_hint:
+                yield {"type": "give_up", "reason": _stuck_hint}
+                yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
+                return
 
             if content:
                 yield {"type": "content", "content": content}
-
-            # 工具调用过程显示 → 独立 tool_action 事件（让用户看到调用了哪些工具）
-            if tool_calls:
-                yield build_tool_action_event(tool_calls)
 
             local_messages.append({
                 "role": "assistant",
@@ -254,12 +324,116 @@ class DataAnalystAgent(BaseAgent):
                 "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
             })
 
+            # 执行工具
             results = await asyncio.gather(*[_safe_execute(tc) for tc in tool_calls])
-            for r in results:
-                _truncated = _truncate_analysis_result(r["content"])
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _truncated})
-                yield {"type": "tool_result", "tool_call_id": r["tool_call_id"], "content": r["content"]}
 
+            # 工具结果处理
+            _result_lines = []
+            for r in results:
+                tool_name = ""
+                for tc in tool_calls:
+                    if tc["id"] == r["tool_call_id"]:
+                        tool_name = tc["function"]["name"]
+                        break
+
+                # tool 消息精简
+                if tool_name in ("read_script", "grep_script"):
+                    _tool_content = r["content"]
+                    try:
+                        _rd_meta = json.loads(r["content"])
+                        _meta_desc = _rd_meta.get("function") or _rd_meta.get("pattern") or _rd_meta.get("file") or ""
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, _meta_desc[:60])
+                    except Exception:
+                        _tool_call_meta[r["tool_call_id"]] = (tool_name, "")
+                elif tool_name == "run_script":
+                    _tool_content = _slim_run_script_result(r["content"])
+                else:
+                    _tool_content = _truncate_analysis_result(r["content"])
+                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _tool_content})
+
+                # 工具结果显示
+                try:
+                    _rd = json.loads(r["content"])
+                    if tool_name == "grep_script" and _rd.get("success"):
+                        _cnt = _rd.get("total_matches", 0)
+                        _pattern = _rd.get("pattern", "")
+                        if _cnt == 0:
+                            _result_lines.append(f'  🔍 搜索 "{_pattern[:30]}" → 无匹配')
+                        else:
+                            _glines = [f'  🔍 搜索 "{_pattern[:30]}" → {_cnt} 个匹配:']
+                            for _m in _rd.get("matches", [])[:10]:
+                                for _sl in _m.get("snippet", "").split("\n"):
+                                    _sl = _sl.strip()
+                                    if _sl.startswith(">>"):
+                                        _glines.append(f"  {_sl}")
+                            if _cnt > 10:
+                                _glines.append(f"  ...（共 {_cnt} 个）")
+                            _result_lines.append("\n".join(_glines))
+                    elif tool_name == "read_script" and _rd.get("success"):
+                        _total = _rd.get("total_lines", 0)
+                        _func = _rd.get("function", "")
+                        _result_lines.append(f"  ✓ 已读取 {_func or ''} 共{_total}行".rstrip())
+                    elif tool_name == "get_table_schema" and _rd.get("success"):
+                        _cols = len(_rd.get("columns", []))
+                        _result_lines.append(f"  表结构: {_cols} 列")
+                    elif tool_name == "query_table_data" and _rd.get("success"):
+                        _rows = _rd.get("row_count", 0)
+                        _result_lines.append(f"  查询: {_rows} 行")
+                except Exception:
+                    pass
+
+                # edit_script 结果
+                if tool_name == "edit_script":
+                    try:
+                        rdata = json.loads(r["content"])
+                    except json.JSONDecodeError:
+                        continue
+                    _mdata = rdata.get("modify", rdata)
+                    if _mdata.get("success"):
+                        yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
+                        if _mdata.get("skill_md_updated"):
+                            yield {"type": "skill_md_updated"}
+
+                # run_script 结果
+                if tool_name == "run_script":
+                    try:
+                        rdata = json.loads(r["content"])
+                    except json.JSONDecodeError as e:
+                        yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n"}
+                        continue
+                    yield {"type": "run_result", "result": rdata}
+
+                    _cls = classify_execution_result(rdata)
+                    if not _cls["is_fail"]:
+                        # 执行成功 → 直接返回（无 Inspector handoff）
+                        yield {"type": "done", "result": {
+                            "agent": self.name, "content": content or "执行成功", "success": True,
+                            "execution_success": True,
+                        }}
+                        return
+                    else:
+                        _err_msg = _cls["err_msg"]
+                        _exec_failures += 1
+                        if _exec_failures >= _MAX_EXEC_FAILURES:
+                            _reason = _build_give_up_reason(_exec_failures, _err_msg)
+                            yield {"type": "give_up", "reason": _reason}
+                            yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
+                            return
+                        yield {"type": "round", "round": _exec_failures, "action": "execute"}
+                        _record_negative(
+                            context.get("debug_folder"), _err_msg, rdata,
+                            context.get("debug_script_name", "main.py"),
+                        )
+
+            # yield 调查工具结果摘要
+            if _result_lines:
+                yield {"type": "tool_summary", "summaries": _result_lines}
+
+            # StuckDetector 干预
+            if _stuck_hint:
+                local_messages.append({"role": "user", "content": _stuck_hint})
+
+            # 上下文压力告警
             level, ratio = get_context_pressure_level(local_messages)
             if level > 0 and not pressure_warned:
                 warning = build_pressure_warning(level, ratio)
@@ -268,8 +442,12 @@ class DataAnalystAgent(BaseAgent):
                     pressure_warned = True
                     logger.info(f"DataAnalyst 上下文压力告警: level={level}, ratio={ratio:.1%}")
 
-        yield {"type": "content", "content": "分析超时，请简化您的问题后重试。"}
-        yield {"type": "done", "result": {"agent": self.name, "content": "分析超时"}}
+        # 超时
+        if _is_debug:
+            yield {"type": "give_up", "reason": f"连续 {_exec_failures} 次执行失败"}
+        else:
+            yield {"type": "content", "content": "分析超时，请简化您的问题后重试。"}
+        yield {"type": "done", "result": {"agent": self.name, "content": "超时"}}
 
     def build_system_prompt(self, context: Dict[str, Any]) -> str:
         global _MAIN_STATIC_PROMPT_CACHE
@@ -284,7 +462,7 @@ class DataAnalystAgent(BaseAgent):
         _MAIN_STATIC_PROMPT_CACHE = prompt
         return prompt
 
-    # ==================== 调试模式 ====================
+    # ==================== 调试模式辅助 ====================
 
     _DEBUG_PROMPT_CACHE: Optional[str] = None
 
@@ -314,7 +492,6 @@ class DataAnalystAgent(BaseAgent):
             return DataAnalystAgent._DEBUG_PROMPT_CACHE
         max_exec_failures = context.get("debug_max_exec_failures", 3)
         prompt = self.ANALYSIS_DEBUG_INSTRUCTIONS.replace("{max_exec_failures}", str(max_exec_failures))
-        prompt += "\n\n" + SANDBOX_TOOLS_DOC
         prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
         DataAnalystAgent._DEBUG_PROMPT_CACHE = prompt
         return prompt
@@ -329,7 +506,7 @@ class DataAnalystAgent(BaseAgent):
         if debug_params:
             parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
         _src_ds = context.get("debug_source_datasource_name", "")
-        _src_tbl = context.get("debug_source_table_name", "")
+        _src_tbl = context.get("debug_source_data_name", "")
         if _src_ds:
             parts.append(f"数据源: {_src_ds}" + (f", 表: {_src_tbl}" if _src_tbl else ""))
         _all_ds = context.get("debug_all_datasources") or []
@@ -337,282 +514,3 @@ class DataAnalystAgent(BaseAgent):
             _ds_list = "\n".join(f"  - {d['name']} (UUID: {d['id']}, 类型: {d['type']})" for d in _all_ds)
             parts.append(f"用户所有可用数据源：\n{_ds_list}")
         return "\n\n".join(parts) if parts else ""
-
-    async def run_debug(
-        self,
-        message: AgentMessage,
-        context: Dict[str, Any],
-    ) -> AsyncGenerator[Dict, None]:
-        """分析技能调试模式：简化循环——3 次执行错误上限，无 Inspector，无转流程。
-
-        与 DataProcessor.run_debug 的区别：
-        - 无 Inspector handoff（执行成功直接返回）
-        - 无修改次数上限（只有执行错误上限 3 次）
-        - 无 ConvergenceGuard
-        - 无跨 handoff 上下文持久化
-        """
-        db: AsyncSession = context.get("db")
-        user_id = context.get("user_id")
-        if not db or not user_id:
-            yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
-            return
-
-        await llm_manager.initialize()
-
-        # 导入辅助函数（schema 从 tool_registry 取）
-        from app.services.data_processor_agent import (
-            _slim_run_script_result,
-            classify_execution_result,
-            _build_give_up_reason, _record_negative,
-        )
-
-        debug_tools = get_tool_schemas([
-            "edit_script", "run_script", "read_script", "grep_script", "list_user_datasources",
-        ])
-
-        system_prompt = self.build_debug_system_prompt(context)
-        local_messages = [{"role": "system", "content": system_prompt}]
-
-        history = context.get("history", [])
-        if history:
-            local_messages.extend(history)
-
-        _user_msg = message.payload.get("user_message", "") if message.payload else ""
-        if not _user_msg:
-            yield {"type": "done", "result": {"error": "空消息"}}
-            return
-        _dynamic_hints = self.build_debug_dynamic_hints(context, _user_msg)
-        if _dynamic_hints:
-            _user_msg = _user_msg + "\n\n" + _dynamic_hints
-        local_messages.append({"role": "user", "content": _user_msg})
-
-        _MAX_EXEC_FAILURES = context.get("debug_max_exec_failures", 3)
-        _exec_failures = 0
-        _stuck = StuckDetector(max_total_rounds=15)
-        _tool_call_meta: Dict[str, tuple] = {}
-        _last_round_had_fix = False
-
-        while _exec_failures < _MAX_EXEC_FAILURES:
-            # 已消费工具结果清理
-            if _last_round_had_fix:
-                for _mi in range(len(local_messages)):
-                    _m = local_messages[_mi]
-                    if _m.get("role") == "tool" and isinstance(_m.get("content"), str):
-                        _tc_id = _m.get("tool_call_id", "")
-                        _tc_info = _tool_call_meta.get(_tc_id)
-                        if _tc_info and _tc_info[0] in ("read_script", "grep_script"):
-                            local_messages[_mi] = {**_m, "content": f"[已归档] {_tc_info[0]}: {_tc_info[1]}"}
-                _last_round_had_fix = False
-                _tool_call_meta.clear()
-
-            if should_compact(local_messages):
-                local_messages = await compact_messages(local_messages, llm_manager)
-
-            content = ""
-            tool_calls = []
-
-            async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=debug_tools, temperature=0.1,
-                model=llm_manager._default, tool_choice="auto",
-            ):
-                t = event["type"]
-                if t == "model":
-                    yield event
-                elif t == "thinking":
-                    yield event
-                elif t == "content":
-                    content += event["content"]
-                    yield event
-                elif t == "tool_calls":
-                    tool_calls = event["tool_calls"]
-
-            if not tool_calls:
-                if content:
-                    yield {"type": "content", "content": content}
-                yield {"type": "done", "result": {"agent": self.name, "content": content or "未执行工具操作"}}
-                return
-
-            _has_fix = any(tc["function"]["name"] in ("edit_script", "run_script") for tc in tool_calls)
-            if _has_fix:
-                _last_round_had_fix = True
-
-            # 工具调用显示
-            _script_name = context.get("debug_script_name", "main.py")
-            _actions = []
-            for tc in tool_calls:
-                _name = tc["function"]["name"]
-                _icon = {"read_script": "📖", "grep_script": "🔍", "edit_script": "✏️", "run_script": "▶️"}.get(_name, "")
-                _act = {"tool": _name, "icon": _icon, "script": _script_name}
-                try:
-                    _args = json.loads(tc["function"]["arguments"])
-                    if _name == "read_script":
-                        _offset = _args.get("offset", 0)
-                        _limit = _args.get("limit", 0)
-                        if _offset and _limit:
-                            _act["detail"] = f"L{_offset}-L{_offset + _limit - 1}"
-                    elif _name == "grep_script":
-                        _pattern = _args.get("pattern", "")
-                        if _pattern:
-                            _act["detail"] = f'"{_pattern[:40]}"'
-                    elif _name == "edit_script":
-                        _old = _args.get("old_string", "")
-                        _new = _args.get("new_string", "")
-                        if _old or _new:
-                            _diff_lines = [f"- {l}" for l in _old.splitlines()[:20]]
-                            _diff_lines += [f"+ {l}" for l in _new.splitlines()[:20]]
-                            _act["diff"] = "\n".join(_diff_lines)
-                except Exception:
-                    pass
-                _actions.append(_act)
-            yield {"type": "tool_action", "actions": _actions}
-
-            # StuckDetector
-            _stuck_hint = None
-            for tc in tool_calls:
-                try:
-                    _args = json.loads(tc["function"]["arguments"])
-                except Exception:
-                    _args = {}
-                _hint = _stuck.record_tool_call(tc["function"]["name"], _args)
-                if _hint:
-                    _stuck_hint = _hint
-                    break
-            if _stuck_hint and "总轮次上限" in _stuck_hint:
-                yield {"type": "give_up", "reason": _stuck_hint}
-                yield {"type": "done", "result": {"agent": self.name, "content": content or _stuck_hint}}
-                return
-
-            local_messages.append({
-                "role": "assistant",
-                "content": content,
-                "tool_calls": [{"id": tc["id"], "type": "function", "function": tc["function"]} for tc in tool_calls],
-            })
-
-            for tc in tool_calls:
-                if tc["function"]["name"] == "run_script":
-                    yield {"type": "executing", "message": f"正在执行 {_script_name}..."}
-                    break
-
-            # 执行工具（通过 tool_registry 统一分发）
-            import asyncio as _asyncio
-            async def _safe_exec(tc):
-                try:
-                    _args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    _args = {}
-                try:
-                    _r = await execute_tool(tc["function"]["name"], _args, db, user_id, context)
-                    return {"tool_call_id": tc["id"], "content": _r}
-                except Exception as e:
-                    return {"tool_call_id": tc["id"], "content": json.dumps({"error": str(e)}, ensure_ascii=False)}
-            results = await _asyncio.gather(*[_safe_exec(tc) for tc in tool_calls])
-
-            # 工具结果摘要
-            _result_lines = []
-            for r in results:
-                tool_name = ""
-                for tc in tool_calls:
-                    if tc["id"] == r["tool_call_id"]:
-                        tool_name = tc["function"]["name"]
-                        break
-
-                # tool 消息精简
-                if tool_name in ("read_script", "grep_script"):
-                    _tool_content = r["content"]
-                    try:
-                        _rd_meta = json.loads(r["content"])
-                        _meta_desc = _rd_meta.get("function") or _rd_meta.get("pattern") or _rd_meta.get("file") or ""
-                        _tool_call_meta[r["tool_call_id"]] = (tool_name, _meta_desc[:60])
-                    except Exception:
-                        _tool_call_meta[r["tool_call_id"]] = (tool_name, "")
-                elif tool_name == "run_script":
-                    _tool_content = _slim_run_script_result(r["content"])
-                    logger.info(f"[Analyst-debug] run_script tool_content for LLM: {repr(_tool_content[:1500])}")
-                else:
-                    _tool_content = truncate_tool_result(r["content"])
-                local_messages.append({"role": "tool", "tool_call_id": r["tool_call_id"], "content": _tool_content})
-
-                # 调查工具结果显示
-                try:
-                    _rd = json.loads(r["content"])
-                    if tool_name == "grep_script" and _rd.get("success"):
-                        _cnt = _rd.get("total_matches", 0)
-                        _matches = _rd.get("matches", [])
-                        _pattern = _rd.get("pattern", "")
-                        if _cnt == 0:
-                            _result_lines.append(f'  🔍 搜索 "{_pattern[:30]}" → 无匹配')
-                        else:
-                            _glines = [f'  🔍 搜索 "{_pattern[:30]}" → {_cnt} 个匹配:']
-                            for _m in _matches[:10]:
-                                for _sl in _m.get("snippet", "").split("\n"):
-                                    _sl = _sl.strip()
-                                    if _sl.startswith(">>"):
-                                        _glines.append(f"  {_sl}")
-                            if _cnt > 10:
-                                _glines.append(f"  ...（共 {_cnt} 个）")
-                            _result_lines.append("\n".join(_glines))
-                    elif tool_name == "read_script" and _rd.get("success"):
-                        _total = _rd.get("total_lines", 0)
-                        _func = _rd.get("function", "")
-                        _result_lines.append(f"  ✓ 已读取 {_func or ''} 共{_total}行".rstrip())
-                except Exception:
-                    pass
-
-                if tool_name == "edit_script":
-                    try:
-                        rdata = json.loads(r["content"])
-                    except json.JSONDecodeError:
-                        continue
-                    _mdata = rdata.get("modify", rdata)
-                    if _mdata.get("success"):
-                        yield {"type": "script_updated", "script_name": rdata.get("script_name", "main.py")}
-                        if _mdata.get("skill_md_updated"):
-                            yield {"type": "skill_md_updated"}
-
-                if tool_name == "run_script":
-                    try:
-                        rdata = json.loads(r["content"])
-                    except json.JSONDecodeError as e:
-                        yield {"type": "content", "content": f"\n⚠ 工具结果解析失败: {e}\n"}
-                        continue
-                    yield {"type": "run_result", "result": rdata}
-
-                    _cls = classify_execution_result(rdata)
-                    _inner_r = _cls["inner_result"]
-                    _warn_text_r = _cls["warn_text"]
-
-                    if not _cls["is_fail"]:
-                        # 执行成功 → 直接返回（无 Inspector handoff）
-                        yield {"type": "done", "result": {
-                            "agent": self.name, "content": content or "执行成功", "success": True,
-                            "execution_success": True,
-                        }}
-                        return
-                    else:
-                        _err_msg = _cls["err_msg"]
-                        # 执行错误计数
-                        _exec_failures += 1
-                        if _exec_failures >= _MAX_EXEC_FAILURES:
-                            _reason = _build_give_up_reason(_exec_failures, _err_msg)
-                            yield {"type": "give_up", "reason": _reason}
-                            yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
-                            return
-                        # 还有重试机会 → yield round 事件
-                        yield {"type": "round", "round": _exec_failures, "action": "execute"}
-
-                        _record_negative(
-                            context.get("debug_folder"), _err_msg, rdata,
-                            context.get("debug_script_name", "main.py"),
-                        )
-
-            # yield 调查工具结果摘要
-            if _result_lines:
-                yield {"type": "tool_summary", "summaries": _result_lines}
-
-            # StuckDetector 干预
-            if _stuck_hint:
-                local_messages.append({"role": "user", "content": _stuck_hint})
-
-        # 执行错误次数用完
-        yield {"type": "give_up", "reason": f"连续 {_exec_failures} 次执行失败"}
-        yield {"type": "done", "result": {"agent": self.name, "content": "执行失败"}}

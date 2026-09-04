@@ -453,118 +453,29 @@ curl -X POST http://localhost:8000/api/v1/llm/embeddings \
 
 ##### 在算子和技能脚本中调用大模型
 
-除了通过 HTTP API 对外开放，DataCrab 还将大模型能力注入到算子和技能的执行沙箱中，脚本代码可直接调用 `llm_chat()` 函数，无需走 HTTP 请求。
+除了通过 HTTP API 对外开放，DataCrab 还将大模型能力注入到算子和技能的执行沙箱中，脚本通过 `call_tool("llm_generate", ...)` 统一入口调用，无需走 HTTP 请求。
 
 **注入方式**：
-- **算子调试执行**（`exec()` 沙箱）：通过 `_build_operator_namespace()` 注入同步 `llm_chat` 函数，内部用 `_run_async_in_thread()` 调用 `llm_manager`
-- **技能脚本执行**（`subprocess` 沙箱）：通过 `SKILL_RUNNER_TEMPLATE` 模板注入 `llm_chat` 函数，内部启动子进程调用 `llm_manager`
+- 算子执行和技能脚本执行统一走 `skill_runner` 子进程沙箱（sandbox_ns.py 已删除），通过 `SKILL_RUNNER_TEMPLATE` 模板注入 `call_tool` 统一入口 + 安全 hooks
+- `call_tool` 内部通过 HTTP 调用 `/internal/execute-tool` 端点，由 tool_registry 统一分发
 
-**函数签名**：
+**调用示例**：
 ```python
-def llm_chat(prompt, system_prompt=None, temperature=0.7, max_tokens=2000):
-    """
-    在算子/技能脚本中直接调用平台大模型
-
-    参数:
-        prompt: 用户消息（必填）
-        system_prompt: 系统提示词，用于设定AI角色和规则（可选）
-        temperature: 温度参数，0.0-2.0，越高越随机（默认0.7）
-        max_tokens: 最大生成token数（默认2000）
-
-    返回:
-        str: 大模型的文本回复
-    """
-```
-
-**算子脚本中使用示例**：
-```python
-import pandas as pd
-from typing import Dict, Any
-
-def translate_data(data, target_language="en"):
-    """翻译数据中的文本列"""
-    df = data if hasattr(data, 'columns') else pd.DataFrame(data)
-
-    # 调用平台大模型翻译
-    result = llm_chat(
-        prompt=f"将以下JSON数据中的中文翻译为{target_language}，保持JSON结构不变：\n{df.to_json(orient='records')}",
-        system_prompt="你是一个专业翻译助手，只返回翻译后的JSON，不要添加任何解释。",
-        temperature=0.3
-    )
-
-    translated_df = pd.DataFrame(eval(result))
-    return {"success": True, "data": translated_df.to_dict(orient="records")}
-```
-
-**技能脚本中使用示例**：
-```python
-def analyze_data(data, **kwargs):
-    """用大模型分析数据"""
-    import pandas as pd
-    df = data if hasattr(data, 'columns') else pd.DataFrame(data)
-
-    # 获取数据摘要
-    summary = df.describe().to_string()
-
-    # 调用平台大模型分析
-    analysis = llm_chat(
-        prompt=f"分析以下数据统计摘要，给出关键洞察和建议：\n{summary}",
-        system_prompt="你是一个数据分析师，请用简洁的中文回答。",
-        temperature=0.5
-    )
-
-    return {"analysis": analysis, "row_count": len(df)}
+# 在算子/技能脚本中调用平台大模型（返回 dict，取 ["content"] 获取文本）
+result = call_tool("llm_generate", prompt="...", system_prompt="...", temperature=0.3)["content"]
 ```
 
 **安全边界**：
-- `llm_chat` 只能调用平台配置的大模型，不能访问 API Key
-- 技能脚本中的 `llm_chat` 通过子进程调用，与主进程隔离
-- 算子调试中的 `llm_chat` 在线程中执行异步调用，有60秒超时限制
+- `call_tool` 只能调用平台配置的大模型，不能访问 API Key
+- 脚本在独立子进程中执行，与主进程隔离，有超时限制
 
 #### 2.3.4 Skills技能库
-```python
-class SkillLibrary:
-    """技能库 - 核心组件"""
-    
-    def __init__(self, embedding_service):
-        self.skills = {}  # 技能注册表
-        self.embeddings = {}  # 技能向量索引        self.embedding_service = embeddin
-    
-    async def register_skill(self, skill: Skill):
-        """注册技能"""
-        # 生成技能描述向量        embedding = await self.embedding_service.embed(
-            skill.description + " " + skill.get_usage_example()
-        )
-        self.skills[skill.id] = skill
-        self.embeddings[skill.id] = embedding
-    
-    async def search_similar(
-        self,
-        query: str,
-        top_k: int = 5,
-        filters: dict = None
-    ) -> List[Skill]:
-        """搜索相似技能"""
-        # 生成查询向量
-        query_embedding = await self.embedding_service.embed(query)
-        
-        # 向量相似度搜索        similarities = self.cosine_similarity(query_embedding,
-        
-        # 过滤和排序        filtered_skills = self.filter_skills(similarities, filte
-        
-        return filtered_skills[:top_k]
-    
-    async def get_skill(self, skill_id: str) -> Skill:
-        """获取技能"""
-        return self.skills.get(skill_id)
-    
-    async def get_skill_executor(self, skill_id: str):
-        """获取技能执行器"""
-        skill = await self.get_skill(skill_id)
-        return skill.get_executor()
-```
+
+> **说明**：`SkillLibrary` 类已删除（向量索引内存结构不再使用）。技能检索改用 `skill_parser`（解析 SKILL.md）+ `skill_creator`（AI 生成技能）+ `match_service`（ChromaDB 向量检索 + LLM 自适应匹配：粗筛→精排两阶段，超阈值才精排）。技能存储在磁盘 `data/skills/` 文件夹（SKILL.md + scripts/），元数据存 DB `skills` 表。
 
 #### 2.3.4 技能定义模型
+
+> **说明**：以下为设计示意模型。实际实现中，`category` 字段已删除（改为 `skill_type`），`author` 改为 `created_by`，`executor_config`（python_function/lambda）已不用——技能是 `scripts/` 文件夹中的 Python 脚本，通过 `skill_runner` 子进程沙箱执行，不再通过 `executor_config` 定位模块函数。
 
 ```python
 class Skill(Base):
@@ -575,7 +486,8 @@ class Skill(Base):
     display_name = Column(String(200))
     description = Column(Text, nullable=False)
     
-    # 技能类型    skill_type = Column(String(50))  # operator, function, pipeline
+    # 技能类型（processing=处理类 / analysis=分析类，默认 processing）
+    skill_type = Column(String(50))
     
     # 输入输出定义
     inputs = Column(JSON)
@@ -612,16 +524,6 @@ class Skill(Base):
     }
     """
     
-    # 执行配置
-    executor_config = Column(JSON)
-    """
-    {
-        "type": "python_function",
-        "module": "app.skills.operators",
-        "function": "select_operator"
-    }
-    """
-    
     # 使用示例(用于向量检索)
     usage_examples = Column(JSON)
     """
@@ -638,16 +540,8 @@ class Skill(Base):
     ["数据选择", "列操作", "基础算子"]
     """
     
-    # 技能分类    category = Column(String(50))
-    """
-    transform, aggregate, filter, join, analyze
-    """
-    
     # 元数据    version = Column(String(20), default="1.0.0")
-    author = Column(UUID, ForeignKey("users.id"))
-    
-    # 权限
-    visibility = Column(String(20))  # private, public, shared
+    created_by = Column(UUID, ForeignKey("users.id"))
     
     # 统计信息
     usage_count = Column(Integer, default=0)
@@ -655,26 +549,6 @@ class Skill(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
-    
-    def get_executor(self):
-        """获取技能执行器"""
-        config = self.executor_config
-        
-        if config["type"] == "python_function":
-            return self._get_python_executor(config)
-        elif config["type"] == "lambda":
-            return self._get_lambda_executor(config)
-        else:
-            raise ValueError(f"Unsupported executor type: {config['type']}")
-    
-    def _get_python_executor(self, config):
-        """获取Python函数执行器"""
-        module = importlib.import_module(config["module"])
-        return getattr(module, config["function"])
-    
-    def _get_lambda_executor(self, config):
-        """获取Lambda执行器"""
-        return eval(config["code"])
 ```
 
 #### 2.3.5 Agent 迭代与并行执行增强
@@ -722,7 +596,6 @@ class Operator(Base):
     name = Column(String(100), nullable=False)
     display_name = Column(String(200))
     description = Column(Text)
-    category = Column(String(50))  # transform, aggregate, filter, join, ai_generated
     
     # 输入输出定义
     inputs = Column(JSON)   # [{"name": "data", "type": "DataFrame", "required": true}]
@@ -743,7 +616,7 @@ class Operator(Base):
     # 元数据
     version = Column(String(20), default="1.0.0")
     tags = Column(JSON)
-    author = Column(UUID, ForeignKey("users.id"))
+    created_by = Column(UUID, ForeignKey("users.id"))
     
     # 权限
     visibility = Column(String(20))  # private, public, shared
@@ -842,7 +715,6 @@ async def generate_operator(request: OperatorGenerateRequest):
         inputs=parsed["inputs"],
         outputs=parsed["outputs"],
         parameters=parsed["parameters"],
-        category="ai_generated",
         tags=["ai_generated"]
     )
     db.add(operator)
@@ -918,7 +790,6 @@ async def clone_operator(operator_id, request: OperatorCloneRequest):
         name=request.name,
         display_name=request.name,
         description=operator.description,
-        category=operator.category,
         inputs=operator.inputs,
         outputs=operator.outputs,
         parameters=operator.parameters,
@@ -985,42 +856,12 @@ async def clone_operator(operator_id, request: OperatorCloneRequest):
     ↓
 POST /operators/debug {operator_id, params, script_content}
     ↓
-后端构建执行命名空间（注入 query_table_data, get_table_schema 等工具函数）
-    ↓
-exec() 执行脚本 + 调用入口函数
+后端通过 skill_runner 子进程沙箱执行（与技能脚本执行统一）
     ↓
 返回结果：{success, stdout, result, error, execution_time_ms}
 ```
 
-**Debug Executor 核心实现**:
-```python
-# 工具函数注入 - 在算子执行环境中提供数据查询能力
-def _build_operator_namespace(current_user_id):
-    def query_table_data(datasource_id, table_name, **kwargs):
-        args = {"datasource_id": str(datasource_id), "table_name": table_name, **kwargs}
-        # 在独立线程中通过 execute_shared_tool 执行异步数据库查询
-        async def _run():
-            async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("query_table_data", args, db, current_user_id)
-        result = json.loads(_run_async_in_thread(_run()))
-        return pd.DataFrame(result["rows"], columns=result["columns"])
-
-    def get_table_schema(datasource_id, table_name):
-        args = {"datasource_id": str(datasource_id), "table_name": table_name}
-        async def _run():
-            async with async_session() as db:
-                from app.services.shared_tools import execute_shared_tool
-                return await execute_shared_tool("get_table_schema", args, db, current_user_id)
-        return json.loads(_run_async_in_thread(_run()))
-
-    return {
-        "pd": pd,
-        "query_table_data": query_table_data,
-        "get_table_schema": get_table_schema,
-        "get_datasource_id_by_name": get_datasource_id_by_name,
-    }
-```
+> **说明**：`_build_operator_namespace()` 和 `exec()` 沙箱已删除（sandbox_ns.py 已删除，第二十八轮架构清理）。算子执行统一走 `skill_runner` 子进程沙箱，通过 `call_tool` 统一入口调用工具（HTTP 调 `/internal/execute-tool` 端点），与技能脚本执行链路一致。
 
 ##### 2.4.4.6 下载脚本
 点击下载按钮 → 下载 .py 文件（script_filename 作为文件名，script_content 作为内容）
@@ -1091,11 +932,10 @@ class Skill(Base):
     skill_path = Column(String(500))  # 磁盘存储路径
 
     tags = Column(JSON)               # 标签列表
-    category = Column(String(50), index=True)  # 分类
+    skill_type = Column(String(50))   # processing=处理类 / analysis=分析类（默认 processing）
 
     version = Column(String(20), default="1.0.0")
-    author = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    visibility = Column(String(20), index=True)  # public/private
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
 
     usage_count = Column(Integer, default=0)
     success_rate = Column(Float, default=1.0)
@@ -1112,7 +952,7 @@ SKILL.md 是 Skill 的核心文档，采用 YAML front matter + Markdown 格式�
 ---
 name: skill-name
 description: 技能描述
-category: data_cleaning
+skill_type: processing
 tags: [filter, transform]
 ---
 
@@ -1154,9 +994,7 @@ tags: [filter, transform]
 | PUT | /api/v1/skills/{id}/scripts/{name} | 更新或创建脚本 |
 | DELETE | /api/v1/skills/{id}/scripts/{name} | 删除脚本 |
 | POST | /api/v1/skills/{id}/run | 执行 Skill 脚本 |
-| POST | /api/v1/skills/{id}/run-stream | 执行 Skill 脚本（SSE 流式，实时推送执行状态） |
 | POST | /api/v1/skills/{id}/run-nl | 自然语言执行 Skill（LLM 推断参数后运行） |
-| POST | /api/v1/skills/{id}/run-nl-stream | 自然语言执行 Skill（SSE 流式，含推理过程） |
 | POST | /api/v1/skills/{id}/modify-stream | AI 修改技能（SSE 流式，含思考过程） |
 | POST | /api/v1/skills/{id}/debug-chat | AI 调试助手（SSE 流式，支持推理过程展示、自动执行/修改脚本） |
 | POST | /api/v1/skills/generate | AI 生成完整 Skill 包 |
@@ -1178,10 +1016,11 @@ tags: [filter, transform]
 在独立子进程中执行 Skill 脚本，支持：
 - 注入输入数据（DataFrame 格式）
 - 注入参数（parameters dict）
-- 内置工具函数：query_table_data(), get_table_schema(), get_datasource_id_by_name()
+- 通过 `call_tool(tool_name, **args)` 统一入口调用 29 个工具（HTTP 调 `/internal/execute-tool` 端点）
 - 自动检测脚本中的主函数名（通过 AST 解析）
-- 超时控制（默认 60 秒，可通过 SKILL_RUNNER_TIMEOUT 配置）
+- 超时控制（默认 300 秒，可通过 SKILL_RUNNER_TIMEOUT 配置）
 - 结果捕获：通过 __RESULT__ 标记解析返回值
+- 安全隔离：`__import__` hook 拦截危险模块、`open()` 沙箱化、环境变量白名单、POSIX 资源限制、并发信号量
 
 ##### skill_creator.py - AI 生成器
 - generate_skill() / generate_skill_stream(): 根据自然语言描述生成完整 Skill 包
@@ -1197,24 +1036,22 @@ tags: [filter, transform]
 
 ##### data_analyst_agent.py - 数据分析智能体
 - DataAnalystAgent: 只读分析智能体（查询/统计/分布/洞察），不修改数据
-- 5 个只读工具子集（ANALYSIS_TOOLS）：query_table_data/get_table_schema/list_user_datasources/execute_sql/kb_search
+- 14 个只读工具子集（含 4 个调试工具 edit_script/run_script/read_script/grep_script）
 - 独立截断阈值（ANALYSIS_MAX_TOOL_RESULT_CHARS=30000，50 行预览）
-- 不参与 handoff；chat_router 关键词路由判断走 DataAnalyst 还是 DataProcessor
+- 不参与 handoff；chat_router.classify_message LLM 语义判断 msg_type 路由
 - system prompt 进程级 memoize（Prefix Cache）
 
-##### prompt_docs.py - 沙箱函数文档
-- SANDBOX_TOOLS_DOC: 17 个沙箱函数完整签名文档
+##### prompt_docs.py - 平台规范文档
 - PLATFORM_CONVENTIONS_DOC: 平台规范文档（内置函数优先/不装扩展/不调外部API）
 - 注入生成/调试/NL 推断三处
+- SANDBOX_TOOLS_DOC 已删除（第三十二轮），LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC
 
 ##### standards_parser.py - 规则解析器
 - 解析数据标准/质量/安全规则（合法值/检测逻辑）
 - parse_security_rules 不再跳过无正则规则
 
 ##### skill_executor.py - 执行上下文与结果数据结构
-- ExecutionContext: 执行上下文（会话ID、用户ID、变量、DataFrame）
-- ExecutionResult: 执行结果（success/output/error/logs/metrics）
-- 供 nl_data_processor 使用；SkillExecutor 类及内置技能函数已删除（无人调用）
+> **说明**：`ExecutionContext`/`ExecutionResult` 已移除（随多智能体统一 + 非流式端点删除）。`skill_executor.py` 已精简至 2 个 dataclass（保留最小必要数据结构），无人调用。
 
 #### 2.5.6 前端界面
 
@@ -1468,9 +1305,8 @@ class Pipeline(Base):
     # 元数据
     version = Column(Integer, default=1)
     tags = Column(JSON)
-    category = Column(String(50))
+    pipeline_type = Column(String(50))
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    visibility = Column(String(20), default="private")
 
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1854,9 +1690,10 @@ DataCrab 借鉴 Swarm 的 Handoff 简洁性 + CrewAI 的角色分工思想 + Aut
 
 | 智能体 | 代号 | 职责 | 核心工具 | 接收来自 | 可交接给 |
 |--------|------|------|----------|----------|----------|
-| **数据处理智能体** | `DataProcessor` | 理解用户意图、生成/修改算子和技能、调度执行、溯源修复 | `query_table_data`、`get_table_schema`、`write_table_data`、`generate_operator`、`generate_skill`、`run_pipeline` | 用户对话、`DataInspector` | `DataInspector` |
+| **数据处理智能体** | `DataProcessor` | 理解用户意图、修改/执行算子和技能、调度执行、溯源修复 | MAIN_TOOLS（20 个）：`query_table_data`、`write_table_data`、`edit_script`、`run_script`、`read_script`、`grep_script`、`llm_vision`、`llm_generate` 等 | 用户对话、`DataInspector` | `DataInspector` |
 | **数据检查智能体** | `DataInspector` | 对加工后的数据进行标准检查、质量检查、安全检查，发现错误后记录并反馈 | `check_data_standards`、`check_data_quality`、`check_data_security`、`profile_data` | `DataProcessor` | `DataProcessor` |
-| **数据分析智能体** | `DataAnalyst` | 只读分析：查询、统计、分布、洞察（不修改数据） | `query_table_data`、`get_table_schema`、`list_user_datasources`、`execute_sql`、`kb_search` | 用户对话（chat_router 路由） | 无（不参与 handoff） |
+| **数据分析智能体** | `DataAnalyst` | 只读分析：查询、统计、分布、洞察（不修改数据） | 14 个只读工具子集（含 4 个调试工具）：`query_table_data`、`get_table_schema`、`execute_sql`、`llm_generate`、`edit_script`、`run_script` 等 | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
+| **对话智能体** | `ChatAgent` | 闲聊/问候/系统配置/提问咨询 | `web_fetch`、`get_llm_config`、`save_llm_adapter`、`delete_llm_adapter`、`save_connector`、`delete_connector` | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
 | *(未来扩展)* | | | | | |
 | 数据治理智能体 | `DataGovernor` | 数据血缘追踪、元数据补全、数据目录管理 | `trace_lineage`、`enrich_metadata` | 任意智能体 | 任意智能体 |
 | 数据安全智能体 | `DataSentinel` | 敏感数据识别、脱敏建议、合规审查 | `detect_pii`、`suggest_masking`、`audit_compliance` | `DataInspector`、用户 | `DataProcessor` |
@@ -1904,7 +1741,7 @@ DataCrab 借鉴 Swarm 的 Handoff 简洁性 + CrewAI 的角色分工思想 + Aut
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **DataAnalyst 智能体**（已实现）：只读分析类问题（查询/统计/分析）经 `chat_router` 关键词路由到 `DataAnalystAgent`，使用 5 个只读工具子集（ANALYSIS_TOOLS），不参与 handoff，直接返回结果。DataAnalyst 与 DataProcessor/DataInspector 并列，三者构成完整的多智能体架构。
+> **DataAnalyst 智能体**（已实现）：只读分析类问题（查询/统计/分析）经 `chat_router.classify_message` LLM 语义判断路由到 `DataAnalystAgent`，使用 14 个只读工具子集（含 4 个调试工具），不参与 handoff，直接返回结果。**ChatAgent** 处理闲聊/问候/系统配置/提问咨询，不参与 handoff。DataProcessor/DataInspector/DataAnalyst/ChatAgent 四者构成完整的多智能体架构。
 
 #### 2.7.4 核心抽象
 
@@ -2096,58 +1933,24 @@ class AgentRuntime:
 - 当收到 DataInspector 的检查结果时，应定位问题根源并修复
 
 **工具集**：
+> 实际工具集是 `MAIN_TOOLS`（20 个工具名），通过 `get_tool_schemas(MAIN_TOOLS)` 获取 JSON Schema。以下为工具分类概览，`generate_operator`/`generate_skill`/`modify_script` 等不再是独立工具（技能/算子生成走独立端点，脚本修改走调试工具 edit_script）。
+
 ```python
-DATA_PROCESSOR_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_table_data",
-            "description": "查询数据源中某个表的数据",
-            "parameters": { ... }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_table_schema",
-            "description": "获取表结构信息",
-            "parameters": { ... }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_operator",
-            "description": "根据自然语言描述生成算子脚本",
-            "parameters": { ... }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_skill",
-            "description": "根据自然语言描述生成完整技能包",
-            "parameters": { ... }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "modify_script",
-            "description": "修改算子或技能脚本",
-            "parameters": { ... }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_script",
-            "description": "执行算子或技能脚本",
-            "parameters": { ... }
-        }
-    },
-    // 注：handoff_to_inspector 工具已在第十七/二十三轮删除
-    // 现在 run_script 执行成功后由 RunTime 自动交接 DataInspector（Agent 不感知 handoff）
+MAIN_TOOLS = [
+    # 数据查询
+    "query_table_data", "get_table_schema", "execute_sql", "iter_table_data",
+    # 数据写入
+    "write_table_data",
+    # 文件操作
+    "read_file", "write_file", "save_file_to_link", "list_user_file_links",
+    # LLM / 视觉
+    "llm_generate", "llm_vision", "extract_video_info", "extract_keyframes",
+    # 知识库 / 联网
+    "kb_search", "web_fetch", "list_user_datasources",
+    # 调试工具（4 个，对齐 OpenCode Grep/Read/Edit/Bash）
+    "edit_script", "run_script", "read_script", "grep_script",
+    # 注：handoff_to_inspector 工具已在第十七/二十三轮删除
+    # 现在 run_script 执行成功后由 RunTime 自动交接 DataInspector（Agent 不感知 handoff）
 ]
 ```
 
@@ -2330,7 +2133,7 @@ DATA_INSPECTOR_TOOLS = [
 
 #### 2.7.10 检查工具实现
 
-检查工具在 `app/services/data_inspector.py` 中实现，基于 pandas 对 ConnectorManager 查询的数据进行分析：
+检查工具实际在 `app/services/inspector_tools.py` 中实现（确定性检查，31 条 STD/DQ/SEC 规则），`app/services/data_inspector_agent.py` 是 DataInspector Agent（LLM 推理 + 调用检查工具）。以下为检查逻辑示意（基于 pandas 对 ConnectorManager 查询的数据进行分析）：
 
 ```python
 class DataInspectorTools:
@@ -2503,13 +2306,13 @@ class EventStore:
 
 | 现有模块 | 集成方式 |
 |----------|----------|
-| `agent.py` (AgentService) | 重构为 `DataProcessor` 智能体，保留现有工具和执行逻辑 |
+| `agent.py` | 已删除（第二十八轮），单 Agent 服务不存在；DataProcessor 智能体在 `data_processor_agent.py` |
 | `chat.py` | 对话入口增加路由层：识别用户意图后分派到对应智能体 |
-| `operator.py` | DataProcessor 的 `generate_operator`/`modify_script`/`run_script` 工具调用现有端点 |
-| `skill.py` | DataProcessor 的 `generate_skill`/`modify_script`/`run_script` 工具调用现有端点 |
+| `operator.py` | DataProcessor 的 `edit_script`/`run_script` 工具调用现有端点 |
+| `skill.py` | DataProcessor 的 `edit_script`/`run_script` 工具调用现有端点 |
 | `connectors.py` | 两个智能体都通过 `get_connector` 读写数据 |
 | `skill_parser.py` | DataInspector 的经验总结注入 DataProcessor 的提示词 |
-| `data_inspector.py` (新增) | DataInspector 智能体的检查工具实现 |
+| `data_inspector_agent.py` + `inspector_tools.py` | DataInspector 智能体（Agent + 31 条确定性检查工具实现） |
 
 #### 2.7.13 API 端点
 
@@ -2640,9 +2443,9 @@ DataProcessor（Orchestrator + 轻量工具）
 
 ##### DataProcessor 调试模式
 
-DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debug_mode"]` 时分派：
+> **说明**：无独立 `run_debug()` 方法。调试模式在 `run()` 内部通过 `_is_debug` flag（检测 `context.get("debug_folder")` 或 `context.get("debug_script_content")`）分支处理。
 
-| 特性 | run()（主对话流） | run_debug()（调试助手） |
+| 特性 | run() 主对话分支 | run() 调试分支（_is_debug） |
 |------|-------------------|------------------------|
 | LLM 调用 | chat_stream_with_tools_and_thinking()（流式，第二十二轮改） | chat_stream_with_tools_and_thinking()（流式） |
 | 工具集 | 共享工具（不含调试工具） | edit_script + run_script + read_script + grep_script（4 个，对齐 OpenCode Grep/Read/Edit/Bash） |
@@ -2654,7 +2457,7 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
 | 工具 | 类型 | 说明 |
 |------|------|------|
 | `edit_script` | Tool | 行级补丁修改脚本（old_string/new_string，对齐 OpenCode Edit）；支持 skill（文件）/ operator（DB）/ pipeline（DB）三种模式 |
-| `run_script` | Tool | 沙箱执行脚本；skill 用 subprocess，operator 用 exec()，pipeline 不支持直接执行；执行成功后 runtime 自动交接 DataInspector |
+| `run_script` | Tool | 沙箱执行脚本；skill/operator/pipeline 均通过 skill_runner 子进程沙箱执行；执行成功后 runtime 自动交接 DataInspector |
 | `read_script` | Tool | 读取脚本内容（带行号，对齐 OpenCode Read）；支持 offset/limit 精确读 |
 | `grep_script` | Tool | 搜索脚本内容（对齐 OpenCode Grep）；定位关键词行号 |
 
@@ -2669,7 +2472,7 @@ DataProcessor 新增 `run_debug()` 方法，在 `run()` 中检测 `context["debu
 ##### SSE 事件流
 
 ```
-用户消息 → DataProcessor.run_debug()
+用户消息 → DataProcessor.run()（调试分支 _is_debug）
     ↓
 model / thinking / content（流式推理 + 正文）
     ↓
@@ -2694,8 +2497,8 @@ done 事件
 
 | 类型 | debug_type | 脚本存储 | 执行方式 | edit_script | run_script |
 |------|-----------|----------|----------|:---:|:---:|
-| 技能 | (默认) | 文件（folder/scripts/） | subprocess 沙箱 | ✅ 文件写入 | ✅ skill_runner |
-| 算子 | "operator" | 数据库（Operator.script_content） | exec() 沙箱 | ✅ DB 更新 | ✅ exec() + _build_operator_namespace |
+| 技能 | (默认) | 文件（folder/scripts/） | skill_runner 子进程沙箱 | ✅ 文件写入 | ✅ skill_runner |
+| 算子 | "operator" | 数据库（Operator.script_content） | skill_runner 子进程沙箱 | ✅ DB 更新 | ✅ skill_runner |
 | 流程 | "pipeline" | 数据库（Pipeline.main_code） | 不支持直接执行 | ✅ DB 更新 | ❌ 返回"请使用流程执行功能" |
 
 ### 2.8 调度系统模块
@@ -2732,7 +2535,7 @@ done 事件
 └───────────────────────────────────────────────┘
 ```
 
-> **实现说明**：手动触发（`POST /schedules/{id}/trigger`）通过 FastAPI `BackgroundTasks` 调用 `execute_task`；定时扫描由 `_scheduler_loop` 在应用启动时 `asyncio.create_task` 创建，30 秒间隔扫描到期的 active 调度。`sandbox_ns.py` 提供算子沙箱命名空间（`build_operator_namespace`），供 `task_runner` 和 `operator.py` 共用。
+> **实现说明**：手动触发（`POST /schedules/{id}/trigger`）通过 FastAPI `BackgroundTasks` 调用 `execute_task`；定时扫描由 `_scheduler_loop` 在应用启动时 `asyncio.create_task` 创建，30 秒间隔扫描到期的 active 调度。算子执行统一走 `skill_runner` 子进程沙箱（`run_skill_script_by_content_async`），与技能/流程一致。
 
 #### 2.8.2 调度配置模型
 ```python
@@ -3371,7 +3174,6 @@ CREATE TABLE data_sources (
     name VARCHAR(100) NOT NULL,
     display_name VARCHAR(200),
     description TEXT,
-    category VARCHAR(50),
     inputs JSONB,
     outputs JSONB,
     parameters JSONB,
@@ -3379,7 +3181,7 @@ CREATE TABLE data_sources (
     code_template TEXT,
     version VARCHAR(20) DEFAULT '1.0.0',
     tags JSONB,
-    author UUID REFERENCES users(id),
+    created_by UUID REFERENCES users(id),
     visibility VARCHAR(20),
     permissions JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -3449,12 +3251,8 @@ CREATE TABLE skills (
     """
     ["数据选择", "列操作", "基础技能"]
     """
-    category VARCHAR(50),
-    """
-    transform, aggregate, filter, join, analyze
-    """
     version VARCHAR(20) DEFAULT '1.0.0',
-    author UUID REFERENCES users(id),
+    created_by UUID REFERENCES users(id),
     visibility VARCHAR(20), -- private, public, shared
     permissions JSONB,
     usage_count INTEGER DEFAULT 0,
@@ -3501,7 +3299,7 @@ CREATE TABLE pipelines (
     -- 元数据
     version INTEGER DEFAULT 1,
     tags JSON,
-    category VARCHAR(50),
+    pipeline_type VARCHAR(50),
     created_by UUID REFERENCES users(id),
     visibility VARCHAR(20) DEFAULT 'private',
 
@@ -3592,7 +3390,6 @@ GET    /api/v1/operators                # 获取算子列表
 GET    /api/v1/operators/{id}           # 获取算子详情
 PUT    /api/v1/operators/{id}           # 更新算子
 DELETE /api/v1/operators/{id}           # 删除算子
-GET    /api/v1/operators/categories     # 获取算子分类
 ```
 
 #### 调度管理API
@@ -3613,13 +3410,31 @@ GET    /api/v1/schedules/stats/overview # 调度统计概览
 
 #### 技能管理API
 ```
-# 技能CRUD
-POST   /api/v1/skills                    # 创建技能GET    /api/v1/skills                    # 获取技能列表GET    /api/v1/skills/{id}               # 获取技能详情PUT    /api/v1/skills/{id}               # 更新技能DELETE /api/v1/skills/{id}               # 删除技能
-# 技能操作POST   /api/v1/skills/{id}/execute       # 执行单个技能POST   /api/v1/skills/{id}/test          # 测试技能执行GET    /api/v1/skills/{id}/versions      # 获取技能版本历史POST   /api/v1/skills/{id}/rollback      # 回退技能版本POST   /api/v1/skills/{id}/validate      # 验证技能定义
-# 技能发布GET    /api/v1/skills/categories         # 获取技能分类GET    /api/v1/skills/search             # 搜索技能POST   /api/v1/skills/recommend          # 推荐相关技能
-# 技能转换POST   /api/v1/skills/from-operator      # 从算子创建技能POST   /api/v1/skills/from-code          # 从代码创建技能POST   /api/v1/skills/from-nl            # 自然语言创建技能
-# 技能模板GET    /api/v1/skills/templates          # 获取技能模板列表POST   /api/v1/skills/templates/{id}/apply # 应用技能模板
-
+# 技能CRUD（已实现）
+POST   /api/v1/skills                    # 创建技能
+GET    /api/v1/skills                    # 获取技能列表
+GET    /api/v1/skills/{id}               # 获取技能详情
+PUT    /api/v1/skills/{id}               # 更新技能
+DELETE /api/v1/skills/{id}               # 删除技能
+# 技能操作（已实现）
+POST   /api/v1/skills/{id}/run           # 执行技能脚本
+POST   /api/v1/skills/{id}/run-nl        # 自然语言执行技能
+POST   /api/v1/skills/{id}/debug-chat    # AI 调试助手
+POST   /api/v1/skills/{id}/modify-stream # AI 修改技能
+POST   /api/v1/skills/generate           # AI 生成完整 Skill 包
+POST   /api/v1/skills/search             # 搜索技能
+POST   /api/v1/skills/{id}/clone         # 克隆技能
+POST   /api/v1/skills/{id}/summarize-errors # 总结错误经验
+# 以下为设计构想，部分未实现
+GET    /api/v1/skills/{id}/versions      # 获取技能版本历史（未实现）
+POST   /api/v1/skills/{id}/rollback      # 回退技能版本（未实现）
+POST   /api/v1/skills/{id}/validate      # 验证技能定义（未实现）
+POST   /api/v1/skills/from-operator      # 从算子创建技能（未实现）
+POST   /api/v1/skills/from-code          # 从代码创建技能（未实现）
+POST   /api/v1/skills/from-nl            # 自然语言创建技能（已由 /generate 实现）
+GET    /api/v1/skills/templates          # 获取技能模板列表（未实现）
+POST   /api/v1/skills/templates/{id}/apply # 应用技能模板（未实现）
+POST   /api/v1/skills/recommend          # 推荐相关技能（未实现）
 ```
 
 #### Skill 与 Pipeline API 详细说明
@@ -3664,7 +3479,6 @@ Request:
         "筛选销售额超过1000的订单"
     ],
     "tags": ["过滤", "数据清洗"],
-    "category": "filter",
     "visibility": "public"
 }
 

@@ -6,6 +6,7 @@
 handler 签名统一：async def handler(args, db, user_id, context) -> str
 """
 import json
+import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -77,7 +78,7 @@ async def execute_tool(name: str, args: dict, db: AsyncSession, user_id, context
     Args:
         name: 工具名
         args: 工具参数
-        db: 数据库会话
+        db: 数据库会话（保留兼容，实际使用独立 session 避免 SSE 长事务持锁）
         user_id: 用户 ID
         context: Agent 上下文（调试工具需要 debug_script_content/debug_folder 等）
     """
@@ -95,8 +96,12 @@ async def execute_tool(name: str, args: dict, db: AsyncSession, user_id, context
             logger.info(f"工具缓存命中: {name}")
             return cached
 
+    # 用独立 session 执行工具，避免 SSE handler 长期持有主 session 导致 SQLite 锁竞争
+    from app.core.database import async_session as _tool_session
     try:
-        result = await td.handler(args, db, user_id, context or {})
+        async with _tool_session() as tool_db:
+            result = await td.handler(args, tool_db, user_id, context or {})
+            await tool_db.commit()
     except Exception as e:
         logger.error(f"工具 {name} 执行异常: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -199,8 +204,18 @@ def _register_data_tools():
         "type": "function",
         "function": {
             "name": "list_user_datasources",
-            "description": "列出用户所有可用的数据源（名称、UUID、类型）。调用此工具获取数据源名称与UUID的映射关系，再用其他工具操作具体数据源。调试模式下可用此工具查找用户提到的数据源名称对应的UUID。",
-            "parameters": {"type": "object", "properties": {}},
+            "description": (
+                "列出用户所有可用的数据源（名称、UUID、类型）。调用此工具获取数据源名称与UUID的映射关系，再用其他工具操作具体数据源。"
+                "调试模式下可用此工具查找用户提到的数据源名称对应的UUID。"
+                "可选参数：datasource_id → 返回该数据源的表列表；by_name → 按名称查找数据源，返回其UUID。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string", "description": "传此参数时返回该数据源的表列表"},
+                    "by_name": {"type": "string", "description": "传此参数时按名称查找数据源，返回其UUID和类型"},
+                },
+            },
         },
     }, _list_user_datasources_handler, cacheable=True)
 
@@ -291,8 +306,157 @@ def _register_data_tools():
         },
     }, _web_fetch_handler, cacheable=True)
 
+    register_tool("llm_vision", {
+        "type": "function",
+        "function": {
+            "name": "llm_vision",
+            "description": (
+                "用视觉大模型分析图片内容（OCR、图表识别、画面描述）。"
+                "适用于：识别图片中的文字/数据表格、描述图片内容、提取关键信息。"
+                "限制：图片必须在文件链接授权目录内；单次调用可能耗时 10-30 秒。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string", "description": "图片文件路径（从附件信息中获取 file_path）"},
+                    "prompt": {"type": "string", "description": "要问的问题，如\"识别图片中的所有文字和数据\"或\"描述图片内容\""},
+                },
+                "required": ["image_path", "prompt"],
+            },
+        },
+    }, _llm_vision_handler, cacheable=False)
 
-# ---- 数据工具 handler 实现 ----
+    register_tool("write_table_data", {
+        "type": "function",
+        "function": {
+            "name": "write_table_data",
+            "description": (
+                "写入数据到数据源的表中。支持多种写入策略。"
+                "限制：records/data 二选一；if_table_exists 控制表已存在时的行为。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string", "description": "数据源UUID"},
+                    "table_name": {"type": "string", "description": "表名"},
+                    "records": {"type": "array", "description": "行数据列表，每行是 dict", "items": {"type": "object"}},
+                    "data": {"type": "array", "description": "records 的别名", "items": {"type": "object"}},
+                    "if_table_exists": {"type": "string", "description": "写入策略: fail/append/replace/overwrite/truncate/delete_rows/upsert/create_new", "default": "fail"},
+                    "table_remark": {"type": "string", "description": "表备注"},
+                    "column_remarks": {"type": "object", "description": "列备注字典"},
+                },
+                "required": ["datasource_id", "table_name"],
+            },
+        },
+    }, _write_table_data_handler, cacheable=False)
+
+    register_tool("iter_table_data", {
+        "type": "function",
+        "function": {
+            "name": "iter_table_data",
+            "description": "分页读取大表数据（单页）。配合 page 参数翻页读取完整数据，避免一次性加载到内存。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "datasource_id": {"type": "string", "description": "数据源UUID"},
+                    "table_name": {"type": "string", "description": "表名"},
+                    "page": {"type": "integer", "description": "页码（从1开始）", "default": 1},
+                    "page_size": {"type": "integer", "description": "每页行数（默认10000）", "default": 10000},
+                },
+                "required": ["datasource_id", "table_name"],
+            },
+        },
+    }, _iter_table_data_handler, cacheable=False)
+
+    register_tool("llm_generate", {
+        "type": "function",
+        "function": {
+            "name": "llm_generate",
+            "description": (
+                "调用平台大模型生成文本（自动使用当前用户的 LLM 配置）。"
+                "适用于：文本分析、翻译、分类、摘要、数据质量检查等。"
+                "限制：消耗 LLM 调用额度；大 prompt 可能较慢。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "用户消息（必填）"},
+                    "system_prompt": {"type": "string", "description": "系统提示词（可选）"},
+                    "temperature": {"type": "number", "description": "温度参数 0.0-2.0（默认0.7）"},
+                    "max_tokens": {"type": "integer", "description": "最大生成token数（默认2000）"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    }, _llm_generate_handler, cacheable=False)
+
+    register_tool("read_file", {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "读取文件内容（自动检测格式：txt/json/csv/excel/parquet）。"
+                "限制：路径必须在文件链接授权目录内；不支持图片（用 llm_vision）和视频（用 extract_video_info）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                },
+                "required": ["path"],
+            },
+        },
+    }, _read_file_handler, cacheable=False)
+
+    register_tool("write_file", {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "写入文件（自动检测格式，路径必须在文件链接授权目录内）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                    "data": {"description": "要写入的内容（str/dict/list）"},
+                    "format": {"type": "string", "description": "可选，强制指定格式（text/json/csv）"},
+                },
+                "required": ["path", "data"],
+            },
+        },
+    }, _write_file_handler, cacheable=False)
+
+    register_tool("extract_video_info", {
+        "type": "function",
+        "function": {
+            "name": "extract_video_info",
+            "description": "提取视频元数据（时长、分辨率、帧率、编码等）。路径必须在文件链接授权目录内。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_path": {"type": "string", "description": "视频文件路径"},
+                },
+                "required": ["video_path"],
+            },
+        },
+    }, _extract_video_info_handler, cacheable=False)
+
+    register_tool("extract_keyframes", {
+        "type": "function",
+        "function": {
+            "name": "extract_keyframes",
+            "description": "抽取视频关键帧为 JPEG 图片文件，返回帧列表（含时间戳和图片路径）。帧图片可直接传给 llm_vision 做内容理解。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_path": {"type": "string", "description": "视频文件路径"},
+                    "max_frames": {"type": "integer", "description": "最多抽取帧数（默认8）"},
+                    "output_dir": {"type": "string", "description": "输出目录（默认在视频同目录下建_keyframes子目录）"},
+                    "method": {"type": "string", "description": "auto（场景检测+等间隔补充）或 interval（纯等间隔）"},
+                },
+                "required": ["video_path"],
+            },
+        },
+    }, _extract_keyframes_handler, cacheable=False)
 
 async def _query_table_data_handler(args, db, user_id, context):
     try:
@@ -343,15 +507,16 @@ async def _query_table_data_handler(args, db, user_id, context):
 
         await connector.close()
 
+        records = df.fillna("").to_dict(orient="records")
         result_str = json.dumps({
-            "total_matched": total or len(df),
-            "returned_rows": len(df),
+            "success": True,
+            "data": records,
             "columns": list(df.columns),
-            "rows": df.fillna("").values.tolist(),
-            "format": "split",
-            "_source": f"datasource:{ds_id}/table:{table_name}",
+            "row_count": total or len(df),
         }, ensure_ascii=False, default=str)
-        return truncate_tool_result(result_str)
+        if not context.get("_sandbox_call"):
+            result_str = truncate_tool_result(result_str)
+        return result_str
     except Exception as e:
         logger.error(f"查询数据失败: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -401,6 +566,46 @@ async def _list_user_datasources_handler(args, db, user_id, context):
     try:
         from sqlalchemy import select
         from app.models.datasource import DataSource
+        from app.services.connectors import get_connector
+
+        # by_name 模式：按名称查找数据源，返回 UUID
+        by_name = args.get("by_name")
+        if by_name:
+            result = await db.execute(
+                select(DataSource).where(
+                    DataSource.name == by_name,
+                    DataSource.is_active == True,
+                )
+            )
+            ds = result.scalar_one_or_none()
+            if not ds:
+                return json.dumps({"error": f"未找到数据源: {by_name}"}, ensure_ascii=False)
+            resp = {"id": str(ds.id), "name": ds.name, "type": ds.type}
+            # 沙箱调用时返回 connection_config（用于读取文件路径等配置）
+            if context.get("_sandbox_call"):
+                resp["connection_config"] = ds.connection_config or {}
+            return json.dumps(resp, ensure_ascii=False, default=str)
+
+        # datasource_id 模式：返回该数据源的表列表
+        ds_id = args.get("datasource_id")
+        if ds_id:
+            import uuid as _uuid
+            result = await db.execute(
+                select(DataSource).where(DataSource.id == _uuid.UUID(ds_id))
+            )
+            ds = result.scalar_one_or_none()
+            if not ds:
+                return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
+            try:
+                connector = get_connector(ds.type, ds.connection_config or {})
+                schema = await connector.get_schema()
+                await connector.close()
+                tables = [t.get("table_name", str(t)) if isinstance(t, dict) else str(t) for t in (schema or [])]
+            except Exception as e:
+                return json.dumps({"error": f"获取表列表失败: {e}"}, ensure_ascii=False)
+            return json.dumps({"tables": tables}, ensure_ascii=False)
+
+        # 默认模式：列出所有数据源
         result = await db.execute(
             select(DataSource).where(
                 DataSource.created_by == user_id,
@@ -408,12 +613,22 @@ async def _list_user_datasources_handler(args, db, user_id, context):
             )
         )
         sources = result.scalars().all()
-        return json.dumps({
-            "datasources": [
-                {"name": s.name, "id": str(s.id), "type": s.type}
-                for s in sources
-            ]
-        }, ensure_ascii=False)
+        ds_list = []
+        for s in sources:
+            tables = []
+            try:
+                connector = get_connector(s.type, s.connection_config or {})
+                schema = await connector.get_schema()
+                await connector.close()
+                tables = [{"table_name": t.get("table_name", ""), "data_type": t.get("data_type", "unknown")} for t in (schema or [])]
+            except Exception:
+                pass
+            entry = {"name": s.name, "id": str(s.id), "type": s.type, "tables": tables}
+            # 沙箱调用时返回 connection_config（用于读取文件路径等配置）
+            if context.get("_sandbox_call"):
+                entry["connection_config"] = s.connection_config or {}
+            ds_list.append(entry)
+        return json.dumps({"datasources": ds_list}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -538,20 +753,19 @@ async def _execute_sql_handler(args, db, user_id, context):
             await connector.close()
 
         if df is None or df.empty:
-            return json.dumps({"columns": list(df.columns) if df is not None else [], "rows": [], "row_count": 0, "_source": "sql"}, ensure_ascii=False)
+            return json.dumps({"success": True, "data": [], "columns": list(df.columns) if df is not None else [], "row_count": 0}, ensure_ascii=False)
         if len(df) > limit:
             df = df.head(limit)
-        columns = list(df.columns)
-        rows = df.fillna("").values.tolist()
+        records = df.fillna("").to_dict(orient="records")
         result_str = json.dumps({
-            "columns": columns,
-            "rows": rows,
-            "format": "split",
-            "row_count": len(rows),
-            "truncated": len(df) >= limit,
-            "_source": "sql",
+            "success": True,
+            "data": records,
+            "columns": list(df.columns),
+            "row_count": len(records),
         }, ensure_ascii=False, default=str)
-        return truncate_tool_result(result_str)
+        if not context.get("_sandbox_call"):
+            result_str = truncate_tool_result(result_str)
+        return result_str
     except Exception as e:
         logger.error(f"SQL 执行失败: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -580,6 +794,335 @@ async def _web_fetch_handler(args, db, user_id, context):
         return json.dumps({"error": "请求超时（30秒）"}, ensure_ascii=False)
     except Exception as e:
         logger.error(f"web_fetch 失败: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _llm_vision_handler(args, db, user_id, context):
+    """视觉模型分析图片（直接调逻辑，不走 HTTP double-hop）。"""
+    import base64
+    from pathlib import Path
+    from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+    from app.services.llm import llm_manager, init_user_llm_context, get_user_llm_config
+
+    image_path = args.get("image_path", "").strip()
+    prompt = args.get("prompt", "").strip()
+    if not image_path or not prompt:
+        return json.dumps({"error": "缺少 image_path 或 prompt"}, ensure_ascii=False)
+    try:
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(image_path, allowed_dirs)
+        p = Path(validated)
+        if not p.exists():
+            return json.dumps({"error": "图片文件不存在"}, ensure_ascii=False)
+
+        ext = p.suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
+            return json.dumps({"error": f"不支持的图片格式: {ext}"}, ensure_ascii=False)
+
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
+        mime = mime_map.get(ext, "image/jpeg")
+
+        raw_bytes = p.read_bytes()
+        try:
+            import io as _io
+            from PIL import Image as _PILImage
+            img = _PILImage.open(_io.BytesIO(raw_bytes))
+            if img.width > 1024 or img.height > 1024:
+                ratio = min(1024 / img.width, 1024 / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, _PILImage.LANCZOS)
+            buf = _io.BytesIO()
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85)
+            image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+            mime = "image/jpeg"
+        except Exception:
+            image_data = base64.b64encode(raw_bytes).decode("utf-8")
+
+        if user_id:
+            await init_user_llm_context(user_id)
+        await llm_manager.initialize()
+        _user_cfg = get_user_llm_config()
+        if not _user_cfg:
+            return json.dumps({"error": "未配置 LLM Provider，请在配置页面设置"}, ensure_ascii=False)
+
+        system_prompt = args.get("system_prompt")
+        temperature = args.get("temperature", 0.3)
+        max_tokens = int(args.get("max_tokens", 8000))
+        result_text = await llm_manager.vision(
+            image_data, mime, prompt, system_prompt, temperature, max_tokens
+        )
+        if not result_text:
+            return json.dumps({"error": "视觉模型返回空结果"}, ensure_ascii=False)
+        if not context.get("_sandbox_call"):
+            return truncate_tool_result(json.dumps({"image_path": image_path, "result": result_text}, ensure_ascii=False))
+        return json.dumps({"image_path": image_path, "result": result_text}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"llm_vision handler 异常: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _write_table_data_handler(args, db, user_id, context):
+    try:
+        import uuid as _uuid
+        from sqlalchemy import select
+        from app.models.datasource import DataSource
+        from app.services.connectors import ConnectorManager
+
+        ds_id = args.get("datasource_id")
+        table_name = args.get("table_name")
+        if not ds_id or not table_name:
+            return json.dumps({"error": "缺少必需参数 datasource_id 和 table_name"}, ensure_ascii=False)
+
+        records = args.get("data") if args.get("data") is not None else args.get("records", [])
+        kwargs = {}
+        if args.get("if_table_exists") and args["if_table_exists"] != "fail":
+            kwargs["if_table_exists"] = args["if_table_exists"]
+        if args.get("table_remark"):
+            kwargs["table_remark"] = args["table_remark"]
+        if args.get("column_remarks"):
+            kwargs["column_remarks"] = args["column_remarks"]
+
+        mgr = ConnectorManager(db)
+        result = await mgr.write_table(str(ds_id), table_name, records, **kwargs)
+
+        # 更新 TableMetadata.data_updated_at
+        if isinstance(result, dict) and result.get("success", True):
+            from datetime import datetime as _dt
+            from app.models.datasource import TableMetadata
+            try:
+                meta_result = await db.execute(
+                    select(TableMetadata).where(
+                        TableMetadata.data_source_id == _uuid.UUID(str(ds_id)),
+                        TableMetadata.table_name == table_name,
+                    )
+                )
+                meta = meta_result.scalar_one_or_none()
+                if meta:
+                    meta.data_updated_at = _dt.utcnow()
+                else:
+                    db.add(TableMetadata(
+                        data_source_id=_uuid.UUID(str(ds_id)),
+                        table_name=table_name,
+                        data_updated_at=_dt.utcnow(),
+                    ))
+            except Exception as e:
+                logger.warning(f"更新 data_updated_at 失败（不影响写入）: {e}")
+
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as e:
+        import traceback as _tb
+        _err_type = type(e).__name__
+        _err_detail = str(e)
+        _tb_summary = _tb.format_exc()[-500:]
+        logger.error(f"write_table_data 失败: {_err_type}: {_err_detail}\n{_tb_summary}")
+        return json.dumps({"error": f"{_err_type}: {_err_detail}", "traceback": _tb_summary}, ensure_ascii=False)
+
+
+async def _iter_table_data_handler(args, db, user_id, context):
+    try:
+        import uuid as _uuid
+        from sqlalchemy import select
+        from app.models.datasource import DataSource
+        from app.services.connectors import get_connector
+
+        ds_id = args.get("datasource_id")
+        table_name = args.get("table_name")
+        if not ds_id or not table_name:
+            return json.dumps({"error": "缺少必需参数 datasource_id 和 table_name"}, ensure_ascii=False)
+
+        page = max(1, int(args.get("page", 1)))
+        page_size = min(100000, max(1, int(args.get("page_size", 10000))))
+
+        result = await db.execute(
+            select(DataSource).where(DataSource.id == _uuid.UUID(ds_id))
+        )
+        datasource = result.scalar_one_or_none()
+        if not datasource:
+            return json.dumps({"error": "数据源不存在"}, ensure_ascii=False)
+
+        connector = get_connector(datasource.type, datasource.connection_config or {})
+        df = await connector.get_table_data(table_name, page=page, page_size=page_size)
+        stats = {}
+        try:
+            stats = await connector.get_table_stats(table_name)
+        except Exception:
+            pass
+        await connector.close()
+
+        total = stats.get("row_count", len(df))
+        columns = list(df.columns)
+        rows = df.fillna("").values.tolist()
+        return json.dumps({
+            "columns": columns,
+            "rows": rows,
+            "page": page,
+            "total": total,
+            "has_next": page * page_size < total,
+        }, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"iter_table_data 失败: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _llm_generate_handler(args, db, user_id, context):
+    try:
+        from app.services.llm import llm_manager, init_user_llm_context
+
+        prompt = args.get("prompt", "").strip()
+        if not prompt:
+            return json.dumps({"error": "prompt 不能为空"}, ensure_ascii=False)
+        system_prompt = args.get("system_prompt")
+        temperature = args.get("temperature", 0.7)
+        max_tokens = int(args.get("max_tokens", 8000))
+
+        if user_id:
+            await init_user_llm_context(user_id)
+        await llm_manager.initialize()
+        if system_prompt:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            result = await llm_manager.chat_with_messages(messages, temperature=temperature, max_tokens=max_tokens)
+        else:
+            result = await llm_manager.chat(prompt, temperature=temperature, max_tokens=max_tokens)
+        return json.dumps({"content": result}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"llm_generate 失败: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _read_file_handler(args, db, user_id, context):
+    try:
+        from pathlib import Path
+        from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+
+        file_path = args.get("path", "")
+        if not file_path:
+            return json.dumps({"error": "缺少 path"}, ensure_ascii=False)
+
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(file_path, allowed_dirs)
+        p = Path(validated)
+        if not p.exists():
+            return json.dumps({"error": "文件不存在"}, ensure_ascii=False)
+
+        ext = p.suffix.lower()
+        if ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
+            return json.dumps({"error": f"read_file 不支持读取图片文件({ext})。请用 call_tool(\"llm_vision\", image_path=..., prompt=...)。"}, ensure_ascii=False)
+        if ext in (".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp"):
+            return json.dumps({"error": f"read_file 不支持读取视频文件({ext})。请用 extract_video_info / extract_keyframes。"}, ensure_ascii=False)
+
+        if ext == ".json":
+            return json.dumps({"format": "json", "content": json.loads(p.read_text(encoding="utf-8"))}, ensure_ascii=False, default=str)
+        elif ext == ".csv":
+            import pandas as _pd
+            df = _pd.read_csv(p)
+            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+        elif ext in (".xlsx", ".xls"):
+            import pandas as _pd
+            df = _pd.read_excel(p)
+            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+        elif ext == ".parquet":
+            import pandas as _pd
+            df = _pd.read_parquet(p)
+            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+        else:
+            return json.dumps({"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _write_file_handler(args, db, user_id, context):
+    try:
+        from pathlib import Path
+        from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+
+        file_path = args.get("path", "")
+        data = args.get("data")
+        fmt = args.get("format")
+        if not file_path or data is None:
+            return json.dumps({"error": "缺少 path 或 data"}, ensure_ascii=False)
+
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(file_path, allowed_dirs)
+        p = Path(validated)
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+        ext = p.suffix.lower()
+        if ext == ".json" or fmt == "json":
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        elif ext == ".csv" or fmt == "csv":
+            import pandas as _pd
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                _pd.DataFrame(data).to_csv(p, index=False, encoding="utf-8-sig")
+            else:
+                p.write_text(str(data), encoding="utf-8")
+        else:
+            if isinstance(data, (dict, list)):
+                p.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            else:
+                p.write_text(str(data), encoding="utf-8")
+        return json.dumps({"success": True, "path": str(p), "size": p.stat().st_size}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _extract_video_info_handler(args, db, user_id, context):
+    try:
+        from pathlib import Path
+        from app.services.video_utils import probe_video, is_video_file
+        from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+
+        video_path = args.get("video_path", "")
+        if not video_path:
+            return json.dumps({"error": "缺少 video_path"}, ensure_ascii=False)
+
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(video_path, allowed_dirs)
+        p = Path(validated)
+        if not p.exists():
+            return json.dumps({"error": "视频文件不存在"}, ensure_ascii=False)
+        if not is_video_file(str(p)):
+            return json.dumps({"error": f"不支持的视频格式: {p.suffix}"}, ensure_ascii=False)
+
+        result = probe_video(str(p))
+        result["video_path"] = str(p)
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _extract_keyframes_handler(args, db, user_id, context):
+    try:
+        from pathlib import Path
+        from app.services.video_utils import extract_keyframes as _extract, is_video_file
+        from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+
+        video_path = args.get("video_path", "")
+        if not video_path:
+            return json.dumps({"error": "缺少 video_path"}, ensure_ascii=False)
+
+        max_frames = int(args.get("max_frames", 8))
+        output_dir = args.get("output_dir")
+        method = args.get("method", "auto")
+
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(video_path, allowed_dirs)
+        p = Path(validated)
+        if not p.exists():
+            return json.dumps({"error": "视频文件不存在"}, ensure_ascii=False)
+        if not is_video_file(str(p)):
+            return json.dumps({"error": f"不支持的视频格式: {p.suffix}"}, ensure_ascii=False)
+        if output_dir:
+            _validate_file_path(output_dir, allowed_dirs)
+
+        frames = _extract(str(p), max_frames=max_frames, output_dir=output_dir, method=method)
+        return json.dumps({"success": True, "frames": frames, "count": len(frames)}, ensure_ascii=False, default=str)
+    except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
@@ -674,26 +1217,25 @@ async def _run_script_handler(args, db, user_id, context):
         parameters.pop(key, None)
     try:
         if context.get("debug_type") == "operator":
-            import io, time as _time, inspect as _inspect
-            from app.api.v1.endpoints.operator import _build_operator_namespace, _sanitize_op
-            script = context.get("debug_script_content", "")
-            func_name = context.get("debug_function_name", "")
-            captured = io.StringIO()
-            exec_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
-            exec_ns.update(_build_operator_namespace(user_id))
-            exec(script, exec_ns)
-            debug_func = exec_ns.get(func_name)
-            if not debug_func:
-                return json.dumps({"success": False, "error": f"脚本中未找到函数: {func_name}"})
-            exec_start = _time.time()
-            is_async = _inspect.iscoroutinefunction(debug_func)
-            exec_result = await debug_func(**parameters) if is_async else debug_func(**parameters)
-            if hasattr(exec_result, "to_dict"):
-                exec_result = exec_result.to_dict(orient="records")
-            elapsed = (_time.time() - exec_start) * 1000
-            result = {"success": True, "result": _sanitize_op(exec_result), "stdout": captured.getvalue() or None, "execution_time_ms": round(elapsed, 2)}
-            context["debug_last_success_params"] = parameters
-            logger.info(f"debug run_script (operator): success=True")
+            from app.services.skill_runner import run_skill_script_by_content_async
+            result = await run_skill_script_by_content_async(
+                script_content=context.get("debug_script_content", ""),
+                parameters=parameters,
+                user_id=str(user_id) if user_id else None,
+                entry_function=context.get("debug_function_name"),
+                timeout=600,
+            )
+            _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+            _failed = (not result.get("success")
+                       or ("success" in _inner and not _inner["success"])
+                       or (result.get("error") and str(result.get("error")).strip())
+                       or (_inner.get("error") and str(_inner.get("error")).strip()))
+            if not _failed:
+                context["debug_last_success_params"] = parameters
+            else:
+                _err = str(result.get("error") or _inner.get("error") or "")
+                logger.info(f"debug run_script (operator): success=False, error={_err[:500]}")
+            logger.info(f"debug run_script (operator): success={not _failed}")
             return json.dumps(result, ensure_ascii=False, default=str)
         elif context.get("debug_type") == "pipeline":
             from app.services.skill_runner import run_skill_script_by_content_async
@@ -723,7 +1265,7 @@ async def _run_script_handler(args, db, user_id, context):
             from app.services.skill_runner import run_skill_script_streaming_async
             ds_id = context.get("debug_source_datasource_id") or context.get("debug_datasource_id")
             ds_name = context.get("debug_source_datasource_name") or context.get("debug_datasource_name")
-            tbl = context.get("debug_source_table_name") or context.get("debug_table_name")
+            tbl = context.get("debug_source_data_name") or context.get("debug_table_name")
             result = None
             _progress_queue = context.get("_progress_queue")
             async for _item in run_skill_script_streaming_async(
@@ -786,6 +1328,7 @@ async def _finalize_script_change(new_code, old_code, script_name, args, db, con
     """写入磁盘 + 语法检查 + diff（从 data_processor_agent._finalize_script_change 原样搬迁）。"""
     import os
     from pathlib import Path
+    from datetime import datetime
     _skill_md_updated = False
     _skill_md = args.get("skill_md", "")
     if _skill_md:
@@ -801,6 +1344,34 @@ async def _finalize_script_change(new_code, old_code, script_name, args, db, con
         _script_dir.mkdir(parents=True, exist_ok=True)
         _file_path = _script_dir / script_name
         _file_path.write_text(new_code, encoding="utf-8")
+
+        # 更新 DB 中 Skill/Operator/Pipeline 的 updated_at（按类型查表）
+        _debug_type = context.get("debug_type", "skill")
+        try:
+            from sqlalchemy import update as sa_update, or_
+            if _debug_type == "skill":
+                from app.models.skill import Skill
+                # skill_path 在 DB 中可能存绝对路径或相对路径（seed 技能只存 UUID 文件夹名），
+                # 用 or_ 两种形式都匹配，确保 updated_at 一定更新
+                _folder_name = Path(_folder).name
+                await db.execute(sa_update(Skill).where(
+                    or_(Skill.skill_path == str(_folder), Skill.skill_path == _folder_name)
+                ).values(updated_at=datetime.now()))
+                await db.commit()
+            elif _debug_type == "operator":
+                from app.models.operator import Operator
+                _op_id = context.get("debug_operator_id") or context.get("debug_id")
+                if _op_id:
+                    await db.execute(sa_update(Operator).where(Operator.id == _op_id).values(updated_at=datetime.now()))
+                    await db.commit()
+            elif _debug_type == "pipeline":
+                from app.models.pipeline import Pipeline
+                _pl_id = context.get("debug_pipeline_id") or context.get("debug_id")
+                if _pl_id:
+                    await db.execute(sa_update(Pipeline).where(Pipeline.id == _pl_id).values(updated_at=datetime.now()))
+                    await db.commit()
+        except Exception as e:
+            logger.warning(f"更新 updated_at 失败(非致命): {e}")
 
     context["debug_script_content"] = new_code
     context["_script_has_been_read"] = False
@@ -1429,11 +2000,11 @@ async def _check_data_security_handler(args, db, user_id, context):
 def _resolve_ds_table(context):
     """从 context 解析数据源ID和表名（原 DataInspector._execute_tool 的自动填充逻辑）。"""
     ds_id = context.get("datasource_id") or context.get("debug_source_datasource_id") or context.get("debug_datasource_id")
-    tbl = context.get("table_name") or context.get("debug_source_table_name") or context.get("debug_table_name")
+    tbl = context.get("table_name") or context.get("debug_source_data_name") or context.get("debug_table_name")
 
     if not ds_id or not tbl:
         ds_name = context.get("source_datasource_name") or context.get("debug_source_datasource_name")
-        tbl_name = context.get("source_table_name") or context.get("debug_source_table_name")
+        tbl_name = context.get("source_data_name") or context.get("debug_source_data_name")
         if ds_name and tbl_name:
             # 延迟查 DB（需要时再在 handler 内处理）
             return ds_name, tbl_name

@@ -1102,6 +1102,14 @@ function stopDebugGeneration() {
   if (debugAbortController) {
     debugAbortController.abort()
   }
+  // 清理中止后不完整的 assistant 消息（既无执行结果也无脚本更新）
+  const lastMsg = debugMessages.value[debugMessages.value.length - 1]
+  if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.runResult && !lastMsg.scriptUpdated) {
+    const trimmed = (lastMsg.llmContent || lastMsg.content || '').replace(/\[已停止生成\]/g, '').trim()
+    if (!trimmed) {
+      debugMessages.value.pop()
+    }
+  }
 }
 
 function handleDebugKeyDown(e: KeyboardEvent) {

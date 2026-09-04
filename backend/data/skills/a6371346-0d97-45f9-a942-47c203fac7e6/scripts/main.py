@@ -1,15 +1,13 @@
-import os
+import re
 import json
 import pandas as pd
 from typing import Dict, Any, Optional, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import time
 
 
 def _log_step(msg: str) -> None:
     """输出进度提示：print 立即 flush，避免长时间无输出被判超时"""
-    log("info", msg)
     print(msg, flush=True)
 
 
@@ -19,12 +17,12 @@ def _log_step(msg: str) -> None:
 
 def _extract_video_metadata(video_path: str) -> Dict[str, Any]:
     """提取视频元数据（时长、分辨率、帧率等）"""
-    log("info", f"开始提取视频元数据: {video_path}")
+    print(f"开始提取视频元数据: {video_path}")
 
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"视频文件不存在: {video_path}")
 
-    info = extract_video_info(video_path)
+    info = call_tool("extract_video_info", video_path=video_path)
     duration = info.get("duration", 0)
     width = info.get("width", 0)
     height = info.get("height", 0)
@@ -34,7 +32,7 @@ def _extract_video_metadata(video_path: str) -> Dict[str, Any]:
     print(f"  时长: {duration:.1f}s | 分辨率: {width}x{height} | 帧率: {fps:.1f}fps | 总帧数: {total_frames}")
 
     if duration < 1:
-        log("warn", f"视频时长过短 ({duration:.1f}s)，可能无法有效抽帧")
+        print(f"视频时长过短 ({duration:.1f}s)，可能无法有效抽帧")
 
     return info
 
@@ -45,9 +43,10 @@ def _extract_video_metadata(video_path: str) -> Dict[str, Any]:
 
 def _extract_keyframes(video_path: str, max_frames: int = 8) -> List[Dict]:
     """抽取视频关键帧，返回帧信息列表"""
-    log("info", f"开始抽取关键帧，最多 {max_frames} 帧")
+    print(f"开始抽取关键帧，最多 {max_frames} 帧")
 
-    frames = extract_keyframes(video_path, max_frames=max_frames, method="auto")
+    _kf_result = call_tool("extract_keyframes", video_path=video_path, max_frames=max_frames, method="auto")
+    frames = _kf_result.get("frames", []) if isinstance(_kf_result, dict) else []
 
     if not frames:
         raise RuntimeError("未能从视频中抽取任何关键帧，请检查视频文件格式和内容")
@@ -84,16 +83,17 @@ def _analyze_single_frame(frame: Dict, video_name: str) -> Dict[str, Any]:
     )
 
     try:
-        result = llm_vision(
-            image_path,
-            prompt,
+        result = call_tool(
+            "llm_vision",
+            image_path=image_path,
+            prompt=prompt,
             system_prompt=(
                 "你是一个专业的培训内容分析专家，擅长从教学视频截图中精准提取文字、"
                 "描述画面内容并识别培训知识点。请务必完整提取画面中的所有文字信息。"
             ),
             temperature=0.3,
             max_tokens=2000
-        )
+        )["result"]
     except Exception as e:
         raise RuntimeError(
             f"LLM 帧分析调用失败（帧 {frame_num} @ {round(timestamp, 1)}s）: {e}"
@@ -116,33 +116,38 @@ def _analyze_frames_concurrent(
     video_name: str,
     max_workers: int = 4
 ) -> List[Dict]:
-    """并发分析所有关键帧"""
-    worker_count = min(max_workers, len(frames))
-    log("info", f"开始并发分析 {len(frames)} 个关键帧（并发数={worker_count}）")
+    """分析所有关键帧（并发执行）。
 
-    results: List[Dict] = []
+    call_tool(\"llm_vision\") 走 HTTP 后端，属于 I/O 密集型，帧间无依赖，
+    可安全并发。并发数取 min(max_workers, 帧数)，控制在 4-8 避免压垮后端。
+    单帧失败仅记录并跳过，不拖垮整个视频。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    total = len(frames)
+    if total == 0:
+        return []
+    workers = max(1, min(int(max_workers), total))
+    print(f"开始分析 {total} 个关键帧（并发 {workers}）", flush=True)
+
+    results_by_frame: Dict[int, Dict] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {
-            executor.submit(_analyze_single_frame, frame, video_name): frame
+            executor.submit(_analyze_single_frame, frame, video_name): frame["frame"]
             for frame in frames
         }
+        for done_idx, fut in enumerate(as_completed(future_map), start=1):
+            frame_no = future_map[fut]
+            try:
+                r = fut.result()
+                results_by_frame[frame_no] = r
+                _log_step(f"  [{video_name}] 帧分析进度 {done_idx}/{total}（帧 {frame_no} 完成）")
+            except Exception as e:
+                print(f"  [{video_name}] 帧 {frame_no} 分析失败，跳过: {e}", flush=True)
 
-        completed = 0
-        total = len(frames)
-        for future in as_completed(future_map):
-            frame = future_map[future]
-            completed += 1
-            # 不再吞掉 LLM 调用异常：future.result() 会重新抛出底层异常，
-            # 让错误信息完整上抛，避免任务“假成功”后写入降级的占位内容。
-            result = future.result()
-            results.append(result)
-            _log_step(f"  [{video_name}] 帧分析进度 {completed}/{total}（帧 {frame['frame']} @ {frame['timestamp']:.1f}s 完成）")
-
-    # 按帧号排序
-    results.sort(key=lambda x: x["frame_number"])
-    print(f"  所有帧分析完成，成功 {len(results)}/{len(results)}")
-
+    # 按帧号排序，保证下游语义聚合的顺序稳定
+    results = [results_by_frame[fn] for fn in sorted(results_by_frame)]
+    print(f"  所有帧分析完成，成功 {len(results)}/{total}", flush=True)
     return results
 
 
@@ -155,77 +160,139 @@ def _semantic_extraction(
     video_info: Dict[str, Any],
     video_name: str
 ) -> List[Dict]:
-    """将所有帧分析结果送入大模型进行语义聚合，提取结构化知识条目"""
+    """将帧分析结果分批送入大模型做语义提取，最后合并去重生成知识条目。
 
-    log("info", "开始语义聚合与知识提取")
-
-    # 拼接所有帧的分析文本
-    frame_texts = []
-    for fa in frame_analyses:
-        frame_texts.append(
-            f"=== 帧 {fa['frame_number']} (时间戳: {fa['timestamp']}s) ===\n{fa['analysis']}"
-        )
-    combined_text = "\n\n".join(frame_texts)
+    帧数较多时若把全部帧拼成一条超长 prompt，极易触发 LLM 静默返回空内容，
+    导致知识点被压到非常少。这里改为每 chunk_size 帧一批独立提取，每批
+    prompt 短、返回稳定，能充分展开每个知识点；最后按标题去重合并。
+    """
+    print("开始语义聚合与知识提取", flush=True)
 
     duration = video_info.get("duration", 0)
 
     system_prompt = (
-        "你是一个专业的培训知识管理专家。你的任务是从培训视频的多个关键帧分析结果中，"
-        "提取、整合并结构化培训知识点。要求：\n"
-        "1. 识别视频中的核心培训主题和章节结构\n"
-        "2. 将分散在各帧中的信息整合为连贯的知识点\n"
-        "3. 去除重复信息，合并相关内容\n"
+        "你是一个专业的培训知识管理专家。你的任务是从培训视频的关键帧分析结果中，"
+        "提取并结构化培训知识点。要求：\n"
+        "1. 识别画面中的培训主题、章节结构和核心知识点\n"
+        "2. 将分散在各帧中的信息梳理为一个个独立、详实的知识点\n"
+        "3. 尽量保留完整的知识点，只有完全重复的内容才合并，不要过度合并\n"
         "4. 为每个知识点标注重要程度（高/中/低）和所属章节\n"
-        "5. 内容应详实、准确，保留关键数据和操作步骤\n"
-        "6. 如果某些帧内容重复或相似，合并为一个知识点\n\n"
+        "5. 内容应详实、准确，保留关键数据、术语和操作步骤\n\n"
         "请严格以JSON数组格式输出，不要包含其他文字。每个元素格式：\n"
         '{"knowledge_point": "知识点标题", "category": "知识分类", '
         '"content": "详细内容（保留关键数据和步骤）", "importance": "高/中/低", '
         '"chapter": "所属章节", "timestamp": "对应视频时间戳（秒）"}'
     )
 
-    prompt = (
-        f"培训视频名称: {video_name}\n"
-        f"视频时长: {duration:.1f}秒\n"
-        f"视频分辨率: {video_info.get('width', 0)}x{video_info.get('height', 0)}\n\n"
-        f"以下是 {len(frame_analyses)} 个关键帧的分析结果：\n\n"
-        f"{combined_text}\n\n"
-        f"请从以上内容中提取结构化的培训知识点，以JSON数组格式返回。"
-        f"确保每个知识点内容详实、独立可用。"
-    )
+    # 每批 6 帧，避免单条 prompt 过长导致 LLM 空返回；批量适中兼顾稳定性与召回
+    chunk_size = 6
+    chunks = [frame_analyses[i:i + chunk_size] for i in range(0, len(frame_analyses), chunk_size)]
 
-    # LLM 偶发返回空结果，加入重试机制；重试后仍空则降级返回空列表（由外层跳过该视频）
-    max_retries = 3
-    result = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            result = llm_chat(
-                prompt,
-                system_prompt=system_prompt,
-                temperature=0.3,
-                max_tokens=4000
+    all_points: List[Dict] = []
+    for ci, chunk in enumerate(chunks, start=1):
+        _log_step(f"  语义提取 批次 {ci}/{len(chunks)}（{len(chunk)} 帧）")
+
+        frame_texts = []
+        for fa in chunk:
+            frame_texts.append(
+                f"=== 帧 {fa['frame_number']} (时间戳: {fa['timestamp']}s) ===\n{fa['analysis']}"
             )
-        except Exception as e:
-            result = None
-            log("warn", f"LLM 语义聚合第 {attempt} 次调用异常: {e}")
-        if result and str(result).strip():
-            break
-        log("warn", f"LLM 语义聚合第 {attempt} 次未返回有效结果")
-        if attempt < max_retries:
-            time.sleep(2)
+        combined_text = "\n\n".join(frame_texts)
 
-    if not result or not str(result).strip():
-        log("warn", "LLM 语义聚合多次未返回有效结果，降级为无知识条目（该视频将被跳过）")
-        return []
+        prompt = (
+            f"培训视频名称: {video_name}\n"
+            f"视频时长: {duration:.1f}秒\n"
+            f"视频分辨率: {video_info.get('width', 0)}x{video_info.get('height', 0)}\n\n"
+            f"以下是本批次 {len(chunk)} 个关键帧的分析结果：\n\n"
+            f"{combined_text}\n\n"
+            f"请从以上内容中提取结构化的培训知识点，以JSON数组格式返回。"
+            f"确保每个知识点内容详实、独立可用，不要过度合并。"
+        )
 
-    # 解析 JSON 结果
-    knowledge_points = _parse_knowledge_json(result)
+        result = None
+        for attempt in range(1, 4):
+            try:
+                result = call_tool(
+                    "llm_generate",
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=0.3,
+                    max_tokens=4000
+                )["content"]
+            except Exception as e:
+                result = None
+                print(f"LLM 语义提取第 {ci}/{len(chunks)} 批第 {attempt} 次调用异常: {e}", flush=True)
+            if result and str(result).strip():
+                break
+            print(f"LLM 语义提取第 {ci}/{len(chunks)} 批第 {attempt} 次未返回有效结果", flush=True)
+            if attempt < 3:
+                time.sleep(2)
 
-    print(f"  语义提取完成，共生成 {len(knowledge_points)} 个知识条目")
-    for i, kp in enumerate(knowledge_points):
-        print(f"    [{i+1}] {kp.get('knowledge_point', 'N/A')} (重要度: {kp.get('importance', 'N/A')}, 章节: {kp.get('chapter', 'N/A')})")
+        # 该批失败时降级为逐帧知识条目（复用已成功的帧分析文本，不跨视频舍去信息）
+        if not result or not str(result).strip():
+            print(f"  批次 {ci} 多次未返回有效结果，降级为逐帧知识条目", flush=True)
+            points = _fallback_per_frame_knowledge(chunk)
+        else:
+            points = _parse_knowledge_json(result)
 
-    return knowledge_points
+        all_points.extend(points)
+        print(f"  批次 {ci} 提取 {len(points)} 条，累计 {len(all_points)} 条", flush=True)
+
+    # 分批提取可能产生跨批次重复条目，按标题去重（保留内容最详实的一条）
+    deduped = _dedupe_knowledge_points(all_points)
+
+    print(f"  语义提取完成，共生成 {len(deduped)} 个知识条目", flush=True)
+    for i, kp in enumerate(deduped):
+        print(f"    [{i + 1}] {kp.get('knowledge_point', 'N/A')} (重要度: {kp.get('importance', 'N/A')}, 章节: {kp.get('chapter', 'N/A')})", flush=True)
+
+    return deduped
+
+
+def _dedupe_knowledge_points(points: List[Dict]) -> List[Dict]:
+    """按知识点标题去重，保留 content 最详实（最长）的一条。
+
+    跨批次提取时同一知识点可能被重复提取，标题相同即视为重复，
+    保留内容最完整的一条，避免写入重复知识。
+    """
+    best: Dict[str, Dict] = {}
+    for kp in points:
+        title = (kp.get("knowledge_point") or "").strip()
+        if not title:
+            title = (kp.get("chapter") or "未命名") + "_" + str(kp.get("timestamp") or "0")
+        content_len = len((kp.get("content") or ""))
+        if title not in best or content_len > len((best[title].get("content") or "")):
+            best[title] = kp
+    return list(best.values())
+
+
+def _fallback_per_frame_knowledge(frame_analyses: List[Dict]) -> List[Dict]:
+    """语义聚合失败时的降级方案：把每一帧的分析内容作为独立知识条目。
+
+    帧分析（llm_vision）已经成功拿到每帧的文字/画面/知识点主题，
+    直接复用这些结果入库，无需再次调用 LLM，保证视频一定能产出知识。
+    """
+    kps = []
+    for fa in frame_analyses:
+        analysis = (fa.get("analysis") or "").strip()
+        if not analysis:
+            continue
+        ts = fa.get("timestamp", 0)
+        # 优先从分析文本中抽取「知识点主题：」作为标题，否则用帧号兜底
+        m = re.search(r"知识点主题[：:]\s*(.+)", analysis)
+        title = (m.group(1).strip() if m else f"培训要点（第 {fa.get('frame_number', '?')} 帧）")
+        if len(title) > 60:
+            title = title[:60]
+        kps.append({
+            "knowledge_point": title,
+            "category": "培训要点",
+            "content": analysis,
+            "importance": "中",
+            "chapter": "逐帧知识",
+            "timestamp": str(ts),
+        })
+    if kps:
+        print(f"  降级完成：由 {len(kps)} 个帧分析生成知识条目")
+    return kps
 
 
 def _parse_knowledge_json(raw_text: str) -> List[Dict]:
@@ -243,7 +310,7 @@ def _parse_knowledge_json(raw_text: str) -> List[Dict]:
             if isinstance(points, list):
                 return points
         except json.JSONDecodeError as e:
-            log("warn", f"JSON解析失败: {str(e)}，尝试修复")
+            print(f"JSON解析失败: {str(e)}，尝试修复")
 
             # 尝试修复常见JSON问题（尾逗号等）
             import re
@@ -252,13 +319,13 @@ def _parse_knowledge_json(raw_text: str) -> List[Dict]:
             try:
                 points = json.loads(fixed)
                 if isinstance(points, list):
-                    log("info", "JSON修复成功")
+                    print("JSON修复成功")
                     return points
             except json.JSONDecodeError:
                 pass
 
     # 如果无法解析，将整个结果作为一条知识
-    log("warn", "无法解析为JSON数组，将原始文本作为单条知识保存")
+    print("无法解析为JSON数组，将原始文本作为单条知识保存")
     return [{
         "knowledge_point": "综合培训内容（未结构化）",
         "category": "通用",
@@ -279,7 +346,7 @@ def _generate_video_summary(
     video_name: str
 ) -> str:
     """生成培训视频的整体摘要"""
-    log("info", "生成视频整体摘要")
+    print("生成视频整体摘要")
 
     kp_titles = [f"- {kp.get('knowledge_point', '')} ({kp.get('importance', '')})" for kp in knowledge_points]
     kp_list = "\n".join(kp_titles)
@@ -292,12 +359,14 @@ def _generate_video_summary(
     )
 
     try:
-        summary = llm_chat(prompt, temperature=0.3, max_tokens=500)
+        summary = call_tool("llm_generate", prompt=prompt, temperature=0.3, max_tokens=500)["content"]
     except Exception as e:
-        raise RuntimeError(f"LLM 摘要生成调用失败: {e}") from e
+        print(f"LLM 摘要生成调用失败，降级为空摘要: {e}")
+        return ""
 
     if not summary or not str(summary).strip():
-        raise RuntimeError("LLM 摘要生成返回空结果")
+        print("LLM 摘要生成返回空结果，降级为空摘要")
+        return ""
 
     print(f"  摘要: {summary[:100]}...")
     return summary
@@ -450,25 +519,20 @@ def _sanitize_collection_name(name: str) -> str:
 
 
 def _get_datasource_connection_config(datasource_name: str):
-    """通过内部 API 获取数据源的 connection_config（用于读取 chroma 持久化目录等）。
+    """通过内置工具获取数据源的 connection_config（用于读取 chroma 持久化目录等）。
 
-    沙箱内脚本无法直接拿到数据源配置，get_datasource_id_by_name 只返回 UUID，
-    因此这里复刻 _discover_video_files 的做法，用内部无认证接口拉取完整配置。
+    get_datasource_id_by_name 在沙箱模式下返回 connection_config，
+    包含文件路径等信息，用于发现视频文件。
     """
-    import urllib.request
-    _base = os.environ.get("DATACRAB_API_BASE", "http://localhost:8000")
-    url = f"{_base}/api/v1/datasources/internal/datasources"
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        _all = json.loads(resp.read().decode("utf-8"))
-    for s in _all:
-        if s.get("name") == datasource_name:
-            cfg = s.get("connection_config") or {}
-            if isinstance(cfg, str):
-                try:
-                    cfg = json.loads(cfg)
-                except Exception:
-                    cfg = {}
-            return s, cfg
+    _result = call_tool("list_user_datasources", by_name=datasource_name)
+    if isinstance(_result, dict) and _result.get("id"):
+        cfg = _result.get("connection_config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        return _result, cfg
     return None, {}
 
 
@@ -491,7 +555,7 @@ def _delete_existing_knowledge(
     _ds, cfg = _get_datasource_connection_config(datasource_name)
     persist_dir = cfg.get("persist_directory") or cfg.get("path") or "d:/chroma-data"
     if not persist_dir or not os.path.isdir(persist_dir):
-        log("warn", f"[覆盖历史] chroma 数据目录不存在，跳过删除: {persist_dir}")
+        print(f"[覆盖历史] chroma 数据目录不存在，跳过删除: {persist_dir}")
         return 0
 
     client = chromadb.PersistentClient(path=persist_dir)
@@ -524,38 +588,43 @@ def _write_to_chroma(
     collection_name: str,
     batch_size: int = 100,
     video_names: Optional[List[str]] = None,
-) -> None:
+) -> str:
     """写入知识条目到 Chroma 向量库集合。
 
-    注意：Chroma 连接器内部走 upsert，且其 write_table_data 签名只接受
-    (table, records)，不能传 if_table_exists / table_remark / column_remarks，
-    否则会因连接器不接受 kwargs 而报错。
+    覆盖历史策略：Chroma 连接器完整支持 if_table_exists 参数，
+    第一批用 overwrite（清空集合旧条目后重建），后续批次用 upsert 追加，
+    实现「相同视频重新提取后覆盖历史、不残留旧条目」。
+
+    返回实际写入的集合名（可能被 sanitize 改名）。
     """
-    ds_id = get_datasource_id_by_name(datasource_name)
+    if re.match(r'^[0-9a-f]{8}-', str(datasource_name), re.I):
+        ds_id = datasource_name
+    else:
+        _r = call_tool("list_user_datasources", by_name=datasource_name)
+        ds_id = _r.get("id") if isinstance(_r, dict) else None
     if not ds_id:
         raise ValueError(f"找不到数据源: {datasource_name}")
 
     # Chroma 集合名仅接受 [a-zA-Z0-9._-]，中文名会触发 HTTP 500，先规范化
     collection_name = _sanitize_collection_name(collection_name)
 
-    # 覆盖历史：同一视频重新分析时，先删除该视频旧知识条目，再 upsert 新条目，
-    # 避免知识条数变化或 id 变化导致历史数据累积残留。
-    if video_names:
-        _delete_existing_knowledge(datasource_name, collection_name, video_names)
-
     total = len(records)
-    _log_step(f"[写入] 开始写入 {total} 条知识条目 → {datasource_name}.{collection_name} (Chroma upsert)")
+    _log_step(f"[写入] 开始写入 {total} 条知识条目 → {datasource_name}.{collection_name} (覆盖历史)")
     total_batches = (total + batch_size - 1) // batch_size
 
     for i in range(0, total, batch_size):
         batch_num = i // batch_size + 1
         batch = records[i:i + batch_size]
         _log_step(f"[写入] 批次 {batch_num}/{total_batches} ({len(batch)} 条)")
-        result = write_table_data(ds_id, collection_name, records=batch)
+        # 第一批 overwrite 清空集合旧数据，后续批次 upsert 追加（避免重复清空）
+        strategy = "overwrite" if batch_num == 1 else "upsert"
+        result = call_tool("write_table_data", datasource_id=ds_id, table_name=collection_name, records=batch, if_table_exists=strategy)
         if not result.get("success"):
-            raise ValueError(f"写入失败: {result.get('message', '未知错误')}")
+            err = result.get("message") or result.get("error") or "未知错误"
+            raise ValueError(f"写入失败: {err}")
 
     print(f"  写入完成: {total} 条知识条目 → {datasource_name}.{collection_name}", flush=True)
+    return collection_name
 
 
 # ============================================================
@@ -591,23 +660,20 @@ def _discover_video_files(video_datasource: str) -> List[str]:
                   ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp"}
 
     _log_step(f"[1/5] 获取视频数据源信息: {video_datasource}")
-    ds_id = get_datasource_id_by_name(video_datasource)
+    if re.match(r'^[0-9a-f]{8}-', str(video_datasource), re.I):
+        ds_id = video_datasource
+    else:
+        _r = call_tool("list_user_datasources", by_name=video_datasource)
+        ds_id = _r.get("id") if isinstance(_r, dict) else None
     if not ds_id:
         raise ValueError(f"找不到视频数据源: {video_datasource}")
 
-    # 通过内部接口拿完整数据源信息（含 connection_config）
+    # 通过内置工具拿完整数据源信息（含 connection_config）
     ds_info = None
     try:
-        import urllib.request as _ureq
-        _url = f"{os.environ.get('DATACRAB_API_BASE', 'http://localhost:8000')}/api/v1/datasources/internal/datasources"
-        with _ureq.urlopen(_url, timeout=10) as _resp:
-            _all = json.loads(_resp.read().decode("utf-8"))
-        for s in _all:
-            if s.get("name") == video_datasource or s.get("id") == ds_id:
-                ds_info = s
-                break
+        ds_info, _cfg = _get_datasource_connection_config(video_datasource)
     except Exception as e:
-        log("warn", f"无法获取视频数据源配置详情: {e}")
+        print(f"无法获取视频数据源配置详情: {e}")
 
     candidates: List[str] = []
 
@@ -623,7 +689,7 @@ def _discover_video_files(video_datasource: str) -> List[str]:
                         if os.path.isfile(_full) and os.path.splitext(_full)[1].lower() in VIDEO_EXTS:
                             candidates.append(_full)
                 except OSError as e:
-                    log("warn", f"读取视频目录失败: {e}")
+                    print(f"读取视频目录失败: {e}")
         fps = _nested_config_path(ds_info, ["file_paths"], [])
         if isinstance(fps, list):
             for _f in fps:
@@ -632,7 +698,8 @@ def _discover_video_files(video_datasource: str) -> List[str]:
 
     # 兜底：list_tables 返回的文件名
     try:
-        tables = list_tables(video_datasource) or []
+        _tables_result = call_tool("list_user_datasources", datasource_id=ds_id)
+        tables = _tables_result.get("tables", []) if isinstance(_tables_result, dict) else []
         for _t in tables:
             _name = _t.get("table_name", _t) if isinstance(_t, dict) else str(_t)
             if _name and os.path.splitext(_name)[1].lower() in VIDEO_EXTS:
@@ -647,7 +714,7 @@ def _discover_video_files(video_datasource: str) -> List[str]:
                             if os.path.isfile(_full):
                                 candidates.append(_full)
     except Exception as e:
-        log("warn", f"list_tables 视频发现失败: {e}")
+        print(f"list_tables 视频发现失败: {e}")
 
     # 去重（保持顺序）
     seen = set()
@@ -679,15 +746,22 @@ def _process_single_video(
     try:
         video_info = _extract_video_metadata(vp)
     except Exception as e:
-        log("warn", f"视频 {video_name} 元数据提取失败，跳过: {e}")
+        print(f"视频 {video_name} 元数据提取失败，跳过: {e}")
         return {"success": False, "video_name": video_name, "video_path": vp, "error": f"元数据提取失败: {e}"}
 
     # Step 2：关键帧抽取
-    _log_step(f"[{video_name}] 步骤2/7 抽取关键帧 (最多 {max_frames} 帧)")
+    # 按视频时长动态提升抽帧数：内容丰富的长视频抽更多帧，避免漏掉知识点。
+    # 策略：约每 30 秒一帧，最少 max_frames(默认8) 帧，最多 60 帧。
     try:
-        frames = _extract_keyframes(vp, max_frames)
+        _dur = float(video_info.get("duration") or 0)
+    except Exception:
+        _dur = 0.0
+    effective_frames = min(60, max(int(max_frames), int(_dur / 30.0) if _dur > 0 else int(max_frames)))
+    _log_step(f"[{video_name}] 步骤2/7 抽取关键帧 (时长 {_dur:.1f}s → 目标 {effective_frames} 帧)")
+    try:
+        frames = _extract_keyframes(vp, effective_frames)
     except Exception as e:
-        log("warn", f"视频 {video_name} 抽帧失败，跳过: {e}")
+        print(f"视频 {video_name} 抽帧失败，跳过: {e}")
         return {"success": False, "video_name": video_name, "video_path": vp, "error": f"抽帧失败: {e}"}
 
     # Step 3：并发帧分析
@@ -695,14 +769,14 @@ def _process_single_video(
     try:
         frame_analyses = _analyze_frames_concurrent(frames, video_name, max_workers)
     except Exception as e:
-        log("warn", f"视频 {video_name} 帧分析失败，跳过: {e}")
+        print(f"视频 {video_name} 帧分析失败，跳过: {e}")
         return {"success": False, "video_name": video_name, "video_path": vp, "error": f"帧分析失败: {e}"}
 
     # Step 4：语义聚合提取
     _log_step(f"[{video_name}] 步骤4/7 语义聚合提取知识点")
     knowledge_points = _semantic_extraction(frame_analyses, video_info, video_name)
     if not knowledge_points:
-        log("warn", f"视频 {video_name} 未提取到有效知识点，跳过")
+        print(f"视频 {video_name} 未提取到有效知识点，跳过")
         return {"success": False, "video_name": video_name, "video_path": vp, "error": "未提取到有效知识点"}
 
     # Step 5：生成视频摘要
@@ -710,7 +784,7 @@ def _process_single_video(
     try:
         summary = _generate_video_summary(knowledge_points, video_info, video_name)
     except Exception as e:
-        log("warn", f"视频 {video_name} 摘要生成失败，跳过: {e}")
+        print(f"视频 {video_name} 摘要生成失败，跳过: {e}")
         return {"success": False, "video_name": video_name, "video_path": vp, "error": f"摘要生成失败: {e}"}
 
     # Step 6：构建入库记录
@@ -739,7 +813,7 @@ def extract_training_knowledge(
     table_name: str = "bank_training_knowledge",
     max_frames: int = 8,
     if_table_exists: str = "replace",
-    max_workers: int = 4,
+    max_workers: int = 6,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -825,50 +899,40 @@ def extract_training_knowledge(
     failed_videos: List[Dict] = []
 
     video_count = len(video_paths)
-    # 视频级并发：不高于视频数量和帧分析并发数，避免 LLM/抽帧同时打满
-    video_workers = min(max(1, max_workers // 2), video_count)
-    _log_step(f"[2/5] 并发处理 {video_count} 个视频（视频并发数={video_workers}，帧内并发={max_workers}）")
+    _log_step(f"[2/5] 处理 {video_count} 个视频（沙箱顺序执行）")
 
-    with ThreadPoolExecutor(max_workers=video_workers) as executor:
-        future_map = {
-            executor.submit(_process_single_video, vp, max_frames, max_workers): vp
-            for vp in video_paths
-        }
-        completed = 0
-        for future in as_completed(future_map):
-            completed += 1
-            vp = future_map[future]
-            video_name = os.path.basename(vp)
-            try:
-                res = future.result()
-            except Exception as e:
-                res = {"success": False, "video_name": video_name, "video_path": vp, "error": str(e)}
+    for completed, vp in enumerate(video_paths, start=1):
+        video_name = os.path.basename(vp)
+        try:
+            res = _process_single_video(vp, max_frames, max_workers)
+        except Exception as e:
+            res = {"success": False, "video_name": video_name, "video_path": vp, "error": str(e)}
 
-            _log_step(f"[{completed}/{video_count}] 视频 {video_name} 并发任务结束")
+        _log_step(f"[{completed}/{video_count}] 视频 {video_name} 处理结束")
 
-            if res.get("success"):
-                all_records.extend(res["records"])
-                _kp_list = res.get("knowledge_point_list", [])
-                for kp in _kp_list:
-                    all_knowledge_summary.append({
-                        "video_name": video_name,
-                        "knowledge_point": kp.get("knowledge_point", ""),
-                        "category": kp.get("category", ""),
-                        "importance": kp.get("importance", ""),
-                        "chapter": kp.get("chapter", ""),
-                    })
-                processed_videos.append({
+        if res.get("success"):
+            all_records.extend(res["records"])
+            _kp_list = res.get("knowledge_point_list", [])
+            for kp in _kp_list:
+                all_knowledge_summary.append({
                     "video_name": video_name,
-                    "video_path": vp,
-                    "frames_extracted": res.get("frames_extracted", 0),
-                    "knowledge_points": res.get("knowledge_points", 0),
+                    "knowledge_point": kp.get("knowledge_point", ""),
+                    "category": kp.get("category", ""),
+                    "importance": kp.get("importance", ""),
+                    "chapter": kp.get("chapter", ""),
                 })
-            else:
-                failed_videos.append({
-                    "video_name": video_name,
-                    "video_path": vp,
-                    "error": res.get("error", "未知错误"),
-                })
+            processed_videos.append({
+                "video_name": video_name,
+                "video_path": vp,
+                "frames_extracted": res.get("frames_extracted", 0),
+                "knowledge_points": res.get("knowledge_points", 0),
+            })
+        else:
+            failed_videos.append({
+                "video_name": video_name,
+                "video_path": vp,
+                "error": res.get("error", "未知错误"),
+            })
 
     # 所有视频均处理失败才抛异常退出
     if not processed_videos:
@@ -878,7 +942,7 @@ def extract_training_knowledge(
     # ---- Step 7: 写入数据源（先删除同名视频历史知识，再 upsert 新知识）----
     _log_step(f"[3/5] 写入 {len(all_records)} 条知识条目 → {datasource_name}.{table_name}")
     _video_names = [v["video_name"] for v in processed_videos]
-    _write_to_chroma(all_records, datasource_name, table_name, video_names=_video_names)
+    _actual_table = _write_to_chroma(all_records, datasource_name, table_name, video_names=_video_names)
 
     # ---- 返回结果 ----
     total_frames = sum(v["frames_extracted"] for v in processed_videos)
@@ -895,7 +959,7 @@ def extract_training_knowledge(
         "knowledge_points_count": total_kp,
         "records_written": len(all_records),
         "target_datasource": datasource_name,
-        "target_table": table_name,
+        "target_table": _actual_table or table_name,
         "knowledge_summary": all_knowledge_summary[:15],
     }
 

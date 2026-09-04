@@ -1,8 +1,6 @@
 """调度任务后台执行器 - 根据 task_type 分派到 skill/operator/pipeline 执行器"""
 
 import asyncio
-import inspect
-import io
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -19,7 +17,6 @@ from app.core.database import async_session
 from app.models.schedule import Schedule, TaskExecution
 from app.models.operator import Operator
 from app.models.skill import Skill
-from app.services.sandbox_ns import build_operator_namespace
 from app.services.permission_service import check_permission
 
 
@@ -262,7 +259,9 @@ async def _run_skill(
 async def _run_operator(
     db, operator_id: UUID, params: Dict[str, Any], user_id: Optional[UUID]
 ) -> Tuple[bool, Optional[Dict], Optional[str], Optional[str]]:
-    """执行算子脚本（exec + func call）"""
+    """执行算子脚本（通过 skill_runner 沙箱执行，和技能/流程统一）"""
+    from app.services.skill_runner import run_skill_script_by_content_async
+
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
@@ -279,42 +278,21 @@ async def _run_operator(
             if not has_perm and operator.visibility != "public":
                 return False, None, f"用户无权执行算子 {operator.name}", None
 
-    captured_output = io.StringIO()
-
-    def _exec_sync() -> Any:
-        local_ns = {
-            "__builtins__": __builtins__,
-            "print": lambda *a, **kw: print(*a, file=captured_output, **kw),
-        }
-        local_ns.update(build_operator_namespace(user_id))
-        exec(operator.script_content, local_ns)
-        func = local_ns.get(operator.function_name or "")
-        if not func:
-            available = [k for k in local_ns if callable(local_ns[k]) and not k.startswith("_")]
-            raise ValueError(
-                f"脚本中未找到函数: {operator.function_name}，可用函数: {available}"
-            )
-        return func
-
     try:
-        func = await asyncio.to_thread(_exec_sync)
-        is_async = inspect.iscoroutinefunction(func)
-        if is_async:
-            result_value = await func(**params)
-        else:
-            result_value = await asyncio.to_thread(func, **params)
-
-        if hasattr(result_value, "to_dict"):
-            result_value = result_value.to_dict(orient="records")
-
-        return True, {"result": result_value}, None, captured_output.getvalue() or None
-    except Exception as e:
-        return (
-            False,
-            None,
-            f"{type(e).__name__}: {e}",
-            captured_output.getvalue() or None,
+        exec_result = await run_skill_script_by_content_async(
+            script_content=operator.script_content,
+            parameters=params,
+            user_id=str(user_id) if user_id else None,
+            entry_function=operator.function_name,
+            timeout=600,
         )
+        success = exec_result.get("success", False)
+        result_data = {"result": exec_result.get("result")} if success else None
+        error_msg = exec_result.get("error") if not success else None
+        stdout = exec_result.get("stdout") or None
+        return success, result_data, error_msg, stdout
+    except Exception as e:
+        return False, None, f"{type(e).__name__}: {e}", None
 
 
 async def _run_pipeline(

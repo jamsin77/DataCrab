@@ -1,11 +1,10 @@
 ﻿"""算子管理API端点"""
 
+import asyncio
 import io
 import time
 import traceback
-import sys
 import json
-import inspect
 from uuid import UUID
 from typing import Optional
 
@@ -37,8 +36,7 @@ from app.schemas.operator import (
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager, init_user_llm_context
 from app.services import experience
-from app.services.sandbox_ns import build_operator_namespace as _build_operator_namespace, run_async_in_thread as _run_async_in_thread
-from app.services.prompt_docs import SANDBOX_TOOLS_DOC, SAFETY_RULES_DOC
+from app.services.prompt_docs import SAFETY_RULES_DOC
 from app.api.deps import get_current_user
 
 
@@ -55,15 +53,15 @@ async def _system_prompt_with_lessons(db: AsyncSession, current_user: User) -> s
 
 
 def _validate_operator_script(script_content: str, current_user_id) -> tuple[bool, str]:
-    """验证算子脚本是否可正常加载，返回 (成功, 错误信息)"""
+    """验证算子脚本语法是否正确（AST 解析，不执行脚本）"""
     try:
-        local_ns = _build_operator_namespace(current_user_id)
-        exec(script_content, local_ns)
+        import ast
+        ast.parse(script_content)
         return True, ""
     except SyntaxError as e:
         return False, f"语法错误 (行{e.lineno}): {e.msg}"
     except Exception as e:
-        return False, f"执行错误: {type(e).__name__}: {e}"
+        return False, f"解析错误: {type(e).__name__}: {e}"
 
 
 async def _llm_fix_operator_script(
@@ -189,8 +187,7 @@ async def debug_operator(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """调试执行算子"""
-    import pandas as pd
+    """调试执行算子（沙箱执行，和技能/流程统一）"""
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
@@ -201,70 +198,56 @@ async def debug_operator(
         raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")
 
     start_time = time.time()
-
-    captured_output = io.StringIO()
+    params = request.parameters or {}
 
     try:
-        local_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured_output, **kw)}
-        local_ns.update(_build_operator_namespace(current_user.id))
+        from app.services.skill_runner import run_skill_script_by_content_async
 
-        exec(operator.script_content, local_ns)
+        exec_result = await run_skill_script_by_content_async(
+            script_content=operator.script_content,
+            parameters=params,
+            input_data=request.test_data,
+            user_id=str(current_user.id),
+            entry_function=operator.function_name,
+            timeout=300,
+        )
 
-        func = local_ns.get(operator.function_name or "")
-        if not func:
-            raise ValueError(f"脚本中未找到函数: {operator.function_name}，可用函数: {[k for k in local_ns if callable(local_ns[k]) and not k.startswith('_')]}")
-
-        params = request.parameters or {}
-
-        is_async = inspect.iscoroutinefunction(func)
-
-        if request.test_data is not None:
-            if isinstance(request.test_data, list):
-                test_data = pd.DataFrame(request.test_data)
-            elif isinstance(request.test_data, dict):
-                test_data = pd.DataFrame([request.test_data])
-            else:
-                test_data = request.test_data
-            result_value = await func(test_data, **params) if is_async else func(test_data, **params)
-        else:
-            result_value = await func(**params) if is_async else func(**params)
-
-        if hasattr(result_value, "to_dict"):
-            result_value = result_value.to_dict(orient="records")
-
+        success = exec_result.get("success", False)
+        result_value = exec_result.get("result")
+        stdout = exec_result.get("stdout") or ""
+        error_msg = exec_result.get("error") if not success else None
         elapsed = (time.time() - start_time) * 1000
 
-        # 经验采集（非侵入式）
         from app.services.data_harness import collect_experience
         collect_experience(
             experience.operator_experience_dir(operator_id),
             source="debug",
-            exec_result={"success": True, "result": result_value, "stdout": captured_output.getvalue()},
-            parameters=request.parameters or {},
+            exec_result=exec_result,
+            parameters=params,
             script_name=operator.function_name or "",
         )
 
         return OperatorDebugResponse(
-            success=True,
-            result=result_value,
-            stdout=captured_output.getvalue() or None,
+            success=success,
+            result=result_value if success else None,
+            error=error_msg,
+            stdout=stdout or None,
             execution_time_ms=round(elapsed, 2),
         )
     except Exception as e:
         elapsed = (time.time() - start_time) * 1000
-        # 经验采集（非侵入式）
         from app.services.data_harness import collect_experience
         collect_experience(
             experience.operator_experience_dir(operator_id),
             source="debug",
-            exec_result={"success": False, "error": f"{type(e).__name__}: {str(e)}", "stdout": captured_output.getvalue()},
-            parameters=request.parameters or {},
+            exec_result={"success": False, "error": f"{type(e).__name__}: {str(e)}", "stdout": ""},
+            parameters=params,
             script_name=operator.function_name or "",
         )
         return OperatorDebugResponse(
             success=False,
             error=f"{type(e).__name__}: {str(e)}\n\n{traceback.format_exc()}",
-            stdout=captured_output.getvalue() or None,
+            stdout=None,
             execution_time_ms=round(elapsed, 2),
         )
 
@@ -467,14 +450,14 @@ SYSTEM_PROMPT = """你是一个专业的Python数据算子脚本生成器。你�
 5. 只输出Python代码，不要任何解释文字，不要markdown代码块标记（不要```python和```），直接输出纯代码
 6. 输出格式：直接输出纯Python代码，第一个字符必须是import或def等Python关键字
 
-""" + SANDBOX_TOOLS_DOC + """
-
 ## 编码最佳实践
-1. 主函数通过 get_datasource_id_by_name() 获取数据源ID，再通过 query_table_data() 读取数据
-2. 使用 pandas 进行数据处理，优先使用向量化操作而非循环
-3. 处理边界情况：空DataFrame、列不存在、空值、类型转换失败
-4. 用 print() 输出关键处理步骤和结果摘要
-5. 有意义的返回值：返回 dict 包含 success/status/data/message 等字段
+1. 主函数通过 call_tool("list_user_datasources", by_name=...) 获取数据源ID
+2. 查询数据用 call_tool("query_table_data", datasource_id=..., table_name=...)，返回 dict（含 success/data/columns/row_count）
+3. 构造 DataFrame：`result = call_tool("query_table_data", ...); df = pd.DataFrame(result["data"], columns=result["columns"])`
+4. 使用 pandas 进行数据处理，优先使用向量化操作而非循环
+5. 处理边界情况：空DataFrame、列不存在、空值、类型转换失败
+6. 用 print() 输出关键处理步骤和结果摘要
+6. 有意义的返回值：返回 dict 包含 success/status/data/message 等字段
 
 ## 示例
 
@@ -508,11 +491,15 @@ def filter_expensive_products(
     Dict[str, Any]
         包含 success, filtered_count, data 的结果
     \"\"\"
-    ds_id = get_datasource_id_by_name(datasource_name)
-    if not ds_id:
+    ds_result = call_tool("list_user_datasources", by_name=datasource_name)
+    if not ds_result or not ds_result.get("id"):
         raise ValueError(f"找不到数据源: {datasource_name}")
+    ds_id = ds_result["id"]
 
-    df = query_table_data(ds_id, table_name)
+    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+    if not result.get("success"):
+        raise ValueError(f"读取表失败: {result.get('error')}")
+    df = pd.DataFrame(result["data"], columns=result["columns"])
     if df.empty:
         print(f"⚠️ 表 '{table_name}' 无数据")
         return {"success": True, "filtered_count": 0, "data": []}
@@ -532,10 +519,8 @@ def filter_expensive_products(
     print(f"✅ 筛选完成: {len(df)} 行 → {len(filtered)} 行 (价格 > {min_price})")
 
     if output_dir:
-        import os
-        output_path = os.path.join(output_dir, f"filtered_{table_name}.csv")
-        filtered.to_csv(output_path, index=False, encoding="utf-8-sig")
-        print(f"📁 结果已保存: {output_path}")
+        call_tool("write_file", path=f"{output_dir}/filtered_{table_name}.csv", data=filtered.to_dict(orient="records"), format="csv")
+        print(f"📁 结果已保存: {output_dir}/filtered_{table_name}.csv")
 
     return {
         "success": True,
@@ -1099,66 +1084,3 @@ async def summarize_operator_experience(
         "error_count": len(errors),
         "lessons": lessons_text.strip(),
     }
-
-
-# ============================================================
-# 内部端点：供技能沙箱子进程调用算子（无认证，本机调用）
-# ============================================================
-@router.post("/internal/execute")
-async def internal_execute_operator(body: dict, db: AsyncSession = Depends(get_db)):
-    """内部算子执行端点（无认证，仅供技能执行器子进程本机调用）。
-    根据算子名称或 ID 加载脚本并执行，返回结果。"""
-    from app.models.operator import Operator
-    from app.services.sandbox_ns import build_operator_namespace as _build_ns, run_async_in_thread as _run_thread
-    from uuid import UUID as _UUID
-    import pandas as _pd
-
-    operator_key = body.get("operator_name") or body.get("operator_id")
-    params = body.get("parameters") or {}
-    user_id = body.get("user_id")
-    if not operator_key:
-        raise HTTPException(status_code=400, detail="operator_name 或 operator_id 必填")
-
-    # 查找算子（按 ID 或名称）
-    try:
-        op_uuid = _UUID(str(operator_key))
-        result = await db.execute(select(Operator).where(Operator.id == op_uuid))
-    except (ValueError, TypeError):
-        result = await db.execute(
-            select(Operator).where(Operator.name == operator_key)
-        )
-    operator = result.scalar_one_or_none()
-    if not operator:
-        raise HTTPException(status_code=404, detail=f"算子不存在: {operator_key}")
-
-    _perm_user = None
-    if user_id:
-        _pu = await db.execute(select(User).where(User.id == _UUID(str(user_id))))
-        _perm_user = _pu.scalar_one_or_none()
-    await assert_resource_access(db, _perm_user, "operator", operator, "use")
-
-    if not operator.script_content:
-        raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")
-
-    _uid = _UUID(str(user_id)) if user_id else None
-
-    try:
-        captured = io.StringIO()
-        local_ns = {"__builtins__": __builtins__, "print": lambda *a, **kw: print(*a, file=captured, **kw)}
-        local_ns.update(_build_ns(_uid))
-
-        exec(operator.script_content, local_ns)
-
-        func = local_ns.get(operator.function_name or "")
-        if not func:
-            raise ValueError(f"脚本中未找到函数: {operator.function_name}")
-
-        is_async = inspect.iscoroutinefunction(func)
-        result_value = await func(**params) if is_async else func(**params)
-
-        if hasattr(result_value, "to_dict"):
-            result_value = result_value.to_dict(orient="records")
-
-        return {"success": True, "result": result_value, "stdout": captured.getvalue() or None}
-    except Exception as e:
-        return {"success": False, "error": f"{type(e).__name__}: {str(e)}", "stdout": captured.getvalue() or None}

@@ -69,7 +69,7 @@ class DataInspectorAgent(BaseAgent):
     description = "对加工后的数据进行标准检查、质量检查、安全检查，发现错误后记录并反馈"
     instructions = DATA_INSPECTOR_INSTRUCTIONS
     tools = get_tool_schemas([
-        "web_fetch", "kb_search", "list_user_datasources",
+        "web_fetch", "list_user_datasources",
         "profile_data", "check_data_standards", "check_data_quality", "check_data_security",
     ])
     capabilities = ["data_quality", "data_standards", "data_security", "inspection"]
@@ -89,9 +89,12 @@ class DataInspectorAgent(BaseAgent):
         db = context.get("db")
         user_id = context.get("user_id")
 
-        if not db or not user_id:
-            yield {"type": "done", "result": {"error": "缺少数据库会话或用户ID"}}
+        if not user_id:
+            yield {"type": "done", "result": {"error": "缺少用户ID"}}
             return
+
+        # 用独立 session 执行检查，避免依赖 SSE handler 的主 session
+        from app.core.database import async_session as _insp_session
 
         # 将 payload 中的数据源信息写入 context（供 RunTime 回交时使用）
         context["current_datasource_id"] = message.payload.get("datasource_id", "")
@@ -124,7 +127,8 @@ class DataInspectorAgent(BaseAgent):
             # 预执行所有检查（加载数据1次 → 4项检查 → 紧凑报告）
             yield {"type": "inspecting", "message": "正在执行数据质量检查..."}
             from app.services.inspector_tools import inspector_tools
-            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db, skill_rules=skill_rules)
+            async with _insp_session() as _chk_sess:
+                check_results = await inspector_tools.run_all_checks(ds_id, table_name, _chk_sess, skill_rules=skill_rules)
             context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 
@@ -144,7 +148,8 @@ class DataInspectorAgent(BaseAgent):
             # 复查：重新预执行（清缓存，加载最新数据）
             yield {"type": "inspecting", "message": "正在复查数据质量..."}
             from app.services.inspector_tools import inspector_tools
-            check_results = await inspector_tools.run_all_checks(ds_id, table_name, db, skill_rules=skill_rules)
+            async with _insp_session() as _chk_sess:
+                check_results = await inspector_tools.run_all_checks(ds_id, table_name, _chk_sess, skill_rules=skill_rules)
             context["_check_results"] = check_results
             report = inspector_tools.format_report(check_results)
 
@@ -269,10 +274,12 @@ class DataInspectorAgent(BaseAgent):
                         try:
                             from app.models.datasource import DataSource as _DS
                             from sqlalchemy import select as _select
-                            _r = await db.execute(_select(_DS).where(_DS.name == str(ds_id)))
-                            _ds = _r.scalar_one_or_none()
-                            if _ds:
-                                func_args["datasource_id"] = str(_ds.id)
+                            from app.core.database import async_session as _insp_session
+                            async with _insp_session() as _ds_sess:
+                                _r = await _ds_sess.execute(_select(_DS).where(_DS.name == str(ds_id)))
+                                _ds = _r.scalar_one_or_none()
+                                if _ds:
+                                    func_args["datasource_id"] = str(_ds.id)
                         except Exception:
                             pass
                 _r = await execute_tool(tc["function"]["name"], func_args, db, context.get("_user_id"), context)

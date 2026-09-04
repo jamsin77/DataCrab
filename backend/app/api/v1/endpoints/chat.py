@@ -54,27 +54,31 @@ async def get_agent_config():
 
 # 聊天附件上传
 _UPLOAD_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))),
     "data", "uploads",
 )
 _MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
-_ALLOWED_EXCEL_EXTS = {".xlsx", ".xls"}
-_VIRTUAL_DS_NAME = "聊天上传数据"  # 所有聊天上传的 Excel 归一到此虚拟数据源
+_ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff"}
+_VIRTUAL_DS_NAME = "聊天上传数据"  # 所有聊天上传的文件归一到此虚拟数据源
 _VIRTUAL_DS_SOURCE_TAG = "chat_upload_virtual"  # tech_metadata.source 标记
 
 
 @router.post("/upload")
 async def upload_attachment(
     file: UploadFile = File(...),
+    session_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传 Excel 附件 → 归入「聊天上传数据」虚拟数据源 → 返回元信息。
+    """上传附件 → 归入「聊天上传数据」虚拟数据源 → 返回元信息。
 
-    限制：仅 .xlsx/.xls，单文件 ≤ 5MB。
+    支持两种类型：
+    - Excel (.xlsx/.xls)：解析 sheet 名 + 列名，作为数据表查询
+    - 图片 (.png/.jpg/.jpeg/.bmp/.webp/.gif/.tiff)：存为文件，供 llm_vision 使用
+
+    限制：单文件 ≤ 5MB。
     设计：所有上传文件归一到同一个虚拟数据源（mode=files）。
           同名文件上传加时间戳后缀（不覆盖），路径互不相同 → 保留多版本。
-          ExcelConnector._resolve_table_name 用最长前缀匹配把 table_name 解析为 (file_path, sheet_name)。
     """
     from sqlalchemy.orm.attributes import flag_modified
     from app.models.datasource import DataSource
@@ -83,8 +87,7 @@ async def upload_attachment(
         raise HTTPException(status_code=400, detail="未提供文件名")
     filename = os.path.basename(file.filename)  # 防路径穿越
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in _ALLOWED_EXCEL_EXTS:
-        raise HTTPException(status_code=400, detail=f"仅支持 Excel 文件 (.xlsx/.xls)，当前后缀: {ext or '无'}")
+    is_image = ext in _ALLOWED_IMAGE_EXTS
 
     content = await file.read()
     if len(content) > _MAX_UPLOAD_SIZE:
@@ -93,7 +96,6 @@ async def upload_attachment(
         raise HTTPException(status_code=400, detail="文件为空")
 
     # 同名文件加时间戳后缀，保留多版本不覆盖
-    # 销售数据.xlsx → 销售数据_20260817_152630.xlsx → 表名前缀 销售数据_20260817_152630
     base = os.path.splitext(filename)[0]
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     saved_filename = f"{base}_{ts}{ext}"
@@ -103,18 +105,27 @@ async def upload_attachment(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 解析 Excel sheet 名 + 首个 sheet 的列名
-    try:
-        import pandas as pd
-        xls = pd.ExcelFile(file_path)
-        sheet_names = list(xls.sheet_names)
-        first_df = pd.read_excel(file_path, sheet_name=sheet_names[0], nrows=5)
-        columns = [str(c) for c in first_df.columns]
-    except Exception as e:
-        logger.warning(f"Excel 解析失败 [{filename}]: {e}")
-        raise HTTPException(status_code=400, detail=f"Excel 解析失败: {e}")
+    table_name_prefix = saved_filename  # 表名 = 完整文件名（带后缀），唯一标识
 
-    table_name_prefix = os.path.splitext(saved_filename)[0]  # 表名前缀 = basename without extension
+    if is_image:
+        sheet_names = []
+        columns = []
+    elif ext in (".xlsx", ".xls"):
+        # Excel：解析 sheet 名 + 首个 sheet 的列名
+        try:
+            import pandas as pd
+            xls = pd.ExcelFile(file_path)
+            sheet_names = list(xls.sheet_names)
+            first_df = pd.read_excel(file_path, sheet_name=sheet_names[0], nrows=5)
+            columns = [str(c) for c in first_df.columns]
+        except Exception as e:
+            logger.warning(f"Excel 解析失败 [{filename}]: {e}")
+            sheet_names = []
+            columns = []
+    else:
+        # 其他文件类型（CSV/PDF/Word/视频等）：不解析，由 Agent 按需用工具处理
+        sheet_names = []
+        columns = []
 
     # 查找或创建虚拟数据源
     result = await db.execute(
@@ -135,13 +146,14 @@ async def upload_attachment(
         "columns": columns,
         "table_name_prefix": table_name_prefix,
         "uploaded_at": ts,
+        "is_image": is_image,
     }
 
     if datasource is None:
         # 首次上传：创建虚拟数据源
         datasource = DataSource(
             name=_VIRTUAL_DS_NAME,
-            type="excel",
+            type="generic_file",
             connection_config={"mode": "files", "file_paths": [file_path]},
             tech_metadata={
                 "source": _VIRTUAL_DS_SOURCE_TAG,
@@ -176,6 +188,26 @@ async def upload_attachment(
 
     await db.commit()
 
+    # 上传后立即把 selectedData 持久化到 session context（刷新不丢）
+    if session_id:
+        try:
+            from app.models.chat import ChatSession as _CS
+            _sess = await db.execute(
+                select(_CS).where(_CS.id == UUID(session_id), _CS.user_id == current_user.id)
+            )
+            _sess_obj = _sess.scalar_one_or_none()
+            if _sess_obj:
+                _ctx = dict(_sess_obj.context or {})
+                _ctx["source_datasource_id"] = str(datasource.id)
+                _ctx["source_datasource_name"] = _VIRTUAL_DS_NAME
+                if not is_image:
+                    _ctx["source_data_name"] = table_name_prefix
+                    _ctx["source_filename"] = saved_filename
+                _sess_obj.context = _ctx
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"上传后持久化 session context 失败: {e}")
+
     logger.info(f"聊天附件上传成功: {filename} -> {saved_filename} (虚拟数据源 {datasource.id}, prefix={table_name_prefix}, sheets={sheet_names})")
 
     return {
@@ -186,6 +218,7 @@ async def upload_attachment(
         "size_bytes": len(content),
         "sheets": sheet_names,
         "columns": columns,
+        "is_image": is_image,
     }
 
 
@@ -470,6 +503,34 @@ async def update_session(
     return session
 
 
+@router.patch("/sessions/{session_id}/context", response_model=ChatSessionResponse)
+async def update_session_context(
+    session_id: UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """更新会话上下文（前端选数据/目标表后即时持久化）"""
+    logger.info(f"[context-patch] session={session_id} payload={payload}")
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+    ctx = dict(session.context or {})
+    ctx.update(payload)
+    session.context = ctx
+    session.updated_at = datetime.utcnow()
+    await db.flush()
+    await db.refresh(session)
+    logger.info(f"[context-patch] saved, context={session.context}")
+    return session
+
+
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(
     session_id: UUID,
@@ -635,7 +696,6 @@ def _cap_preview(text: str, limit: int = PREVIEW_CHAR_LIMIT, note: str = "") -> 
 @router.post("/stream")
 async def stream_response(
     request: ChatMessageCreate,
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """流式响应 - 支持多智能体路由"""
@@ -645,12 +705,12 @@ async def stream_response(
         params = []
         if ctx.get("source_datasource_name"):
             params.append(f"源数据源: {ctx['source_datasource_name']}")
-        if ctx.get("source_table_name"):
-            params.append(f"源表: {ctx['source_table_name']}")
+        if ctx.get("source_data_name"):
+            params.append(f"源表: {ctx['source_data_name']}")
         if ctx.get("target_datasource_name"):
             params.append(f"目标数据源: {ctx['target_datasource_name']}")
-        if ctx.get("target_table_name"):
-            params.append(f"目标表: {ctx['target_table_name']}")
+        if ctx.get("target_data_name"):
+            params.append(f"目标表: {ctx['target_data_name']}")
         _wmode = ctx.get("target_write_mode", "")
         if _wmode:
             _wmode_label = {"overwrite": "覆盖", "append": "追加", "direct": "直接使用", "create": "新建表"}.get(_wmode, _wmode)
@@ -662,14 +722,14 @@ async def stream_response(
     def _get_missing_params(ctx: dict, msg_type: str) -> list:
         """缺失的参数列表"""
         missing = []
-        if not ctx.get("source_datasource_id"):
+        if not ctx.get("source_datasource_id") and not ctx.get("source_datasource_name"):
             missing.append("源数据源")
-        if not ctx.get("source_table_name"):
+        if not ctx.get("source_data_name") and not ctx.get("source_table_name"):
             missing.append("源数据表")
         if msg_type == "processing":
-            if not ctx.get("target_datasource_id"):
+            if not ctx.get("target_datasource_id") and not ctx.get("target_datasource_name"):
                 missing.append("目标数据源")
-            if not ctx.get("target_table_name"):
+            if not ctx.get("target_data_name") and not ctx.get("target_table_name"):
                 missing.append("目标数据表")
         return missing
 
@@ -693,178 +753,259 @@ async def stream_response(
         full_response = ""
 
         try:
-            # 加载会话上下文（源/目标数据源和表，跨消息持久化）
-            _sess_result = await db.execute(
-                select(ChatSession).where(ChatSession.id == request.session_id, ChatSession.user_id == current_user.id)
-            )
-            _session_obj = _sess_result.scalar_one_or_none()
-            _session_ctx = _session_obj.context if _session_obj and _session_obj.context else {}
-
-            # directExecute 时不存用户消息（前端复用已有消息，不弹新的）
-            if not request.direct_execute:
-                user_message = ChatMessage(
-                    session_id=request.session_id,
-                    role="user",
-                    content=request.content,
+            from app.core.database import async_session as _stream_session
+            # ===== 段1：会话加载 + 存消息 + 数据源查询 + commit（独立 session，commit 后释放）=====
+            async with _stream_session() as db:
+                # 加载会话上下文（源/目标数据源和表，跨消息持久化）
+                _sess_result = await db.execute(
+                    select(ChatSession).where(ChatSession.id == request.session_id, ChatSession.user_id == current_user.id)
                 )
-                db.add(user_message)
+                _session_obj = _sess_result.scalar_one_or_none()
+                _session_ctx = _session_obj.context if _session_obj and _session_obj.context else {}
+
+                # 向后兼容：旧 session_ctx 用 source_table_name/target_table_name，迁移到新字段名
+                if "source_table_name" in _session_ctx and "source_data_name" not in _session_ctx:
+                    _session_ctx["source_data_name"] = _session_ctx.pop("source_table_name")
+                if "target_table_name" in _session_ctx and "target_data_name" not in _session_ctx:
+                    _session_ctx["target_data_name"] = _session_ctx.pop("target_table_name")
+
+                # directExecute 时不存用户消息（前端复用已有消息，不弹新的）
+                _user_message_id = None
+                if not request.direct_execute:
+                    user_message = ChatMessage(
+                        session_id=request.session_id,
+                        role="user",
+                        content=request.content,
+                    )
+                    db.add(user_message)
+                    await db.flush()
+                    _user_message_id = user_message.id
+
+                # 刷新会话 updated_at，使会话列表按最近活跃排序
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(ChatSession).where(ChatSession.id == request.session_id)
+                    .values(updated_at=datetime.utcnow())
+                )
                 await db.flush()
 
-            # 刷新会话 updated_at，使会话列表按最近活跃排序
-            from sqlalchemy import update as sa_update
-            await db.execute(
-                sa_update(ChatSession).where(ChatSession.id == request.session_id)
-                .values(updated_at=datetime.utcnow())
-            )
-            await db.flush()
+                # 设置当前用户的 LLM 配置（API Key 按用户隔离，contextvars 请求级生效）
+                from app.services.llm import init_user_llm_context, llm_manager
+                _llm_cfg = await init_user_llm_context(current_user.id)
 
-            # 设置当前用户的 LLM 配置（API Key 按用户隔离，contextvars 请求级生效）
-            from app.services.llm import init_user_llm_context, llm_manager
-            from app.core.database import async_session as _new_session
-            _llm_cfg = await init_user_llm_context(current_user.id)
+                if not _llm_cfg:
+                    _err_msg = "❌ 未配置大模型，请在「系统设置 → 大模型管理」中配置 API Key 和模型后重试。"
+                    yield f"data: {json.dumps({'type': 'content', 'content': _err_msg}, ensure_ascii=False)}\n\n"
+                    full_response = _err_msg
+                    async with _stream_session() as save_session:
+                        save_session.add(ChatMessage(
+                            session_id=request.session_id, role="assistant",
+                            content=full_response,
+                        ))
+                        await save_session.commit()
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                    return
 
-            if not _llm_cfg:
-                _err_msg = "❌ 未配置大模型，请在「系统设置 → 大模型管理」中配置 API Key 和模型后重试。"
-                yield f"data: {json.dumps({'type': 'content', 'content': _err_msg}, ensure_ascii=False)}\n\n"
-                full_response = _err_msg
-                async with _new_session() as save_session:
-                    save_session.add(ChatMessage(
-                        session_id=request.session_id, role="assistant",
-                        content=full_response,
-                    ))
-                    await save_session.commit()
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-                return
+                await llm_manager.initialize()
 
-            await llm_manager.initialize()
-
-            history_result = await db.execute(
-                select(ChatMessage)
-                .where(
-                    ChatMessage.session_id == request.session_id,
-                    *([] if request.direct_execute else [ChatMessage.id != user_message.id]),
-                )
-                .order_by(ChatMessage.created_at.desc())
-                .limit(20)
-            )
-            history_messages = list(history_result.scalars().all())
-            history_messages.reverse()
-
-            # 优先处理附件：用户上传了数据文件 → 直接用虚拟数据源，不推断
-            # 用户从 data_suggestion 选择了数据 → 直接用选中的数据源
-            datasource_context = ""
-            data_preview = ""
-            matched_names = []
-            _user_msg = request.content
-            _attachment_matched = False
-
-            # 用户选择了数据源（前端传 selected_datasource_id）
-            if request.selected_datasource_id:
-                from app.services.permission_service import check_permission
-                from app.models.datasource import DataSource as _DS
-                sel_result = await db.execute(
-                    select(_DS).where(
-                        _DS.id == UUID(request.selected_datasource_id),
-                        _DS.is_active == True,
+                history_result = await db.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.session_id == request.session_id,
+                        *([] if request.direct_execute else [ChatMessage.id != _user_message_id]),
                     )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(20)
                 )
-                sel_ds = sel_result.scalars().first()
-                if sel_ds:
-                    _can_use = (
-                        sel_ds.created_by == current_user.id
-                        or current_user.is_superuser
-                        or await check_permission(db, current_user.id, "datasource", sel_ds.id, "use",
-                            is_owner=(sel_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
-                    )
-                    if _can_use:
-                        datasource_context, data_preview = await _build_selected_datasource_context(
-                            sel_ds, request.selected_table_name, request.content
+                history_messages = list(history_result.scalars().all())
+                history_messages.reverse()
+
+                # 优先处理附件：用户上传了数据文件 → 直接用虚拟数据源，不推断
+                # 用户从 data_suggestion 选择了数据 → 直接用选中的数据源
+                datasource_context = ""
+                data_preview = ""
+                matched_names = []
+                _user_msg = request.content
+                _attachment_matched = False
+
+                # 用户选择了数据源（前端传 selected_datasource_id）
+                if request.selected_datasource_id:
+                    from app.services.permission_service import check_permission
+                    from app.models.datasource import DataSource as _DS
+                    sel_result = await db.execute(
+                        select(_DS).where(
+                            _DS.id == UUID(request.selected_datasource_id),
+                            _DS.is_active == True,
                         )
-                        matched_names = [sel_ds.name]
-                        _attachment_matched = True
-                        _session_ctx["source_datasource_id"] = str(sel_ds.id)
-                        _session_ctx["source_datasource_name"] = sel_ds.name
-                        _session_ctx["source_table_name"] = request.selected_table_name
-
-            # 用户选择了目标表（前端从 target_suggestion 选择后带上）
-            if request.target_datasource_id:
-                from app.models.datasource import DataSource as _DS
-                _tgt_sel = await db.execute(
-                    select(_DS).where(_DS.id == UUID(request.target_datasource_id), _DS.is_active == True)
-                )
-                _tgt_ds = _tgt_sel.scalars().first()
-                if _tgt_ds:
-                    _session_ctx["target_datasource_id"] = str(_tgt_ds.id)
-                    _session_ctx["target_datasource_name"] = _tgt_ds.name
-                    _session_ctx["target_table_name"] = request.target_table_name
-                    if request.target_write_mode:
-                        _session_ctx["target_write_mode"] = request.target_write_mode
-
-            # 用户选择了技能/流程（前端从 skill_suggestion 选择后带上）
-            if request.selected_skill_id:
-                if request.selected_skill_type == "pipeline":
-                    _session_ctx["last_pipeline_id"] = request.selected_skill_id
-                    _session_ctx["last_pipeline_name"] = request.selected_skill_name or ""
-                else:
-                    _session_ctx["last_skill_id"] = request.selected_skill_id
-                    _session_ctx["last_skill_name"] = request.selected_skill_name or ""
-
-            # 附件处理
-            if request.attachments and not _attachment_matched:
-                from app.models.datasource import DataSource as _DS
-                att_result = await db.execute(
-                    select(_DS).where(
-                        _DS.name == _VIRTUAL_DS_NAME,
-                        _DS.created_by == current_user.id,
-                        _DS.is_active == True,
                     )
-                )
-                virtual_ds = att_result.scalars().first()
-                if virtual_ds:
-                    _tech = virtual_ds.tech_metadata or {}
-                    _all_files = _tech.get("files", [])
-                    _att_files = [f for f in _all_files if f.get("original_filename") in request.attachments]
-                    if _att_files:
-                        att_lines = [
-                            f"【本次对话附件】用户上传了以下文件到「{_VIRTUAL_DS_NAME}」数据源，请用以下工具按 datasource_id 查询：",
-                            f"数据源名: {_VIRTUAL_DS_NAME}",
-                            f"datasource_id: {virtual_ds.id}",
-                            f"数据源类型: excel（文件型，非 DB）",
-                            "",
-                            "可用工具：",
-                            "- query_table_data: 分页拉数据（page/page_size，默认100行）",
-                            "- get_table_schema: 查看表结构",
-                            "- execute_sql: 用 DuckDB 在内存跑 SQL（支持 SELECT/WHERE/GROUP BY/JOIN，"
-                            "  统计/聚合优先用此工具，比翻页拉数据再算高效）",
-                            "",
-                            "本次上传文件：",
-                        ]
-                        for _f in _att_files:
-                            _prefix = _f.get("table_name_prefix", "")
-                            _sheets = _f.get("sheets") or []
-                            att_lines.append(f"- 文件: {_f.get('original_filename', '')}")
-                            att_lines.append(f"  表名前缀: {_prefix}")
-                            if _sheets:
-                                att_lines.append(f"  工作表(sheets): {', '.join(_sheets)}")
-                                att_lines.append(f"  完整表名: {_prefix}_{_sheets[0]}（其余工作表类似，前缀_工作表名）")
-                                _example_tbl = f'{_prefix}_{_sheets[0]}'
-                                att_lines.append(f"  SQL 示例: execute_sql(datasource_id=\"{virtual_ds.id}\", sql=\"SELECT COUNT(*) FROM \\\"{_example_tbl}\\\"\")")
-                        att_lines.append("如未指定具体工作表，默认查询第一个工作表。")
-                        _user_msg = "\n".join(att_lines) + f"\n\n---\n\n{request.content}"
-                        matched_names = [_VIRTUAL_DS_NAME]
-                        _attachment_matched = True
+                    sel_ds = sel_result.scalars().first()
+                    if sel_ds:
+                        _can_use = (
+                            sel_ds.created_by == current_user.id
+                            or current_user.is_superuser
+                            or await check_permission(db, current_user.id, "datasource", sel_ds.id, "use",
+                                is_owner=(sel_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                        )
+                        if _can_use:
+                            # 虚拟数据源（聊天上传）需要注入图片/数据文件附件提示
+                            if sel_ds.name == _VIRTUAL_DS_NAME:
+                                _tech = sel_ds.tech_metadata or {}
+                                _all_files = _tech.get("files", [])
+                                _sel_prefix = request.selected_table_name or ""
+                                _att_files = [f for f in _all_files if f.get("table_name_prefix") == _sel_prefix] if _sel_prefix else (_all_files[-1:] if _all_files else [])
+                                if _att_files:
+                                    _image_files = [f for f in _att_files if f.get("is_image")]
+                                    _data_files = [f for f in _att_files if not f.get("is_image")]
+                                    att_lines = []
+                                    if _data_files:
+                                        att_lines.extend([
+                                            f"【本次对话附件】用户上传了以下文件到「{_VIRTUAL_DS_NAME}」数据源，请用以下工具按 datasource_id 查询：",
+                                            f"数据源名: {_VIRTUAL_DS_NAME}",
+                                            f"datasource_id: {sel_ds.id}",
+                                            f"数据源类型: generic_file（文件型，非 DB）",
+                                            "",
+                                            "可用工具：",
+                                            "- query_table_data / get_table_schema / execute_sql",
+                                            "",
+                                            "本次上传文件：",
+                                        ])
+                                        for _f in _data_files:
+                                            _prefix = _f.get("table_name_prefix", "")
+                                            _sheets = _f.get("sheets") or []
+                                            att_lines.append(f"- 文件: {_f.get('original_filename', '')}")
+                                            att_lines.append(f"  表名前缀: {_prefix}")
+                                            if _sheets:
+                                                att_lines.append(f"  工作表(sheets): {', '.join(_sheets)}")
+                                                att_lines.append(f"  完整表名: {_prefix}_{_sheets[0]}")
+                                    if _image_files:
+                                        att_lines.append("")
+                                        att_lines.append("【图片附件】用户上传了以下图片，请用 llm_vision 工具分析图片内容：")
+                                        att_lines.append(f"datasource_id: {sel_ds.id}")
+                                        for _f in _image_files:
+                                            _img_path = _f.get("file_path", "")
+                                            _img_name = _f.get("original_filename", "")
+                                            att_lines.append(f"- 图片: {_img_name}")
+                                            att_lines.append(f"  图片路径(file_path): {_img_path}")
+                                            att_lines.append(f"  调用示例: call_tool(\"llm_vision\", image_path=\"{_img_path}\", prompt=\"请识别图片中的所有文字和数据\")")
+                                        att_lines.append("用 call_tool(\"llm_vision\", image_path=..., prompt=...) 识别图片内容后，给出分析结论。")
+                                    if att_lines:
+                                        _user_msg = "\n".join(att_lines) + f"\n\n---\n\n{request.content}"
+                            else:
+                                datasource_context, data_preview = await _build_selected_datasource_context(
+                                    sel_ds, request.selected_table_name, request.content
+                                )
+                            matched_names = [sel_ds.name]
+                            _attachment_matched = True
+                            _session_ctx["source_datasource_id"] = str(sel_ds.id)
+                            _session_ctx["source_datasource_name"] = sel_ds.name
+                            _session_ctx["source_data_name"] = request.selected_table_name
 
-            # 无附件或附件未匹配到文件时，才推断数据源
-            if not _attachment_matched:
-                datasource_context, data_preview, matched_names = await build_datasource_context(
-                    db, current_user.id, request.content
-                )
-                _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
+                # 用户选择了目标表（前端从 target_suggestion 选择后带上）
+                if request.target_datasource_id:
+                    from app.models.datasource import DataSource as _DS
+                    _tgt_sel = await db.execute(
+                        select(_DS).where(_DS.id == UUID(request.target_datasource_id), _DS.is_active == True)
+                    )
+                    _tgt_ds = _tgt_sel.scalars().first()
+                    if _tgt_ds:
+                        _session_ctx["target_datasource_id"] = str(_tgt_ds.id)
+                        _session_ctx["target_datasource_name"] = _tgt_ds.name
+                        _session_ctx["target_data_name"] = request.target_data_name
+                        _session_ctx["target_filename"] = request.target_data_name
+                        if request.target_write_mode:
+                            _session_ctx["target_write_mode"] = request.target_write_mode
 
-            # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
-            if _session_obj:
-                _session_obj.context = dict(_session_ctx)
-            await db.commit()
+                # 用户选择了技能/流程（前端从 skill_suggestion 选择后带上）
+                if request.selected_skill_id:
+                    if request.selected_skill_type == "pipeline":
+                        _session_ctx["last_pipeline_id"] = request.selected_skill_id
+                        _session_ctx["last_pipeline_name"] = request.selected_skill_name or ""
+                    else:
+                        _session_ctx["last_skill_id"] = request.selected_skill_id
+                        _session_ctx["last_skill_name"] = request.selected_skill_name or ""
+
+                # 附件处理：用户上传文件后 selectedData 设了虚拟数据源
+                if request.selected_datasource_id and not _attachment_matched:
+                    from app.models.datasource import DataSource as _DS
+                    att_result = await db.execute(
+                        select(_DS).where(
+                            _DS.id == UUID(request.selected_datasource_id),
+                            _DS.is_active == True,
+                        )
+                    )
+                    virtual_ds = att_result.scalars().first()
+                    if virtual_ds and virtual_ds.name == _VIRTUAL_DS_NAME:
+                        _tech = virtual_ds.tech_metadata or {}
+                        _all_files = _tech.get("files", [])
+                        # 用 table_name_prefix 匹配用户选的文件（selected_table_name 就是 table_name_prefix）
+                        _sel_prefix = request.selected_table_name or ""
+                        _att_files = [f for f in _all_files if f.get("table_name_prefix") == _sel_prefix] if _sel_prefix else _all_files[-1:] if _all_files else []
+                        if _att_files:
+                            # 图片和数据文件分开处理
+                            _image_files = [f for f in _att_files if f.get("is_image")]
+                            _data_files = [f for f in _att_files if not f.get("is_image")]
+                            att_lines = []
+
+                            if _data_files:
+                                att_lines.extend([
+                                    f"【本次对话附件】用户上传了以下文件到「{_VIRTUAL_DS_NAME}」数据源，请用以下工具按 datasource_id 查询：",
+                                    f"数据源名: {_VIRTUAL_DS_NAME}",
+                                    f"datasource_id: {virtual_ds.id}",
+                                    f"数据源类型: generic_file（文件型，非 DB）",
+                                    "",
+                                    "可用工具：",
+                                    "- query_table_data: 分页拉数据（page/page_size，默认100行）",
+                                    "- get_table_schema: 查看表结构",
+                                    "- execute_sql: 用 DuckDB 在内存跑 SQL（支持 SELECT/WHERE/GROUP BY/JOIN，"
+                                    "  统计/聚合优先用此工具，比翻页拉数据再算高效）",
+                                    "",
+                                    "本次上传文件：",
+                                ])
+                                for _f in _data_files:
+                                    _prefix = _f.get("table_name_prefix", "")
+                                    _sheets = _f.get("sheets") or []
+                                    att_lines.append(f"- 文件: {_f.get('original_filename', '')}")
+                                    att_lines.append(f"  表名前缀: {_prefix}")
+                                    if _sheets:
+                                        att_lines.append(f"  工作表(sheets): {', '.join(_sheets)}")
+                                        att_lines.append(f"  完整表名: {_prefix}_{_sheets[0]}（其余工作表类似，前缀_工作表名）")
+                                        _example_tbl = f'{_prefix}_{_sheets[0]}'
+                                        att_lines.append(f"  SQL 示例: call_tool(\"execute_sql\", datasource_id=\"{virtual_ds.id}\", sql=\"SELECT COUNT(*) FROM \\\"{_example_tbl}\\\"\")")
+                                att_lines.append("如未指定具体工作表，默认查询第一个工作表。")
+
+                            if _image_files:
+                                att_lines.append("")
+                                att_lines.append("【图片附件】用户上传了以下图片，请用 llm_vision 工具分析图片内容：")
+                                att_lines.append(f"datasource_id: {virtual_ds.id}")
+                                for _f in _image_files:
+                                    _img_path = _f.get("file_path", "")
+                                    _img_name = _f.get("original_filename", "")
+                                    att_lines.append(f"- 图片: {_img_name}")
+                                    att_lines.append(f"  图片路径(file_path): {_img_path}")
+                                    att_lines.append(f"  调用示例: call_tool(\"llm_vision\", image_path=\"{_img_path}\", prompt=\"请识别图片中的所有文字和数据\")")
+                                att_lines.append("用 call_tool(\"llm_vision\", image_path=..., prompt=...) 识别图片内容后，给出分析结论。")
+
+                            _user_msg = "\n".join(att_lines) + f"\n\n---\n\n{request.content}"
+                            matched_names = [_VIRTUAL_DS_NAME]
+                            _attachment_matched = True
+                            # 把虚拟数据源写入 session_ctx（与用户选择数据源一致）
+                            _session_ctx["source_datasource_id"] = str(virtual_ds.id)
+                            _session_ctx["source_datasource_name"] = _VIRTUAL_DS_NAME
+                            # 数据文件设 source_data_name（表名前缀），图片不设（不是数据表）
+                            if _data_files:
+                                _session_ctx["source_data_name"] = _data_files[0].get("table_name_prefix", "")
+
+                # 无附件或附件未匹配到文件时，才推断数据源
+                if not _attachment_matched:
+                    datasource_context, data_preview, matched_names = await build_datasource_context(
+                        db, current_user.id, request.content
+                    )
+                    _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
+
+                # 提交用户消息，释放 SQLite 写锁（避免流式期间 database is locked）
+                if _session_obj:
+                    _session_obj.context = dict(_session_ctx)
+                await db.commit()
 
             from app.services.chat_router import classify_message
             from app.services.llm import llm_manager
@@ -884,7 +1025,6 @@ async def stream_response(
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     return
                 _type_label = {"analysis": "数据分析", "processing": "数据处理"}.get(_msg_type, _msg_type)
-                yield f"data: {json.dumps({'type': 'executing', 'message': f'直接执行：{_type_label}'}, ensure_ascii=False)}\n\n"
                 logger.info(f"[direct_execute] session={session_id} msg_type={_msg_type}")
                 _skill_instruction_generated = False
                 # 用户点「使用技能」走调试模式调用技能；「直接处理」不走技能
@@ -898,10 +1038,17 @@ async def stream_response(
                         from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message, stream_agent_events_sse
                         from pathlib import Path as _Path
                         from app.core.config import settings as _settings
-                        _sk_result = await db.execute(select(_SkillModel).where(_SkillModel.id == UUID(_skill_id)))
-                        _sk = _sk_result.scalar_one_or_none()
-                        if _sk:
-                            _sk_folder = _Path(_settings.SKILL_STORAGE_PATH) / _sk.skill_path if _sk.skill_path else None
+                        async with _new_session() as _sk_sess:
+                            _sk_result = await _sk_sess.execute(select(_SkillModel).where(_SkillModel.id == UUID(_skill_id)))
+                            _sk = _sk_result.scalar_one_or_none()
+                            # 在 session 内提取基本类型，避免 DetachedInstanceError
+                            _sk_path = _sk.skill_path if _sk else None
+                            _sk_display = _sk.display_name or _sk.name if _sk else ""
+                            _sk_desc = _sk.description if _sk else ""
+                            _sk_name = _sk.name if _sk else ""
+                            _sk_type = _sk.skill_type if _sk else ""
+                        if _sk_path:
+                            _sk_folder = _Path(_settings.SKILL_STORAGE_PATH) / _sk_path
                             _sk_md = read_skill_md(_sk_folder) if _sk_folder else ""
                             _sk_script = read_skill_script(_sk_folder, "main.py") or "" if _sk_folder else ""
                             _sk_lessons = read_lessons(_sk_folder) if _sk_folder else ""
@@ -909,12 +1056,12 @@ async def stream_response(
                             _ready = _get_ready_params(_session_ctx)
                             # 用数据上下文拼具体需求给 Agent
                             _src_ds = _session_ctx.get("source_datasource_name", "")
-                            _src_tbl = _session_ctx.get("source_table_name", "")
+                            _src_tbl = _session_ctx.get("source_data_name", "")
                             _tgt_ds = _session_ctx.get("target_datasource_name", "")
-                            _tgt_tbl = _session_ctx.get("target_table_name", "")
-                            _skill_info = f"📋 技能：{_sk.display_name or _sk.name}"
-                            if _sk.description:
-                                _skill_info += f"\n描述：{_sk.description}"
+                            _tgt_tbl = _session_ctx.get("target_data_name", "")
+                            _skill_info = f"📋 技能：{_sk_display}"
+                            if _sk_desc:
+                                _skill_info += f"\n描述：{_sk_desc}"
                             if _ready:
                                 _skill_info += "\n\n✅ 数据参数：" + "，".join(_ready)
                             # 拼具体需求
@@ -930,7 +1077,7 @@ async def stream_response(
                             yield f"data: {json.dumps({'type': 'content', 'content': _skill_info}, ensure_ascii=False)}\n\n"
                             _runtime = ensure_agent_runtime()
                             _debug_context = build_debug_context(
-                                db=db,
+                                db=None,
                                 user_id=current_user.id,
                                 target_type="skill",
                                 history=[],
@@ -940,19 +1087,19 @@ async def stream_response(
                                 lessons=_sk_lessons,
                                 source_datasource_id=_session_ctx.get("source_datasource_id", ""),
                                 source_datasource_name=_session_ctx.get("source_datasource_name", ""),
-                                source_table_name=_session_ctx.get("source_table_name", ""),
+                                source_data_name=_session_ctx.get("source_data_name", ""),
                                 target_datasource_id=_session_ctx.get("target_datasource_id", ""),
                                 target_datasource_name=_session_ctx.get("target_datasource_name", ""),
-                                target_table_name=_session_ctx.get("target_table_name", ""),
+                                target_data_name=_session_ctx.get("target_data_name", ""),
                                 debug_folder=_sk_folder,
                                 debug_skill_path=_sk_folder,
                                 debug_skill_md=_sk_md[:1500] if _sk_md else "",
                                 debug_skill_md_full=_sk_md,
                             )
                             _debug_msg = build_debug_message(_detail, _debug_context)
-                            _is_analysis = _sk.skill_type == "analysis"
+                            _is_analysis = _sk_type == "analysis"
                             _agent_name = "data_analyst" if _is_analysis else "data_processor"
-                            logger.info(f"[direct_execute] 走调试模式调用技能: {_sk.name} agent={_agent_name}")
+                            logger.info(f"[direct_execute] 走调试模式调用技能: {_sk_name} agent={_agent_name}")
                             # SSE 保活：20 秒无事件则发 ping，防止长时间执行导致 network error
                             _agen = _runtime.run(_agent_name, _debug_msg, _debug_context).__aiter__()
                             _exec_failed = False
@@ -979,11 +1126,7 @@ async def stream_response(
                                     break
                                 _t = _agent_event.get("type")
                                 if _t == "done":
-                                    _result = _agent_event.get("result", {})
-                                    _result_content = _result.get("content", "") if isinstance(_result, dict) else str(_result)
-                                    if _result_content:
-                                        full_response += _result_content
-                                        yield f"data: {json.dumps({'type': 'content', 'content': _result_content}, ensure_ascii=False, default=str)}\n\n"
+                                    pass  # content 已通过 content 事件流式传过，done 不重复 yield
                                 elif _t == "agent_switch":
                                     _agent_display = _agent_event.get("display_name", _agent_event.get("agent", ""))
                                     _agent_reason = _agent_event.get("reason_display", _agent_event.get("reason", ""))
@@ -1030,12 +1173,12 @@ async def stream_response(
                 if not _keep_source:
                     _session_ctx.pop("source_datasource_id", None)
                     _session_ctx.pop("source_datasource_name", None)
-                    _session_ctx.pop("source_table_name", None)
+                    _session_ctx.pop("source_data_name", None)
                     _ctx_changed = True
                 if not _keep_target:
                     _session_ctx.pop("target_datasource_id", None)
                     _session_ctx.pop("target_datasource_name", None)
-                    _session_ctx.pop("target_table_name", None)
+                    _session_ctx.pop("target_data_name", None)
                     _ctx_changed = True
                 if not _keep_skill:
                     _session_ctx.pop("last_skill_id", None)
@@ -1056,33 +1199,35 @@ async def stream_response(
             # ===== 恢复数据源上下文（direct_execute 和非 chat 都需要）=====
             if not _attachment_matched and _session_ctx.get("source_datasource_id"):
                 from app.models.datasource import DataSource as _DS
-                _ctx_src = await db.execute(select(_DS).where(_DS.id == UUID(_session_ctx["source_datasource_id"]), _DS.is_active == True))
-                _ctx_ds = _ctx_src.scalars().first()
-                if _ctx_ds:
-                    _can_use_ctx = (_ctx_ds.created_by == current_user.id or current_user.is_superuser)
-                    if _can_use_ctx:
-                        datasource_context, data_preview = await _build_selected_datasource_context(
-                            _ctx_ds, _session_ctx.get("source_table_name"), request.content
-                        )
-                        matched_names = [_ctx_ds.name]
-                        _attachment_matched = True
+                async with _new_session() as _ctx_ds_sess:
+                    _ctx_src = await _ctx_ds_sess.execute(select(_DS).where(_DS.id == UUID(_session_ctx["source_datasource_id"]), _DS.is_active == True))
+                    _ctx_ds = _ctx_src.scalars().first()
+                    if _ctx_ds:
+                        _can_use_ctx = (_ctx_ds.created_by == current_user.id or current_user.is_superuser)
+                        if _can_use_ctx:
+                            datasource_context, data_preview = await _build_selected_datasource_context(
+                                _ctx_ds, _session_ctx.get("source_data_name"), request.content
+                            )
+                            matched_names = [_ctx_ds.name]
+                            _attachment_matched = True
 
             if not _attachment_matched and not request.direct_execute:
-                datasource_context, data_preview, matched_names = await build_datasource_context(
-                    db, current_user.id, request.content
-                )
+                async with _new_session() as _ds_inf_sess:
+                    datasource_context, data_preview, matched_names = await build_datasource_context(
+                        _ds_inf_sess, current_user.id, request.content
+                    )
                 _user_msg = f"{data_preview}\n\n---\n\n{request.content}" if data_preview else request.content
 
             # 注入已知的数据上下文到 user message
             _ctx_lines = []
             if _session_ctx.get("source_datasource_name"):
                 _ctx_lines.append(f"源数据源: {_session_ctx['source_datasource_name']}")
-            if _session_ctx.get("source_table_name"):
-                _ctx_lines.append(f"源表: {_session_ctx['source_table_name']}")
+            if _session_ctx.get("source_data_name"):
+                _ctx_lines.append(f"源表: {_session_ctx['source_data_name']}")
             if _session_ctx.get("target_datasource_name"):
                 _ctx_lines.append(f"目标数据源: {_session_ctx['target_datasource_name']}")
-            if _session_ctx.get("target_table_name"):
-                _ctx_lines.append(f"目标表: {_session_ctx['target_table_name']}")
+            if _session_ctx.get("target_data_name"):
+                _ctx_lines.append(f"目标表: {_session_ctx['target_data_name']}")
             if _ctx_lines:
                 _user_msg = f"【已确定的数据上下文】\n" + "\n".join(_ctx_lines) + f"\n\n---\n\n{_user_msg}"
 
@@ -1093,7 +1238,6 @@ async def stream_response(
                 from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, stream_agent_events_sse
                 _runtime = ensure_agent_runtime()
                 _chat_context = {
-                    "db": db,
                     "user_id": current_user.id,
                     "history": compressed_history,
                     "has_preinjected_data": False,
@@ -1150,208 +1294,216 @@ async def stream_response(
 
                 try:
                     # 判断三路是否需要匹配
-                    _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_table_name"))
-                    _need_target = _msg_type == "processing" and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_table_name")))
+                    _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_data_name"))
+                    _need_target = _msg_type == "processing" and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
                     _need_skill = not _keep_skill or not bool(_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id"))
 
-                    # 预查所有数据源（匹配 + 名称检测共用）
-                    _all_ds = [ds for ds in (await db.execute(select(DataSource))).scalars().all() if ds.name]
+                    # ===== 段5：匹配阶段（独立 session，闭包共用，匹配完释放）=====
+                    async with _new_session() as db:
+                        # 预查数据源（当前用户的 + 虚拟数据源，排除其他用户的私有数据源）
+                        _all_ds = [ds for ds in (await db.execute(select(DataSource).where(DataSource.is_active == True))).scalars().all()
+                                   if ds.name and (ds.created_by == current_user.id or current_user.is_superuser or ds.is_virtual)]
 
-                    # 预统计匹配池规模（给用户丰富的进度提示）
-                    from app.models.datasource import TableMetadata as _TM
-                    from sqlalchemy import func as _func
-                    _skill_pool = (await db.execute(select(Skill))).scalars().all()
-                    _pipe_pool = (await db.execute(select(Pipeline).where(Pipeline.is_active == True, Pipeline.is_builtin == False))).scalars().all()
-                    # 数据表匹配池：只统计用户消息中提到的数据源的表数
-                    _mentioned_ds = [ds for ds in _all_ds if ds.name and ds.name in request.content]
-                    _mentioned_tbl_cnt = 0
-                    if _mentioned_ds:
-                        _mentioned_tbl_cnt = (await db.execute(
-                            select(_func.count()).select_from(_TM).where(_TM.data_source_id.in_([ds.id for ds in _mentioned_ds]))
-                        )).scalar() or 0
+                        # 预统计匹配池规模（给用户丰富的进度提示）
+                        from app.models.datasource import TableMetadata as _TM
+                        from sqlalchemy import func as _func
+                        _skill_pool = (await db.execute(select(Skill))).scalars().all()
+                        # 按 msg_type 过滤技能池（与 llm_match_skills 内部过滤逻辑一致）
+                        if _msg_type == "analysis":
+                            _skill_pool = [s for s in _skill_pool if s.skill_type == "analysis"]
+                        elif _msg_type == "processing":
+                            _skill_pool = [s for s in _skill_pool if s.skill_type != "analysis"]
+                        _pipe_pool = (await db.execute(select(Pipeline).where(Pipeline.is_active == True, Pipeline.is_builtin == False))).scalars().all()
+                        # 数据表匹配池：只统计用户消息中提到的数据源的表数（按名称去重）
+                        _mentioned_ds = []
+                        _seen_ds_names = set()
+                        for ds in _all_ds:
+                            if ds.name and ds.name in request.content and ds.name not in _seen_ds_names:
+                                _mentioned_ds.append(ds)
+                                _seen_ds_names.add(ds.name)
+                        _mentioned_tbl_cnt = 0
+                        if _mentioned_ds:
+                            _mentioned_tbl_cnt = (await db.execute(
+                                select(_func.count()).select_from(_TM).where(_TM.data_source_id.in_([ds.id for ds in _mentioned_ds]))
+                            )).scalar() or 0
 
-                    async def _match_source():
-                        """源表匹配"""
-                        if not _need_source:
-                            return None
-                        _ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
-                        if not _ds_names:
-                            return {"type": "missing_source"}
-                        table_matches, _, _events = await llm_match_tables(request.content, db)
-                        _results = []
-                        for tid, score, meta in table_matches:
-                            ds_id = meta.get("data_source_id", "")
-                            table_name = meta.get("table_name", "")
-                            if not ds_id or not table_name:
-                                continue
-                            try:
-                                ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(ds_id)))
-                            except (ValueError, Exception):
-                                continue
-                            ds = ds_result.scalar_one_or_none()
-                            if not ds:
-                                continue
-                            can_use = (
-                                ds.created_by == current_user.id
-                                or current_user.is_superuser
-                                or await check_permission(db, current_user.id, "datasource", ds.id, "use", is_owner=(ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
-                            )
-                            _results.append({
-                                "type": "table",
-                                "datasource_id": str(ds.id),
-                                "datasource_name": ds.name,
-                                "table_name": table_name,
-                                "row_count": meta.get("row_count"),
-                                "column_count": meta.get("column_count"),
-                                "similarity": score,
-                                "can_use": can_use,
-                            })
-                        if _results:
-                            return {"type": "data_suggestion", "matches": _results}
-                        return {"type": "data_no_match"}
-
-                    async def _match_target():
-                        """目标表匹配（仅 processing）"""
-                        if not _need_target:
-                            return None
-                        _tgt_ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
-                        if not _tgt_ds_names:
-                            return {"type": "missing_target"}
-                        target_matches, _, _events = await llm_match_tables(request.content, db)
-                        _results = []
-                        for tid, score, meta in target_matches:
-                            _ds_id = meta.get("data_source_id", "")
-                            _tname = meta.get("table_name", "")
-                            if not _ds_id or not _tname:
-                                continue
-                            try:
-                                _ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(_ds_id)))
-                            except (ValueError, Exception):
-                                continue
-                            _ds = _ds_result.scalar_one_or_none()
-                            if not _ds:
-                                continue
-                            _can_use = (
-                                _ds.created_by == current_user.id
-                                or current_user.is_superuser
-                                or await check_permission(db, current_user.id, "datasource", _ds.id, "use",
-                                    is_owner=(_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
-                            )
-                            _results.append({
-                                "type": "target_table",
-                                "datasource_id": str(_ds.id),
-                                "datasource_name": _ds.name,
-                                "table_name": _tname,
-                                "row_count": meta.get("row_count"),
-                                "column_count": meta.get("column_count"),
-                                "similarity": score,
-                                "can_use": _can_use,
-                            })
-                        if _results:
-                            return {"type": "target_suggestion", "matches": _results}
-                        return {"type": "target_no_match"}
-
-                    async def _match_skill():
-                        """技能/流程匹配"""
-                        if not _need_skill:
-                            return None
-                        if _msg_type == "processing":
-                            # processing: 先流程失败才技能
-                            pipe_matches, _ = await llm_match_pipelines(request.content, db, _msg_type)
+                        async def _match_source():
+                            """源表匹配"""
+                            if not _need_source:
+                                return None
+                            _ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
+                            if not _ds_names:
+                                return {"type": "missing_source"}
+                            table_matches, _, _events = await llm_match_tables(request.content, db)
                             _results = []
-                            for pid, score in pipe_matches:
+                            for tid, score, meta in table_matches:
+                                ds_id = meta.get("data_source_id", "")
+                                table_name = meta.get("table_name", "")
+                                if not ds_id or not table_name:
+                                    continue
                                 try:
-                                    p_result = await db.execute(select(Pipeline).where(Pipeline.id == UUID(pid), Pipeline.is_active == True))
+                                    ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(ds_id)))
                                 except (ValueError, Exception):
                                     continue
-                                p = p_result.scalar_one_or_none()
-                                if not p:
+                                ds = ds_result.scalar_one_or_none()
+                                if not ds:
                                     continue
                                 can_use = (
-                                    p.created_by == current_user.id
-                                    or p.visibility == "public"
+                                    ds.created_by == current_user.id
                                     or current_user.is_superuser
-                                    or await check_permission(db, current_user.id, "pipeline", p.id, "use", is_owner=(p.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                                    or await check_permission(db, current_user.id, "datasource", ds.id, "use", is_owner=(ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
                                 )
                                 _results.append({
-                                    "type": "pipeline",
-                                    "id": str(p.id),
-                                    "name": p.display_name or p.name,
-                                    "description": p.description or "",
+                                    "type": "table",
+                                    "datasource_id": str(ds.id),
+                                    "datasource_name": ds.name,
+                                    "table_name": table_name,
+                                    "row_count": meta.get("row_count"),
+                                    "column_count": meta.get("column_count"),
+                                    "similarity": score,
+                                    "can_use": can_use,
+                                })
+                            if _results:
+                                return {"type": "data_suggestion", "matches": _results}
+                            return {"type": "data_no_match"}
+
+                        async def _match_target():
+                            """目标表匹配（仅 processing）"""
+                            if not _need_target:
+                                return None
+                            _tgt_ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
+                            if not _tgt_ds_names:
+                                return {"type": "missing_target"}
+                            target_matches, _, _events = await llm_match_tables(request.content, db)
+                            _results = []
+                            for tid, score, meta in target_matches:
+                                _ds_id = meta.get("data_source_id", "")
+                                _tname = meta.get("table_name", "")
+                                if not _ds_id or not _tname:
+                                    continue
+                                try:
+                                    _ds_result = await db.execute(select(DataSource).where(DataSource.id == UUID(_ds_id)))
+                                except (ValueError, Exception):
+                                    continue
+                                _ds = _ds_result.scalar_one_or_none()
+                                if not _ds:
+                                    continue
+                                _can_use = (
+                                    _ds.created_by == current_user.id
+                                    or current_user.is_superuser
+                                    or await check_permission(db, current_user.id, "datasource", _ds.id, "use",
+                                        is_owner=(_ds.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                                )
+                                _results.append({
+                                    "type": "target_table",
+                                    "datasource_id": str(_ds.id),
+                                    "datasource_name": _ds.name,
+                                    "table_name": _tname,
+                                    "row_count": meta.get("row_count"),
+                                    "column_count": meta.get("column_count"),
+                                    "similarity": score,
+                                    "can_use": _can_use,
+                                })
+                            if _results:
+                                return {"type": "target_suggestion", "matches": _results}
+                            return {"type": "target_no_match"}
+
+                        async def _match_skill():
+                            """技能/流程匹配"""
+                            if not _need_skill:
+                                return None
+                            _results = []
+                            if _msg_type == "processing":
+                                # processing: 流程和技能都匹配，合并展示给用户选择
+                                pipe_matches, _ = await llm_match_pipelines(request.content, db, _msg_type)
+                                for pid, score in pipe_matches:
+                                    try:
+                                        p_result = await db.execute(select(Pipeline).where(Pipeline.id == UUID(pid), Pipeline.is_active == True))
+                                    except (ValueError, Exception):
+                                        continue
+                                    p = p_result.scalar_one_or_none()
+                                    if not p:
+                                        continue
+                                    can_use = (
+                                        p.created_by == current_user.id
+                                        or p.visibility == "public"
+                                        or current_user.is_superuser
+                                        or await check_permission(db, current_user.id, "pipeline", p.id, "use", is_owner=(p.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                                    )
+                                    _results.append({
+                                        "type": "pipeline",
+                                        "id": str(p.id),
+                                        "name": p.display_name or p.name,
+                                        "description": p.description or "",
+                                        "similarity": score,
+                                        "can_use": can_use,
+                                    })
+                            # 技能匹配（processing 和 analysis 都匹配技能）
+                            skill_matches, _ = await llm_match_skills(request.content, db, _msg_type)
+                            _results = []
+                            for sid, score in skill_matches:
+                                try:
+                                    s_result = await db.execute(select(Skill).where(Skill.id == UUID(sid)))
+                                except (ValueError, Exception):
+                                    continue
+                                s = s_result.scalar_one_or_none()
+                                if not s:
+                                    continue
+                                can_use = (
+                                    s.created_by == current_user.id
+                                    or s.visibility == "public"
+                                    or current_user.is_superuser
+                                    or await check_permission(db, current_user.id, "skill", s.id, "use", is_owner=(s.created_by == current_user.id), is_superuser=current_user.is_superuser)
+                                )
+                                _results.append({
+                                    "type": "skill",
+                                    "id": str(s.id),
+                                    "name": s.display_name or s.name,
+                                    "description": s.description or "",
                                     "similarity": score,
                                     "can_use": can_use,
                                 })
                             if _results:
                                 return {"type": "skill_suggestion", "matches": _results}
-                            # 流程没匹配到，试技能
-                            skill_matches, _ = await llm_match_skills(request.content, db, _msg_type)
-                        else:
-                            # analysis: 直接技能
-                            skill_matches, _ = await llm_match_skills(request.content, db, _msg_type)
-                        _results = []
-                        for sid, score in skill_matches:
-                            try:
-                                s_result = await db.execute(select(Skill).where(Skill.id == UUID(sid)))
-                            except (ValueError, Exception):
-                                continue
-                            s = s_result.scalar_one_or_none()
-                            if not s:
-                                continue
-                            can_use = (
-                                s.created_by == current_user.id
-                                or s.visibility == "public"
-                                or current_user.is_superuser
-                                or await check_permission(db, current_user.id, "skill", s.id, "use", is_owner=(s.created_by == current_user.id), is_superuser=current_user.is_superuser)
-                            )
-                            _results.append({
-                                "type": "skill",
-                                "id": str(s.id),
-                                "name": s.display_name or s.name,
-                                "description": s.description or "",
-                                "similarity": score,
-                                "can_use": can_use,
-                            })
-                        if _results:
-                            return {"type": "skill_suggestion", "matches": _results}
-                        return {"type": "skill_no_match"}
+                            return {"type": "skill_no_match"}
 
-                    if _need_source:
-                        if _mentioned_ds:
-                            _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配数据表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
-                        else:
-                            yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定数据源'}, ensure_ascii=False)}\n\n"
-                    elif _session_ctx.get("source_datasource_name") and _session_ctx.get("source_table_name"):
-                        _src_ds = _session_ctx["source_datasource_name"]
-                        _src_tbl = _session_ctx["source_table_name"]
-                        yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的数据：{_src_ds} → {_src_tbl}'}, ensure_ascii=False)}\n\n"
-                    if _need_target:
-                        if _mentioned_ds:
-                            _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配目标表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
-                        else:
-                            yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定目标数据源'}, ensure_ascii=False)}\n\n"
-                    elif _msg_type == "processing" and _session_ctx.get("target_datasource_name"):
-                        _tgt_ds = _session_ctx["target_datasource_name"]
-                        _tgt_tbl = _session_ctx["target_table_name"]
-                        yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的目标表：{_tgt_ds} → {_tgt_tbl}'}, ensure_ascii=False)}\n\n"
-                    if _need_skill:
-                        if _msg_type == "processing":
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能/流程（{len(_pipe_pool)} 个流程，{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
-                        else:
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能（{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
-                    elif _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name"):
-                        _sk = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name")
-                        yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的技能：{_sk}'}, ensure_ascii=False)}\n\n"
-                    if cancel_event.is_set():
-                        yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
-                        return
+                        if _need_source:
+                            if _mentioned_ds:
+                                _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
+                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配数据表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定数据源'}, ensure_ascii=False)}\n\n"
+                        elif _session_ctx.get("source_datasource_name") and _session_ctx.get("source_data_name"):
+                            _src_ds = _session_ctx["source_datasource_name"]
+                            _src_tbl = _session_ctx["source_data_name"]
+                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的数据：{_src_ds} → {_src_tbl}'}, ensure_ascii=False)}\n\n"
+                        if _need_target:
+                            if _mentioned_ds:
+                                _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
+                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配目标表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定目标数据源'}, ensure_ascii=False)}\n\n"
+                        elif _msg_type == "processing" and _session_ctx.get("target_datasource_name"):
+                            _tgt_ds = _session_ctx["target_datasource_name"]
+                            _tgt_tbl = _session_ctx["target_data_name"]
+                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的目标表：{_tgt_ds} → {_tgt_tbl}'}, ensure_ascii=False)}\n\n"
+                        if _need_skill:
+                            if _msg_type == "processing":
+                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能/流程（{len(_pipe_pool)} 个流程，{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
+                            else:
+                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能（{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
+                        elif _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name"):
+                            _sk = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name")
+                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的技能：{_sk}'}, ensure_ascii=False)}\n\n"
+                        if cancel_event.is_set():
+                            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                            return
 
-                    # 三路完全独立并行
-                    _s_res, _t_res, _k_res = await asyncio.gather(
-                        _match_source(), _match_target(), _match_skill(),
-                        return_exceptions=True,
-                    )
+                        # 三路完全独立并行
+                        _s_res, _t_res, _k_res = await asyncio.gather(
+                            _match_source(), _match_target(), _match_skill(),
+                            return_exceptions=True,
+                        )
 
                     # 处理异常和结果
                     for _res in (_s_res, _t_res, _k_res):
@@ -1430,10 +1582,11 @@ async def stream_response(
                         elif sug["type"] == "skill_no_match":
                             yield f"data: {json.dumps({'type': 'skill_no_match', 'msg_type': _msg_type}, ensure_ascii=False)}\n\n"
 
-                    # 兜底：检查参数是否齐全
-                    _missing = _get_missing_params(_session_ctx, _msg_type)
-                    if _missing:
-                        yield f"data: {json.dumps({'type': 'content', 'content': _build_params_hint(_session_ctx, _msg_type)}, ensure_ascii=False)}\n\n"
+                    # 兜底：没有任何 suggestion 时才检查参数是否齐全
+                    if not _all_suggestions:
+                        _missing = _get_missing_params(_session_ctx, _msg_type)
+                        if _missing:
+                            yield f"data: {json.dumps({'type': 'content', 'content': _build_params_hint(_session_ctx, _msg_type)}, ensure_ascii=False)}\n\n"
 
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     return
@@ -1466,12 +1619,18 @@ async def stream_response(
                 try:
                     from app.services.skill_parser import read_skill_md
                     from app.models.skill import Skill as _SkillModel
-                    _skill_result = await db.execute(select(_SkillModel).where(_SkillModel.id == UUID(_skill_id)))
-                    _skill = _skill_result.scalar_one_or_none()
-                    if _skill:
+                    async with _new_session() as _instr_sess:
+                        _skill_result = await _instr_sess.execute(select(_SkillModel).where(_SkillModel.id == UUID(_skill_id)))
+                        _skill = _skill_result.scalar_one_or_none()
+                        # 在 session 内提取基本类型
+                        _skill_path = _skill.skill_path if _skill else None
+                        _skill_display = _skill.display_name or _skill.name if _skill else _skill_name
+                        _skill_desc = _skill.description if _skill else ""
+                        _skill_name_actual = _skill.name if _skill else _skill_name
+                    if _skill_path:
                         from pathlib import Path as _Path
                         from app.core.config import settings as _settings
-                        _skill_folder = _Path(_settings.SKILL_STORAGE_PATH) / _skill.skill_path if _skill.skill_path else None
+                        _skill_folder = _Path(_settings.SKILL_STORAGE_PATH) / _skill_path
                         _skill_md = read_skill_md(_skill_folder) if _skill_folder else ""
                         _skill_ctx_lines = _get_ready_params(_session_ctx)
                         _skill_chat_context = "\n".join(_skill_ctx_lines) if _skill_ctx_lines else "无已知数据上下文"
@@ -1487,7 +1646,7 @@ async def stream_response(
                                 "5. 如果对话上下文不足以确定某个参数，用「请指定」标注\n"
                             )},
                             {"role": "user", "content": (
-                                f"## 技能信息\n技能名称：{_skill.display_name or _skill.name}\n技能描述：{_skill.description or ''}\n\n"
+                                f"## 技能信息\n技能名称：{_skill_display}\n技能描述：{_skill_desc or ''}\n\n"
                                 f"## SKILL.md\n{_skill_md[:3000]}\n\n"
                                 f"## 已知数据上下文\n{_skill_chat_context}\n\n"
                                 f"## 用户消息\n{request.content}\n\n"
@@ -1509,7 +1668,6 @@ async def stream_response(
 
             trace_id = str(uuid4())
             context = {
-                "db": db,
                 "user_id": current_user.id,
                 "datasource_context": datasource_context,
                 "persona": ASSISTANT_PERSONA,
@@ -1527,20 +1685,26 @@ async def stream_response(
                     from pathlib import Path as _Path
                     from app.core.config import settings as _settings
                     _sk_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
-                    _sk_result = await db.execute(select(_SkillModel).where(_SkillModel.id == UUID(_sk_id)))
-                    _sk = _sk_result.scalar_one_or_none()
-                    if _sk:
-                        _sk_folder = _Path(_settings.SKILL_STORAGE_PATH) / _sk.skill_path if _sk.skill_path else None
+                    async with _new_session() as _inj_sess:
+                        _sk_result = await _inj_sess.execute(select(_SkillModel).where(_SkillModel.id == UUID(_sk_id)))
+                        _sk = _sk_result.scalar_one_or_none()
+                        # 在 session 内提取基本类型
+                        _sk_path = _sk.skill_path if _sk else None
+                        _sk_name = _sk.name if _sk else ""
+                        _sk_display = _sk.display_name or _sk.name if _sk else ""
+                        _sk_desc = _sk.description if _sk else ""
+                    if _sk_path:
+                        _sk_folder = _Path(_settings.SKILL_STORAGE_PATH) / _sk_path
                         _sk_md = read_skill_md(_sk_folder) if _sk_folder else ""
                         _sk_script = read_skill_script(_sk_folder, "main.py") if _sk_folder else None
-                        context["skill_id"] = str(_sk.id)
-                        context["skill_name"] = _sk.name
+                        context["skill_id"] = _sk_id
+                        context["skill_name"] = _sk_name
                         context["skill_path"] = str(_sk_folder) if _sk_folder else ""
                         context["skill_md"] = _sk_md[:3000] if _sk_md else ""
                         context["skill_script"] = _sk_script[:3000] if _sk_script else ""
                         # 在 user_msg 里提示 Agent 使用技能
-                        _user_msg = f"【请使用技能执行】\n技能：{_sk.display_name or _sk.name}\n技能描述：{_sk.description or ''}\n\n用户需求：{request.content}\n\n请调用技能脚本来完成用户需求。"
-                        logger.info(f"[route] 注入技能 context: {_sk.name}")
+                        _user_msg = f"【请使用技能执行】\n技能：{_sk_display}\n技能描述：{_sk_desc or ''}\n\n用户需求：{request.content}\n\n请调用技能脚本来完成用户需求。"
+                        logger.info(f"[route] 注入技能 context: {_sk_name}")
                 except Exception as e:
                     logger.warning(f"[route] 技能 context 注入失败: {e}")
 

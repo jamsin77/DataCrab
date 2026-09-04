@@ -25,7 +25,6 @@ class ConnectorCreate(BaseModel):
     description: Optional[str] = None
     code: str
     config_template: Optional[list] = []
-    is_public: Optional[bool] = False
 
 
 class ConnectorUpdate(BaseModel):
@@ -33,7 +32,6 @@ class ConnectorUpdate(BaseModel):
     description: Optional[str] = None
     code: Optional[str] = None
     config_template: Optional[list] = None
-    is_public: Optional[bool] = None
 
 
 @router.get("/connectors/custom")
@@ -41,15 +39,15 @@ async def list_custom_connectors(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出当前用户可见的连接器（自己的 + 公共的 + RBAC 共享的）"""
+    """列出当前用户可见的连接器（自己的 + seed 的 + RBAC 共享的）"""
     shared_ids = await get_accessible_resource_ids(db, current_user.id, "connector")
     query = select(CustomConnector).where(CustomConnector.is_active == True)
     if not current_user.is_superuser:
-        conds = [CustomConnector.created_by == current_user.id, CustomConnector.is_public == True]
+        conds = [CustomConnector.created_by == current_user.id, CustomConnector.is_seed == True]
         if shared_ids:
             conds.append(CustomConnector.id.in_(shared_ids))
         query = query.where(or_(*conds))
-    query = query.order_by(CustomConnector.is_public.desc(), CustomConnector.created_at, CustomConnector.name)
+    query = query.order_by(CustomConnector.is_seed.desc(), CustomConnector.created_at, CustomConnector.name)
     items = (await db.execute(query)).scalars().all()
     return [
         {
@@ -59,7 +57,7 @@ async def list_custom_connectors(
             "description": c.description or "",
             "config_template": c.config_template or [],
             "code": c.code or "",
-            "is_public": bool(c.is_public),
+            "is_seed": bool(c.is_seed),
             "created_by": str(c.created_by) if c.created_by else None,
             "is_owner": c.created_by == current_user.id,
             "can_edit": c.created_by == current_user.id or current_user.is_superuser,
@@ -101,7 +99,6 @@ async def create_custom_connector(
         description=payload.description or "",
         code=payload.code,
         config_template=payload.config_template or [],
-        is_public=payload.is_public or False,
         created_by=current_user.id,
     )
     db.add(record)
@@ -140,8 +137,6 @@ async def update_custom_connector(
         record.code = new_code
     if payload.config_template is not None:
         record.config_template = payload.config_template
-    if payload.is_public is not None:
-        record.is_public = payload.is_public
     await db.commit()
     return {"ok": True, "message": f"连接器 '{record.name}' 已更新"}
 
@@ -190,15 +185,15 @@ async def list_providers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """列出当前用户可见的 Provider（自己的 + 公共的 + RBAC 共享的）"""
+    """列出当前用户可见的 Provider（自己的 + seed 的 + RBAC 共享的）"""
     shared_ids = await get_accessible_resource_ids(db, current_user.id, "llmprovider")
     query = select(LLMProvider).where(LLMProvider.is_active == True)
     if not current_user.is_superuser:
-        conds = [LLMProvider.created_by == current_user.id, LLMProvider.is_public == True]
+        conds = [LLMProvider.created_by == current_user.id, LLMProvider.is_seed == True]
         if shared_ids:
             conds.append(LLMProvider.id.in_(shared_ids))
         query = query.where(or_(*conds))
-    query = query.order_by(LLMProvider.is_public.desc(), LLMProvider.created_at, LLMProvider.provider_name)
+    query = query.order_by(LLMProvider.is_seed.desc(), LLMProvider.created_at, LLMProvider.provider_name)
     items = (await db.execute(query)).scalars().all()
     return [
         {
@@ -212,7 +207,7 @@ async def list_providers(
             "flash_model": p.flash_model or "",
             "vision_model": p.vision_model or "",
             "embedding_model": p.embedding_model or "",
-            "is_public": bool(p.is_public),
+            "is_seed": bool(p.is_seed),
             "is_owner": p.created_by == current_user.id,
             "can_edit": p.created_by == current_user.id or current_user.is_superuser,
             "created_at": p.created_at.isoformat() if p.created_at else None,

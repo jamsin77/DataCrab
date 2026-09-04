@@ -13,9 +13,11 @@ DataCrab 数据工程智能体后端服务
 
 ## 功能特性
 
-- 对话式数据交互（SSE 流式）+ 多智能体协作（DataProcessor → DataInspector，Handoff 由 RunTime 决策；只读分析走 DataAnalyst 无需 handoff）
-- 8 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载）
+- 对话式数据交互（SSE 流式）+ 多智能体协作（DataProcessor → DataInspector，Handoff 由 RunTime 决策；只读分析走 DataAnalyst、闲聊走 ChatAgent 均无需 handoff）
+- 9 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/GenericFile/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载；seed 连接器所有用户可见）
 - 技能/算子/流程全生命周期（CRUD + AI 生成/调试 + 自愈循环 + 经验库）
+- 统一工具注册中心（29 个工具，Agent function calling + 脚本 call_tool 共用同一套 handler）
+- 沙箱安全隔离（__import__ hook + open() 沙箱化 + 环境变量白名单 + POSIX 资源限制 + 并发控制）
 - 7 种写表策略 + 调度系统（Cron/间隔/手动 + 30s 定时扫描器）
 - 资产导入导出（7 类资产一键 ZIP 迁移，API Key 不导出，跨机器引用稳定）
 - 向量索引服务（ChromaDB：技能/流程/算子/数据表语义检索 + LLM 自适应匹配）

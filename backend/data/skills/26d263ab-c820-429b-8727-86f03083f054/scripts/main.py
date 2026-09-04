@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import difflib
 
 
 # ── 全国地级以上行政区划白名单（约340个，用于校验分类结果） ──
@@ -46,7 +47,8 @@ def _resolve_datasource(datasource_name: str) -> str:
     """解析数据源：UUID直接使用，中文名称才查ID（避免不必要的网络调用）"""
     if _is_uuid(datasource_name):
         return datasource_name
-    ds_id = get_datasource_id_by_name(datasource_name)
+    _r = call_tool("list_user_datasources", by_name=datasource_name)
+    ds_id = _r.get("id") if isinstance(_r, dict) else None
     if ds_id:
         return ds_id
     return datasource_name
@@ -62,17 +64,20 @@ def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
     """
     ds_id = _resolve_datasource(datasource_name)
 
-    # 统一分块读取（iter_table_data 内部 timeout=120s，远比 query_table_data 的 30s 安全）
     chunks = []
     expected_total = 0
-    for chunk in iter_table_data(ds_id, table_name, chunk_size=10000):
+    page = 1
+    while True:
+        chunk = call_tool("iter_table_data", datasource_id=ds_id, table_name=table_name, page=page, page_size=10000)
         chunk_rows = chunk.get("rows", [])
         if chunk_rows:
-            chunks.append(pd.DataFrame(chunk_rows))
-        # 从每个 chunk 的 total 字段获取表总行数（所有 chunk 返回的 total 相同）
+            chunks.append(pd.DataFrame(chunk_rows, columns=chunk.get("columns", [])))
         if chunk.get("total"):
             expected_total = chunk["total"]
-        log("info", f"已读取 {sum(len(c) for c in chunks)} 行（总计 {expected_total} 行）")
+        print(f"已读取 {sum(len(c) for c in chunks)} 行（总计 {expected_total} 行）")
+        if not chunk.get("has_next", False):
+            break
+        page += 1
 
     if not chunks:
         raise ValueError(f"表 '{table_name}' 中没有数据")
@@ -86,18 +91,20 @@ def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
             f"已中止处理以防止用截断数据覆盖原表。请重试。"
         )
     else:
-        log("info", f"行数校验通过: {len(df)}/{expected_total} 行")
+        print(f"行数校验通过: {len(df)}/{expected_total} 行")
 
-    log("info", f"加载完成: {len(df)} 行, {len(df.columns)} 列")
+    print(f"加载完成: {len(df)} 行, {len(df.columns)} 列")
     return df
 
 
 def _resolve_column_name(df: pd.DataFrame, column_name: str) -> str:
     """解析用户指定的列名，支持模糊匹配"""
-    actual_col = resolve_column(df, column_name)
-    if actual_col is None:
-        raise ValueError(f"列 '{column_name}' 不存在，可用列: {list(df.columns)}")
-    return actual_col
+    if column_name in df.columns:
+        return column_name
+    matches = difflib.get_close_matches(column_name, [str(c) for c in df.columns], n=1, cutoff=0.6)
+    if matches:
+        return matches[0]
+    raise ValueError(f"列 '{column_name}' 不存在，可用列: {list(df.columns)}")
 
 
 def _extract_json(text: str) -> dict:
@@ -264,14 +271,14 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
     for attempt in range(max_retries):
         if attempt > 0:
             wait_sec = min(2 * attempt, 3)
-            log("info", f"等待 {wait_sec}s 后重试（第 {attempt + 1}/{max_retries} 次）")
+            print(f"等待 {wait_sec}s 后重试（第 {attempt + 1}/{max_retries} 次）")
             time.sleep(wait_sec)
 
-        result = llm_chat(prompt, system_prompt=system_prompt, temperature=0.3, max_tokens=6000)
+        result = call_tool("llm_generate", prompt=prompt, system_prompt=system_prompt, temperature=0.3, max_tokens=6000)["content"]
 
         # 检查空返回
         if not result or not result.strip():
-            log("warn", f"AI未返回有效内容（可能因数据量过大导致超时），正在重试（第 {attempt + 1}/{max_retries} 次）")
+            print(f"AI未返回有效内容（可能因数据量过大导致超时），正在重试（第 {attempt + 1}/{max_retries} 次）")
             last_error = "AI返回空字符串"
             continue
 
@@ -293,12 +300,12 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
             return value_to_category, categories_str
         except Exception as e:
             last_error = str(e)
-            log("warn", f"AI返回的格式不正确，无法解析（内容可能被截断），正在重试（第 {attempt + 1}/{max_retries} 次）")
+            print(f"AI返回的格式不正确，无法解析（内容可能被截断），正在重试（第 {attempt + 1}/{max_retries} 次）")
             continue
 
     # 所有重试均失败，尝试将批次拆分为更小的子批次
     if len(values) > 10:
-        log("warn", f"本批 {len(values)} 条地址处理失败，正在拆分为更小的批次重新处理")
+        print(f"本批 {len(values)} 条地址处理失败，正在拆分为更小的批次重新处理")
         mid = len(values) // 2
         left_result, left_cats = _classify_batch(values[:mid], categories, max_retries=2)
         right_result, right_cats = _classify_batch(values[mid:], categories, max_retries=2)
@@ -311,7 +318,7 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
         cats_str = ", ".join(sorted(set(all_cats))) if all_cats else None
         return merged, cats_str
 
-    log("error", f"以下 {len(values)} 条地址经过多次重试仍无法识别地级市，已标记为'分类失败': {values[:5]}{'...' if len(values) > 5 else ''}")
+    print(f"以下 {len(values)} 条地址经过多次重试仍无法识别地级市，已标记为'分类失败': {values[:5]}{'...' if len(values) > 5 else ''}")
     return {v: "分类失败" for v in values}, None
 
 
@@ -619,7 +626,7 @@ def _post_process_city(city: str) -> str:
                     break
         if matched:
             return matched
-        log("warn", f"「{city}」不在标准地级市名单中，可能需要人工核查")
+        print(f"「{city}」不在标准地级市名单中，可能需要人工核查")
 
     return city
 
@@ -652,11 +659,11 @@ def _classify_all_values(
                     rule_matched += 1
                 else:
                     remaining_values.append(v)
-            log("info", f"规则预匹配成功 {rule_matched}/{len(unique_values)} 个，剩余 {len(remaining_values)} 个需LLM处理")
+            print(f"规则预匹配成功 {rule_matched}/{len(unique_values)} 个，剩余 {len(remaining_values)} 个需LLM处理")
             unique_values = remaining_values
 
             if not unique_values:
-                log("info", "所有值已通过规则匹配完成，无需调用LLM")
+                print("所有值已通过规则匹配完成，无需调用LLM")
                 return value_to_category
 
     # ── 自适应批次大小：提取任务每条结果较长，保持较小批次避免JSON截断 ──
@@ -666,7 +673,7 @@ def _classify_all_values(
             batch_size = min(50, len(unique_values))
         else:
             batch_size = min(120, len(unique_values))
-        log("info", f"唯一值较多（{len(unique_values)}），批次大小从 {old_batch_size} 调整为 {batch_size}")
+        print(f"唯一值较多（{len(unique_values)}），批次大小从 {old_batch_size} 调整为 {batch_size}")
 
     # ── 分批 ──
     batches = [unique_values[i:i + batch_size] for i in range(0, len(unique_values), batch_size)]
@@ -675,12 +682,12 @@ def _classify_all_values(
     # ── 并发分类（I/O 密集型，用线程池） ──
     # 如果没有预定义类别，需要先串行处理第一批以自动检测类别，再并发处理剩余批次
     if not detected_categories and batches:
-        log("info", f"正在分类第 1/{total_batches} 批（{len(batches[0])} 个唯一值）— 串行（用于检测类别）")
+        print(f"正在分类第 1/{total_batches} 批（{len(batches[0])} 个唯一值）— 串行（用于检测类别）")
         first_result, first_cats = _classify_batch(batches[0], detected_categories)
         value_to_category.update(first_result)
         if first_cats:
             detected_categories = first_cats
-            log("info", f"自动检测到分类类别: {detected_categories}")
+            print(f"自动检测到分类类别: {detected_categories}")
         parallel_batches = batches[1:]
         parallel_start = 2
     else:
@@ -689,7 +696,7 @@ def _classify_all_values(
 
     if parallel_batches:
         max_workers = min(6, len(parallel_batches))
-        log("info", f"共 {total_batches} 批，并发处理 {len(parallel_batches)} 批（最多 {max_workers} 并发）")
+        print(f"共 {total_batches} 批，并发处理 {len(parallel_batches)} 批（最多 {max_workers} 并发）")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -703,9 +710,9 @@ def _classify_all_values(
                 try:
                     batch_result, _ = future.result()
                     value_to_category.update(batch_result)
-                    log("info", f"第 {batch_num}/{total_batches} 批完成（{batch_len} 个唯一值）")
+                    print(f"第 {batch_num}/{total_batches} 批完成（{batch_len} 个唯一值）")
                 except Exception as e:
-                    log("error", f"第 {batch_num}/{total_batches} 批（{batch_len} 条地址）处理出错: {e}，该批地址将标记为'未分类'")
+                    print(f"第 {batch_num}/{total_batches} 批（{batch_len} 条地址）处理出错: {e}，该批地址将标记为'未分类'")
 
     return value_to_category
 
@@ -738,7 +745,7 @@ def _write_result(
     batch_size = 500
     total_batches = (total_records + batch_size - 1) // batch_size
 
-    log("info", f"开始分批写入: {total_records} 行, 分 {total_batches} 批（每批 {batch_size} 行, 策略: {if_table_exists}）")
+    print(f"开始分批写入: {total_records} 行, 分 {total_batches} 批（每批 {batch_size} 行, 策略: {if_table_exists}）")
 
     rows_written_total = 0
     for i in range(0, total_records, batch_size):
@@ -748,25 +755,24 @@ def _write_result(
         # 第一批用原策略（如 overwrite 会先清表），后续批次用 append
         current_strategy = if_table_exists if batch_num == 1 else "append"
 
-        log("info", f"写入第 {batch_num}/{total_batches} 批（{len(batch)} 行，策略: {current_strategy}）")
+        print(f"写入第 {batch_num}/{total_batches} 批（{len(batch)} 行，策略: {current_strategy}）")
 
         max_retries = 3
         result = None
         for attempt in range(max_retries):
             if attempt > 0:
                 wait_sec = min(3 * attempt, 5)
-                log("info", f"等待 {wait_sec}s 后重试写入（第 {attempt + 1}/{max_retries} 次）")
+                print(f"等待 {wait_sec}s 后重试写入（第 {attempt + 1}/{max_retries} 次）")
                 time.sleep(wait_sec)
-            result = write_table_data(
-                ds_id,
-                table_name,
+            result = call_tool(
+                "write_table_data", datasource_id=ds_id, table_name=table_name,
                 records=batch,
                 if_table_exists=current_strategy,
                 column_remarks=column_remarks if batch_num == 1 else None,
             )
             if result.get("success"):
                 break
-            log("warn", f"写入失败（第 {attempt + 1}/{max_retries} 次）: {result.get('message', '未知错误')}")
+            print(f"写入失败（第 {attempt + 1}/{max_retries} 次）: {result.get('message', '未知错误')}")
 
         if not result or not result.get("success"):
             raise ValueError(
@@ -777,11 +783,11 @@ def _write_result(
         # 累加写入行数
         batch_written = result.get("rows_written", len(batch))
         rows_written_total += batch_written
-        log("info", f"累计写入 {rows_written_total}/{total_records} 行")
+        print(f"累计写入 {rows_written_total}/{total_records} 行")
 
     # ── 写入后最终校验：查询表实际行数，防止平台静默截断 ──
-    log("info", "正在查询表实际行数做最终校验...")
-    verify_result = query_table_data(ds_id, table_name, limit=total_records + 1000)
+    print("正在查询表实际行数做最终校验...")
+    verify_result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name, limit=total_records + 1000)
     if verify_result.get("success"):
         actual_row_count = len(verify_result.get("data", []))
         if actual_row_count != total_records:
@@ -789,11 +795,11 @@ def _write_result(
                 f"⚠️ 写入后行数校验失败！期望 {total_records} 行，表中实际 {actual_row_count} 行，"
                 f"数据可能丢失。请重新运行。"
             )
-        log("info", f"最终校验通过: 表中实际 {actual_row_count} 行（期望 {total_records} 行）")
+        print(f"最终校验通过: 表中实际 {actual_row_count} 行（期望 {total_records} 行）")
     else:
-        log("warn", f"无法查询表行数做校验: {verify_result.get('error', '未知错误')}")
+        print(f"无法查询表行数做校验: {verify_result.get('error', '未知错误')}")
 
-    log("info", f"写入完成，共 {rows_written_total} 行（校验通过）")
+    print(f"写入完成，共 {rows_written_total} 行（校验通过）")
     return {"rows_written": rows_written_total}
 
 
@@ -879,9 +885,9 @@ def semantic_classify(
         raise ValueError("缺少必需参数: column_name（要分类的列名）")
 
     # ── 1. 加载数据 ──
-    log("info", f"从数据源 '{datasource_name}' 加载表 '{table_name}'")
+    print(f"从数据源 '{datasource_name}' 加载表 '{table_name}'")
     df = _load_data(datasource_name, table_name)
-    log("info", f"加载完成: {len(df)} 行, {len(df.columns)} 列")
+    print(f"加载完成: {len(df)} 行, {len(df.columns)} 列")
     print(f"列名: {list(df.columns)}")
 
     if df.empty:
@@ -889,24 +895,28 @@ def semantic_classify(
 
     # ── 2. 解析源列名 ──
     actual_col = _resolve_column_name(df, column_name)
-    log("info", f"分类源列: '{actual_col}'")
+    print(f"分类源列: '{actual_col}'")
 
     # ── 3. 确定目标列名 ──
     if not target_column:
         target_column = f"{actual_col}_分类"
 
     if mode == "update":
-        existing_col = resolve_column(df, target_column)
+        if target_column in df.columns:
+            existing_col = target_column
+        else:
+            matches = difflib.get_close_matches(target_column, [str(c) for c in df.columns], n=1, cutoff=0.6)
+            existing_col = matches[0] if matches else None
         if existing_col:
             target_column = existing_col
-            log("info", f"更新已有列: '{target_column}'")
+            print(f"更新已有列: '{target_column}'")
         else:
-            log("warn", f"目标列 '{target_column}' 在表中不存在，将自动新建该列并填入分类结果")
+            print(f"目标列 '{target_column}' 在表中不存在，将自动新建该列并填入分类结果")
     else:
         if target_column in df.columns:
-            log("warn", f"列 '{target_column}' 已存在，将覆盖该列原有数据")
+            print(f"列 '{target_column}' 已存在，将覆盖该列原有数据")
         else:
-            log("info", f"新增列: '{target_column}'")
+            print(f"新增列: '{target_column}'")
 
     # ── 4. 提取唯一值 ──
     col_series = df[actual_col].astype(str)
@@ -923,7 +933,7 @@ def semantic_classify(
             "total_rows": len(df),
         }
 
-    log("info", f"共 {len(unique_values)} 个唯一值需要分类")
+    print(f"共 {len(unique_values)} 个唯一值需要分类")
 
     # ── 5. LLM 分批分类 ──
     # 确保 categories 是字符串
@@ -943,7 +953,7 @@ def semantic_classify(
 
     categories_param = categories if categories else None
     if categories_param:
-        log("info", f"使用预定义类别: {categories_param}")
+        print(f"使用预定义类别: {categories_param}")
 
     value_to_category = _classify_all_values(unique_values, categories_param, batch_size, target_column)
 
@@ -953,12 +963,12 @@ def semantic_classify(
         city_keywords = ("地级市", "城市", "市", "行政区划", "行政区域")
         if any(kw in cat_name for kw in city_keywords) or any(kw in target_column for kw in city_keywords):
             value_to_category = {k: _post_process_city(v) for k, v in value_to_category.items()}
-            log("info", "已对分类结果进行后处理（修正县级市→地级市、历史地名→最新名称、清理乱码前缀等）")
+            print("已对分类结果进行后处理（修正县级市→地级市、历史地名→最新名称、清理乱码前缀等）")
 
             # ── 5.6 对"未知/分类失败"的值进行二次重试（逐条并发处理，提高准确率） ──
             retry_values = [v for v, cat in value_to_category.items() if cat in ("未知", "分类失败", "未分类")]
             if retry_values:
-                log("info", f"有 {len(retry_values)} 条地址首次未能识别地级市，正在逐条重新分析...")
+                print(f"有 {len(retry_values)} 条地址首次未能识别地级市，正在逐条重新分析...")
 
                 def _retry_single(val):
                     result, _ = _classify_batch([val], categories_param, max_retries=2)
@@ -973,7 +983,7 @@ def semantic_classify(
 
                 still_failed = sum(1 for v in retry_values if value_to_category[v] in ("未知", "分类失败", "未分类"))
                 if still_failed:
-                    log("warn", f"经过二次分析，仍有 {still_failed} 条地址无法识别所属地级市，已标记为'分类失败'")
+                    print(f"经过二次分析，仍有 {still_failed} 条地址无法识别所属地级市，已标记为'分类失败'")
 
             # ── 5.7 最终校验：统计不在白名单中的结果 ──
             invalid_cities = set()
@@ -981,7 +991,7 @@ def semantic_classify(
                 if cat not in _PREFECTURE_CITIES and cat not in ("未知", "未分类", "分类失败", ""):
                     invalid_cities.add(cat)
             if invalid_cities:
-                log("warn", f"有 {len(invalid_cities)} 个城市名不在标准地级市名单中，可能需要人工核查: {list(invalid_cities)[:10]}")
+                print(f"有 {len(invalid_cities)} 个城市名不在标准地级市名单中，可能需要人工核查: {list(invalid_cities)[:10]}")
 
     # ── 6. 映射回全表 ──
     def _map_value(v: str) -> str:
@@ -993,12 +1003,12 @@ def semantic_classify(
 
     # ── 7. 打印分类统计 ──
     category_counts = df[target_column].value_counts()
-    log("info", "分类结果统计:")
+    print("分类结果统计:")
     for cat, count in category_counts.items():
         print(f"  {cat}: {count} 条")
 
     # ── 8. 写回数据源 ──
-    log("info", f"写入结果到表 '{table_name}'（策略: {if_table_exists}）")
+    print(f"写入结果到表 '{table_name}'（策略: {if_table_exists}）")
     write_result = _write_result(df, datasource_name, table_name, target_column, if_table_exists)
 
     return {
@@ -1011,6 +1021,8 @@ def semantic_classify(
         "categories_found": list(category_counts.index),
         "category_distribution": {str(k): int(v) for k, v in category_counts.to_dict().items()},
         "rows_written": write_result["rows_written"],
+        "target_table": table_name,
+        "target_datasource": datasource_name,
     }
 
 

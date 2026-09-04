@@ -1,4 +1,5 @@
 import re
+import difflib
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -107,7 +108,7 @@ def batch_translate_pinyin(unknown_pinyins: List[str]) -> Dict[str, str]:
         # 最多重试 2 次（初次 + 1 次重试）
         for attempt in range(2):
             try:
-                resp = llm_chat(prompt, temperature=0.1, max_tokens=500)
+                resp = call_tool("llm_generate", prompt=prompt, temperature=0.1, max_tokens=500)["content"]
                 for line in resp.strip().split("\n"):
                     line = line.strip()
                     if "=" in line:
@@ -118,9 +119,9 @@ def batch_translate_pinyin(unknown_pinyins: List[str]) -> Dict[str, str]:
                             result_map[py] = cn
                 break  # 成功则跳出重试循环
             except Exception as e:
-                log("warn", f"LLM翻译拼音失败 (尝试 {attempt+1}/2): {e}")
+                print(f"LLM翻译拼音失败 (尝试 {attempt+1}/2): {e}")
                 if attempt == 0:
-                    log("info", "重试中...")
+                    print("重试中...")
 
     return result_map
 
@@ -160,8 +161,8 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
 
         write_result = None
         try:
-            write_result = write_table_data(
-                target_ds, table_name,
+            write_result = call_tool(
+                "write_table_data", datasource_id=target_ds, table_name=table_name,
                 records=batch,
                 if_table_exists=current_strategy,
                 table_remark=table_remark,
@@ -176,10 +177,10 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
             # 如果 fail 策略因表已存在失败，自动重试 truncate
             err_str = str(err_msg)
             if current_strategy == "fail" and any(kw in err_str for kw in ["已存在", "already exists", "exists", "表已存在", "table"]):
-                log("warn", f"表已存在，fail 策略失败，自动切换为 replace 重试...")
+                print(f"表已存在，fail 策略失败，自动切换为 replace 重试...")
                 try:
-                    write_result = write_table_data(
-                        target_ds, table_name,
+                    write_result = call_tool(
+                        "write_table_data", datasource_id=target_ds, table_name=table_name,
                         records=batch,
                         if_table_exists="replace",
                         table_remark=table_remark,
@@ -271,33 +272,46 @@ def extract_image_info(
         包含 success、total_rows、columns 等字段的字典。
     """
     # ---- 1. 获取数据源 ID ----
-    log("info", f"获取源数据源 ID: {source_datasource_name}")
-    source_ds = get_datasource_id_by_name(source_datasource_name)
+    print(f"获取源数据源 ID: {source_datasource_name}")
+    if re.match(r'^[0-9a-f]{8}-', str(source_datasource_name), re.I):
+        source_ds = source_datasource_name
+    else:
+        _r = call_tool("list_user_datasources", by_name=source_datasource_name)
+        source_ds = _r.get("id") if isinstance(_r, dict) else None
     if not source_ds:
         return {"success": False, "error": f"找不到源数据源: {source_datasource_name}", "message": "数据源名称校验失败"}
 
-    log("info", f"获取目标数据源 ID: {target_datasource_name}")
-    target_ds = get_datasource_id_by_name(target_datasource_name)
+    print(f"获取目标数据源 ID: {target_datasource_name}")
+    if re.match(r'^[0-9a-f]{8}-', str(target_datasource_name), re.I):
+        target_ds = target_datasource_name
+    else:
+        _r = call_tool("list_user_datasources", by_name=target_datasource_name)
+        target_ds = _r.get("id") if isinstance(_r, dict) else None
     if not target_ds:
         return {"success": False, "error": f"找不到目标数据源: {target_datasource_name}", "message": "数据源名称校验失败"}
 
     # ---- 2. 读取源数据（分块读取避免超时）----
-    log("info", f"读取源表数据: {source_table_name}")
+    print(f"读取源表数据: {source_table_name}")
     data = []
     source_columns = []
     try:
-        for chunk in iter_table_data(source_ds, source_table_name, chunk_size=2000):
+        page = 1
+        while True:
+            chunk = call_tool("iter_table_data", datasource_id=source_ds, table_name=source_table_name, page=page, page_size=2000)
             chunk_rows = chunk.get("rows", chunk.get("data", []))
             if not source_columns:
                 source_columns = chunk.get("columns", [])
             data.extend(chunk_rows)
             print(f"  已读取 {len(data)} 条...")
+            if not chunk.get("has_next", False):
+                break
+            page += 1
         if not source_columns and data:
             if isinstance(data[0], dict):
                 source_columns = list(data[0].keys())
     except Exception as e:
-        log("warn", f"分块读取失败，尝试单次小批量读取: {e}")
-        result = query_table_data(source_ds, source_table_name, limit=2000)
+        print(f"分块读取失败，尝试单次小批量读取: {e}")
+        result = call_tool("query_table_data", datasource_id=source_ds, table_name=source_table_name, limit=2000)
         if not isinstance(result, dict) or not result.get("success"):
             return {"success": False, "error": f"读取源表失败: {result}", "message": "数据读取异常"}
         data = result.get("data", [])
@@ -316,7 +330,11 @@ def extract_image_info(
         for c in candidates:
             if not c or c == "*":
                 continue
-            col = resolve_column(df_source, c)
+            if c in df_source.columns:
+                col = c
+            else:
+                matches = difflib.get_close_matches(c, [str(col) for col in df_source.columns], n=1, cutoff=0.6)
+                col = matches[0] if matches else None
             if col:
                 return col
         return None
@@ -331,14 +349,14 @@ def extract_image_info(
         return {"success": False, "error": f"在源表列 {source_columns} 中找不到图片路径列",
                 "message": "无法确定图片路径列，请通过 image_column 参数指定包含图片路径的列名"}
 
-    log("info", f"图片路径列解析为: {resolved_image_col}")
+    print(f"图片路径列解析为: {resolved_image_col}")
 
     # 文件名列（可选，找不到则从路径推导）
     resolved_name_col = _resolve_col(["file_name", "文件名", "filename", "名称", "name", "title"])
     if resolved_name_col:
-        log("info", f"文件名列解析为: {resolved_name_col}")
+        print(f"文件名列解析为: {resolved_name_col}")
     else:
-        log("info", "文件名列未找到，将从图片路径推导")
+        print("文件名列未找到，将从图片路径推导")
 
     # 其他元数据列（可选）
     resolved_ext_col = _resolve_col(["extension", "扩展名", "ext", "格式"])
@@ -348,7 +366,7 @@ def extract_image_info(
     resolved_dir_col = _resolve_col(["parent_dir", "目录", "dir", "所在目录"])
 
     # ---- 3. 提取所有拼音前缀，批量翻译未知类型 ----
-    log("info", "从文件名提取凭证类型...")
+    print("从文件名提取凭证类型...")
     all_pinyins = set()
     for row in data:
         if isinstance(row, (list, tuple)):
@@ -378,13 +396,13 @@ def extract_image_info(
     full_map = dict(PINYIN_DOC_MAP)
     full_map.update(EXTRA_PREFIX_MAP)
     if unknown_pinyins:
-        log("info", f"使用 LLM 翻译 {len(unknown_pinyins)} 个未知拼音前缀...")
+        print(f"使用 LLM 翻译 {len(unknown_pinyins)} 个未知拼音前缀...")
         translated = batch_translate_pinyin(unknown_pinyins)
         full_map.update(translated)
         print(f"  LLM 翻译完成: 成功 {len(translated)} 个")
 
     # ---- 4. 数据加工 + OCR提取关键信息（并发处理）----
-    log("info", "开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信息...")
+    print("开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信息...")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     processed_records: List[Dict[str, Any]] = []
     ocr_success_count = 0
@@ -419,7 +437,7 @@ def extract_image_info(
             if not file_path or file_path == "None":
                 raise ValueError("图片路径为空，无法进行OCR")
             ocr_prompt = f"提取这张{doc_type_cn}图片中的所有文字信息，以JSON格式返回。"
-            ocr_result = llm_vision(file_path, ocr_prompt, max_tokens=1000)
+            ocr_result = call_tool("llm_vision", image_path=file_path, prompt=ocr_prompt, max_tokens=1000)["result"]
             extracted_info = str(ocr_result).strip() if ocr_result else ""
             if extracted_info:
                 extraction_status = "已提取"
@@ -514,10 +532,10 @@ def extract_image_info(
     print(f"  凭证类型分布: {type_dist}")
 
     # ---- 5. 检查目标表是否存在，自动调整写入策略 ----
-    log("info", f"检查目标表是否存在: {target_table_name}")
+    print(f"检查目标表是否存在: {target_table_name}")
     table_exists = False
     try:
-        schema_result = get_table_schema(target_ds, target_table_name)
+        schema_result = call_tool("get_table_schema", datasource_id=target_ds, table_name=target_table_name)
         # get_table_schema 可能返回 list 或 dict
         if isinstance(schema_result, list) and len(schema_result) > 0:
             table_exists = True
@@ -527,13 +545,13 @@ def extract_image_info(
         table_exists = False
 
     if not table_exists:
-        log("warn", f"目标表 {target_table_name} 不存在，写入策略从 '{if_table_exists}' 切换为 'fail'（自动建表）")
+        print(f"目标表 {target_table_name} 不存在，写入策略从 '{if_table_exists}' 切换为 'fail'（自动建表）")
         if_table_exists = "fail"
     else:
         print(f"  目标表已存在, 写入策略: {if_table_exists}")
 
     # ---- 6. 写入目标表 ----
-    log("info", f"写入目标表: {target_table_name} (策略: {if_table_exists})")
+    print(f"写入目标表: {target_table_name} (策略: {if_table_exists})")
 
     _write_records(
         processed_records, target_ds, target_table_name,
@@ -542,12 +560,13 @@ def extract_image_info(
         column_remarks=COLUMN_REMARKS,
     )
 
-    log("info", f"处理完成: 共 {len(processed_records)} 条数据已写入 {target_table_name}")
+    print(f"处理完成: 共 {len(processed_records)} 条数据已写入 {target_table_name}")
 
     return {
         "success": True,
         "total_rows": len(processed_records),
         "target_table": target_table_name,
+        "target_datasource": target_datasource_name,
         "columns": list(COLUMN_REMARKS.keys()),
         "ocr_success": ocr_success_count,
         "ocr_fail": ocr_fail_count,
@@ -616,30 +635,7 @@ def main(**kwargs):
 
 def _probe_ocr_functions():
     """探测沙箱中可用的OCR/视觉相关函数"""
-    import builtins
-    # 列出所有内置全局名称
-    all_names = dir(builtins)
-    # 也检查全局命名空间
-    try:
-        g = globals()
-        all_names = list(set(all_names + list(g.keys())))
-    except:
-        pass
-    
-    ocr_related = []
-    for name in sorted(all_names):
-        name_lower = name.lower()
-        if any(kw in name_lower for kw in ['ocr', 'vision', 'image', 'recognize', 'read', 'llm', 'chat', 'extract']):
-            ocr_related.append(name)
-    
-    print("OCR/视觉相关函数:", ocr_related)
-    print("\n所有非下划线开头的全局名称:")
-    for name in sorted(all_names):
-        if not name.startswith('_'):
-            print(f"  {name}")
-    return {"ocr_related": ocr_related}
-
-_probe_ocr_functions()
+    pass
 
 
 def _sanitize_pii(text: str) -> str:

@@ -63,7 +63,7 @@ async def _load_custom_extensions():
             except Exception as e:
                 logger.warning(f"加载 Provider 适配器 {p.provider_name} 失败: {e}")
 
-    # 加载所有连接器（统一从 DB 装载，首次启动 seed 内置连接器）
+    # 加载所有连接器（统一从 DB 装载，首次启动 seed 连接器）
     await load_connectors_from_db()
 
 
@@ -93,9 +93,13 @@ def _migrate_custom_extensions(connection):
         try:
             result = connection.execute(text(f"PRAGMA table_info({table})"))
             columns = {row[1] for row in result.fetchall()}
-            if "is_public" not in columns:
-                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN is_public BOOLEAN DEFAULT 0"))
-                logger.info(f"{table}表已添加 is_public 列")
+            # is_public → is_seed 重命名
+            if "is_public" in columns and "is_seed" not in columns:
+                connection.execute(text(f"ALTER TABLE {table} RENAME COLUMN is_public TO is_seed"))
+                logger.info(f"{table}表 is_public 列已重命名为 is_seed")
+            elif "is_seed" not in columns:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN is_seed BOOLEAN DEFAULT 0"))
+                logger.info(f"{table}表已添加 is_seed 列")
         except Exception as e:
             logger.warning(f"{table}表迁移跳过: {e}")
 
@@ -154,6 +158,9 @@ def _migrate_builtin_flags(connection):
             logger.info("data_sources表已添加 is_virtual 列")
         # 从 tech_metadata 回填虚拟数据源标记
         connection.execute(text("UPDATE data_sources SET is_virtual = 1 WHERE tech_metadata LIKE '%chat_upload_virtual%'"))
+        # 虚拟数据源 type 迁移：旧版 type=excel → generic_file（第三十二轮改 generic_file，旧记录未同步）
+        connection.execute(text("UPDATE data_sources SET type = 'generic_file' WHERE is_virtual = 1 AND type = 'excel'"))
+        logger.info("虚拟数据源 type 已迁移: excel → generic_file")
     except Exception as e:
         logger.warning(f"data_sources表 is_virtual 迁移跳过: {e}")
 

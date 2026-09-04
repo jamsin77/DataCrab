@@ -793,7 +793,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch, nextTick, type Ref } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, watch, nextTick, type Ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
@@ -957,6 +957,7 @@ async function confirmRename() {
 
 // ==================== 下载 ====================
 function isAnalysisSkill(skill: any): boolean {
+  if (skill?.skill_type === 'analysis') return true
   const tags: any[] = skill?.tags || []
   return tags.some((t: any) => String(t) === 'skill_type:analysis')
 }
@@ -1922,7 +1923,7 @@ function processDebugSSEEvent(
       archiveExecutingMsg(msg)
       msg.thinkingOpen = false
       state.thinkingDone = true
-      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] ─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───`)
+      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
       break
     case 'fixing':
       execPhase.value = 'executing'
@@ -2765,6 +2766,18 @@ function stopDebugGeneration() {
   if (debugAbortController) {
     debugAbortController.abort()
   }
+  // 清理中止后不完整的 assistant 消息（既无执行结果也无脚本更新 → LLM 话说到一半被中止）
+  // 保留到下一轮会误导 LLM 重复同样的文字，不调工具直接输出
+  const lastMsg = debugMessages.value[debugMessages.value.length - 1]
+  if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.runResult && !lastMsg.scriptUpdated) {
+    const content = lastMsg.content || ''
+    const llmContent = lastMsg.llmContent || ''
+    // 只清理"几乎为空"或"只有停止标记"的消息，有实质内容的保留（可能 LLM 已经输出了有用信息）
+    const trimmed = (llmContent || content).replace(/\[已停止生成\]/g, '').trim()
+    if (!trimmed) {
+      debugMessages.value.pop()
+    }
+  }
 }
 
 async function handleDebugSend() {
@@ -2901,7 +2914,7 @@ onMounted(async () => {
             chat_session_id: chatSessionId,
             user_message: userMessage,
             source_datasource_name: dsName || undefined,
-            source_table_name: tblName || undefined,
+            source_data_name: tblName || undefined,
             target_datasource_name: tgtDsName || undefined,
             target_table_name: tgtTblName || undefined,
           })
@@ -2925,9 +2938,16 @@ onMounted(async () => {
     router.replace({ query: {} })
     generatePrompt.value = desc
     showGenerateDialog.value = true
-    if (desc) {
-      await handleGenerate()
-    }
+  }
+})
+
+// keep-alive 缓存后再次激活时，onMounted 不触发，用 onActivated 处理 query
+onActivated(() => {
+  if (route.query.create === 'true') {
+    const desc = route.query.desc ? decodeURIComponent(route.query.desc as string) : ''
+    router.replace({ query: {} })
+    generatePrompt.value = desc
+    showGenerateDialog.value = true
   }
 })
 </script>

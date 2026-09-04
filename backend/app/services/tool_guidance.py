@@ -26,8 +26,8 @@ _DEBUG_TOOL_CAPABILITY_TABLE = """## 调试工具能力表（诚实声明）
 
 | 工具 | 输出量 | 精确度 | 已知局限 |
 |------|--------|--------|----------|
-| edit_and_run / edit_script | 小（只输出 old/new 片段） | 高（精确字符串匹配） | old_string 必须逐字唯一匹配；不唯一需补上下文；找不到时先 read_script 查看逐字内容 |
-| modify_and_run / modify_script | 大（输出整个函数/脚本） | 中（函数级合并，同名替换） | 输出量大可能截断；LLM 重生成整脚本可能丢 import；支持一次输出多个函数（同名替换，新函数自动插入 if __name__ 之前） |
+| edit_script | 小（只输出 old/new 片段） | 高（精确字符串匹配） | old_string 必须逐字唯一匹配；不唯一需补上下文；找不到时先 read_script 查看逐字内容 |
+| run_script | 无（执行脚本） | 高 | 沙箱执行，返回 stdout+result；超时 300s；stdout 过长会截断 |
 | read_script | 无（只读） | 高（逐字+行号） | scope=script 读用户脚本全文（大脚本占 token，可指定 function_name）；scope=platform 读平台源码指定行范围（只读不可修改） |
 | grep_script | 无（只读） | 高（正则+行号） | scope=script 搜用户脚本定位 old_string；scope=platform 搜平台源码追踪错误来源；只返回匹配行+上下文，比 read_script 省 token |
 
@@ -70,13 +70,7 @@ PLATFORM_CAPABILITIES = {
     "sandbox": {
         "async_support": False,
         "network_access": False,
-        "available_functions": [
-            "write_table_data", "get_table_data", "query_table_data", "execute_sql",
-            "get_table_schema", "list_tables", "iter_table_data", "llm_chat", "llm_vision",
-            "extract_video_info", "extract_keyframes",
-            "log", "read_file", "write_file", "compute_map", "call_operator",
-            "get_datasource_id_by_name", "resolve_column",
-        ],
+        "available_functions": ["call_tool"],
     },
     "llm": {
         "thinking": "已开启（推理后输出+调工具，对齐 OpenCode）",
@@ -102,7 +96,7 @@ def get_platform_capabilities(target_connector_type: str = None) -> str:
 
     lines.append("### 沙箱（L2）")
     sb = caps["sandbox"]
-    lines.append(f"- async/await: {'✅' if sb['async_support'] else '❌ 不支持（需用 run_async_in_thread）'}")
+    lines.append(f"- async/await: {'✅' if sb['async_support'] else '❌ 不支持'}")
     lines.append(f"- 直接网络访问: {'✅' if sb['network_access'] else '❌ 禁止（需走内部 HTTP 端点）'}")
     lines.append(f"- 可用函数: {', '.join(sb['available_functions'])}")
     lines.append("- 如果遇到 NameError 且该函数不在列表中 → 平台未注入，不是脚本 bug")

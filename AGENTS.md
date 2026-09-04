@@ -1,5 +1,15 @@
 # AGENTS.md — DataCrab 项目 AI 协作指南
 
+## 已完成：attachments 与 selectedData 合并
+
+`attachments`（前端临时状态）已合并到 `selectedData`（持久状态）。上传文件后直接设 `selectedData`（含 datasource_id + datasource_name + table_name + is_image），显示小绿字。后端用 `selected_datasource_id` + `selected_table_name` 定位虚拟数据源里的文件，不再依赖 `request.attachments` 文件名列表。虚拟数据源 type=generic_file（通用文件连接器），接受任意文件类型（不限 Excel+图片）。
+
+- ChatView.vue：删 `attachments` ref / `Attachment` interface / `attachment-bar` / `removeAttachment`；`reuseAttachment` 改为设 `selectedData`
+- chat.ts：`sendMessage`/`sendDirectly` 去掉 `attachments` 参数
+- api/chat.ts：`sendMessageStream` 去掉 `attachments` 参数
+- 后端 chat.py：附件处理用 `selected_datasource_id` 定位虚拟数据源 + `selected_table_name` 匹配文件
+- 历史消息附件卡片保留（`msg.attachments` 是 DB 存的，不动）
+
 ## 项目概述
 
 DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工程智能体。用户通过自然语言对话完成数据查询、清洗、转换、分析、可视化——无需写代码。
@@ -22,34 +32,34 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
 | `agent_config.py` | Agent 配置管理（加载 soul.md 人格、构建各 Agent system prompt 静态段） |
 | `chat_router.py` | 对话路由器——一次 LLM 调用判断消息类型(analysis/processing/chat) + 4 段 keep(keep_source/keep_target/keep_skill)；返回 `(msg_type, keep_source, keep_target, keep_skill, events)`；**传当前已选数据上下文（源/目标/技能名）给 LLM 判断 keep/change**；默认 keep，用户明确说换才 change |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；调试模式 5 工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；删平台信号词匹配，靠 LLM 自主判断 + 3 次执行错误兜底 + StuckDetector 30 轮兜底** |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；20 个工具（数据查询/写入/文件/LLM/视频 + 4 调试工具 edit_script/run_script/read_script/grep_script）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；3 次执行错误兜底 + StuckDetector 总轮次上限** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
-| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；5 个只读工具子集（ANALYSIS_TOOLS）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
-| `shared_tools.py` | **7 个公共工具的 schema + 实现（query_table_data/get_table_schema/list_user_datasources/list_user_file_links/save_file_to_link/kb_search/execute_sql；去重后统一入口 + LRU 缓存）** |
+| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；14 个工具（只读数据查询 + 文件读取 + LLM + 调试工具）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
+| `shared_tools.py` | 向后兼容层——委托 tool_registry，无独立 schema 或实现 |
+| `tool_registry.py` | **工具注册中心——29 个工具统一注册（schema + handler + LRU 缓存）；Agent 通过 tool_names 声明工具，脚本通过 call_tool 调同一套 handler；execute_tool 统一分发入口** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex），31 条 STD/DQ/SEC 规则实现 + `format_report` 表格化 |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
 | `tool_guidance.py` | **工具诚实能力表——主对话/调试模式拆分（`get_tool_guidance(debug=)`），主对话不注入调试工具表** |
 | `llm.py` | **LLM 管理器（去全局化：无全局 provider/api_key/model 属性，强制基于用户配置 `_require_user_cfg`）；`_default`/`_flash` 模型属性 + 多模型降级链 + CircuitBreaker 熔断 + 瞬态重试 + 视觉/嵌入模型按 provider 选** |
-| `skill_runner.py` | **技能脚本沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle 无输出 + hard cap 总时长；`_stream_execute` 标记行解析 + 异常类名提取）** |
+| `skill_runner.py` | **技能/算子沙箱执行（`run_skill_script_streaming` 统一入口，支持 skill_path 或 script_content；双层超时：idle + hard cap；`_stream_execute` 标记行解析 + 异常类名提取）；模板只注入 `call_tool` 统一入口 + 安全 hooks（`__import__` 拦截 + `open()` 沙箱化 + 环境变量白名单 + POSIX 资源限制 + 并发信号量）** |
 | `skill_creator.py` | AI 生成完整 Skill 包（SKILL.md + scripts，从自然语言描述生成） |
 | `skill_parser.py` | SKILL.md 解析器（YAML front matter + Markdown 内容，含 skill_type 字段） |
 | `operator_parser.py` | **Python 脚本 AST 解析（提取算子函数签名/docstring）+ 行级补丁原语 `apply_patch`（对齐 OpenCode edit）+ `apply_partial_code`（函数级合并，保 import/常量/其他函数）** |
 | `operators.py` | 算子基类与内置算子 |
-| `sandbox_ns.py` | **算子沙箱命名空间构建（build_operator_namespace + run_async_in_thread，从 operator.py 抽出）** |
 | `pipeline_builder.py` | Pipeline Builder——从 Skill 机械转换流程（保留调试好的脚本不重新生成，解析函数签名+参数说明） |
 | `pipeline_executor.py` | Pipeline Executor——复用 skill_runner 子进程沙箱执行流程主函数 |
-| `connectors.py` | 8 种数据源连接器实现（PG/MySQL/SQLite/CSV/Excel/OBS/HDFS/Chroma；Excel 多 sheet 用 `_resolve_table_name` 最长前缀匹配） |
+| `connectors.py` | 9 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/GenericFile/OBS/HDFS/Chroma；`_SEED_CONNECTORS` 注册表，启动 seed 到 DB `is_seed=True`；GenericFile 支持 mode=files 多文件模式，聊天上传用） |
 | `datasource.py` | **数据源连接器基类 `BaseConnector`（抽象契约：connect/test_connection/get_schema/get_table_data/get_table_stats/close）** |
 | `compute_backend.py` | **计算后端抽象层——分离「算什么」和「在哪里算」（`compute_map`，local multiprocessing 可插拔，预留 ray/dask 分布式）** |
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
-| `prompt_docs.py` | 沙箱函数文档（SANDBOX_TOOLS_DOC）+ 平台规范文档（PLATFORM_CONVENTIONS_DOC），注入生成/调试/NL 推断三处 |
+| `prompt_docs.py` | 平台规范文档（PLATFORM_CONVENTIONS_DOC）+ 安全红线（SAFETY_RULES_DOC），注入生成/调试/NL 推断三处；`TOOL_FUNCTIONS_DOC` 已删除（LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可） |
 | `standards_parser.py` | 数据标准/质量/安全规则解析器（解析合法值/检测逻辑） |
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `permission_service.py` | RBAC 权限管理服务（用户/角色/权限，view/use/manage 三级） |
 | `kb_service.py` | 文档知识库服务（解析+切片+嵌入+ChromaDB 存取+语义检索） |
 | `video_utils.py` | **视频处理工具：`probe_video`（元数据提取，ffprobe 优先回退 opencv）+ `extract_keyframes`（关键帧抽取，ffmpeg 场景检测优先回退 opencv 等间隔）；帧图片 PIL 压缩 1024px + JPEG quality 85** |
-| `asset_io.py` | **资产导出/导入服务——7 类资产（skills/operators/pipelines/llm_config/custom_extensions/datasources/schedules）一键 ZIP 迁移；API Key/密码不导出；按 name 去重 + 按类型独立覆盖；skill_calls 用 skill_name 跨机器引用，调度 task_target_id→task_target_name** |
+| `asset_io.py` | **资产导出/导入服务——7 类资产一键 ZIP 迁移；API Key/密码不导出；按 name 去重 + 按类型独立覆盖；Connector/Provider 导出 `is_seed` 字段** |
 | `match_service.py` | **向量索引服务（ChromaDB）——技能/流程/算子/数据表 embedding 存取 + 语义检索；LLM 自适应匹配（粗筛→精排两阶段，超阈值才粗筛）；`llm_match_tables` 统一函数（exclude_datasource_id 参数区分源/目标匹配）；`check_similar_resources` 通用相似资源检测；`_mlog` 独立写 match_detail.log；`rebuild_index` 全量重建（启动时可触发）** |
 | `soul.md` | 助手人格定义（原 personal.md，rename 对齐「灵魂」语义）；安全红线已移至 DATA_PROCESSOR_INSTRUCTIONS |
 | `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
@@ -57,12 +67,12 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 > 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-17 个端点文件、共 188 条路由，主要：
-- `chat.py` — 对话/流式响应/数据处理；**classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）**；chat 类型直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
+17 个端点文件、共 140 个 OpenAPI paths（175 个 path+method operations），主要：
+- `chat.py` — 对话/流式响应/数据处理；**classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）**；chat 类型走 ChatAgent 直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
 - `agents.py` — 多智能体事件/血缘查询
-- `skill.py` — 技能 CRUD + AI 生成/调试（29 路由，最多）
+- `skill.py` — 技能 CRUD + AI 生成/调试（23 paths，最多）
 - `operator.py` — 算子 CRUD + 执行
-- `datasource.py` — 数据源 + 12 个 `/internal/*` 无认证沙箱端点（SQL/文件 I/O/LLM 对话/视觉/分块读取）
+- `datasource.py` — 数据源 + 1 个 `/internal/execute-tool` 统一无认证端点（沙箱脚本通过 `call_tool` HTTP 调用，替代旧 13 个分散端点）
 - `knowledge.py` — 文档知识库 RAG
 - `assets.py` — 资产导出/导入（7 类资产一键 ZIP 迁移；counts/export/import preview/import）
 - `custom_extension.py` — 自定义数据源连接器 + LLM Provider 适配器（AI 生成代码，沙箱加载）
@@ -104,8 +114,9 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 ## 多 Agent 架构
 
 ```
-用户请求 → chat.py/stream → chat_router 路由判断
+用户请求 → chat.py/stream → chat_router.classify_message 路由判断
     ↓
+    ├── chat 类（闲聊/问候/系统配置/提问咨询）→ ChatAgent → 直接 LLM 对话（无 handoff）
     ├── 只读分析类（查询/统计/分析）→ DataAnalystAgent → 直接返回结果（无 handoff）
     └── 数据处理类（清洗/转换/修改）→ DataProcessorAgent（统一入口）
         ├── 处理数据 → runtime 自动交接 → DataInspectorAgent
@@ -114,11 +125,15 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
         └── 不需要检查 → 直接返回结果
 ```
 
-**调试模式**：DataProcessor 暴露 5 个工具（edit_script/run_script/read_script/grep_script + list_user_datasources，对齐 OpenCode Grep/Read/Edit/Bash）；`run_script` 执行成功后 runtime 自动交接 DataInspector（无需 LLM 主动调 handoff 工具）。
+> 四智能体：DataProcessor（修改数据/脚本）、DataInspector（检查）、DataAnalyst（只读分析）、ChatAgent（闲聊/咨询）。ChatAgent/DataAnalyst 的 `_decide_handoff` 返回 None（不参与 handoff）。Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）。
 
-**修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数；平台信号词命中 → 立即退出（不消耗额度）。
+**调试模式**：DataProcessor/DataAnalyst 的 `run()` 通过 `context.get("debug_folder") or context.get("debug_script_content")` 判断是否调试模式（`_is_debug` flag 分支，无独立 `run_debug()` 方法）；调试模式用 `build_debug_system_prompt` + `temperature=0.1` + 修改尝试计数 + StuckDetector；主对话用 `build_system_prompt` + `temperature=0.3` + 按复杂度分配轮次。DataProcessor 用 MAIN_TOOLS（20 工具，含 4 个调试工具），DataAnalyst 用只读工具子集（14 工具，含 4 个调试工具）。
+
+**修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数。
 
 **收敛检测**：动态阈值（= 检查上限×2+3，默认 17）在同一张表来回 handoff → 终止并提示用户介入。
+
+**沙箱安全**：子进程 `__import__` hook 拦截危险模块（os/sys/sqlite3/socket 等）；`open()` 沙箱化（只允许临时目录 + 授权目录）；环境变量白名单（不传密钥）；删 PYTHONPATH（防 import app.*）；cwd 改临时目录；stdout 累积上限（5000 行/5MB）；并发限制（Semaphore(3)）；POSIX 资源限制（内存 2GB/CPU 600s/文件 500MB，Windows 跳过）。
 
 ## 工程改进记录（借鉴 DeepAnalyze）
 
@@ -827,11 +842,11 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 轮次 | 记录 | 实际代码 |
 |------|------|---------|
 | 第十九轮 | "DB model 删 2 个 Column（LLMProvider.fast_model + UserLLMConfig.fast_model）" | `flash_model` 列仍存在于 `models/custom_extension.py`（line 40, 62）；`llm.py` 仍读写 `flash_model`（line 96/107/271/283-284/303/471/524/536 等 12 处，含 `_flash` 属性 line 471）。业务路径用 `_default`/`_flash` 属性间接消费，DB 列未删除（向后兼容） |
-| 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()`（line 469）实际仍用非流式 `chat_with_tools()`（line 533）；仅 `run_debug()`（line 1551）用流式 `chat_stream_with_tools_and_thinking`（line 1690） |
-| 第二十五轮 | "调试工具精简至 4 个" | 实际暴露 5 个：`DEBUG_TOOLS`（line 149）含 4 核心（edit_script/run_script/read_script/grep_script）+ 第 151 行追加 `list_user_datasources`（从 SHARED_TOOL_SCHEMAS 提取） |
+| 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()`（line 338）统一处理主对话与调试——通过 `_is_debug = bool(context.get("debug_folder") or context.get("debug_script_content"))`（line 353）分支；调试分支用流式 `chat_stream_with_tools_and_thinking`，主对话用非流式 `chat_with_tools`；**无独立 `run_debug()` 方法**（历史记录中的 run_debug 已合并入 run()） |
+| 第二十五轮 | "调试工具精简至 4 个" | **无 `DEBUG_TOOLS` 列表**；实际为单一 `MAIN_TOOLS`（line 73-80，20 个工具名），`tools = get_tool_schemas(MAIN_TOOLS)`（line 335）同时用于主对话与调试模式；4 个调试工具（edit_script/run_script/read_script/grep_script）含在 MAIN_TOOLS 中，注册于 tool_registry.py（line 1132/1148/1166/1186） |
 | 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数：`run_skill_script`（631）/`run_skill_script_async`（659）/`run_skill_script_streaming`（898）/`run_skill_script_streaming_async`（995）/`run_skill_script_by_content`（1043）/`run_skill_script_by_content_async`（1066），含 async 包装器 |
 | 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | 第二十八轮已删除 seed 算子/流程加载逻辑（改用资产导入导出替代）；`data/seed/operators.json` 不存在；`main.py` `_seed_skills_and_pipelines` 仅保留技能磁盘扫描 + 内置流程/调度 seed（按 is_builtin 查重） |
-| 路由数 | 第二十一轮记录"183 条路由" | 实际 188 条路由（187 API + 1 health；第三十轮：skills 30 / datasources 24 / operators 18 / permissions 18 / config 16 / pipelines 13 / chat 12 / schedules 12 / filelinks 9 / metadata 7 / auth 6 / agents 5 / knowledge 5 / custom_extension 6（含 connectors+providers）/ assets 4 / filesystem 1 / llm 1 / health 1） |
+| 路由数 | 第二十一轮记录"183 条路由" | 实际 140 个 OpenAPI paths（175 operations）：skills 23 / permissions 16 / operators 14 / config 11 / pipelines 11 / chat 9 / schedules 9 / datasources 8 / auth 6 / filelinks 6 / metadata 6 / agents 5 / knowledge 5 / assets 4 / connectors 2 / providers 2 / filesystem 1 / llm 1 / health 1 |
 | 第二十五轮 | "Docker 一键部署：前端多阶段构建 nginx 托管 + SSE 长连接支持" | 第二十八轮（2bd1a58）已删除 Docker/nginx 全部配置（`docker-compose.yml`/`Dockerfile`×2/`nginx/nginx.conf` 均不存在），回归开发模式 |
 | 第二十七轮 | "当前错误处理机制含平台信号词匹配（_PLATFORM_FAILURE_SIGNALS）" | 第二十八轮（2bd1a58）已彻底删除平台信号词匹配（`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空），靠 LLM 自主判断 + 执行错误计数 + 修改次数上限三层兜底 |
 | 第二十六轮 | "关键词路由：含查询/统计/分析…→ DataAnalyst" | 第三十轮已删除关键词路由，改为 `classify_message` LLM 语义判断 msg_type（analysis/processing/chat）→ 选 Agent；chat_router 不再依赖关键词列表 |
@@ -841,6 +856,17 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 第三十轮 | "classify 不传 context 信息给 LLM（只靠用户消息语义判断）" | 第三十一轮已改为传当前已选数据上下文（源/目标/技能名）给 LLM，让它能判断 keep/change |
 | 第三十轮 | "有任意 suggestion → 保存 ChatMessage + yield done + return；无 suggestion → 走 Agent" | 第三十一轮已改为每路独立返回结果（含 no_match 类型），不再用 `_has_suggestion` 判断 |
 | 第三十轮 | "前端 suggestions 数组（data_suggestion/target_suggestion/skill_suggestion + missing_source/missing_target）" | 第三十一轮已改为 8 种独立事件类型（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match） |
+| 路由数 | 第三十一轮记录"188 条路由" | 第三十二轮删 13 个旧 /internal/* 端点 + 1 个孤儿 /internal/execute → 140 OpenAPI paths（139 API + 1 health） |
+| 全局 | "三智能体（DataProcessor/DataInspector/DataAnalyst）" | 实际为**四智能体**：新增 `ChatAgent`（`chat_agent.py`，处理闲聊/问候/系统配置/提问咨询等非数据操作，`_decide_handoff` 对其返回 None 不参与 handoff）；chat 类型消息走 ChatAgent 而非 DataProcessor |
+| 第二十六轮 | "DataAnalyst run_debug() 分析技能调试" | **无 `run_debug()` 方法**（data_analyst_agent.py 与 data_processor_agent.py 均无独立 run_debug）；调试模式在 `run()` 内部通过 `_is_debug` flag 分支处理 |
+| 全局 | "StuckDetector max_total_rounds 30→15" | `StuckDetector.__init__` 默认 `max_total_rounds=15`（agent_utils.py line 102），但实例化时传参不同：data_processor debug=50/main=30、data_analyst=15、chat_agent=10；无"只调查不修改"检测（已删） |
+| 全局 | "sandbox_ns.py 算子沙箱命名空间" | 第三十二轮已删除 sandbox_ns.py + 所有引用；算子执行统一走 skill_runner |
+| 全局 | "SANDBOX_TOOLS_DOC / TOOL_FUNCTIONS_DOC 沙箱函数文档" | 第三十二轮已彻底删除；LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC |
+| 全局 | "is_public 字段（Connector/Provider）" | 第三十二轮已改 is_seed；语义统一：seed=预置的=所有用户可见 |
+| 全局 | "_BUILTIN_CONNECTORS" | 第三十二轮已改 _SEED_CONNECTORS |
+| 全局 | "沙箱模板注入 17 个适配函数" | 第三十二轮已删除，只留 call_tool 统一入口 + 安全 hooks |
+| 全局 | "聊天上传虚拟数据源 type=excel" | 第三十二轮已改 type=generic_file + 去扩展名过滤（接受任意文件） |
+| 全局 | "DataProcessor 13 工具 / DataAnalyst 11 工具" | 第三十二轮 DataProcessor 20 工具 / DataAnalyst 14 工具（新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes） |
 
 ### 第二十九轮（Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化 + 输入历史隔离）
 
@@ -1035,3 +1061,83 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 **验证**：`app.main` 完整加载 188 路由；130 测试全通过；前端 vite build 通过；classify 传上下文后 keep/change 判断正确；使用技能走调试模式 Agent 用 run_script 执行；directExecute 不弹重复用户消息。
 
 **与前轮关系**：第三十轮的 4 段 keep + 并行匹配框架在本轮完善——每路独立返回结果类型、前端卡片渲染修复、技能调用走调试模式复用 `build_debug_context`。第二十三轮的 `build_debug_context`/`build_debug_message` 在本轮被 chat.py 复用（之前只有 skill.py/operator.py/pipeline.py 用）。第二十九轮的 `selectedData` 只传源表在本轮扩展到目标表+技能全链路。
+
+### 第三十二轮（工具统一 + 沙箱安全加固 + is_seed + GenericFileConnector + 沙箱函数概念消除）
+
+**核心洞察**：DataCrab 有两套工具实现——Agent 工具（tool_registry.py，主进程 function calling）和沙箱工具（skill_runner.py 模板，子进程 HTTP）。同一能力两套实现是历史演进。本轮彻底统一成一套 handler，一个 `call_tool` 入口。同时补齐沙箱安全隔离，统一 Connector/Provider 的 seed 概念，消除"沙箱函数"独立概念。
+
+**工具统一（tool_registry + call_tool）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **tool_registry 新增 8 个工具** | tool_registry.py | write_table_data/iter_table_data/llm_generate/read_file/write_file/extract_video_info/extract_keyframes 注册 + handler；list_user_datasources 扩展 by_name/datasource_id 参数 |
+| **/internal/execute-tool 统一端点** | datasource.py | 新增 POST /internal/execute-tool，直接调 handler（不经 execute_tool），跳过 LRU 缓存和截断（脚本需要完整数据） |
+| **删 13 个旧 /internal/* 端点** | datasource.py | 旧分散端点全部删除，只保留 /internal/execute-tool + 辅助函数 |
+| **_llm_vision_handler 去 double-hop** | tool_registry.py | 从 HTTP 调旧端点 → 直接调 llm_manager.vision()（和 read_file/extract_video_info handler 一致） |
+| **operator /internal/execute 删孤儿端点** | operator.py | call_operator 已删，无调用方 |
+
+**沙箱函数概念消除**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **handler 返回格式统一 records** | tool_registry.py | query_table_data/execute_sql 从 split(`rows`+`format`) → records(`data`+`success`+`columns`+`row_count`)，脚本和 Agent 统一 |
+| **模板删 17 个适配函数** | skill_runner.py | SKILL_RUNNER_TEMPLATE 从 14506→6925 字符；只留 `call_tool` + `_logged_call_tool` + 安全 hooks |
+| **删 TOOL_FUNCTIONS_DOC** | prompt_docs.py | LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可 |
+| **PLATFORM_CONVENTIONS_DOC 全改 call_tool** | prompt_docs.py | 所有示例从旧函数名 → call_tool 风格 |
+| **9 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | query_table_data→call_tool("query_table_data",...)；resolve_column→内联 difflib；llm_chat→call_tool("llm_generate")["content"]；iter_table_data 生成器→while 翻页 |
+| **skill_creator + SKILL_SPEC 全改 call_tool** | skill_creator.py / SKILL_SPEC.md | _COMMON_PITFALLS 20+ 示例 + Section 4 全改 call_tool |
+| **chat.py 附件提示改 call_tool** | chat.py | llm_vision(...)/execute_sql(...) → call_tool("llm_vision",...)/call_tool("execute_sql",...) |
+| **data_processor_agent system prompt 改 call_tool** | data_processor_agent.py | "内置函数" → "call_tool" |
+
+**沙箱安全加固（P0-P2）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **环境变量白名单** | skill_runner.py | 只传 PATH/HOME/TEMP/DATACRAB_API_BASE 等，不传 JWT_SECRET_KEY/ENCRYPT_KEY 等密钥 |
+| **删 PYTHONPATH** | skill_runner.py | 脚本不能 `import app.*` 读平台源码 |
+| **__import__ hook** | skill_runner.py 模板 | 拦截 os/sys/sqlite3/socket/subprocess/sqlalchemy 等危险模块 |
+| **open() 沙箱化** | skill_runner.py 模板 | 只允许临时目录 + SANDBOX_ALLOWED_DIRS，禁止读平台文件 |
+| **cwd 改临时目录** | skill_runner.py | 子进程 cwd 在 dc_sandbox_* 临时目录，相对路径读不到 datacrab.db/.env |
+| **stdout 累积上限** | skill_runner.py | 5000 行 / 5MB 截断，防主进程内存涨 |
+| **并发数限制** | skill_runner.py | asyncio.Semaphore(3)，最多 3 个脚本同时执行 |
+| **POSIX 资源限制** | skill_runner.py | preexec_fn 设内存 2GB / CPU 600s / 文件 500MB 上限（Linux/macOS，Windows 跳过） |
+
+**is_public → is_seed 统一**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **is_public → is_seed** | models/custom_extension.py | CustomConnector + LLMProvider 的 `is_public` 列改 `is_seed`；语义统一：seed=预置的=所有用户可见 |
+| **seed 不复活** | connectors.py / llm.py | 启动时 seed 到 DB（不存在才创建），已存在不覆盖 is_seed |
+| **_BUILTIN_CONNECTORS → _SEED_CONNECTORS** | connectors.py | 命名统一为 seed 语义 |
+| **permission_service** | permission_service.py | _PUBLIC_FIELD connector/llmprovider 从 is_public → is_seed |
+| **asset_io 导入导出** | asset_io.py | is_public → is_seed |
+| **前端 DataSourceView** | DataSourceView.vue | "公开/私有" → "预置/自建"；删编辑表单公开开关 |
+| **DB 迁移** | main.py | ALTER TABLE ... RENAME COLUMN is_public TO is_seed |
+| **LLMProvider 无创建/编辑端点** | custom_extension.py | 只有列表+删除；用户通过 Agent save_llm_adapter 工具创建（默认 is_seed=False） |
+
+**GenericFileConnector + 聊天上传**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **GenericFileConnector 内建** | connectors.py | 注册到 _SEED_CONNECTORS；支持 mode=files 多文件模式；列出文件名/大小/扩展名 |
+| **聊天上传去扩展名过滤** | chat.py + ChatView.vue | 接受任意文件（不再只 Excel+图片）；虚拟数据源 type 从 "excel" → "generic_file" |
+| **Excel 解析失败不报错** | chat.py | 非图片非 Excel 的文件直接存，由 Agent 按需用工具处理 |
+
+**工具分配**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **DataProcessor 13→20 工具** | data_processor_agent.py | 新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes |
+| **DataAnalyst 11→14 工具** | data_analyst_agent.py | 新增 iter_table_data/read_file/llm_generate |
+| **resolve_column 删除** | — | 纯本地 difflib 函数，不注册 tool_registry；脚本内联 `difflib.get_close_matches` |
+
+**written_tables 死代码清理**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删 _WRITTEN_TABLES 追踪** | skill_runner.py 模板 | 模板不再追踪写入表；result dict 中 written_tables=None |
+| **删 data_processor_agent 消费** | data_processor_agent.py | 删 3 处读取 + 1 处 docstring；handoff 靠脚本返回值 output_table |
+
+**验证**：`app.main` 加载 139 OpenAPI paths（删 14 个旧端点）；131 测试全通过；10 个技能脚本语法全通过；零残留（SANDBOX_TOOLS_DOC/TOOL_FUNCTIONS_DOC/call_operator/sandbox_ns/is_public grep 全空）。
+
+**与前轮关系**：第三十一轮的 Agent 工具 + 沙箱函数两套实现在本轮彻底统一为一个 `call_tool` 入口 +一套 tool_registry handler。第十~十六轮建立的沙箱适配函数层（split→records 转换、_wrap_tool_log、_resolve_ds 等）在本轮全部删除。第十四~二十八轮的 13 个旧 /internal/* 端点在本轮删除。第八轮的 sandbox_ns.py 在第二十八轮已删引用，本轮确认无残留。

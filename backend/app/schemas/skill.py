@@ -104,9 +104,9 @@ class SkillInferInstructionRequest(BaseModel):
     chat_session_id: str = Field(..., description="对话会话ID")
     user_message: str = Field(..., description="用户原始消息")
     source_datasource_name: Optional[str] = Field(None, description="源数据源名（前端从跳转 URL 传入，优先于 ChatSession.context）")
-    source_table_name: Optional[str] = Field(None, description="源表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+    source_data_name: Optional[str] = Field(None, description="源表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
     target_datasource_name: Optional[str] = Field(None, description="目标数据源名（前端从跳转 URL 传入，优先于 ChatSession.context）")
-    target_table_name: Optional[str] = Field(None, description="目标表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
+    target_data_name: Optional[str] = Field(None, description="目标表名（前端从跳转 URL 传入，优先于 ChatSession.context）")
 
 
 class SkillDebugChatRequest(BaseModel):
@@ -114,11 +114,11 @@ class SkillDebugChatRequest(BaseModel):
     history: list = Field(default_factory=list, description="对话历史 [{role, content}]")
     script_name: str = Field(default="main.py", description="脚本名称")
     datasource_id: Optional[str] = Field(None, description="数据源ID（向后兼容，等同于 source_datasource_id）")
-    table_name: Optional[str] = Field(None, description="表名（向后兼容，等同于 source_table_name）")
+    table_name: Optional[str] = Field(None, description="表名（向后兼容，等同于 source_data_name）")
     source_datasource_id: Optional[str] = Field(None, description="源数据源ID")
-    source_table_name: Optional[str] = Field(None, description="源表名")
+    source_data_name: Optional[str] = Field(None, description="源表名")
     target_datasource_id: Optional[str] = Field(None, description="目标数据源ID")
-    target_table_name: Optional[str] = Field(None, description="目标表名")
+    target_data_name: Optional[str] = Field(None, description="目标表名")
     context: Optional[dict] = Field(None, description="左侧执行面板上下文")
 
 

@@ -800,6 +800,14 @@ function resetDebug() {
     opAbortController = null
   }
   opStreaming.value = false
+  // 清理中止后不完整的 assistant 消息（既无执行结果也无脚本更新）
+  const lastMsg = opMessages.value[opMessages.value.length - 1]
+  if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.runResult && !lastMsg.scriptUpdated) {
+    const trimmed = (lastMsg.llmContent || lastMsg.content || '').replace(/\[已停止生成\]/g, '').trim()
+    if (!trimmed) {
+      opMessages.value.pop()
+    }
+  }
 }
 
 async function refreshOpScript() {

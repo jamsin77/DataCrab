@@ -158,7 +158,7 @@ def compute_map(
         结果列表，顺序与 partitions 一致
 
     示例:
-        chunks = list(iter_table_data(ds_id, "big_table", chunk_size=50000))
+        chunk = call_tool("iter_table_data", datasource_id=ds_id, table_name="big_table", page=1, page_size=50000)
 
         def clean(df):
             return df.dropna().reset_index(drop=True)

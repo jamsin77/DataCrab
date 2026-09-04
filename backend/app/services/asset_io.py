@@ -130,7 +130,7 @@ async def export_llm_config(zf: zipfile.ZipFile, db: AsyncSession, user_id) -> i
             "vision_model": p.vision_model or "",
             "embedding_model": p.embedding_model or "",
             "code": p.code or "",
-            "is_public": p.is_public,
+            "is_seed": p.is_seed,
         })
     zf.writestr("llm_config.json", json.dumps(data, ensure_ascii=False, indent=2))
     return len(data)
@@ -151,7 +151,7 @@ async def export_custom_extensions(zf: zipfile.ZipFile, db: AsyncSession, user_i
             "description": c.description or "",
             "code": c.code or "",
             "config_template": c.config_template or [],
-            "is_public": c.is_public,
+            "is_seed": c.is_seed,
         })
     zf.writestr("custom_extensions.json", json.dumps(data, ensure_ascii=False, indent=2))
     return len(data)
@@ -462,7 +462,7 @@ async def import_llm_config(data: List[Dict], db: AsyncSession, user_id, overwri
                 existing_prov.vision_model = p.get("vision_model") or ""
                 existing_prov.embedding_model = p.get("embedding_model") or ""
                 existing_prov.code = p.get("code") or ""
-                existing_prov.is_public = p.get("is_public", False)
+                existing_prov.is_seed = p.get("is_seed", False)
                 existing_prov.created_by = user_id
                 # api_key_encrypted 不动（保留用户已填的 key）
                 updated += 1
@@ -478,7 +478,7 @@ async def import_llm_config(data: List[Dict], db: AsyncSession, user_id, overwri
             vision_model=p.get("vision_model") or "",
             embedding_model=p.get("embedding_model") or "",
             code=p.get("code") or "",
-            is_public=p.get("is_public", False),
+            is_seed=p.get("is_seed", False),
             api_key_encrypted=None,
             created_by=user_id,
         )
@@ -514,7 +514,7 @@ async def import_custom_extensions(data: List[Dict], db: AsyncSession, user_id, 
                 existing_conn.description = c.get("description") or ""
                 existing_conn.code = c.get("code") or ""
                 existing_conn.config_template = c.get("config_template") or []
-                existing_conn.is_public = c.get("is_public", False)
+                existing_conn.is_seed = c.get("is_seed", False)
                 existing_conn.created_by = user_id
                 updated += 1
                 continue
@@ -524,7 +524,7 @@ async def import_custom_extensions(data: List[Dict], db: AsyncSession, user_id, 
             description=c.get("description") or "",
             code=c.get("code") or "",
             config_template=c.get("config_template") or [],
-            is_public=c.get("is_public", False),
+            is_seed=c.get("is_seed", False),
             created_by=user_id,
         )
         db.add(connector)

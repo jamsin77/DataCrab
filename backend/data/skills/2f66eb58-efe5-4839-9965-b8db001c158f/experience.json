@@ -928,6 +928,26 @@
       "parameters": {},
       "stdout_preview": "debug start\n============================================================\n📥 main() 被调用，收到参数: {'source_datasource_name': '文物库', 'source_table_name': 'national_key_cultural_relic_protection_units', 'targ",
       "context_summary": "工具: run_script\nAI输出: 上次运行报错是「数据源服务不可达（timed out）」，这是基础设施临时超时，不是脚本逻辑错误。我先重试一次看服务"
+    },
+    {
+      "timestamp": "2026-09-03T15:50:56.949544",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp03bzeb_2.py\", line 7, in <module>\n    import sys\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp03bzeb_2.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: sys（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 我已了解脚本与平台逻辑。先直接运行一次看默认行为（目标表 `result_20260903` 当前不存在，属\"导出到新表\"场景），确认参数传递和数据写入是否"
+    },
+    {
+      "timestamp": "2026-09-03T15:52:07.055031",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Invalid value '<StringArray>\n[   '1',    '2',    '3',    '4',    '5',    '6',    '7',    '8',    '9',\n   '10',\n ...\n '5287', '5288', '5289', '5290', '5291', '5292', '5293', '5294', '5295',\n '5296']\nLength: 5296, dtype: str' for dtype 'int64'",
+      "parameters": {},
+      "stdout_preview": "debug start\n============================================================\n📥 main() 被调用，收到参数: {'source_datasource_name': '聊天上传数据', 'source_table_name': '微信图片_20260901141946_535_239_20260903_073638', 'ta",
+      "context_summary": "工具: run_script\nAI输出: 已删除 sys/io 导入及编码重配置代码。现在重新运行验证导出任务是否能正常执行。\n\n由于源表有 5296 行数据，且目标表 `result_20260903` 目前不存在，脚本默认 `if_table_exists=\"fail\"` 会先建表写入。我重新执行验证"
     }
   ],
   "positive": [

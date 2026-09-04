@@ -445,6 +445,49 @@ async def llm_match_tables(
     )).scalars().all()
 
     if not table_metas:
+        # ChromaDB 等数据源的表不在 TableMetadata 里，实时从 get_schema 获取并补建
+        from app.services.connectors import get_connector
+        from app.core.database import async_session as _meta_session
+        for ds in ds_rows:
+            if str(ds.id) not in mentioned_ds_ids:
+                continue
+            if ds.type not in ("chroma",):
+                continue
+            try:
+                connector = get_connector(ds.type, ds.connection_config or {})
+                schema = await connector.get_schema()
+                await connector.close()
+                if schema:
+                    _mlog(f"# ChromaDB {ds.name} 实时获取 {len(schema)} 个 collections，补建 TableMetadata")
+                    async with _meta_session() as meta_db:
+                        for item in schema:
+                            tn = item.get("table_name", "")
+                            if not tn:
+                                continue
+                            existing = await meta_db.execute(
+                                select(TableMetadata).where(
+                                    TableMetadata.data_source_id == ds.id,
+                                    TableMetadata.table_name == tn,
+                                )
+                            )
+                            if not existing.scalar_one_or_none():
+                                meta_db.add(TableMetadata(
+                                    data_source_id=ds.id,
+                                    table_name=tn,
+                                    table_type=item.get("table_type", "chroma_collection"),
+                                ))
+                        await meta_db.commit()
+                    # 重新查
+                    table_metas = (await db.execute(
+                        select(TableMetadata).where(
+                            TableMetadata.data_source_id.in_([_UUID(d) for d in mentioned_ds_ids])
+                        )
+                    )).scalars().all()
+                    break
+            except Exception as e:
+                _mlog(f"# ChromaDB {ds.name} schema 同步失败: {e}")
+
+    if not table_metas:
         _mlog(f"# 数据源中无表，返回空（数据源名已匹配）")
         return [], mentioned_ds_names, []
 
@@ -480,6 +523,11 @@ async def llm_match_skills(user_message: str, db, msg_type: str = "") -> Tuple[L
     from app.models.skill import Skill
     from sqlalchemy import select
     skills = (await db.execute(select(Skill))).scalars().all()
+    # 按 msg_type 过滤 skill_type：analysis 只匹配分析类，processing 只匹配处理类
+    if msg_type == "analysis":
+        skills = [s for s in skills if s.skill_type == "analysis"]
+    elif msg_type == "processing":
+        skills = [s for s in skills if s.skill_type != "analysis"]
     _mlog(f"\n{'#'*60}")
     _mlog(f"# llm_match_skills 入口: msg_type={msg_type} 技能数={len(skills)}")
     for s in skills:
@@ -588,7 +636,8 @@ async def _llm_fine_match(user_message: str, items: List[Dict], msg_type: str = 
         f"{_type_hint}"
         f"{_task_hint}"
         f"可选项目：\n{item_list}\n\n"
-        "返回所有匹配项目的序号（逗号分隔），按匹配程度从高到低排序，不要解释。"
+        "返回所有匹配项目的序号（逗号分隔），按匹配程度从高到低排序。"
+        "只有真正能完成用户需求的项目才返回，不确定或无关的不要返回。无匹配返回 none。不要解释。"
     )
     return await _llm_parse_response(prompt, items, match_stage="fine")
 

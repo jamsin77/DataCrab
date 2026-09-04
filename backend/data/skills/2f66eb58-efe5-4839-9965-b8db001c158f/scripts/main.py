@@ -4,22 +4,12 @@
 支持自动翻译列名为英文，并设置中文备注
 """
 
-import sys
-import io
 import re
 import time
 import traceback
 from datetime import datetime
 import pandas as pd
 from typing import Dict, List, Optional, Any
-
-# 修复 Windows 环境下 GBK 编码无法输出 emoji 等特殊字符的问题
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-else:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 
 # ============================================================
@@ -192,11 +182,8 @@ def _batch_translate(values: List[str], source_lang: str, target_lang: str) -> L
     """批量翻译文本列表，使用 llm_chat 调用大模型。"""
     if not values:
         return values
-    try:
-        llm_chat_func = _get_builtin_func('llm_chat')
-    except Exception:
-        print("  ⚠️ llm_chat 函数不可用，跳过翻译")
-        return values
+    def llm_chat_func(prompt, **kwargs):
+        return call_tool("llm_generate", prompt=prompt, **kwargs)["content"]
 
     lang_map = {"zh": "中文", "en": "英文"}
     src_name = lang_map.get(source_lang, source_lang)
@@ -337,10 +324,18 @@ def migrate_data(
       - overwrite: 清空目标表内容后重新写入（第一批 overwrite，后续批次 append）
     """
 
-    # 延迟加载内置函数
-    get_datasource_id_by_name = _get_builtin_func('get_datasource_id_by_name')
-    query_table_data = _get_builtin_func('query_table_data')
-    write_table_data = _get_builtin_func('write_table_data')
+    # call_tool 替代旧内置函数
+    def get_datasource_id_by_name(name):
+        if re.match(r'^[0-9a-f]{8}-', str(name), re.I):
+            return name
+        _r = call_tool("list_user_datasources", by_name=name)
+        return _r.get("id") if isinstance(_r, dict) else None
+
+    def query_table_data(ds_id, table, **kwargs):
+        return call_tool("query_table_data", datasource_id=ds_id, table_name=table, **kwargs)
+
+    def write_table_data(ds_id, table, **kwargs):
+        return call_tool("write_table_data", datasource_id=ds_id, table_name=table, **kwargs)
 
     # 兼容系统自动注入的参数
     if not source_datasource_name and 'datasource' in kwargs:
@@ -479,7 +474,8 @@ def migrate_data(
     # 英文→中文翻译逻辑（translate_to_cn）——使用 llm_chat 批量翻译（对齐文本翻译算子）
     if translate_to_cn:
         print("\n  🌐 [英文→中文翻译] 使用 LLM 翻译表名和列名...")
-        llm_chat_func = _get_builtin_func('llm_chat')
+        def llm_chat_func(prompt, **kwargs):
+            return call_tool("llm_generate", prompt=prompt, **kwargs)["content"]
         # 收集需要翻译的名称（表名 + 未映射的列名）
         _to_translate = []
         _translate_table = False
@@ -749,7 +745,8 @@ def migrate_data(
                 # 最后兜底：尝试 execute_sql（仅对 DB 型数据源有效）
                 print(f"  💡 尝试使用 execute_sql 创建表并写入数据...")
                 try:
-                    execute_sql_func = _get_builtin_func('execute_sql')
+                    def execute_sql_func(ds_id, sql, **kwargs):
+                        return call_tool("execute_sql", datasource_id=ds_id, sql=sql, **kwargs)
                     col_defs = ", ".join([f'"{col}" TEXT' for col in df.columns])
                     create_sql = f'CREATE TABLE IF NOT EXISTS "{target_table_name}" ({col_defs})'
                     execute_sql_func(target_ds_id, create_sql)
@@ -799,6 +796,7 @@ def migrate_data(
         "migrated_rows": total_written,
         "columns": list(df.columns),
         "target_table": target_table_name,
+        "target_datasource": target_datasource_name,
         "table_remark": table_remark,
         "column_remarks": column_remarks
     }
@@ -1061,9 +1059,10 @@ def _smart_translate_en_to_cn(text: str) -> str:
     # 部分匹配也返回拼接结果
     if any(COMMON_EN_CN.get(p) for p in parts):
         return ''.join(translated_parts)
-    # 3. 用 llm_chat 翻译
+    # 3. 用 call_tool 翻译
     try:
-        llm_chat_func = _get_builtin_func('llm_chat')
+        def llm_chat_func(prompt, **kwargs):
+            return call_tool("llm_generate", prompt=prompt, **kwargs)["content"]
         prompt = (
             f"请将以下英文数据库表名/列名翻译为简洁的中文，"
             f"只输出中文翻译结果，不要添加任何说明或标点：\n{text}"
@@ -1136,7 +1135,8 @@ def repair_existing_data(datasource_name, table_name):
     """
     print(f"\n🔧 数据质量修复: 检查表 '{table_name}' 中的必填字段空值...")
 
-    execute_sql_func = _get_builtin_func('execute_sql')
+    def execute_sql_func(ds_id, sql, **kwargs):
+        return call_tool("execute_sql", datasource_id=ds_id, sql=sql, **kwargs)
 
     # 查找名称为空的记录
     sql = f'''SELECT * FROM "{table_name}" WHERE name IS NULL OR TRIM(name) = '' '''
@@ -1173,7 +1173,8 @@ def repair_existing_data(datasource_name, table_name):
         fixed_records.append(record)
 
     # 使用 upsert 写回修复的记录
-    write_func = _get_builtin_func('write_table_data')
+    def write_func(ds_id, table, **kwargs):
+        return call_tool("write_table_data", datasource_id=ds_id, table_name=table, **kwargs)
     write_result = write_func(datasource_name, table_name, records=fixed_records, if_table_exists="upsert")
 
     if not write_result or not write_result.get("success"):

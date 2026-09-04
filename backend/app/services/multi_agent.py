@@ -220,7 +220,7 @@ class AgentRuntime:
         Agent 只返回业务结果（done 事件），不感知 handoff 存在。
         RunTime 按 Agent 角色 + 结果内容决定是否交接给对方。
         """
-        if not done_result or not context.get("debug_mode"):
+        if not done_result:
             return None
 
         if agent_name == "data_analyst":
@@ -273,8 +273,8 @@ class AgentRuntime:
                      or context.get("debug_target_datasource_id", "")
                      or context.get("debug_source_datasource_id", ""))
             tbl = (context.get("debug_output_table", "")
-                   or context.get("debug_target_table_name", "")
-                   or context.get("debug_source_table_name", ""))
+                   or context.get("debug_target_data_name", "")
+                   or context.get("debug_source_data_name", ""))
             return ("data_processor", HandoffReason.FIX_REQUIRED, {
                 "issues": issues,
                 "summary": (done_result.get("content") or "")[:500],
@@ -290,8 +290,23 @@ class AgentRuntime:
         issues = []
         if not isinstance(check_results, dict):
             return issues
+        # 数据加载失败等顶层错误（集合不存在、数据源不可达等）→ 直接作为 error 级 issue
+        if check_results.get("error"):
+            issues.append({
+                "severity": "error",
+                "rule_id": "LOAD-FAIL",
+                "description": check_results["error"],
+            })
+            return issues
         for dim in ("standards", "quality", "security"):
             dim_result = check_results.get(dim) or {}
+            # 维度级别错误（如该维度检查抛异常）
+            if isinstance(dim_result, dict) and dim_result.get("error"):
+                issues.append({
+                    "severity": "error",
+                    "rule_id": f"{dim.upper()}-ERR",
+                    "description": dim_result["error"],
+                })
             for issue in dim_result.get("issues", []):
                 if isinstance(issue, dict) and issue.get("severity") in ("error", "critical", "fatal"):
                     issues.append(issue)
@@ -338,10 +353,10 @@ def build_debug_context(
     max_inspections: int = 7,
     source_datasource_id: str = None,
     source_datasource_name: str = None,
-    source_table_name: str = None,
+    source_data_name: str = None,
     target_datasource_id: str = None,
     target_datasource_name: str = None,
-    target_table_name: str = None,
+    target_data_name: str = None,
     **extras,
 ) -> Dict[str, Any]:
     """构建调试 context 核心字段 + 类型特定字段（skill/operator/pipeline 共享）。
@@ -351,7 +366,6 @@ def build_debug_context(
     旧字段 debug_datasource_id/name 和 debug_table_name 保持兼容（向后兼容为源端）。
     """
     context = {
-        "debug_mode": True,
         "debug_type": target_type,
         "db": db,
         "user_id": user_id,
@@ -366,10 +380,10 @@ def build_debug_context(
         "debug_max_inspections": max_inspections,
         "debug_source_datasource_id": source_datasource_id or "",
         "debug_source_datasource_name": source_datasource_name or "",
-        "debug_source_table_name": source_table_name or "",
+        "debug_source_data_name": source_data_name or "",
         "debug_target_datasource_id": target_datasource_id or "",
         "debug_target_datasource_name": target_datasource_name or "",
-        "debug_target_table_name": target_table_name or "",
+        "debug_target_data_name": target_data_name or "",
     }
     context.update(extras)
     # 向后兼容：旧字段映射到源端
@@ -377,8 +391,8 @@ def build_debug_context(
         context["debug_source_datasource_id"] = context["debug_datasource_id"]
     if not context.get("debug_source_datasource_name") and context.get("debug_datasource_name"):
         context["debug_source_datasource_name"] = context["debug_datasource_name"]
-    if not context.get("debug_source_table_name") and context.get("debug_table_name"):
-        context["debug_source_table_name"] = context["debug_table_name"]
+    if not context.get("debug_source_data_name") and context.get("debug_table_name"):
+        context["debug_source_data_name"] = context["debug_table_name"]
     return context
 
 
