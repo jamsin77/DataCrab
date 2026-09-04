@@ -7,6 +7,7 @@
 - 不做关键词路由——由调用方声明任务类型，ModelRouter 负责降级
 """
 
+import asyncio
 import json
 import time
 import contextvars
@@ -938,11 +939,14 @@ class LLMManager:
             try:
                 client = self._client_for(cfg)
                 logger.info(f"LLM vision调用: provider={cfg['provider']}, model={vis_model}")
-                resp = await client.chat.completions.create(
-                    model=vis_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+                resp = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=vis_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=120.0,
                 )
                 return resp.choices[0].message.content
             except Exception as e:
@@ -953,11 +957,14 @@ class LLMManager:
                     if _clamped != max_tokens:
                         logger.warning(f"LLM vision max_tokens={max_tokens} 超限，clamp 到 {_clamped} 重试 [{vis_model}]")
                         try:
-                            resp = await client.chat.completions.create(
-                                model=vis_model,
-                                messages=messages,
-                                temperature=temperature,
-                                max_tokens=_clamped,
+                            resp = await asyncio.wait_for(
+                                client.chat.completions.create(
+                                    model=vis_model,
+                                    messages=messages,
+                                    temperature=temperature,
+                                    max_tokens=_clamped,
+                                ),
+                                timeout=120.0,
                             )
                             return resp.choices[0].message.content
                         except Exception as e2:
