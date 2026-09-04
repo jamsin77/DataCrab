@@ -950,6 +950,15 @@ async function continueProcessing(msg: any) {
   const userMsg = allMsgs[msgIdx - 1]
   const text = userMsg?.content || ''
   if (!text) return
+  // 「直接分析/直接处理」：清除已选技能，不走技能调试模式
+  if (chatStore.selectedData) {
+    chatStore.selectedData = {
+      ...chatStore.selectedData,
+      skill_id: undefined,
+      skill_name: undefined,
+      skill_type: undefined,
+    } as any
+  }
   // 检查是否有 data_suggestion 但用户没选源表
   const hasDataSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'data_suggestion')
   if (hasDataSuggestion && !chatStore.selectedData?.datasource_id) {

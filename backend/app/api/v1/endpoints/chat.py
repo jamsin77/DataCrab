@@ -1612,7 +1612,8 @@ async def stream_response(
             logger.info(f"[route] session={session_id} msg_type={_msg_type} agent={_agent_name}")
 
             # 如果有已选技能且指令未在 direct_execute 生成过，生成技能调用指令替换 _user_msg
-            if not _skill_instruction_generated and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
+            # 注意：direct_execute + use_skill=false（用户点「直接分析/直接处理」）时不注入技能
+            if not _skill_instruction_generated and not request.direct_execute and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
                 _skill_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
                 _skill_name = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name") or ""
                 yield f"data: {json.dumps({'type': 'executing', 'message': f'正在生成技能调用指令...'}, ensure_ascii=False)}\n\n"
@@ -1678,7 +1679,8 @@ async def stream_response(
             }
 
             # 如果有已选技能，把技能信息注入 context，并在 user_msg 里提示 Agent 调用技能
-            if _skill_instruction_generated or (_session_ctx.get("last_skill_id") and not _skill_instruction_generated):
+            # 注意：direct_execute + use_skill=false（用户点「直接分析/直接处理」）时不注入技能
+            if (_skill_instruction_generated or (_session_ctx.get("last_skill_id") and not _skill_instruction_generated)) and not (request.direct_execute and not request.use_skill):
                 try:
                     from app.models.skill import Skill as _SkillModel
                     from app.services.skill_parser import read_skill_md, read_skill_script
