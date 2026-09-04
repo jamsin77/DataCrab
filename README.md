@@ -1,5 +1,10 @@
 # DataCrab - 数据工程智能体
 
+> **原作者**: Simon ([Gitee: DataCrab/DataCrab](https://gitee.com/DataCrab/DataCrab))  
+> **许可证**: 木兰宽松许可证 v2（MulanPSL-2.0）  
+> **本仓库**: 基于原项目同步，补充了桌面部署模式的前端静态文件托管（SPA fallback），便于本地一键启动。
+
+
 DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提供 ChatGPT 风格的对话式数据交互体验。用户无需编写代码，通过自然语言对话即可完成数据的查询、清洗、转换、分析和可视化等操作。
 
 ## 核心理念
