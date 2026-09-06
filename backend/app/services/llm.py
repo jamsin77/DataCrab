@@ -246,6 +246,22 @@ _SEED_PROVIDERS = {
             {"label": "Doubao-Embedding-Text-240715", "value": "doubao-embedding-text-240715"},
         ],
     },
+    "volcengine_gateway": {
+        "display_name": "火山AI网关",
+        "description": "火山引擎 AI 网关（聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan 等模型）",
+        "api_base": "https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com/v1",
+        "default_model": "glm-5.2",
+        "models": [
+            {"label": "GLM-5.2", "value": "glm-5.2"},
+            {"label": "DeepSeek-V4-Pro", "value": "deepseek-v4-pro"},
+            {"label": "DeepSeek-V4-Flash", "value": "deepseek-v4-flash"},
+            {"label": "Qwen3.7-Plus", "value": "qwen3.7-plus"},
+            {"label": "Qwen3.7-Max", "value": "qwen3.7-max"},
+            {"label": "DouBao-Seed-2.1-Pro", "value": "doubao-seed-2.1-pro"},
+            {"label": "MiniMax-M3", "value": "MiniMax-M3"},
+            {"label": "HunYuan3", "value": "hy3"},
+        ],
+    },
 }
 
 
