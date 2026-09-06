@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.core.security import (
     verify_password,
     get_password_hash,
@@ -40,7 +41,7 @@ async def register(
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名已存在",
+            detail=t("user_exists"),
         )
 
     # 检查邮箱是否已存在
@@ -48,7 +49,7 @@ async def register(
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="邮箱已存在",
+            detail=t("email_exists"),
         )
 
     # 创建用户
@@ -77,13 +78,13 @@ async def login(
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
+            detail=t("username_or_password_incorrect"),
         )
 
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户已被禁用",
+            detail=t("user_disabled"),
         )
 
     # 更新最后登录时间
@@ -112,7 +113,7 @@ async def refresh_token(
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的刷新令牌",
+            detail=t("invalid_refresh_token"),
         )
 
     user_id = payload.get("sub")
@@ -122,7 +123,7 @@ async def refresh_token(
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已被禁用",
+            detail=t("user_not_found_or_disabled"),
         )
 
     token_data = {"sub": str(user.id)}
@@ -147,19 +148,19 @@ async def reset_password(
     if not user or not verify_password(request.old_password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或旧密码错误",
+            detail=t("username_or_old_password_incorrect"),
         )
 
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户已被禁用",
+            detail=t("user_disabled"),
         )
 
     user.password_hash = get_password_hash(request.new_password)
     await db.flush()
 
-    return {"message": "密码重置成功"}
+    return {"message": t("password_reset_success")}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -173,4 +174,4 @@ async def get_current_user_info(
 @router.post("/logout")
 async def logout():
     """用户登出"""
-    return {"message": "登出成功"}
+    return {"message": t("logout_success")}

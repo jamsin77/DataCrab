@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.filelink import FileLink
 from app.models.user import User
 from app.schemas.filelink import (
@@ -55,7 +56,7 @@ async def create_file_link(
     if not path.exists():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"路径不存在: {request.path}"
+            detail=t("path_not_found", path=request.path)
         )
     
     # 自动检测类型
@@ -117,11 +118,11 @@ async def get_file_link(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if not file_link.is_public and file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_access_file_link"))
     
     return file_link
 
@@ -137,11 +138,11 @@ async def update_file_link(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修改此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_permission_modify_file_link"))
     
     update_data = request.model_dump(exclude_unset=True)
     for key, value in update_data.items():
@@ -162,11 +163,11 @@ async def delete_file_link(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_permission_delete_file_link"))
     
     await db.delete(file_link)
 
@@ -182,11 +183,11 @@ async def browse_directory(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if not file_link.is_public and file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_access_file_link"))
     
     # 构建完整路径
     base_path = Path(file_link.path)
@@ -194,12 +195,12 @@ async def browse_directory(
         full_path = (base_path / subpath).resolve()
         base_resolved = str(base_path.resolve())
         if not (str(full_path) == base_resolved or str(full_path).startswith(base_resolved + os.sep)):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("invalid_path"))
     else:
         full_path = base_path
     
     if not full_path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="路径不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("path_not_exist"))
     
     if full_path.is_file():
         # 如果是文件，返回文件信息
@@ -235,11 +236,11 @@ async def download_file(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if not file_link.is_public and file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_access_file_link"))
     
     # 构建完整路径
     base_path = Path(file_link.path)
@@ -247,18 +248,18 @@ async def download_file(
         full_path = (base_path / subpath).resolve()
         base_resolved = str(base_path.resolve())
         if not (str(full_path) == base_resolved or str(full_path).startswith(base_resolved + os.sep)):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("invalid_path"))
     else:
         full_path = base_path
     
     if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_not_found"))
     
     # 检查扩展名限制
     if file_link.allowed_extensions:
         ext = full_path.suffix.lower()
         if ext not in [e.lower() for e in file_link.allowed_extensions]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="不允许下载此类型的文件")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("download_type_not_allowed"))
     
     return FileResponse(
         path=str(full_path),
@@ -277,19 +278,19 @@ async def write_file(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
 
     if not file_link.is_public and file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_access_file_link"))
 
     if file_link.link_type != "directory":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="只能向目录类型的文件链接写入文件")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("write_requires_directory"))
 
     base_path = Path(file_link.path).resolve()
     full_path = (base_path / request.subpath).resolve()
 
     if not str(full_path).startswith(str(base_path)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("invalid_path"))
 
     full_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -301,7 +302,7 @@ async def write_file(
         "status": "success",
         "path": str(full_path),
         "size": file_size,
-        "message": f"文件已保存: {request.subpath} ({file_size} 字节)",
+        "message": t("file_saved", subpath=request.subpath, size=file_size),
     }
 
 
@@ -317,28 +318,28 @@ async def preview_file(
     result = await db.execute(select(FileLink).where(FileLink.id == link_id))
     file_link = result.scalar_one_or_none()
     if not file_link:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件链接不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_link_not_found"))
     
     # 权限检查
     if not file_link.is_public and file_link.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此文件链接")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_access_file_link"))
     
     # 构建完整路径
     base_path = Path(file_link.path)
     if subpath:
         full_path = (base_path / subpath).resolve()
         if not str(full_path).startswith(str(base_path.resolve())):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非法路径")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("invalid_path"))
     else:
         full_path = base_path
     
     if not full_path.exists() or not full_path.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("file_not_found"))
     
     # 检查文件大小
     size = full_path.stat().st_size
     if size > max_size * 10:  # 允许10倍于预览大小的文件
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件太大，无法预览")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("file_too_large_preview"))
     
     # 尝试读取文本内容
     try:
@@ -353,4 +354,4 @@ async def preview_file(
         }
     except UnicodeDecodeError:
         # 非文本文件
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="非文本文件，无法预览")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("not_text_file"))

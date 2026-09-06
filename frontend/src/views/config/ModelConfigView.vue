@@ -3,16 +3,16 @@
     <el-card class="config-card">
       <template #header>
         <div class="card-header">
-          <span>大模型配置</span>
+          <span>{{ t('config.model.title') }}</span>
           <el-tag :type="config.is_configured ? 'success' : 'warning'">
-            {{ config.is_configured ? '已配置' : '未配置' }}
+            {{ config.is_configured ? t('config.model.configured') : t('config.model.notConfigured') }}
           </el-tag>
         </div>
       </template>
 
       <el-form :model="form" label-width="120px" v-loading="loading">
-        <el-form-item label="服务提供商">
-          <el-select v-model="form.provider" placeholder="选择提供商" @change="onProviderChange">
+        <el-form-item :label="t('config.model.providerLabel')">
+          <el-select v-model="form.provider" :placeholder="t('config.model.selectProvider')" @change="onProviderChange">
             <el-option
               v-for="p in providers"
               :key="p.provider_name"
@@ -22,26 +22,26 @@
           </el-select>
         </el-form-item>
 
-        <el-form-item label="API Key">
+        <el-form-item :label="t('config.model.apiKey')">
           <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
             <el-input
               v-model="form.api_key"
               type="password"
               show-password
               style="flex: 1"
-              :placeholder="config.api_key_set ? '已设置（输入可更新）' : '请输入API Key'"
+              :placeholder="config.api_key_set ? t('config.model.apiKeySet') : t('config.model.apiKeyRequired')"
               @input="clearAlerts"
             />
-            <el-tag v-if="config.api_key_set" type="success" size="small">已配置</el-tag>
+            <el-tag v-if="config.api_key_set" type="success" size="small">{{ t('config.model.configured') }}</el-tag>
           </div>
           <div class="form-tip">
             <el-text size="small" type="info">
-              API密钥用于调用大模型服务，请妥善保管
+              {{ t('config.model.apiKeyHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-form-item label="API 地址">
+        <el-form-item :label="t('config.model.apiBase')">
           <el-input
             v-model="form.api_base"
             :placeholder="apiBasePlaceholder"
@@ -49,13 +49,13 @@
           />
           <div class="form-tip">
             <el-text size="small" type="info">
-              {{ form.provider === 'custom' ? '可填写自定义API地址，如 http://localhost:8000/v1' : '已自动填入官方地址，如需代理可修改' }}
+              {{ form.provider === 'custom' ? t('config.model.apiBaseCustomHint') : t('config.model.apiBaseAutoHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-form-item label="默认模型">
-          <el-select v-model="form.model" placeholder="选择默认模型" style="width: 100%" @change="clearAlerts">
+        <el-form-item :label="t('config.model.defaultModel')">
+          <el-select v-model="form.model" :placeholder="t('config.model.selectDefaultModel')" style="width: 100%" @change="clearAlerts">
             <el-option
               v-for="m in availableModels"
               :key="m.value"
@@ -65,13 +65,13 @@
           </el-select>
           <div class="form-tip">
             <el-text size="small" type="info">
-              对话、调试、分析等场景默认使用的模型
+              {{ t('config.model.defaultModelHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-form-item label="快速模型">
-          <el-select v-model="form.flash_model" placeholder="选择快速模型" style="width: 100%" @change="clearAlerts">
+        <el-form-item :label="t('config.model.flashModel')">
+          <el-select v-model="form.flash_model" :placeholder="t('config.model.selectFlashModel')" style="width: 100%" @change="clearAlerts">
             <el-option
               v-for="m in availableModels"
               :key="m.value"
@@ -81,15 +81,15 @@
           </el-select>
           <div class="form-tip">
             <el-text size="small" type="info">
-              数据检查、参数推断等简单任务使用的轻量模型，留空则按 Provider 推荐或回退默认模型
+              {{ t('config.model.flashModelHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-form-item label="视觉模型">
+        <el-form-item :label="t('config.model.visionModel')">
           <el-select
             v-model="form.vision_model"
-            placeholder="留空表示不支持图片识别"
+            :placeholder="t('config.model.visionModelPlaceholder')"
             style="width: 100%"
             filterable
             allow-create
@@ -106,15 +106,15 @@
           </el-select>
           <div class="form-tip">
             <el-text size="small" type="info">
-              OCR/图片识别使用的模型，留空则不支持视觉任务
+              {{ t('config.model.visionModelHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-form-item label="向量模型">
+        <el-form-item :label="t('config.model.embeddingModel')">
           <el-select
             v-model="form.embedding_model"
-            placeholder="留空表示不支持向量化"
+            :placeholder="t('config.model.embeddingModelPlaceholder')"
             style="width: 100%"
             filterable
             allow-create
@@ -131,22 +131,22 @@
           </el-select>
           <div class="form-tip">
             <el-text size="small" type="info">
-              知识库向量化使用的模型，留空则不支持向量化
+              {{ t('config.model.embeddingModelHint') }}
             </el-text>
           </div>
         </el-form-item>
 
-        <el-divider content-position="left">备用模型（主模型不可用时自动降级）</el-divider>
+        <el-divider content-position="left">{{ t('config.model.fallbackModelsTitle') }}</el-divider>
 
         <div v-for="(fb, idx) in fallbackModels" :key="idx" class="fallback-item">
           <div class="fallback-header">
-            <span class="fallback-title">备用 {{ idx + 1 }}</span>
+            <span class="fallback-title">{{ t('config.model.fallbackN', { n: idx + 1 }) }}</span>
             <el-button type="danger" circle size="small" @click="fallbackModels.splice(idx, 1)">
               <el-icon><Delete /></el-icon>
             </el-button>
           </div>
-          <el-form-item label="提供商">
-            <el-select v-model="fb.provider" placeholder="选择提供商" style="width: 100%" filterable @change="onFallbackProviderChange(fb)">
+          <el-form-item :label="t('config.model.providerShort')">
+            <el-select v-model="fb.provider" :placeholder="t('config.model.selectProvider')" style="width: 100%" filterable @change="onFallbackProviderChange(fb)">
               <el-option
                 v-for="p in providers"
                 :key="p.provider_name"
@@ -155,62 +155,62 @@
               />
             </el-select>
           </el-form-item>
-          <el-form-item label="API Key">
+          <el-form-item :label="t('config.model.apiKey')">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
               <el-input
                 v-model="fb.api_key"
                 type="password"
                 show-password
                 style="flex: 1"
-                :placeholder="fb.api_key_set ? '已设置（输入可更新）' : '请输入API Key'"
+                :placeholder="fb.api_key_set ? t('config.model.apiKeySet') : t('config.model.apiKeyRequired')"
               />
-              <el-tag v-if="fb.api_key_set" type="success" size="small">已配置</el-tag>
+              <el-tag v-if="fb.api_key_set" type="success" size="small">{{ t('config.model.configured') }}</el-tag>
             </div>
           </el-form-item>
-          <el-form-item label="API 地址">
-            <el-input v-model="fb.api_base" placeholder="留空用默认" />
+          <el-form-item :label="t('config.model.apiBase')">
+            <el-input v-model="fb.api_base" :placeholder="t('config.model.leaveBlankDefault')" />
           </el-form-item>
-          <el-form-item label="默认模型">
-            <el-select v-model="fb.model" placeholder="选择默认模型" style="width: 100%" filterable allow-create clearable default-first-option>
+          <el-form-item :label="t('config.model.defaultModel')">
+            <el-select v-model="fb.model" :placeholder="t('config.model.selectDefaultModel')" style="width: 100%" filterable allow-create clearable default-first-option>
               <el-option v-for="m in (getProviderModels(fb.provider) || [])" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="快速模型">
-            <el-select v-model="fb.flash_model" placeholder="留空用默认" style="width: 100%" filterable allow-create clearable default-first-option>
+          <el-form-item :label="t('config.model.flashModel')">
+            <el-select v-model="fb.flash_model" :placeholder="t('config.model.leaveBlankDefault')" style="width: 100%" filterable allow-create clearable default-first-option>
               <el-option v-for="m in (getProviderModels(fb.provider) || [])" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="视觉模型">
-            <el-select v-model="fb.vision_model" placeholder="留空不支持" style="width: 100%" filterable allow-create clearable default-first-option>
+          <el-form-item :label="t('config.model.visionModel')">
+            <el-select v-model="fb.vision_model" :placeholder="t('config.model.leaveBlankUnsupported')" style="width: 100%" filterable allow-create clearable default-first-option>
               <el-option v-for="m in (getProviderModels(fb.provider) || [])" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="向量模型">
-            <el-select v-model="fb.embedding_model" placeholder="留空不支持" style="width: 100%" filterable allow-create clearable default-first-option>
+          <el-form-item :label="t('config.model.embeddingModel')">
+            <el-select v-model="fb.embedding_model" :placeholder="t('config.model.leaveBlankUnsupported')" style="width: 100%" filterable allow-create clearable default-first-option>
               <el-option v-for="m in (getProviderModels(fb.provider) || [])" :key="m.value" :label="m.label" :value="m.value" />
             </el-select>
           </el-form-item>
         </div>
         <el-button type="primary" plain size="small" @click="addFallback" style="margin-bottom: 16px">
-          <el-icon><Plus /></el-icon> 添加备用模型
+          <el-icon><Plus /></el-icon> {{ t('config.model.addFallback') }}
         </el-button>
 
         <el-form-item>
           <el-button type="primary" @click="saveConfig" :loading="saving">
-            保存配置
+            {{ t('config.model.saveConfig') }}
           </el-button>
           <el-button @click="testConnection" :loading="testing">
-            测试连接
+            {{ t('config.model.testConnection') }}
           </el-button>
           <el-button @click="loadConfig">
-            刷新
+            {{ t('common.refresh') }}
           </el-button>
         </el-form-item>
       </el-form>
 
       <el-alert
         v-if="testResult"
-        :title="testResult.success ? '连接测试通过' : '连接测试存在问题'"
+        :title="testResult.success ? t('config.model.testPassed') : t('config.model.testWarning')"
         :type="testResult.success ? 'success' : 'warning'"
         :description="testResult.message"
         show-icon
@@ -226,17 +226,17 @@
           class="test-result-item"
         >
           <el-tag :type="r.success ? 'success' : 'danger'" size="small">
-            {{ r.success ? '✓ 成功' : '✗ 失败' }}
+            {{ r.success ? t('config.model.testSuccess') : t('config.model.testFailed') }}
           </el-tag>
           <span class="test-result-label">{{ r.label }}</span>
-          <span class="test-result-model">{{ r.provider }} / {{ r.model || '未设置' }}</span>
+          <span class="test-result-model">{{ r.provider }} / {{ r.model || t('config.model.notSet') }}</span>
           <span class="test-result-msg" :class="{ 'err': !r.success }">{{ r.message }}</span>
         </div>
       </div>
 
       <el-alert
         v-if="saveResult"
-        :title="saveResult.success ? '保存成功' : '保存失败'"
+        :title="saveResult.success ? t('config.model.saveSuccess') : t('config.model.saveFailed')"
         :type="saveResult.success ? 'success' : 'error'"
         :description="saveResult.message"
         show-icon
@@ -248,27 +248,27 @@
 
     <el-card class="help-card" style="margin-top: 16px">
       <template #header>
-        <span>使用说明</span>
+        <span>{{ t('config.model.helpTitle') }}</span>
       </template>
       <div class="help-content">
-        <h4>配置步骤</h4>
+        <h4>{{ t('config.model.steps') }}</h4>
         <ol>
-          <li>选择服务提供商</li>
-          <li>输入对应的API Key</li>
-          <li>如使用自定义服务，填写API地址</li>
-          <li>点击"测试连接"验证配置</li>
-          <li>点击"保存配置"保存设置</li>
+          <li>{{ t('config.model.step1') }}</li>
+          <li>{{ t('config.model.step2') }}</li>
+          <li>{{ t('config.model.step3') }}</li>
+          <li>{{ t('config.model.step4') }}</li>
+          <li>{{ t('config.model.step5') }}</li>
         </ol>
         <el-text size="small" type="info">
-          主模型不可用时（如 API 故障、限流），自动降级到备用模型。图片识别和向量化由平台按 Provider 自动选择。
+          {{ t('config.model.fallbackHint') }}
         </el-text>
 
-        <h4 style="margin-top: 16px">已注册的 Provider</h4>
+        <h4 style="margin-top: 16px">{{ t('config.model.registeredProviders') }}</h4>
         <el-table :data="providerTableData" size="small">
-          <el-table-column prop="display_name" label="名称" />
-          <el-table-column prop="provider_name" label="标识" />
-          <el-table-column prop="api_base" label="API 地址" show-overflow-tooltip />
-          <el-table-column label="支持能力" show-overflow-tooltip>
+          <el-table-column prop="display_name" :label="t('common.name')" />
+          <el-table-column prop="provider_name" :label="t('config.model.identifier')" />
+          <el-table-column prop="api_base" :label="t('config.model.apiBase')" show-overflow-tooltip />
+          <el-table-column :label="t('config.model.capabilities')" show-overflow-tooltip>
             <template #default="{ row }">
               {{ formatCapabilities(row) }}
             </template>
@@ -281,10 +281,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
 import { ElMessage } from 'element-plus'
 import { Delete, Plus } from '@element-plus/icons-vue'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -323,7 +325,7 @@ function getProviderDefaultEmbeddingModel(providerName: string): string {
 
 const availableModels = computed(() => getProviderModels(form.value.provider))
 
-const apiBasePlaceholder = computed(() => getProviderApiBase(form.value.provider) || '请填写 API 地址')
+const apiBasePlaceholder = computed(() => getProviderApiBase(form.value.provider) || t('config.model.apiBasePlaceholderText'))
 
 const visionModelOptions = computed(() => getProviderModels(form.value.provider))
 
@@ -331,10 +333,10 @@ const embeddingModelOptions = computed(() => getProviderModels(form.value.provid
 
 function formatCapabilities(row: any): string {
   const caps = []
-  if (row.default_model) caps.push('深度')
-  if (row.vision_model) caps.push('视觉')
-  if (row.embedding_model) caps.push('向量')
-  if (row.models && row.models.length > 0) caps.push('文本')
+  if (row.default_model) caps.push(t('config.model.deep'))
+  if (row.vision_model) caps.push(t('config.model.vision'))
+  if (row.embedding_model) caps.push(t('config.model.embedding'))
+  if (row.models && row.models.length > 0) caps.push(t('config.model.text'))
   return caps.join('/') || '-'
 }
 
@@ -428,7 +430,7 @@ async function loadConfig(preserveApiKey = false) {
       api_base: f.api_base || '',
     }))
   } catch (e: any) {
-    ElMessage.error('加载配置失败')
+    ElMessage.error(t('config.model.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -464,7 +466,7 @@ async function saveConfig() {
     const res = await api.post('/config/llm', payload)
     saveResult.value = res
     if (res.success) {
-      ElMessage.success('配置已保存')
+      ElMessage.success(t('config.model.saveSuccess'))
       config.value = {
         ...config.value,
         api_key_set: hasNewApiKey || config.value.api_key_set,
@@ -475,7 +477,7 @@ async function saveConfig() {
       }
     }
   } catch (e: any) {
-    saveResult.value = { success: false, message: e.response?.data?.detail || '保存失败' }
+    saveResult.value = { success: false, message: e.response?.data?.detail || t('config.model.saveFailed') }
   } finally {
     saving.value = false
   }
@@ -500,14 +502,14 @@ async function testConnection() {
     })
     testResult.value = res
     if (res.success) {
-      ElMessage.success('全部连接测试成功')
+      ElMessage.success(t('config.model.testAllSuccess'))
     } else if (res.results?.length > 1) {
       ElMessage.warning(res.message)
     } else {
-      ElMessage.warning('连接测试失败')
+      ElMessage.warning(t('config.model.connectionFailed'))
     }
   } catch (e: any) {
-    testResult.value = { success: false, message: e.response?.data?.detail || '测试失败' }
+    testResult.value = { success: false, message: e.response?.data?.detail || t('config.model.connectionFailed') }
   } finally {
     testing.value = false
   }

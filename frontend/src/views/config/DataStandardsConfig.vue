@@ -1,13 +1,13 @@
 <template>
   <div class="standards-config">
     <el-tabs v-model="subTab">
-      <el-tab-pane label="数据标准规则" name="standards">
+      <el-tab-pane :label="t('config.standards.standards')" name="standards">
         <div class="editor-toolbar">
-          <span class="toolbar-hint">字段级数据格式与约束标准（DataInspector 检查时引用 STD-xxx）</span>
+          <span class="toolbar-hint">{{ t('config.standards.standardsHint') }}</span>
           <div class="toolbar-btns">
-            <el-button size="small" @click="load('standards')" :loading="loading.standards">重新加载</el-button>
-            <el-button size="small" type="warning" plain @click="reset('standards')" :loading="resetting.standards">恢复默认</el-button>
-            <el-button size="small" type="primary" @click="save('standards')" :loading="saving.standards">保存</el-button>
+            <el-button size="small" @click="load('standards')" :loading="loading.standards">{{ t('config.standards.reload') }}</el-button>
+            <el-button size="small" type="warning" plain @click="reset('standards')" :loading="resetting.standards">{{ t('config.standards.resetToDefault') }}</el-button>
+            <el-button size="small" type="primary" @click="save('standards')" :loading="saving.standards">{{ t('config.standards.save') }}</el-button>
           </div>
         </div>
         <el-input
@@ -15,17 +15,17 @@
           type="textarea"
           :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
-          :placeholder="'加载数据标准库...'"
+          :placeholder="t('config.standards.standardsPlaceholder')"
         />
       </el-tab-pane>
 
-      <el-tab-pane label="数据质量规则" name="quality">
+      <el-tab-pane :label="t('config.standards.quality')" name="quality">
         <div class="editor-toolbar">
-          <span class="toolbar-hint">规则级数据质量检查规则（DataInspector 检查时引用 DQ-xxx）</span>
+          <span class="toolbar-hint">{{ t('config.standards.qualityHint') }}</span>
           <div class="toolbar-btns">
-            <el-button size="small" @click="load('quality')" :loading="loading.quality">重新加载</el-button>
-            <el-button size="small" type="warning" plain @click="reset('quality')" :loading="resetting.quality">恢复默认</el-button>
-            <el-button size="small" type="primary" @click="save('quality')" :loading="saving.quality">保存</el-button>
+            <el-button size="small" @click="load('quality')" :loading="loading.quality">{{ t('config.standards.reload') }}</el-button>
+            <el-button size="small" type="warning" plain @click="reset('quality')" :loading="resetting.quality">{{ t('config.standards.resetToDefault') }}</el-button>
+            <el-button size="small" type="primary" @click="save('quality')" :loading="saving.quality">{{ t('config.standards.save') }}</el-button>
           </div>
         </div>
         <el-input
@@ -33,17 +33,17 @@
           type="textarea"
           :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
-          :placeholder="'加载数据质量库...'"
+          :placeholder="t('config.standards.qualityPlaceholder')"
         />
       </el-tab-pane>
 
-      <el-tab-pane label="数据安全规则" name="security">
+      <el-tab-pane :label="t('config.standards.security')" name="security">
         <div class="editor-toolbar">
-          <span class="toolbar-hint">数据安全检查规则（DataInspector 检查时引用 SEC-xxx）</span>
+          <span class="toolbar-hint">{{ t('config.standards.securityHint') }}</span>
           <div class="toolbar-btns">
-            <el-button size="small" @click="load('security')" :loading="loading.security">重新加载</el-button>
-            <el-button size="small" type="warning" plain @click="reset('security')" :loading="resetting.security">恢复默认</el-button>
-            <el-button size="small" type="primary" @click="save('security')" :loading="saving.security">保存</el-button>
+            <el-button size="small" @click="load('security')" :loading="loading.security">{{ t('config.standards.reload') }}</el-button>
+            <el-button size="small" type="warning" plain @click="reset('security')" :loading="resetting.security">{{ t('config.standards.resetToDefault') }}</el-button>
+            <el-button size="small" type="primary" @click="save('security')" :loading="saving.security">{{ t('config.standards.save') }}</el-button>
           </div>
         </div>
         <el-input
@@ -51,7 +51,7 @@
           type="textarea"
           :autosize="{ minRows: 10, maxRows: 20 }"
           class="md-editor"
-          :placeholder="'加载数据安全规则库...'"
+          :placeholder="t('config.standards.securityPlaceholder')"
         />
       </el-tab-pane>
     </el-tabs>
@@ -60,9 +60,11 @@
 
 <script setup lang="ts">
 import { reactive, ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/api/index'
 
+const { t } = useI18n()
 const subTab = ref('standards')
 const content = reactive<{ standards: string; quality: string; security: string }>({ standards: '', quality: '', security: '' })
 const loading = reactive({ standards: false, quality: false, security: false })
@@ -83,7 +85,7 @@ async function load(key: Key) {
     const res = await api.get(pathMap[key])
     content[key] = (res && (res as any).content) || ''
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '加载失败')
+    ElMessage.error(e.response?.data?.detail || t('config.standards.loadFailed'))
   } finally {
     loading[key] = false
   }
@@ -93,9 +95,9 @@ async function save(key: Key) {
   saving[key] = true
   try {
     await api.put(pathMap[key], { content: content[key] })
-    ElMessage.success('已保存')
+    ElMessage.success(t('config.standards.saveSuccess'))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('config.standards.saveFailed'))
   } finally {
     saving[key] = false
   }
@@ -106,9 +108,9 @@ async function reset(key: Key) {
   try {
     await api.post(`${pathMap[key]}/reset`)
     await load(key)
-    ElMessage.success('已恢复默认')
+    ElMessage.success(t('config.standards.resetSuccess'))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '恢复失败')
+    ElMessage.error(e.response?.data?.detail || t('config.standards.resetFailed'))
   } finally {
     resetting[key] = false
   }

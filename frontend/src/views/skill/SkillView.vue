@@ -4,21 +4,21 @@
       <div class="toolbar-left">
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
-          生成技能
+          {{ t('skill.createSkill') }}
         </el-button>
         <el-button type="primary" @click="showUploadDialog = true">
           <el-icon><Upload /></el-icon>
-          导入技能
+          {{ t('skill.importSkill') }}
         </el-button>
       </div>
       <div class="toolbar-right">
         <el-select v-model="sortBy" style="width: 120px" @change="loadSkills">
-          <el-option label="创建时间" value="created" />
-          <el-option label="修改时间" value="updated" />
+          <el-option :label="t('common.createdAt')" value="created" />
+          <el-option :label="t('skill.modifiedAt')" value="updated" />
         </el-select>
         <el-input
           v-model="searchQuery"
-          placeholder="搜索技能"
+          :placeholder="t('skill.searchPlaceholder')"
           style="width: 220px"
           clearable
           :prefix-icon="Search"
@@ -33,21 +33,21 @@
             <el-icon><component :is="section.icon" /></el-icon>
             {{ section.title }}
           </span>
-          <el-tag size="small" :type="section.tagType" round>{{ section.list.length }} 个</el-tag>
+          <el-tag size="small" :type="section.tagType" round>{{ t('skill.skillCount', { count: section.list.length }) }}</el-tag>
         </div>
         <div class="op-grid">
           <el-card v-for="skill in section.list" :key="skill.id" class="skill-card" shadow="hover">
             <template #header>
               <div class="card-header">
                 <span class="skill-name">{{ skill.display_name || skill.name }}</span>
-                <el-tag size="small" :type="section.tagType">{{ section.type === 'analysis' ? '数据分析' : '数据处理' }}</el-tag>
+                <el-tag size="small" :type="section.tagType">{{ section.type === 'analysis' ? t('skill.analysis') : t('skill.processing') }}</el-tag>
               </div>
             </template>
-            <p class="skill-desc">{{ skill.description || '暂无描述' }}</p>
+            <p class="skill-desc">{{ skill.description || t('skill.noDescription') }}</p>
 
             <div class="skill-meta">
               <el-tag v-if="skill.scripts?.length" size="small" effect="plain">
-                {{ skill.scripts.length }} 个脚本
+                {{ t('skill.scriptCount', { count: skill.scripts.length }) }}
               </el-tag>
               <el-tag v-if="skill.version" size="small" effect="plain">v{{ skill.version }}</el-tag>
             </div>
@@ -55,57 +55,57 @@
             <div class="skill-actions">
               <div class="skill-actions-row">
                 <el-button size="small" type="primary" @click="openDetail(skill)">
-                  <el-icon><Edit /></el-icon> 修改
+                  <el-icon><Edit /></el-icon> {{ t('common.edit') }}
                 </el-button>
                 <el-button size="small" type="success" plain @click="openDebug(skill)">
-                  <el-icon><VideoPlay /></el-icon> 调试
+                  <el-icon><VideoPlay /></el-icon> {{ t('common.debug') }}
                 </el-button>
                 <el-button size="small" @click="openCloneDialog(skill)">
-                  <el-icon><CopyDocument /></el-icon> 另存
+                  <el-icon><CopyDocument /></el-icon> {{ t('common.duplicate') }}
                 </el-button>
                 <el-button size="small" @click="downloadSkill(skill)">
-                  <el-icon><Download /></el-icon> 下载
+                  <el-icon><Download /></el-icon> {{ t('common.download') }}
                 </el-button>
                 <el-button size="small" type="danger" plain @click="confirmDelete(skill)">
-                  <el-icon><Delete /></el-icon> 删除
+                  <el-icon><Delete /></el-icon> {{ t('common.delete') }}
                 </el-button>
               </div>
             </div>
           </el-card>
         </div>
 
-        <el-empty v-if="section.list.length === 0" :description="`暂无${section.title}`" />
+        <el-empty v-if="section.list.length === 0" :description="t('skill.noSkillsInSection', { title: section.title })" />
       </div>
     </div>
 
     <!-- ==================== 另存为对话框 ==================== -->
-    <el-dialog v-model="showCloneDialog" title="另存为" width="450px" @closed="cloneName = ''; cloneTarget = null">
+    <el-dialog v-model="showCloneDialog" :title="t('skill.saveAs')" width="450px" @closed="cloneName = ''; cloneTarget = null">
       <div v-if="cloneTarget" class="modify-target-info">
         <el-tag>{{ cloneTarget.display_name || cloneTarget.name }}</el-tag>
-        <span class="modify-desc">将复制脚本和全部配置</span>
+        <span class="modify-desc">{{ t('skill.cloneHint') }}</span>
       </div>
       <el-form label-width="80px" style="margin-top: 12px">
-        <el-form-item label="新名称" required>
+        <el-form-item :label="t('skill.newName')" required>
           <el-input
             v-model="cloneName"
-            placeholder="输入新技能的名称"
+            :placeholder="t('skill.newNamePlaceholder')"
             @keyup.enter="handleClone"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showCloneDialog = false">取消</el-button>
+        <el-button @click="showCloneDialog = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" @click="handleClone" :loading="cloning" :disabled="!cloneName.trim()">
-          {{ cloning ? '复制中...' : '确认复制' }}
+          {{ cloning ? t('skill.cloning') : t('skill.confirmClone') }}
         </el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 导入对话框 ==================== -->
-    <el-dialog v-model="showUploadDialog" title="导入技能" width="480px">
+    <el-dialog v-model="showUploadDialog" :title="t('skill.importSkill')" width="480px">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
-          请上传 .zip 格式的技能包，包内需包含 SKILL.md 文件。同名技能可选择覆盖或重命名
+          {{ t('skill.uploadHint') }}
         </template>
       </el-alert>
       <el-upload
@@ -116,78 +116,78 @@
         accept=".zip"
       >
         <el-icon style="font-size: 48px"><UploadFilled /></el-icon>
-        <div class="upload-text">拖拽或点击上传 .zip 文件</div>
+        <div class="upload-text">{{ t('skill.dragUploadHint') }}</div>
       </el-upload>
       <template #footer>
-        <el-button @click="showUploadDialog = false">取消</el-button>
+        <el-button @click="showUploadDialog = false">{{ t('common.cancel') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 重名冲突对话框 ==================== -->
-    <el-dialog v-model="showConflictDialog" title="技能已存在" width="460px" :close-on-click-modal="false">
+    <el-dialog v-model="showConflictDialog" :title="t('skill.skillExists')" width="460px" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom:16px">
         <template #title>
-          技能 "{{ conflictInfo?.parsed_name }}" 已存在，请选择覆盖或重命名
+          {{ t('skill.conflictHint', { name: conflictInfo?.parsed_name }) }}
         </template>
       </el-alert>
       <el-form label-width="80px" style="margin-top: 12px">
-        <el-form-item label="新名称">
+        <el-form-item :label="t('skill.newName')">
           <el-input
             v-model="renameValue"
-            placeholder="输入新技能名称"
+            :placeholder="t('skill.newSkillNamePlaceholder')"
             @keyup.enter="confirmRename"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showConflictDialog = false">取消</el-button>
-        <el-button type="danger" plain :loading="importing" @click="confirmOverwrite">覆盖原有</el-button>
-        <el-button type="primary" :loading="importing" @click="confirmRename">重命名导入</el-button>
+        <el-button @click="showConflictDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="danger" plain :loading="importing" @click="confirmOverwrite">{{ t('skill.overwriteExisting') }}</el-button>
+        <el-button type="primary" :loading="importing" @click="confirmRename">{{ t('skill.renameImport') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 转流程重名冲突对话框 ==================== -->
-    <el-dialog v-model="showPipelineConflict" title="流程已存在" width="460px" :close-on-click-modal="false">
+    <el-dialog v-model="showPipelineConflict" :title="t('skill.pipelineExists')" width="460px" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom:16px">
         <template #title>
-          流程 "{{ pipelineConflictInfo?.existing_display_name || pipelineConflictInfo?.existing_name }}" 已存在，请选择覆盖或另存为
+          {{ t('skill.pipelineConflictHint', { name: pipelineConflictInfo?.existing_display_name || pipelineConflictInfo?.existing_name }) }}
         </template>
       </el-alert>
       <el-form label-width="80px" style="margin-top: 12px">
-        <el-form-item label="新名称">
+        <el-form-item :label="t('skill.newName')">
           <el-input
             v-model="pipelineRenameValue"
-            placeholder="输入新流程名称"
+            :placeholder="t('skill.newPipelineNamePlaceholder')"
             @keyup.enter="confirmPipelineRename"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showPipelineConflict = false">取消</el-button>
-        <el-button type="danger" plain :loading="convertingPipeline" @click="confirmPipelineOverwrite">覆盖现有</el-button>
-        <el-button type="primary" :loading="convertingPipeline" @click="confirmPipelineRename">另存为</el-button>
+        <el-button @click="showPipelineConflict = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="danger" plain :loading="convertingPipeline" @click="confirmPipelineOverwrite">{{ t('skill.overwriteCurrent') }}</el-button>
+        <el-button type="primary" :loading="convertingPipeline" @click="confirmPipelineRename">{{ t('skill.saveAs') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== AI 生成对话框 ==================== -->
-    <el-dialog v-model="showGenerateDialog" title="AI 生成技能" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" :title="t('skill.generateSkill')" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
-          Skill Creator 将根据需求描述生成完整 Skill 包（SKILL.md + 脚本）
+          {{ t('skill.generateHint') }}
         </template>
       </el-alert>
       <el-form label-width="80px">
-        <el-form-item label="需求描述">
+        <el-form-item :label="t('skill.requirementDesc')">
           <el-input
             v-model="generatePrompt"
             type="textarea"
             :rows="5"
-            placeholder="用自然语言描述你需要什么技能，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条"
+            :placeholder="t('skill.generatePlaceholderDetailed')"
             :disabled="generating"
             @keydown="onGenHistoryKey"
           />
           <div class="history-tip" v-if="genHistory.length && !generating">
-            ↑↓ 切换历史输入（共 {{ genHistory.length }} 条）
+            {{ t('skill.historySwitchHint', { count: genHistory.length }) }}
           </div>
         </el-form-item>
       </el-form>
@@ -196,7 +196,7 @@
         <div v-for="(msg, idx) in genMessages" :key="idx" class="debug-message" :class="msg.role">
           <div class="debug-msg-avatar">
             <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
-            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">{{ t('skill.me') }}</el-avatar>
           </div>
           <div class="debug-msg-body">
             <template v-if="msg.role === 'user'">
@@ -207,7 +207,7 @@
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                   <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                  <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                  <span>{{ t('chat.thinking') }}<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
@@ -219,52 +219,52 @@
       </div>
 
       <template #footer>
-        <el-button @click="showGenerateDialog = false" :disabled="generating">取消</el-button>
+        <el-button @click="showGenerateDialog = false" :disabled="generating">{{ t('common.cancel') }}</el-button>
         <el-button v-if="generating" type="danger" @click="stopGenerate">
-          <el-icon><VideoPause /></el-icon> 停止
+          <el-icon><VideoPause /></el-icon> {{ t('common.stop') }}
         </el-button>
         <el-button type="primary" @click="handleGenerate" :loading="generating || checkingSimilar" :disabled="generating || checkingSimilar">
-          {{ generating ? 'AI 生成中...' : (checkingSimilar ? '检测相似技能...' : '开始生成') }}
+          {{ generating ? t('skill.aiGenerating') : (checkingSimilar ? t('skill.checkingSimilar') : t('skill.startGenerate')) }}
         </el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 相似技能检测对话框 ==================== -->
-    <el-dialog v-model="showSimilarDialog" title="发现相似技能" width="600px" :close-on-click-modal="false">
+    <el-dialog v-model="showSimilarDialog" :title="t('skill.similarSkillsFound')" width="600px" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
-        <template #title>以下技能可能与您的需求相似，建议优先复用：</template>
+        <template #title>{{ t('skill.similarSkillsHint') }}</template>
       </el-alert>
 
       <div v-for="skill in similarSkills" :key="skill.id" class="similar-skill-item">
         <div class="similar-skill-header">
           <span class="similar-skill-name">{{ skill.display_name || skill.name }}</span>
-          <el-tag v-if="skill.skill_type" size="small">{{ skill.skill_type === 'analysis' ? '分析' : '处理' }}</el-tag>
-          <span class="similar-skill-score">相似度 {{ (skill.similarity * 100).toFixed(0) }}%</span>
+          <el-tag v-if="skill.skill_type" size="small">{{ skill.skill_type === 'analysis' ? t('skill.analysisShort') : t('skill.processingShort') }}</el-tag>
+          <span class="similar-skill-score">{{ t('skill.similarity') }} {{ (skill.similarity * 100).toFixed(0) }}%</span>
         </div>
-        <div class="similar-skill-desc">{{ skill.description || '(无描述)' }}</div>
+        <div class="similar-skill-desc">{{ skill.description || t('skill.noDescriptionParen') }}</div>
 
         <div v-if="skill.can_use" class="similar-skill-actions">
-          <el-button type="primary" size="small" @click="openExistingSkill(skill)">查看此技能</el-button>
+          <el-button type="primary" size="small" @click="openExistingSkill(skill)">{{ t('skill.viewSkill') }}</el-button>
         </div>
         <div v-else class="similar-skill-contact">
           <el-alert type="info" :closable="false">
             <template #title>
-              您无权限使用此技能，请联系创建者：{{ skill.owner_name }}（{{ skill.owner_email }}）
+              {{ t('skill.noPermissionHint', { owner: skill.owner_name, email: skill.owner_email }) }}
             </template>
           </el-alert>
         </div>
       </div>
 
       <template #footer>
-        <el-button @click="showSimilarDialog = false">取消</el-button>
-        <el-button type="primary" @click="proceedToGenerate">仍然创建新技能</el-button>
+        <el-button @click="showSimilarDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="proceedToGenerate">{{ t('skill.stillCreateNew') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 技能详情/修改 Drawer ==================== -->
     <el-dialog
       v-model="detailDrawer"
-      :title="detailSkill?.display_name || detailSkill?.name || '技能详情'"
+      :title="detailSkill?.display_name || detailSkill?.name || t('skill.skillDetail')"
       width="95%"
       top="2vh"
       destroy-on-close
@@ -274,15 +274,15 @@
       <div v-if="detailSkill" class="detail-container">
         <div class="nl-modify-section">
           <div class="nl-modify-header">
-            <span class="nl-modify-title">自然语言修改</span>
-            <span class="nl-modify-hint">用自然语言描述你想如何修改这个技能</span>
+            <span class="nl-modify-title">{{ t('skill.nlModify') }}</span>
+            <span class="nl-modify-hint">{{ t('skill.nlModifyHint') }}</span>
           </div>
           <div class="nl-modify-input-row">
             <el-input
               v-model="modifyInstruction"
               type="textarea"
               :rows="2"
-              placeholder="例如：把描述改成更专业的风格，添加使用示例，修改分类为数据处理（↑↓ 切换历史输入）"
+              :placeholder="t('skill.modifyPlaceholder')"
               class="nl-modify-input"
               @keydown="onModifyHistoryKey"
             />
@@ -293,7 +293,7 @@
               :disabled="!modifyInstruction.trim()"
             >
               <el-icon><MagicStick /></el-icon>
-              AI 修改
+              {{ t('skill.aiModify') }}
             </el-button>
             <el-button
               v-else
@@ -301,7 +301,7 @@
               @click="modifyAbortCtrl?.abort()"
             >
               <el-icon><VideoPause /></el-icon>
-              停止
+              {{ t('common.stop') }}
             </el-button>
           </div>
           <div v-if="modifyError" class="modify-error">
@@ -311,7 +311,7 @@
             <div v-for="(msg, idx) in modifyMessages" :key="idx" class="debug-message" :class="msg.role">
               <div class="debug-msg-avatar">
                 <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
-                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">{{ t('skill.me') }}</el-avatar>
               </div>
               <div class="debug-msg-body">
                 <template v-if="msg.role === 'user'">
@@ -322,7 +322,7 @@
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                      <span>推理过程</span>
+                      <span>{{ t('chat.thinking') }}</span>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
@@ -336,17 +336,17 @@
 
         <el-divider />
 
-        <div class="detail-preview-label">技能详情预览</div>
+        <div class="detail-preview-label">{{ t('skill.detailPreview') }}</div>
 
         <el-tabs v-model="detailTab" class="detail-tabs">
           <el-tab-pane label="SKILL.md" name="md">
             <div class="md-editor-toolbar">
               <el-radio-group v-model="mdMode" size="small">
-                <el-radio-button value="preview">预览</el-radio-button>
-                <el-radio-button value="edit">编辑</el-radio-button>
+                <el-radio-button value="preview">{{ t('common.preview') }}</el-radio-button>
+                <el-radio-button value="edit">{{ t('skill.editMode') }}</el-radio-button>
               </el-radio-group>
               <el-button size="small" type="primary" :loading="savingMd" @click="saveSkillMd">
-                <el-icon><Check /></el-icon> 保存
+                <el-icon><Check /></el-icon> {{ t('common.save') }}
               </el-button>
             </div>
             <el-input
@@ -354,18 +354,18 @@
               v-model="mdEditContent"
               type="textarea"
               :autosize="{ minRows: 12, maxRows: 30 }"
-              placeholder="编辑 SKILL.md 内容（Markdown）"
+              :placeholder="t('skill.editMdPlaceholder')"
               style="font-family: 'Consolas', 'Monaco', monospace; font-size: 13px"
             />
             <template v-else>
               <div v-if="mdEditContent" class="markdown-body" v-html="renderMarkdown(mdEditContent)"></div>
-              <el-empty v-else description="暂无 SKILL.md 内容" />
+              <el-empty v-else :description="t('skill.noMdContent')" />
             </template>
           </el-tab-pane>
 
-          <el-tab-pane label="脚本列表" name="scripts">
+          <el-tab-pane :label="t('skill.scriptList')" name="scripts">
             <div class="scripts-header">
-              <span>{{ detailSkill.scripts?.length || 0 }} 个脚本</span>
+              <span>{{ t('skill.scriptCount', { count: detailSkill.scripts?.length || 0 }) }}</span>
             </div>
             <div v-if="detailSkill.scripts?.length" class="scripts-list">
               <div
@@ -386,25 +386,25 @@
                   ></textarea>
                   <div class="script-actions">
                     <el-button size="small" type="primary" @click="saveScriptContent(script.name)" :loading="savingScript">
-                      <el-icon><Check /></el-icon> 保存
+                      <el-icon><Check /></el-icon> {{ t('common.save') }}
                     </el-button>
                     <el-button size="small" type="success" @click="openDebug(detailSkill, script.name)">
-                      <el-icon><VideoPlay /></el-icon> 调试
+                      <el-icon><VideoPlay /></el-icon> {{ t('common.debug') }}
                     </el-button>
                   </div>
                 </div>
               </div>
             </div>
-            <el-empty v-else description="暂无脚本" />
+            <el-empty v-else :description="t('skill.noScripts')" />
           </el-tab-pane>
 
-          <el-tab-pane label="属性" name="props">
+          <el-tab-pane :label="t('skill.properties')" name="props">
             <el-descriptions :column="2" border>
-              <el-descriptions-item label="名称">{{ detailSkill.name }}</el-descriptions-item>
-              <el-descriptions-item label="显示名">{{ detailSkill.display_name }}</el-descriptions-item>
-              <el-descriptions-item label="类型">
+              <el-descriptions-item :label="t('skill.name')">{{ detailSkill.name }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.displayName')">{{ detailSkill.display_name }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.type')">
                 <div style="display:flex;align-items:center;gap:8px">
-                  <el-tag size="small" :type="isAnalysisSkill(detailSkill) ? 'success' : 'primary'">{{ isAnalysisSkill(detailSkill) ? '数据分析' : '数据处理' }}</el-tag>
+                  <el-tag size="small" :type="isAnalysisSkill(detailSkill) ? 'success' : 'primary'">{{ isAnalysisSkill(detailSkill) ? t('skill.analysis') : t('skill.processing') }}</el-tag>
                   <el-select
                     v-model="skillTypeEdit"
                     size="small"
@@ -412,50 +412,50 @@
                     @change="saveSkillType"
                     :loading="savingType"
                   >
-                    <el-option label="数据处理" value="processing" />
-                    <el-option label="数据分析" value="analysis" />
+                    <el-option :label="t('skill.processing')" value="processing" />
+                    <el-option :label="t('skill.analysis')" value="analysis" />
                   </el-select>
                 </div>
               </el-descriptions-item>
-              <el-descriptions-item label="版本">v{{ detailSkill.version }}</el-descriptions-item>
-              <el-descriptions-item label="可见性">{{ detailSkill.visibility }}</el-descriptions-item>
-              <el-descriptions-item label="使用次数">{{ detailSkill.usage_count }}</el-descriptions-item>
-              <el-descriptions-item label="存储路径" :span="2">
+              <el-descriptions-item :label="t('common.version')">v{{ detailSkill.version }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.visibility')">{{ detailSkill.visibility }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.usageCount')">{{ detailSkill.usage_count }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.storagePath')" :span="2">
                 <code>{{ detailSkill.skill_path }}</code>
               </el-descriptions-item>
-              <el-descriptions-item label="描述" :span="2">{{ detailSkill.description || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="标签" :span="2">
+              <el-descriptions-item :label="t('skill.description')" :span="2">{{ detailSkill.description || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.tags')" :span="2">
                 <el-tag v-for="tag in (detailSkill.tags || [])" :key="tag" size="small" style="margin-right:4px">{{ tag }}</el-tag>
                 <span v-if="!detailSkill.tags?.length">-</span>
               </el-descriptions-item>
-              <el-descriptions-item label="创建时间">{{ formatDate(detailSkill.created_at) }}</el-descriptions-item>
-              <el-descriptions-item label="更新时间">{{ formatDate(detailSkill.updated_at) }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.createdAt')">{{ formatDate(detailSkill.created_at) }}</el-descriptions-item>
+              <el-descriptions-item :label="t('skill.updatedAt')">{{ formatDate(detailSkill.updated_at) }}</el-descriptions-item>
             </el-descriptions>
           </el-tab-pane>
 
-          <el-tab-pane label="检查规则" name="rules">
+          <el-tab-pane :label="t('skill.checkRules')" name="rules">
             <div class="md-editor-toolbar">
               <el-radio-group v-model="rulesMode" size="small">
-                <el-radio-button value="preview">预览</el-radio-button>
-                <el-radio-button value="edit">编辑</el-radio-button>
+                <el-radio-button value="preview">{{ t('common.preview') }}</el-radio-button>
+                <el-radio-button value="edit">{{ t('skill.editMode') }}</el-radio-button>
               </el-radio-group>
               <el-button size="small" type="primary" :loading="savingRules" @click="saveSkillRules">
-                <el-icon><Check /></el-icon> 保存
+                <el-icon><Check /></el-icon> {{ t('common.save') }}
               </el-button>
-              <el-button size="small" @click="resetSkillRules">清空</el-button>
+              <el-button size="small" @click="resetSkillRules">{{ t('skill.clear') }}</el-button>
             </div>
             <div v-if="rulesMode === 'edit'">
               <el-input
                 v-model="rulesContent"
                 type="textarea"
                 :autosize="{ minRows: 12, maxRows: 30 }"
-                placeholder="编辑技能专属规则 rules.md（规则编号用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀）"
+                :placeholder="t('skill.editRulesPlaceholder')"
                 style="font-family: 'Consolas', 'Monaco', monospace; font-size: 13px"
               />
             </div>
             <template v-else>
               <div v-if="rulesContent" class="markdown-body" v-html="renderMarkdown(rulesContent)"></div>
-              <el-empty v-else description="该技能暂无专属检查规则（将仅执行全局规则）" />
+              <el-empty v-else :description="t('skill.noSkillRules')" />
             </template>
           </el-tab-pane>
         </el-tabs>
@@ -465,7 +465,7 @@
     <!-- ==================== 调试技能 Dialog ==================== -->
     <el-dialog
       v-model="debugDrawer"
-      :title="'AI调试助手: ' + (debugSkill?.display_name || debugSkill?.name || '')"
+      :title="t('skill.aiDebugAssistant') + ': ' + (debugSkill?.display_name || debugSkill?.name || '')"
       width="95%"
       top="2vh"
       destroy-on-close
@@ -476,11 +476,11 @@
     >
       <div v-if="debugSkill" class="debug-layout">
         <div class="debug-left">
-          <div class="debug-section-title"><span>执行参数</span></div>
+          <div class="debug-section-title"><span>{{ t('skill.inputParams') }}</span></div>
           <el-tabs v-model="execTab">
-            <el-tab-pane label="自然语言" name="nl">
+            <el-tab-pane :label="t('skill.naturalLanguage')" name="nl">
               <div v-if="nlExamples.length" class="nl-examples">
-                <div class="nl-examples-title">示例</div>
+                <div class="nl-examples-title">{{ t('skill.examples') }}</div>
                 <div v-for="(ex, i) in nlExamples" :key="i" class="nl-example-item" @click="execNLQuery = ex">
                   <span class="nl-example-text">{{ ex }}</span>
                 </div>
@@ -493,21 +493,21 @@
                 v-model="execNLQuery"
                 type="textarea"
                 :rows="3"
-                :placeholder="nlPlaceholder + ' (↑↓浏览历史)'"
+                :placeholder="nlPlaceholder + ' (' + t('skill.browseHistory') + ')'"
                 @keydown="handleNLKeyDown"
               />
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
-                <el-icon><VideoPause /></el-icon> 停止
+                <el-icon><VideoPause /></el-icon> {{ t('common.stop') }}
               </el-button>
               <el-button v-else type="primary" style="margin-top:10px" @click="handleRunSkillNL" :disabled="!execNLQuery.trim() || debugStreaming">
-                <el-icon><VideoPlay /></el-icon> 执行
+                <el-icon><VideoPlay /></el-icon> {{ t('skill.execute') }}
               </el-button>
             </el-tab-pane>
 
-            <el-tab-pane label="命令行" name="cmd">
+            <el-tab-pane :label="t('skill.commandLine')" name="cmd">
               <div class="cmd-input-row">
                 <div v-if="cmdExamples.length" class="cmd-examples">
-                  <div class="cmd-examples-title">示例命令</div>
+                  <div class="cmd-examples-title">{{ t('skill.exampleCommands') }}</div>
                   <div v-for="(ex, i) in cmdExamples" :key="i" class="cmd-example-item" @click="execCmdStr = ex.cmd">
                     <code>{{ ex.cmd }}</code>
                     <span class="cmd-example-desc">{{ ex.desc }}</span>
@@ -520,10 +520,10 @@
                 </div>
               </div>
               <el-button v-if="execRunning" type="danger" style="margin-top:10px" @click="stopExec">
-                <el-icon><VideoPause /></el-icon> 停止
+                <el-icon><VideoPause /></el-icon> {{ t('common.stop') }}
               </el-button>
               <el-button v-else type="primary" style="margin-top:10px" @click="handleRunCmd" :disabled="!execCmdStr.trim() || debugStreaming">
-                <el-icon><VideoPlay /></el-icon> 执行
+                <el-icon><VideoPlay /></el-icon> {{ t('skill.execute') }}
               </el-button>
             </el-tab-pane>
 
@@ -533,7 +533,7 @@
         <div class="debug-right">
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
-            <span>AI 调试助手</span>
+            <span>{{ t('skill.aiDebugTitle') }}</span>
             <el-select
               v-model="debugScriptName"
               size="small"
@@ -556,7 +556,7 @@
               :disabled="debugStreaming || execRunning"
               @click="convertToPipeline"
             >
-              <el-icon><Share /></el-icon> 转为流程
+              <el-icon><Share /></el-icon> {{ t('skill.convertToPipeline') }}
             </el-button>
             <el-button
               size="small"
@@ -564,7 +564,7 @@
               :loading="expLoading"
               @click="openExperience"
             >
-              <el-icon><Document /></el-icon> 调试经验
+              <el-icon><Document /></el-icon> {{ t('skill.debugExperience') }}
             </el-button>
             <el-button
               size="small"
@@ -573,12 +573,12 @@
               :disabled="debugStreaming || execRunning || debugMessages.length === 0"
               @click="clearDebugHistory"
             >
-              <el-icon><Delete /></el-icon> 清空记录
+              <el-icon><Delete /></el-icon> {{ t('skill.clearHistory') }}
             </el-button>
           </div>
           <div class="debug-message-list" ref="debugMsgListRef" @scroll="onSkillListScroll">
             <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
-              <p>输入消息或使用左侧参数面板开始调试，例如"运行一下"、"帮我优化这个脚本"</p>
+              <p>{{ t('skill.debugEmptyHint') }}</p>
             </div>
             <div
               v-for="(msg, idx) in debugMessages"
@@ -588,7 +588,7 @@
             >
               <div class="debug-msg-avatar">
                 <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">{{ agentName }}</el-avatar>
-                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">{{ t('skill.me') }}</el-avatar>
               </div>
               <div class="debug-msg-body">
                 <template v-if="msg.role === 'user'">
@@ -602,7 +602,7 @@
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                      <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                      <span>{{ t('chat.thinking') }}<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
                       <el-button text size="small" @click.stop="copyText(msg.thinking)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
@@ -610,8 +610,8 @@
                   <el-collapse v-if="msg.content" :model-value="msg._contentOpen === false ? [] : ['content']" @change="(v: any) => { msg._contentOpen = v.length > 0 }">
                     <el-collapse-item name="content">
                       <template #title>
-                        <span class="collapse-label">AI回复</span>
-                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                        <span class="collapse-label">{{ t('skill.aiReply') }}</span>
+                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
                       <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                     </el-collapse-item>
@@ -630,8 +630,8 @@
                     <el-collapse-item name="logs">
                       <template #title>
                         <el-icon style="margin-right: 4px;"><Document /></el-icon>
-                        <span class="collapse-label">处理日志</span>
-                        <el-button text size="small" @click.stop="copyText(msg.stdouts.join('\n\n'))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                        <span class="collapse-label">{{ t('skill.processLog') }}</span>
+                        <el-button text size="small" @click.stop="copyText(msg.stdouts.join('\n\n'))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
                       <pre class="debug-stdout-archive">{{ msg.stdouts.join('\n\n') }}</pre>
                     </el-collapse-item>
@@ -640,7 +640,7 @@
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
                       <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
-                        {{ msg.runResult.success ? '执行成功' : '执行失败' }}
+                        {{ msg.runResult.success ? t('skill.runSuccess') : t('skill.runFailed') }}
                       </el-tag>
                       <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
                     </div>
@@ -648,8 +648,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">错误信息</span>
-                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('skill.errorInfo') }}</span>
+                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ msg.runResult.error }}</pre>
                         </el-collapse-item>
@@ -659,8 +659,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">标准输出</span>
-                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('skill.stdout') }}</span>
+                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ msg.runResult.stdout }}</pre>
                         </el-collapse-item>
@@ -670,8 +670,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">返回数据</span>
-                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('skill.returnData') }}</span>
+                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ formatResult(msg.runResult.result) }}</pre>
                         </el-collapse-item>
@@ -681,7 +681,7 @@
                   <div v-if="msg.inspectionResult" class="debug-msg-inspection">
                     <div class="inspection-header">
                       <el-tag :type="msg.inspectionResult.passed ? 'success' : 'warning'" size="small">
-                        {{ msg.inspectionResult.passed ? '检查通过' : '发现问题' }}
+                        {{ msg.inspectionResult.passed ? t('skill.inspectionPassed') : t('skill.inspectionIssues') }}
                       </el-tag>
                       <span class="inspection-summary">{{ msg.inspectionResult.summary }}</span>
                       <el-button text size="small" @click="copyText(msg.inspectionResult.summary)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
@@ -693,9 +693,9 @@
                             {{ issue.severity }}
                           </el-tag>
                           <span class="inspection-issue-desc">{{ issue.description }}</span>
-                          <el-button text size="small" @click="copyText(issue.description + (issue.suggestion ? '\n→ ' + issue.suggestion : ''))" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
+                          <el-button text size="small" @click="copyText(issue.description + (issue.suggestion ? '\n' + t('skill.arrowPrefix') + ' ' + issue.suggestion : ''))" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                         </div>
-                        <div v-if="issue.suggestion" class="inspection-issue-suggestion">→ {{ issue.suggestion }}</div>
+                        <div v-if="issue.suggestion" class="inspection-issue-suggestion">{{ t('skill.arrowPrefix') }} {{ issue.suggestion }}</div>
                       </div>
                     </div>
                     <div v-if="msg.inspectionResult.error" class="inspection-error">
@@ -707,15 +707,15 @@
                       <el-collapse-item name="report">
                         <template #title>
                           <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
-                          <span class="collapse-label">数据检查报告</span>
-                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          <span class="collapse-label">{{ t('skill.dataInspectionReport') }}</span>
+                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                         </template>
                         <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
                       </el-collapse-item>
                     </el-collapse>
                   </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
-                    <el-tag type="warning" size="small">脚本已更新: {{ msg.scriptUpdated }}</el-tag>
+                    <el-tag type="warning" size="small">{{ t('skill.scriptUpdatedTag', { name: msg.scriptUpdated }) }}</el-tag>
                   </div>
                 </div>
               </div>
@@ -734,7 +734,7 @@
               type="textarea"
               :rows="2"
               :autosize="{ minRows: 1, maxRows: 4 }"
-              placeholder="输入调试指令... (Enter发送, ↑↓浏览历史)"
+              :placeholder="t('skill.debugInputPlaceholder')"
               @keydown="handleDebugKeyDown"
               :disabled="debugStreaming || execRunning"
             />
@@ -760,14 +760,14 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showExperience" title="调试经验" width="680px">
+    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="680px">
       <div v-loading="expLoading">
         <el-tabs>
-          <el-tab-pane label="归纳原因">
+          <el-tab-pane :label="t('skill.inductReasons')">
             <div v-if="experienceData.lessons" class="markdown-body" v-html="renderMarkdown(experienceData.lessons)"></div>
-            <el-empty v-else description="暂无归纳经验，调试失败后会自动存储原因分析" :image-size="80" />
+            <el-empty v-else :description="t('skill.noInductedExperience')" :image-size="80" />
           </el-tab-pane>
-          <el-tab-pane :label="`历史错误 (${(experienceData.negative || []).length})`">
+          <el-tab-pane :label="t('skill.historyErrors') + ' (' + (experienceData.negative || []).length + ')'">
             <div v-if="(experienceData.negative || []).length" style="max-height:400px;overflow-y:auto">
               <div v-for="(err, i) in experienceData.negative" :key="i" class="exp-error-item">
                 <div class="exp-error-time">{{ formatTime(err.timestamp) }}</div>
@@ -775,16 +775,16 @@
                 <div v-if="err.stdout_preview" class="exp-error-stdout"><pre>{{ err.stdout_preview }}</pre></div>
               </div>
             </div>
-            <el-empty v-else description="暂无错误记录" :image-size="80" />
+            <el-empty v-else :description="t('skill.noErrorRecords')" :image-size="80" />
           </el-tab-pane>
-          <el-tab-pane :label="`成功记录 (${(experienceData.positive || []).length})`">
+          <el-tab-pane :label="t('skill.successRecords') + ' (' + (experienceData.positive || []).length + ')'">
             <div v-if="(experienceData.positive || []).length" style="max-height:400px;overflow-y:auto">
               <div v-for="(pos, i) in experienceData.positive" :key="i" class="exp-positive-item">
                 <div class="exp-error-time">{{ formatTime(pos.timestamp) }}</div>
                 <div class="exp-error-msg">{{ pos.result_summary }}</div>
               </div>
             </div>
-            <el-empty v-else description="暂无成功记录" :image-size="80" />
+            <el-empty v-else :description="t('skill.noSuccessRecords')" :image-size="80" />
           </el-tab-pane>
         </el-tabs>
       </div>
@@ -795,6 +795,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onActivated, watch, nextTick, type Ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
@@ -808,6 +809,7 @@ import { formatTime, timePrefix } from '@/utils/time'
 
 const router = useRouter()
 const route = useRoute()
+const { t } = useI18n()
 const skills = ref<any[]>([])
 const searchQuery = ref('')
 const sortBy = ref('updated')
@@ -838,8 +840,8 @@ function applySearch(list: any[]) {
 const processingSkills = computed(() => applySearch(skills.value.filter((s: any) => !isAnalysisSkill(s))))
 const analysisSkills = computed(() => applySearch(skills.value.filter((s: any) => isAnalysisSkill(s))))
 const skillSections = computed(() => [
-  { type: 'processing', title: '数据处理技能', icon: DataLine, tagType: 'primary', list: processingSkills.value },
-  { type: 'analysis', title: '数据分析技能', icon: DataAnalysis, tagType: 'success', list: analysisSkills.value },
+  { type: 'processing', title: t('skill.processingSkills'), icon: DataLine, tagType: 'primary', list: processingSkills.value },
+  { type: 'analysis', title: t('skill.analysisSkills'), icon: DataAnalysis, tagType: 'success', list: analysisSkills.value },
 ])
 
 const datasources = ref<any[]>([])
@@ -849,7 +851,7 @@ async function loadSkills() {
   try {
     skills.value = await api.get(`/skills?sort_by=${sortBy.value}`)
   } catch (e: any) {
-    ElMessage.error('加载技能失败')
+    ElMessage.error(t('skill.loadFailed'))
   }
 }
 
@@ -897,7 +899,7 @@ const importing = ref(false)
 
 function validateZip(file: any) {
   if (!file.name.toLowerCase().endsWith('.zip')) {
-    ElMessage.error('只支持 .zip 格式的技能包')
+    ElMessage.error(t('skill.zipOnly'))
     return false
   }
   return true
@@ -919,7 +921,7 @@ async function doImport(file: File, mode: string, newName?: string) {
       headers: { 'Content-Type': 'multipart/form-data' },
       params,
     })
-    ElMessage.success(`技能 "${res.display_name || res.name}" 已导入`)
+    ElMessage.success(t('skill.importedSuccess', { name: res.display_name || res.name }))
     showUploadDialog.value = false
     showConflictDialog.value = false
     pendingFile.value = null
@@ -934,7 +936,7 @@ async function doImport(file: File, mode: string, newName?: string) {
       renameValue.value = `${detail.parsed_name}-copy`
       showConflictDialog.value = true
     } else {
-      ElMessage.error(typeof detail === 'string' ? detail : '导入失败')
+      ElMessage.error(typeof detail === 'string' ? detail : t('skill.importFailedShort'))
     }
   } finally {
     importing.value = false
@@ -949,7 +951,7 @@ async function confirmOverwrite() {
 async function confirmRename() {
   if (!pendingFile.value) return
   if (!renameValue.value.trim()) {
-    ElMessage.warning('请输入新名称')
+    ElMessage.warning(t('skill.nameRequiredShort'))
     return
   }
   await doImport(pendingFile.value, 'rename', renameValue.value.trim())
@@ -999,7 +1001,7 @@ async function openExperience() {
   try {
     experienceData.value = await api.get(`/skills/${debugSkill.value.id}/experience`)
   } catch (e: any) {
-    ElMessage.error('加载经验失败')
+    ElMessage.error(t('skill.loadExperienceFailed'))
   } finally {
     expLoading.value = false
   }
@@ -1069,10 +1071,10 @@ async function streamConvert(mode: string, newName: string | null) {
         } else if (data.type === 'existing') {
           existingInfo = data
         } else if (data.type === 'done') {
-          pipelineName = data.pipeline_name || data.name || '流程'
+          pipelineName = data.pipeline_name || data.name || t('skill.pipelineDefault')
           streamOk = true
         } else if (data.type === 'error') {
-          msg.content += `\n\n错误: ${data.message || data.content || '未知错误'}`
+          msg.content += `\n\n` + t('skill.errorMsg', { msg: data.message || data.content || t('skill.unknownError') })
         }
       } catch { /* skip */ }
     }
@@ -1097,24 +1099,24 @@ async function streamConvert(mode: string, newName: string | null) {
     if (existingInfo && !streamOk) {
       // 命中重名，弹窗让用户选择
       pipelineConflictInfo.value = existingInfo
-      pipelineRenameValue.value = `${existingInfo.existing_display_name || existingInfo.existing_name} (副本)`
+      pipelineRenameValue.value = `${existingInfo.existing_display_name || existingInfo.existing_name} ${t('skill.copySuffix')}`
       showPipelineConflict.value = true
       const msg = debugMessages.value[assistantIdx]
-      if (msg) msg.content = `检测到流程 "${existingInfo.existing_display_name || existingInfo.existing_name}" 已存在，请选择覆盖或另存为。`
+      if (msg) msg.content = t('skill.pipelineExistsHint', { name: existingInfo.existing_display_name || existingInfo.existing_name })
       return
     }
 
     if (streamOk) {
       const msg = debugMessages.value[assistantIdx]
       if (msg.thinking) msg.thinkingOpen = false
-      msg.content = (msg.content || '') + `\n\n✅ 流程 "${pipelineName}" 已生成，可在流程页面查看。`
-      ElMessage.success(`流程 "${pipelineName}" 已生成`)
+      msg.content = (msg.content || '') + `\n\n` + t('skill.pipelineGenerated', { name: pipelineName })
+      ElMessage.success(t('skill.pipelineGenerateSuccess', { name: pipelineName }))
       await loadSkills()
     }
   } catch (e: any) {
     if (e.name !== 'AbortError') {
       const msg = debugMessages.value[assistantIdx]
-      if (msg) msg.content = `转为流程失败: ${e.message || String(e)}`
+      if (msg) msg.content = t('skill.convertToPipelineFailed', { error: e.message || String(e) })
     }
   } finally {
     convertingPipeline.value = false
@@ -1133,7 +1135,7 @@ async function confirmPipelineOverwrite() {
 // 转流程冲突：另存为
 async function confirmPipelineRename() {
   if (!pipelineConflictInfo.value || !pipelineRenameValue.value.trim()) {
-    ElMessage.warning('请输入新的流程名称')
+    ElMessage.warning(t('skill.newPipelineNameRequired'))
     return
   }
   showPipelineConflict.value = false
@@ -1143,16 +1145,16 @@ async function confirmPipelineRename() {
 async function confirmDelete(skill: any) {
   try {
     await ElMessageBox.confirm(
-      `确定要删除技能 "${skill.display_name || skill.name}" 吗？此操作不可恢复。`,
-      '确认删除',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+      t('skill.deleteConfirmMsg', { name: skill.display_name || skill.name }),
+      t('skill.deleteConfirmTitle'),
+      { confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel'), type: 'warning' }
     )
     await api.delete(`/skills/${skill.id}`)
-    ElMessage.success('删除成功')
+    ElMessage.success(t('skill.deleteSuccessMsg'))
     await loadSkills()
   } catch (e: any) {
     if (e !== 'cancel') {
-      ElMessage.error(e.response?.data?.detail || '删除失败')
+      ElMessage.error(e.response?.data?.detail || t('skill.deleteFailedMsg'))
     }
   }
 }
@@ -1165,13 +1167,13 @@ const cloning = ref(false)
 
 function openCloneDialog(skill: any) {
   cloneTarget.value = skill
-  cloneName.value = (skill.display_name || skill.name) + ' (副本)'
+    cloneName.value = (skill.display_name || skill.name) + ' ' + t('skill.copySuffix')
   showCloneDialog.value = true
 }
 
 async function handleClone() {
   if (!cloneName.value.trim()) {
-    ElMessage.warning('请输入新名称')
+    ElMessage.warning(t('skill.nameRequiredShort'))
     return
   }
   if (!cloneTarget.value) return
@@ -1180,13 +1182,13 @@ async function handleClone() {
     const res = await api.post(`/skills/${cloneTarget.value.id}/clone`, {
       name: cloneName.value.trim(),
     })
-    ElMessage.success(`技能 "${res.display_name || res.name}" 复制成功`)
+    ElMessage.success(t('skill.cloneSuccess', { name: res.display_name || res.name }))
     showCloneDialog.value = false
     cloneName.value = ''
     cloneTarget.value = null
     await loadSkills()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '复制失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.cloneFailed'))
   } finally {
     cloning.value = false
   }
@@ -1224,7 +1226,7 @@ function scrollGenMsg() {
 
 async function handleGenerate() {
   if (!generatePrompt.value.trim()) {
-    ElMessage.warning('请输入需求描述')
+    ElMessage.warning(t('skill.requirementRequired'))
     return
   }
   const userText = generatePrompt.value.trim()
@@ -1286,7 +1288,7 @@ async function doGenerate(userText: string) {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n' + t('skill.newRoundThinking') + '\n'; msg.thinkingOpen = false; thinkingDone = false }
             if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'chunk') {
@@ -1305,8 +1307,8 @@ async function doGenerate(userText: string) {
             ElMessage.error(data.message)
           } else if (data.type === 'created') {
             const skill = data.skill
-            msg.content += (msg.content ? '\n\n' : '') + `✅ 技能 "${skill.display_name || skill.name}" 已创建`
-            ElMessage.success(`技能 "${skill.display_name || skill.name}" 已生成`)
+            msg.content += (msg.content ? '\n\n' : '') + t('skill.skillCreatedMsg', { name: skill.display_name || skill.name })
+            ElMessage.success(t('skill.skillGeneratedMsg', { name: skill.display_name || skill.name }))
             showGenerateDialog.value = false
             await loadSkills()
             detailSkill.value = skill
@@ -1323,9 +1325,9 @@ async function doGenerate(userText: string) {
     const msg = genMessages.value[genMessages.value.length - 1]
     if (msg) {
       if (e.name === 'AbortError') {
-        msg.content += '\n\n*[已停止生成]*'
+        msg.content += '\n\n' + t('skill.generationStopped')
       } else {
-        msg.content += `\n\n❌ ${e.message || '生成失败'}`
+        msg.content += `\n\n❌ ${e.message || t('skill.generationFailed')}`
       }
     }
   } finally {
@@ -1417,11 +1419,11 @@ async function saveSkillRules() {
     await api.put(`/skills/${detailSkill.value.id}/rules`, {
       content: rulesContent.value,
     })
-    ElMessage.success('技能规则已保存')
+    ElMessage.success(t('skill.skillRulesSaved'))
     // 重新加载解析后的结构
     await loadSkillRules(detailSkill.value.id)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.saveFailedMsg'))
   } finally {
     savingRules.value = false
   }
@@ -1430,16 +1432,16 @@ async function saveSkillRules() {
 async function resetSkillRules() {
   if (!detailSkill.value) return
   try {
-    await ElMessageBox.confirm('确认清空该技能的专属规则？', '提示', { type: 'warning' })
+    await ElMessageBox.confirm(t('skill.clearRulesConfirm'), t('skill.tipLabel'), { type: 'warning' })
   } catch {
     return
   }
   try {
     await api.post(`/skills/${detailSkill.value.id}/rules/reset`)
-    ElMessage.success('已清空技能规则')
+    ElMessage.success(t('skill.rulesCleared'))
     await loadSkillRules(detailSkill.value.id)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '清空失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.clearFailed'))
   }
 }
 
@@ -1454,9 +1456,9 @@ async function saveSkillType() {
     detailSkill.value = { ...detailSkill.value, ...updated }
     const idx = skills.value.findIndex((s: any) => s.id === updated.id)
     if (idx >= 0) skills.value[idx] = { ...skills.value[idx], ...updated }
-    ElMessage.success(`已切换为${newType === 'analysis' ? '数据分析' : '数据处理'}技能`)
+    ElMessage.success(t('skill.switchedTo' + (newType === 'analysis' ? 'Analysis' : 'Processing')))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.saveFailedMsg'))
     skillTypeEdit.value = isAnalysisSkill(detailSkill.value) ? 'analysis' : 'processing'
   } finally {
     savingType.value = false
@@ -1511,7 +1513,7 @@ async function handleModifySkill() {
         } else if (data.type === 'clear_thinking') {
           msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
         } else if (data.type === 'thinking') {
-          if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+          if (thinkingDone && msg.thinking) { msg.thinking += '\n\n' + t('skill.newRoundThinking') + '\n'; msg.thinkingOpen = false; thinkingDone = false }
           if (!msg.thinking) msg.thinkingOpen = false
           msg.thinking = (msg.thinking || '') + data.content
         } else if (data.type === 'content') {
@@ -1521,7 +1523,7 @@ async function handleModifySkill() {
           doneSkill = data.skill || null
           if (msg.thinking && !thinkingDone) msg.thinkingOpen = false
         } else if (data.type === 'error') {
-          errMsg = data.content || '修改失败'
+          errMsg = data.content || t('skill.modifyFailed')
         } else if (data.type === 'cancelled') {
           cancelled = true
         }
@@ -1554,12 +1556,12 @@ async function handleModifySkill() {
     if (errMsg) {
       modifyError.value = errMsg
     } else if (cancelled) {
-      ElMessage.info('修改已取消')
+      ElMessage.info(t('skill.modifyCancelled'))
     } else if (doneSkill) {
       detailSkill.value = doneSkill
       mdEditContent.value = doneSkill.skill_md || ''
       modifyInstruction.value = ''
-      ElMessage.success('技能已通过 AI 修改')
+      ElMessage.success(t('skill.skillAiModified'))
       await loadSkills()
       if (debugDrawer.value) {
         refreshDebugContext()
@@ -1567,7 +1569,7 @@ async function handleModifySkill() {
     }
   } catch (e: any) {
     if (e.name !== 'AbortError') {
-      modifyError.value = e.response?.data?.detail || e.message || '修改失败，请检查 LLM 配置'
+      modifyError.value = e.response?.data?.detail || e.message || t('skill.modifyFailedCheckLlm')
     }
   } finally {
     modifying.value = false
@@ -1586,7 +1588,7 @@ async function toggleScript(name: string) {
       const res = await api.get(`/skills/${detailSkill.value.id}/scripts/${name}`)
       scriptContents[name] = res.content || ''
     } catch (e: any) {
-      ElMessage.error('加载脚本失败')
+      ElMessage.error(t('skill.loadScriptFailed'))
     }
   }
 }
@@ -1598,13 +1600,13 @@ async function saveScriptContent(name: string) {
     await api.put(`/skills/${detailSkill.value.id}/scripts/${name}`, {
       content: scriptContents[name],
     })
-    ElMessage.success(`脚本 ${name} 已保存`)
+    ElMessage.success(t('skill.scriptSaved', { name }))
     detailSkill.value.scripts = await api.get(`/skills/${detailSkill.value.id}/scripts`)
     if (debugDrawer.value) {
       refreshDebugContext()
     }
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.saveFailedMsg'))
   } finally {
     savingScript.value = false
   }
@@ -1621,9 +1623,9 @@ async function saveSkillMd() {
     mdEditContent.value = updated.skill_md || mdEditContent.value
     const idx = skills.value.findIndex((s: any) => s.id === updated.id)
     if (idx >= 0) skills.value[idx] = updated
-    ElMessage.success('SKILL.md 已保存')
+    ElMessage.success(t('skill.mdSaved'))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('skill.saveFailedMsg'))
   } finally {
     savingMd.value = false
   }
@@ -1643,7 +1645,7 @@ watch(debugDrawer, (newVal, oldVal) => {
 
 function handleDebugBeforeClose(done: () => void) {
   if (debugStreaming.value || execRunning.value) {
-    ElMessage.warning('正在执行中，请先等待完成或点击停止')
+    ElMessage.warning(t('skill.executingWaitStop'))
     return
   }
   done()
@@ -1669,7 +1671,7 @@ function stopExec() {
 function pushExecResult(result: any, thinking = '') {
   debugMessages.value.push({
     role: 'assistant',
-    content: result?.success ? '执行完成' : '执行失败',
+    content: result?.success ? t('skill.execComplete') : t('skill.execFailed'),
     thinking: thinking || undefined,
     runResult: result,
   })
@@ -1757,9 +1759,9 @@ function formatMsgTime(ts?: string): string {
 
 function copyText(text: string) {
   navigator.clipboard.writeText(text).then(() => {
-    ElMessage.success('已复制')
+    ElMessage.success(t('common.copySuccess'))
   }).catch(() => {
-    ElMessage.error('复制失败')
+    ElMessage.error(t('common.copyFailed'))
   })
 }
 
@@ -1823,7 +1825,7 @@ function finalizeExecMessage(idx: number, result: any) {
   const msg = debugMessages.value[idx]
   if (msg) {
     msg.runResult = result
-    if (!msg.content) msg.content = result?.success ? '执行完成' : '执行失败'
+    if (!msg.content) msg.content = result?.success ? t('skill.execComplete') : t('skill.execFailed')
   }
   nextTick(() => scrollSkillDebugToBottom())
 }
@@ -1855,7 +1857,7 @@ function processDebugSSEEvent(
       break
     case 'thinking':
       if (state.thinkingDone && msg.thinking) {
-        msg.thinking += '\n\n--- 新一轮推理 ---\n'
+        msg.thinking += '\n\n' + t('skill.newRoundThinking') + '\n'
         msg.thinkingOpen = false
         state.thinkingDone = false
       }
@@ -1895,7 +1897,7 @@ function processDebugSSEEvent(
     }
     case 'executing':
       execPhase.value = 'executing'
-      setExecutingMsg(msg, data.message || '正在执行技能脚本...')
+      setExecutingMsg(msg, data.message || t('skill.executingScript'))
       setThinkingDone()
       break
     case 'progress':
@@ -1903,7 +1905,7 @@ function processDebugSSEEvent(
       break
     case 'inspecting':
       archiveExecutingMsg(msg)
-      setExecutingMsg(msg, data.message || '正在执行数据质量检查...')
+      setExecutingMsg(msg, data.message || t('skill.executingInspection'))
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -1915,7 +1917,7 @@ function processDebugSSEEvent(
       break
     case 'retry':
       archiveExecutingMsg(msg)
-      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔄 ${data.message || '开始修复...'}`)
+      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔄 ${data.message || t('skill.startFixMsg')}`)
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -1923,12 +1925,12 @@ function processDebugSSEEvent(
       archiveExecutingMsg(msg)
       msg.thinkingOpen = false
       state.thinkingDone = true
-      msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
+      msg.content += `\n\n─── ` + t('skill.modifyAttemptRound', { round: data.round, action: data.action === 'execute' ? t('skill.executeAction') : t('skill.modifyAction') }) + ` ───\n`
       break
     case 'fixing':
       execPhase.value = 'executing'
       archiveExecutingMsg(msg)
-      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔧 ${data.message || '正在自动修复...'}`)
+      ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔧 ${data.message || t('skill.autoFixingMsg')}`)
       break
     case 'run_result':
       setThinkingDone()
@@ -1939,10 +1941,10 @@ function processDebugSSEEvent(
         const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
         msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
         if (failed) {
-          const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
-          msg.content += `\n❌ 执行失败：${errMsg}\n`
+          const errMsg = String(r.error || inner.error || t('skill.unknownError')).substring(0, 300)
+          msg.content += `\n` + t('skill.execFailedMsg', { error: errMsg }) + `\n`
         } else if (!msg.content) {
-          msg.content = '技能执行完成'
+          msg.content = t('skill.skillExecComplete')
         }
       }
       break
@@ -1953,35 +1955,35 @@ function processDebugSSEEvent(
       break
     case 'give_up':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
-      state.result = { success: false, error: data.reason || '修复失败' }
+      msg.content += `\n\n` + t('skill.fixFailedContent', { reason: data.reason ? '\n' + data.reason : t('skill.fixFailedDefault') })
+      state.result = { success: false, error: data.reason || t('skill.fixFailed') }
       return 'break'
     case 'platform_issue':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
+      msg.content += `\n\n` + t('skill.platformIssueContent', { message: data.message || '' })
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
     case 'fatal': {
       const issues = data.issues || []
-      let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+      let fatalText = `\n\n` + t('skill.fatalIssueContent', { summary: data.summary || '' }) + `\n`
       for (const issue of issues) {
         fatalText += `\n- [FATAL] ${issue.description || ''}`
-        if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
+        if (issue.suggestion) fatalText += `\n  ` + t('skill.arrowPrefix') + ` ${issue.suggestion}`
       }
       msg.content += fatalText
-      state.result = { success: false, error: '致命问题' }
+      state.result = { success: false, error: t('skill.fatalIssueLabel') }
       return 'break'
     }
     case 'warning_confirmation': {
       const issues = data.issues || []
-      let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+      let warnText = `\n\n` + t('skill.warningConfirmContent', { summary: data.summary || '' }) + `\n`
       for (const issue of issues) {
         warnText += `\n- [WARNING] ${issue.description || ''}`
-        if (issue.column) warnText += ` (列: ${issue.column})`
-        if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
+        if (issue.column) warnText += ` (` + t('skill.columnLabel') + `: ${issue.column})`
+        if (issue.suggestion) warnText += `\n  ` + t('skill.arrowPrefix') + ` ${issue.suggestion}`
       }
-      warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+      warnText += '\n\n> ' + t('skill.fixWarningReply')
       msg.content += warnText
       break
     }
@@ -1990,16 +1992,16 @@ function processDebugSSEEvent(
         state.result = data.result
       }
       if (!msg.content || msg.content.trim() === '') {
-        msg.content = '✅ 调试完成'
+        msg.content = t('skill.debugComplete')
       } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
-        msg.content += '\n\n✅ 调试完成'
+        msg.content += '\n\n' + t('skill.debugComplete')
       }
       msg.thinkingOpen = false
       archiveExecutingMsg(msg)
       return 'break'
     case 'error':
-      msg.content += `\n\n错误: ${data.content || '未知错误'}`
-      state.result = { success: false, error: data.content || '执行失败' }
+      msg.content += `\n\n` + t('skill.errorMsg', { msg: data.content || t('skill.unknownError') })
+      state.result = { success: false, error: data.content || t('skill.execFailed') }
       return 'break'
   }
   return null
@@ -2164,7 +2166,7 @@ const cmdPlaceholder = computed(() => {
       .join(' ')
     return `/${name} ${paramHint}`
   }
-  return `/${name} 参数1=值1 参数2=值2`
+  return t('skill.cmdDefaultPlaceholder', { name })
 })
 
 const nlExamples = computed(() => {
@@ -2231,28 +2233,28 @@ const nlHint = computed(() => {
   const examples = nlExamples.value
   if (examples.length > 0) return ''
   if (desc.includes('清洗') || desc.includes('去重')) {
-    return '告诉我要清洗哪个数据源的哪个表，我会帮你去除重复和空值数据'
+    return t('skill.nlHintClean')
   }
   if (desc.includes('检索') || desc.includes('搜索') || desc.includes('查询')) {
-    return '用自然语言描述你想查找的内容，我会帮你检索相关数据'
+    return t('skill.nlHintSearch')
   }
   if (desc.includes('分析') || desc.includes('统计')) {
-    return '描述你想分析的数据维度，我会生成统计报告'
+    return t('skill.nlHintAnalyze')
   }
   if (desc.includes('导出')) {
-    return '告诉我要导出哪些数据，我会帮你生成文件'
+    return t('skill.nlHintExport')
   }
   if (desc.includes('采集') || desc.includes('爬取')) {
-    return '描述要采集的数据来源和数量，我会帮你获取数据'
+    return t('skill.nlHintCollect')
   }
   if (desc.includes('转换') || desc.includes('处理')) {
-    return '描述数据转换需求，我会帮你处理数据'
+    return t('skill.nlHintTransform')
   }
   return ''
 })
 
 const nlPlaceholder = computed(() => {
-  if (!debugSkill.value) return '用自然语言描述你想做什么'
+  if (!debugSkill.value) return t('skill.nlDefaultPlaceholder')
   const examples = nlExamples.value
   if (examples.length > 0) {
     return examples[0]
@@ -2262,40 +2264,40 @@ const nlPlaceholder = computed(() => {
   const desc = skill.description || ''
   const params = skillParams.value
   if (name.includes('文物') || desc.includes('文物')) {
-    return '例如：检索明代的青铜器，限制返回20条'
+    return t('skill.nlPlaceholderHeritage')
   }
   if (desc.includes('清洗') || desc.includes('去重')) {
-    return '例如：清洗"文物"数据源的"全国文物"表，去除重复数据'
+    return t('skill.nlPlaceholderClean')
   }
   if (desc.includes('检索') || desc.includes('搜索')) {
     if (params.length > 0) {
       const pExamples = params.slice(0, 2).map((p: any) => {
-        if (p.example) return `${p.name}为${p.example}`
-        return `${p.name}为某个值`
+        if (p.example) return t('skill.nlParamExample', { name: p.name, value: p.example })
+        return t('skill.nlParamExampleDefault', { name: p.name })
       })
-      return `例如：查找${pExamples.join('，')}的数据`
+      return t('skill.nlPlaceholderSearchParam', { params: pExamples.join(', ') })
     }
-    return '例如：查找符合条件的数据'
+    return t('skill.nlPlaceholderSearchDefault')
   }
   if (desc.includes('分析') || desc.includes('统计')) {
-    return '例如：统计各类型数据的分布情况'
+    return t('skill.nlPlaceholderAnalyze')
   }
   if (desc.includes('导出')) {
-    return '例如：导出查询结果到Excel文件'
+    return t('skill.nlPlaceholderExport')
   }
   if (desc.includes('采集')) {
-    return '例如：采集100条数据并保存'
+    return t('skill.nlPlaceholderCollect')
   }
   if (params.length > 0) {
     const requiredParams = params.filter((p: any) => p.required)
     if (requiredParams.length > 0) {
       const firstParam = requiredParams[0]
       if (firstParam.example) {
-        return `例如：设置${firstParam.name}为${firstParam.example}`
+        return t('skill.nlPlaceholderSetParam', { name: firstParam.name, value: firstParam.example })
       }
     }
   }
-  return '用自然语言描述你想做什么'
+  return t('skill.nlDefaultPlaceholder')
 })
 
 const cmdParseHint = computed(() => {
@@ -2311,8 +2313,8 @@ const cmdParseHint = computed(() => {
     }
   }
   const paramKeys = Object.keys(params)
-  if (paramKeys.length === 0) return `技能: ${skillName}（无参数）`
-  return `技能: ${skillName} | ${paramKeys.map(k => `${k}=${params[k]}`).join(', ')}`
+  if (paramKeys.length === 0) return t('skill.skillParamNoParams', { name: skillName })
+  return t('skill.skillParamDetail', { name: skillName, params: paramKeys.map(k => `${k}=${params[k]}`).join(', ') })
 })
 
 const cmdExamples = computed(() => {
@@ -2325,8 +2327,8 @@ const cmdExamples = computed(() => {
   const tblName = cmdExampleTableName.value || ''
 
   function paramValue(p: any): string {
-    if (p.is_datasource) return dsName || '数据源名'
-    if (p.is_table) return tblName || '表名'
+    if (p.is_datasource) return dsName || t('skill.paramValueDsName')
+    if (p.is_table) return tblName || t('skill.paramValueTableName')
     if (p.example) return String(p.example)
     if (p.default !== undefined && p.default !== null) return String(p.default)
     if (p.type === 'bool') return 'true'
@@ -2336,14 +2338,14 @@ const cmdExamples = computed(() => {
       return '1'
     }
     if (p.name.includes('path') || p.name.includes('file') || p.name.includes('log')) return './output.log'
-    if (p.name.includes('name')) return '名称'
+    if (p.name.includes('name')) return t('skill.paramValueName')
     if (p.name.includes('id')) return 'ID'
-    return '值'
+    return t('skill.paramValueValue')
   }
 
   if (!params.length) {
-    examples.push({ cmd: `/${name}`, desc: '基本调用' })
-    examples.push({ cmd: `/${name} param1=value1 param2=value2`, desc: '带参数调用' })
+    examples.push({ cmd: `/${name}`, desc: t('skill.basicCallDesc') })
+    examples.push({ cmd: `/${name} param1=value1 param2=value2`, desc: t('skill.paramCallDesc') })
     return examples
   }
 
@@ -2352,16 +2354,16 @@ const cmdExamples = computed(() => {
 
   if (required.length > 0) {
     const requiredPart = required.map((p: any) => `${p.name}=${paramValue(p)}`).join(' ')
-    examples.push({ cmd: `/${name} ${requiredPart}`, desc: '必填参数' })
+    examples.push({ cmd: `/${name} ${requiredPart}`, desc: t('skill.requiredParamDesc') })
   } else {
-    examples.push({ cmd: `/${name}`, desc: '基本调用' })
+    examples.push({ cmd: `/${name}`, desc: t('skill.basicCallDesc') })
   }
 
   const additionalParams = optional.slice(0, 2)
   if (additionalParams.length > 0) {
     const allParams = [...required, ...additionalParams]
     const allPart = allParams.map((p: any) => `${p.name}=${paramValue(p)}`).join(' ')
-    examples.push({ cmd: `/${name} ${allPart}`, desc: '完整参数' })
+    examples.push({ cmd: `/${name} ${allPart}`, desc: t('skill.fullParamDesc') })
   }
 
   return examples
@@ -2372,13 +2374,13 @@ const cmdExamples = computed(() => {
 
 async function clearDebugHistory() {
   try {
-    await ElMessageBox.confirm('确认清空当前技能的调试记录？此操作不可撤销。', '提示', { type: 'warning' })
+    await ElMessageBox.confirm(t('skill.clearDebugConfirm'), t('skill.tipLabel'), { type: 'warning' })
   } catch { return }
   if (debugSkill.value) {
     localStorage.removeItem(`dc_skill_debug_msgs_${debugSkill.value.id}`)
   }
   debugMessages.value = []
-  ElMessage.success('已清空调试记录')
+  ElMessage.success(t('skill.debugHistoryCleared'))
 }
 
 function resetDebug() {
@@ -2515,7 +2517,7 @@ function buildCmdFromParams() {
 async function handleRunSkillNL() {
   if (!debugSkill.value) return
   if (!execNLQuery.value.trim()) {
-    ElMessage.warning('请输入调用指令')
+    ElMessage.warning(t('skill.callInstructionRequired'))
     return
   }
   const userQuery = execNLQuery.value.trim()
@@ -2532,7 +2534,7 @@ async function handleRunSkillNL() {
     const token = localStorage.getItem('access_token')
     const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[` + t('skill.execResultLabel') + `: ${m.runResult.success ? t('skill.successLabel') : t('skill.failedLabel')}]` + (m.runResult.error ? ` ` + t('skill.errorMsg', { msg: m.runResult.error }) : '') : '') + (m.scriptUpdated ? `\n\n[` + t('skill.scriptUpdatedLabel', { name: m.scriptUpdated }) + `]` : ''),
     }))
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
@@ -2541,7 +2543,7 @@ async function handleRunSkillNL() {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        message: userQuery + '\n\n（只执行不修改代码，直接用当前脚本运行）',
+        message: userQuery + '\n\n' + t('skill.execOnlyMsg'),
         history,
         script_name: debugScriptName.value,
         datasource_id: userQuery.includes('数据源')
@@ -2573,11 +2575,11 @@ async function handleRunSkillNL() {
     streamOk = sseResult.streamOk
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      result = { success: false, error: '已停止' }
+      result = { success: false, error: t('skill.stopped') }
     } else {
       result = {
         success: false,
-        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
+        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? t('skill.connectionError') : e.message) || String(e),
       }
     }
   } finally {
@@ -2590,7 +2592,7 @@ async function handleRunSkillNL() {
     }
     if (result && _msg) {
       _msg.runResult = result
-      if (!_msg.content) _msg.content = result?.success ? '执行完成' : '执行失败'
+      if (!_msg.content) _msg.content = result?.success ? t('skill.execComplete') : t('skill.execFailed')
     }
   }
 
@@ -2600,7 +2602,7 @@ async function handleRunSkillNL() {
     const hasRunResult = assistantMsg?.runResult
     if (!hasRunResult && execNLQuery.value.trim()) {
       if (assistantMsg) {
-        assistantMsg.content += '\n\n> 脚本已更新，正在重新执行技能…'
+        assistantMsg.content += '\n\n> ' + t('skill.scriptUpdatedReexecuting')
       }
       await handleRunSkillNL()
     }
@@ -2611,7 +2613,7 @@ async function handleRunCmd() {
   if (!debugSkill.value) return
   const cmd = execCmdStr.value.trim()
   if (!cmd) {
-    ElMessage.warning('请输入命令')
+    ElMessage.warning(t('skill.cmdRequired'))
     return
   }
   pushHistory(cmdHistory, cmdHistoryIdx, cmd, 'cmd')
@@ -2641,7 +2643,7 @@ async function handleRunCmd() {
       }
     }
   } else {
-    ElMessage.error('命令格式错误，请以 / 开头，例如 /filter condition="age>18"')
+    ElMessage.error(t('skill.cmdFormatError'))
     return
   }
 
@@ -2654,7 +2656,7 @@ async function handleRunCmd() {
   execRunning.value = true
   execPhase.value = 'executing'
   execAbortController = new AbortController()
-  const assistantIdx = startExecMessage(cmd, '正在执行技能脚本...')
+  const assistantIdx = startExecMessage(cmd, t('skill.executingScript'))
   let scriptChanged = false
   let streamOk = false
 
@@ -2663,7 +2665,7 @@ async function handleRunCmd() {
     const token = localStorage.getItem('access_token')
     const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[` + t('skill.execResultLabel') + `: ${m.runResult.success ? t('skill.successLabel') : t('skill.failedLabel')}]` + (m.runResult.error ? ` ` + t('skill.errorMsg', { msg: m.runResult.error }) : '') : '') + (m.scriptUpdated ? `\n\n[` + t('skill.scriptUpdatedLabel', { name: m.scriptUpdated }) + `]` : ''),
     }))
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
       method: 'POST',
@@ -2701,11 +2703,11 @@ async function handleRunCmd() {
     streamOk = sseResult.streamOk
   } catch (e: any) {
     if (e.name === 'AbortError') {
-      result = { success: false, error: '已停止' }
+      result = { success: false, error: t('skill.stopped') }
     } else {
       result = {
         success: false,
-        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message) || String(e),
+        error: e.response?.data?.detail || (e.message === 'network error' || e.message === 'Failed to fetch' ? t('skill.connectionError') : e.message) || String(e),
       }
     }
   } finally {
@@ -2718,7 +2720,7 @@ async function handleRunCmd() {
     }
     if (result && _msg) {
       _msg.runResult = result
-      if (!_msg.content) _msg.content = result?.success ? '执行完成' : '执行失败'
+      if (!_msg.content) _msg.content = result?.success ? t('skill.execComplete') : t('skill.execFailed')
     }
   }
 
@@ -2727,7 +2729,7 @@ async function handleRunCmd() {
     const hasRunResult = assistantMsg?.runResult
     if (!hasRunResult && execCmdStr.value.trim()) {
       if (assistantMsg) {
-        assistantMsg.content += '\n\n> 脚本已更新，正在重新执行…'
+        assistantMsg.content += '\n\n> ' + t('skill.scriptUpdatedReexecutingShort')
       }
       await handleRunCmd()
     }
@@ -2802,7 +2804,7 @@ async function handleDebugSend() {
     const token = localStorage.getItem('access_token')
     const history = debugMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[脚本已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[` + t('skill.execResultLabel') + `: ${m.runResult.success ? t('skill.successLabel') : t('skill.failedLabel')}]` + (m.runResult.error ? ` ` + t('skill.errorMsg', { msg: m.runResult.error }) : '') : '') + (m.scriptUpdated ? `\n\n[` + t('skill.scriptUpdatedLabel', { name: m.scriptUpdated }) + `]` : ''),
     }))
 
     const response = await fetch(`/api/v1/skills/${debugSkill.value.id}/debug-chat`, {
@@ -2849,13 +2851,13 @@ async function handleDebugSend() {
     if (e.name === 'AbortError') {
       const msg = debugMessages.value[assistantIdx]
       if (msg.content) {
-        msg.content += '\n\n*[已停止生成]*'
+        msg.content += '\n\n' + t('skill.generationStopped')
       } else {
-        msg.content = '*[已停止生成]*'
+        msg.content = t('skill.generationStopped')
       }
     } else {
       const msg = debugMessages.value[assistantIdx]
-      const errHint = `⚠ 连接已断开: ${e.message || String(e)}`
+      const errHint = t('skill.connectionDropped', { error: e.message || String(e) })
       msg.content = msg.content ? `${msg.content}\n\n${errHint}` : errHint
     }
   } finally {
@@ -2876,11 +2878,11 @@ async function handleDebugSend() {
     if (!hasRunResult) {
       if (execNLQuery.value.trim()) {
         if (assistantMsg) {
-          assistantMsg.content += '\n\n> 脚本已更新，正在用自然语言重新执行技能…'
+          assistantMsg.content += '\n\n> ' + t('skill.scriptUpdatedNLReexecuting')
         }
         await handleRunSkillNL()
       } else if (assistantMsg) {
-        assistantMsg.content += '\n\n> 脚本已更新。在左侧执行面板输入参数后执行，即可查看运行结果。'
+        assistantMsg.content += '\n\n> ' + t('skill.scriptUpdatedHint')
       }
     }
   }

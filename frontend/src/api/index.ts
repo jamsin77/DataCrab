@@ -13,6 +13,8 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    const lang = localStorage.getItem('dc_language') || 'zh'
+    config.headers['X-Lang'] = lang
     return config
   },
   (error) => Promise.reject(error)
@@ -57,7 +59,7 @@ api.interceptors.response.use(
     } else if (error.code === 'ERR_NETWORK' || error.message?.includes('Network')) {
       // 网络错误：后端可能正在 reload（开发模式改代码触发 uvicorn 重启）
       // 不跳转登录页，让调用方 catch 处理；给一个友好错误消息
-      error.message = '后端服务暂时不可用，可能正在重启，请稍后重试'
+      error.message = 'Backend service temporarily unavailable, possibly restarting. Please retry later.'
     }
     return Promise.reject(error)
   }

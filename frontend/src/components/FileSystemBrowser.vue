@@ -1,16 +1,16 @@
 <template>
-  <el-dialog v-model="visible" :title="mode === 'folder' ? '选择文件夹' : '选择文件'" width="600px" :close-on-click-modal="false" @close="emit('cancel')">
+  <el-dialog v-model="visible" :title="mode === 'folder' ? t('fileBrowser.selectFolder') : t('fileBrowser.selectFile')" width="600px" :close-on-click-modal="false" @close="emit('cancel')">
     <div class="fs-browser">
       <div class="fs-path-bar">
         <el-input v-model="currentPath" size="default" @keydown.enter="navigateTo(currentPath)">
-          <template #prepend>路径</template>
+          <template #prepend>{{ t('fileBrowser.path') }}</template>
           <template #append>
             <el-button @click="navigateTo(currentPath)" :icon="Right" />
           </template>
         </el-input>
       </div>
       <div class="fs-list">
-        <div v-if="loading" class="fs-loading">加载中...</div>
+        <div v-if="loading" class="fs-loading">{{ t('fileBrowser.loading') }}</div>
         <div class="fs-item fs-parent" @click="navigateTo(parentPath)" v-if="!loading && currentPath !== parentPath">
           <el-icon><Back /></el-icon>
           <span>..</span>
@@ -35,15 +35,15 @@
           <el-icon><Document /></el-icon>
           <span>{{ f.name }}</span>
         </div>
-        <el-empty v-if="!loading && directories.length === 0 && files.length === 0" description="空目录" :image-size="50" />
+        <el-empty v-if="!loading && directories.length === 0 && files.length === 0" :description="t('fileBrowser.emptyDir')" :image-size="50" />
       </div>
       <div class="fs-selected" v-if="selectedPath">
-        <span style="color:#909399">已选择：</span>{{ selectedPath }}
+        <span style="color:#909399">{{ t('fileBrowser.selected') }}</span>{{ selectedPath }}
       </div>
     </div>
     <template #footer>
-      <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" @click="confirm" :disabled="!selectedPath">确定</el-button>
+      <el-button @click="visible = false">{{ t('fileBrowser.cancel') }}</el-button>
+      <el-button type="primary" @click="confirm" :disabled="!selectedPath">{{ t('fileBrowser.confirm') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -51,7 +51,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { Back, Folder, Document, Right } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: boolean

@@ -2,240 +2,240 @@
   <div class="schedule-page">
     <div class="toolbar">
       <el-button type="primary" @click="openCreateDialog">
-        <el-icon><Plus /></el-icon> 新建调度
+        <el-icon><Plus /></el-icon> {{ t('schedule.createSchedule') }}
       </el-button>
-      <el-select v-model="filterStatus" placeholder="状态" clearable style="width: 130px">
-        <el-option label="运行中" value="active" />
-        <el-option label="已暂停" value="paused" />
+      <el-select v-model="filterStatus" :placeholder="t('common.status')" clearable style="width: 130px">
+        <el-option :label="t('schedule.statusActive')" value="active" />
+        <el-option :label="t('schedule.statusPaused')" value="paused" />
       </el-select>
     </div>
 
     <el-table :data="filteredSchedules" stripe style="width: 100%" v-loading="loading">
-      <el-table-column label="名称" min-width="150">
+      <el-table-column :label="t('schedule.scheduleName')" min-width="150">
         <template #default="{ row }">
           <div>
             {{ row.name }}
-            <el-tag v-if="row.is_builtin" size="small" type="warning" effect="dark" style="margin-left: 4px">内置</el-tag>
+            <el-tag v-if="row.is_builtin" size="small" type="warning" effect="dark" style="margin-left: 4px">{{ t('schedule.builtin') }}</el-tag>
           </div>
           <div v-if="row.description" class="row-desc">{{ row.description }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="流程" min-width="140">
+      <el-table-column :label="t('schedule.pipeline')" min-width="140">
         <template #default="{ row }">{{ pipelineName(row.task_target_id) }}</template>
       </el-table-column>
-      <el-table-column label="调度方式" width="120">
+      <el-table-column :label="t('schedule.scheduleMethod')" width="120">
         <template #default="{ row }">
-          <el-tag v-if="row.schedule_type === 'cron'" size="small">定时</el-tag>
-          <el-tag v-else-if="row.schedule_type === 'interval' && row.interval_seconds === 1" size="small" type="danger">永久在线</el-tag>
-          <el-tag v-else-if="row.schedule_type === 'interval'" size="small" type="success">周期</el-tag>
-          <el-tag v-else size="small" type="info">手动</el-tag>
+          <el-tag v-if="row.schedule_type === 'cron'" size="small">{{ t('schedule.schedule') }}</el-tag>
+          <el-tag v-else-if="row.schedule_type === 'interval' && row.interval_seconds === 1" size="small" type="danger">{{ t('schedule.continuous') }}</el-tag>
+          <el-tag v-else-if="row.schedule_type === 'interval'" size="small" type="success">{{ t('schedule.interval') }}</el-tag>
+          <el-tag v-else size="small" type="info">{{ t('schedule.manual') }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="调度配置" width="200">
+      <el-table-column :label="t('schedule.scheduleConfig')" width="200">
         <template #default="{ row }">
           <div v-if="row.schedule_type === 'cron'">
             <div>{{ cronToHumanReadable(row.cron_expression) }}</div>
             <div class="row-desc">{{ timezoneLabel(row.timezone) }}</div>
           </div>
-          <span v-else-if="row.schedule_type === 'interval' && row.interval_seconds === 1">持续运行</span>
+          <span v-else-if="row.schedule_type === 'interval' && row.interval_seconds === 1">{{ t('schedule.continuousRunning') }}</span>
           <span v-else-if="row.schedule_type === 'interval'">{{ formatInterval(row.interval_seconds) }}</span>
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="运行模式" width="100">
+      <el-table-column :label="t('schedule.runMode')" width="100">
         <template #default="{ row }">
           <el-tag :type="row.run_mode === 'auto_fix' ? 'warning' : 'info'" size="small">
-            {{ row.run_mode === 'auto_fix' ? '自修复' : '普通' }}
+            {{ row.run_mode === 'auto_fix' ? t('schedule.autoFix') : t('schedule.normal') }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90">
+      <el-table-column :label="t('schedule.status')" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 'active' ? 'success' : 'warning'" size="small">
-            {{ row.status === 'active' ? '运行中' : '已暂停' }}
+            {{ row.status === 'active' ? t('schedule.statusActive') : t('schedule.statusPaused') }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="下次执行" width="160">
+      <el-table-column :label="t('schedule.nextRun')" width="160">
         <template #default="{ row }">{{ formatTime(row.next_run_at) }}</template>
       </el-table-column>
-      <el-table-column label="上次结果" width="90">
+      <el-table-column :label="t('schedule.lastResult')" width="90">
         <template #default="{ row }">
-          <el-tag v-if="row.last_run_status === 'success'" type="success" size="small">成功</el-tag>
-          <el-tag v-else-if="row.last_run_status === 'failed'" type="danger" size="small">失败</el-tag>
+          <el-tag v-if="row.last_run_status === 'success'" type="success" size="small">{{ t('schedule.success') }}</el-tag>
+          <el-tag v-else-if="row.last_run_status === 'failed'" type="danger" size="small">{{ t('schedule.failed') }}</el-tag>
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column :label="t('common.actions')" width="260" fixed="right">
         <template #default="{ row }">
           <div class="op-btns">
-            <el-button size="small" type="primary" @click="triggerNow(row)">执行</el-button>
-            <el-button v-if="row.status === 'active'" size="small" @click="pauseSchedule(row)">暂停</el-button>
-            <el-button v-else size="small" type="success" @click="resumeSchedule(row)">恢复</el-button>
-            <el-button size="small" @click="viewExecutions(row)">历史</el-button>
-            <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-            <el-button v-if="!row.is_builtin" size="small" type="danger" plain @click="deleteSchedule(row)">删除</el-button>
+            <el-button size="small" type="primary" @click="triggerNow(row)">{{ t('common.run') }}</el-button>
+            <el-button v-if="row.status === 'active'" size="small" @click="pauseSchedule(row)">{{ t('schedule.pause') }}</el-button>
+            <el-button v-else size="small" type="success" @click="resumeSchedule(row)">{{ t('schedule.resume') }}</el-button>
+            <el-button size="small" @click="viewExecutions(row)">{{ t('schedule.runHistory') }}</el-button>
+            <el-button size="small" @click="openEditDialog(row)">{{ t('common.edit') }}</el-button>
+            <el-button v-if="!row.is_builtin" size="small" type="danger" plain @click="deleteSchedule(row)">{{ t('common.delete') }}</el-button>
           </div>
         </template>
       </el-table-column>
     </el-table>
 
     <!-- 新建/编辑对话框 -->
-    <el-dialog v-model="showDialog" :title="editing ? '编辑调度' : '新建调度'" width="560px">
+    <el-dialog v-model="showDialog" :title="editing ? t('schedule.editSchedule') : t('schedule.createSchedule')" width="560px">
       <el-form label-width="100px" class="schedule-dialog-form">
-        <el-form-item label="调度名称" required>
-          <el-input v-model="form.name" placeholder="如：每日数据清洗" :disabled="isBuiltinSchedule" />
+        <el-form-item :label="t('schedule.scheduleName')" required>
+          <el-input v-model="form.name" :placeholder="t('schedule.namePlaceholder')" :disabled="isBuiltinSchedule" />
         </el-form-item>
-        <el-form-item label="选择流程" required>
-          <el-select v-model="form.task_target_id" placeholder="选择流程" filterable style="width: 100%" :disabled="isBuiltinSchedule" @change="onPipelineChange">
+        <el-form-item :label="t('schedule.selectPipeline')" required>
+          <el-select v-model="form.task_target_id" :placeholder="t('schedule.selectPipeline')" filterable style="width: 100%" :disabled="isBuiltinSchedule" @change="onPipelineChange">
             <el-option v-for="p in pipelines" :key="p.id" :label="p.display_name || p.name" :value="p.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="运行模式">
+        <el-form-item :label="t('schedule.runMode')">
           <el-radio-group v-model="form.run_mode" :disabled="isBuiltinSchedule">
-            <el-radio value="normal">普通运行</el-radio>
-            <el-radio value="auto_fix">自修复运行</el-radio>
+            <el-radio value="normal">{{ t('schedule.normalRun') }}</el-radio>
+            <el-radio value="auto_fix">{{ t('schedule.autoFixRun') }}</el-radio>
           </el-radio-group>
-          <span class="form-hint">{{ isBuiltinSchedule ? '内置调度不允许修改运行模式' : (form.run_mode === 'auto_fix' ? '执行失败时自动修复代码，走双智能体检查' : '直接执行流程脚本') }}</span>
+          <span class="form-hint">{{ isBuiltinSchedule ? t('schedule.builtinNoModifyRunMode') : (form.run_mode === 'auto_fix' ? t('schedule.autoFixHint') : t('schedule.normalRunHint')) }}</span>
         </el-form-item>
-        <el-form-item label="调度方式">
+        <el-form-item :label="t('schedule.scheduleMethod')">
           <el-radio-group v-model="form.schedule_type" :disabled="isBuiltinSchedule">
-            <el-radio value="cron">定时</el-radio>
-            <el-radio value="interval">周期</el-radio>
-            <el-radio value="continuous">永久在线</el-radio>
+            <el-radio value="cron">{{ t('schedule.schedule') }}</el-radio>
+            <el-radio value="interval">{{ t('schedule.interval') }}</el-radio>
+            <el-radio value="continuous">{{ t('schedule.continuous') }}</el-radio>
           </el-radio-group>
-          <span v-if="isBuiltinSchedule" class="form-hint">内置调度不允许修改调度方式</span>
+          <span v-if="isBuiltinSchedule" class="form-hint">{{ t('schedule.builtinNoModifyScheduleType') }}</span>
         </el-form-item>
 
         <!-- 定时：可视化选择 -->
         <template v-if="form.schedule_type === 'cron'">
-          <el-form-item label="执行时间">
+          <el-form-item :label="t('schedule.executeTime')">
             <div class="cron-times">
-              <div v-for="(t, i) in cronTimes" :key="i" class="cron-time-row">
-                <el-time-picker v-model="cronTimes[i]" format="HH:mm" value-format="HH:mm" placeholder="输入时间" style="width: 140px" clearable />
+              <div v-for="(t_item, i) in cronTimes" :key="i" class="cron-time-row">
+                <el-time-picker v-model="cronTimes[i]" format="HH:mm" value-format="HH:mm" :placeholder="t('schedule.inputTimePlaceholder')" style="width: 140px" clearable />
                 <el-button v-if="cronTimes.length > 1" size="small" text type="danger" @click="cronTimes.splice(i, 1)">
                   <el-icon><Delete /></el-icon>
                 </el-button>
               </div>
               <el-button size="small" text type="primary" @click="cronTimes.push('12:00')">
-                <el-icon><Plus /></el-icon> 添加时间
+                <el-icon><Plus /></el-icon> {{ t('schedule.addTime') }}
               </el-button>
             </div>
           </el-form-item>
-          <el-form-item label="时区">
-            <el-select v-model="cronTimezone" filterable allow-create default-first-option placeholder="选择时区" style="width: 240px">
+          <el-form-item :label="t('schedule.timezone')">
+            <el-select v-model="cronTimezone" filterable allow-create default-first-option :placeholder="t('schedule.selectTimezone')" style="width: 240px">
               <el-option v-for="tz in commonTimezones" :key="tz" :label="timezoneLabel(tz)" :value="tz" />
             </el-select>
-            <span class="form-hint">执行时间按此时区触发（已自动检测浏览器时区，可手动修改）</span>
+            <span class="form-hint">{{ t('schedule.timezoneHint') }}</span>
           </el-form-item>
-          <el-form-item label="重复频率">
+          <el-form-item :label="t('schedule.repeatFrequency')">
             <el-select v-model="cronFrequency" style="width: 120px" :disabled="isBuiltinSchedule">
-              <el-option label="每天" value="daily" />
-              <el-option v-if="!isBuiltinSchedule" label="每周" value="weekly" />
-              <el-option v-if="!isBuiltinSchedule" label="每月" value="monthly" />
+              <el-option :label="t('schedule.daily')" value="daily" />
+              <el-option v-if="!isBuiltinSchedule" :label="t('schedule.weekly')" value="weekly" />
+              <el-option v-if="!isBuiltinSchedule" :label="t('schedule.monthly')" value="monthly" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="cronFrequency === 'weekly'" label="星期">
+          <el-form-item v-if="cronFrequency === 'weekly'" :label="t('schedule.weekday')">
             <el-checkbox-group v-model="cronWeekdays">
-              <el-checkbox v-for="(d, i) in ['一','二','三','四','五','六','日']" :key="i" :value="i+1" :label="d">{{ d }}</el-checkbox>
+              <el-checkbox v-for="(d, i) in weekdayNames" :key="i" :value="i+1" :label="d">{{ d }}</el-checkbox>
             </el-checkbox-group>
           </el-form-item>
-          <el-form-item v-if="cronFrequency === 'monthly'" label="日期">
-            <el-input-number v-model="cronMonthDay" :min="1" :max="28" /> 号
+          <el-form-item v-if="cronFrequency === 'monthly'" :label="t('schedule.date')">
+            <el-input-number v-model="cronMonthDay" :min="1" :max="28" /> {{ t('schedule.dayOfMonth') }}
           </el-form-item>
-          <el-form-item label="预览">
+          <el-form-item :label="t('common.preview')">
             <el-tag type="info" size="small">{{ cronHumanReadable }}</el-tag>
           </el-form-item>
         </template>
 
         <!-- 周期 -->
-        <el-form-item v-if="form.schedule_type === 'interval'" label="执行间隔">
+        <el-form-item v-if="form.schedule_type === 'interval'" :label="t('schedule.executeInterval')">
           <div class="interval-row">
             <el-input-number v-model="intervalValue" :min="1" />
             <el-select v-model="intervalUnit" style="width: 90px">
-              <el-option label="秒" :value="1" />
-              <el-option label="分钟" :value="60" />
-              <el-option label="小时" :value="3600" />
-              <el-option label="天" :value="86400" />
+              <el-option :label="t('schedule.seconds')" :value="1" />
+              <el-option :label="t('schedule.minutes')" :value="60" />
+              <el-option :label="t('schedule.hours')" :value="3600" />
+              <el-option :label="t('schedule.days')" :value="86400" />
             </el-select>
           </div>
         </el-form-item>
 
         <!-- 永久在线 -->
-        <el-form-item v-if="form.schedule_type === 'continuous'" label="说明">
-          <span class="form-hint">流程执行完成后自动重新启动，保持持续运行。并发数为 1，不会重叠执行。</span>
+        <el-form-item v-if="form.schedule_type === 'continuous'" :label="t('schedule.note')">
+          <span class="form-hint">{{ t('schedule.continuousHint') }}</span>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveSchedule" :loading="saving">保存</el-button>
+        <el-button @click="showDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="saveSchedule" :loading="saving">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- 执行历史 -->
-    <el-dialog v-model="showHistory" title="执行历史" width="800px" @close="stopPolling">
+    <el-dialog v-model="showHistory" :title="t('schedule.runHistory')" width="800px" @close="stopPolling">
       <template #header>
         <div class="history-header">
-          <span>执行历史</span>
+          <span>{{ t('schedule.runHistory') }}</span>
           <el-button size="small" text :loading="historyLoading" @click="refreshExecutions">
-            <el-icon><Refresh /></el-icon> 刷新
+            <el-icon><Refresh /></el-icon> {{ t('common.refresh') }}
           </el-button>
         </div>
       </template>
       <el-table :data="executions" stripe>
-        <el-table-column label="状态" width="80">
+        <el-table-column :label="t('common.status')" width="80">
           <template #default="{ row }">
             <el-tag :type="execStatusColor(row.status)" size="small">{{ execStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="触发方式" width="80">
-          <template #default="{ row }">{{ row.trigger_type === 'manual' ? '手动' : '自动' }}</template>
+        <el-table-column :label="t('schedule.triggerType')" width="80">
+          <template #default="{ row }">{{ row.trigger_type === 'manual' ? t('schedule.manual') : t('schedule.automatic') }}</template>
         </el-table-column>
-        <el-table-column label="开始" width="160">
+        <el-table-column :label="t('schedule.startTime')" width="160">
           <template #default="{ row }">{{ formatTime(row.started_at) }}</template>
         </el-table-column>
-        <el-table-column label="耗时" width="80">
+        <el-table-column :label="t('schedule.duration')" width="80">
           <template #default="{ row }">{{ row.duration ? row.duration + 's' : '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="80">
+        <el-table-column :label="t('common.actions')" width="80">
           <template #default="{ row }">
-            <el-button size="small" text @click="viewExecutionDetail(row)">详情</el-button>
+            <el-button size="small" text @click="viewExecutionDetail(row)">{{ t('common.detail') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-dialog>
 
     <!-- 执行详情 -->
-    <el-dialog v-model="showDetail" title="执行详情" width="700px" @close="stopDetailPolling">
+    <el-dialog v-model="showDetail" :title="t('schedule.executionDetail')" width="700px" @close="stopDetailPolling">
       <template #header>
         <div class="history-header">
-          <span>执行详情</span>
+          <span>{{ t('schedule.executionDetail') }}</span>
           <el-button size="small" text :loading="detailLoading" @click="refreshExecutionDetail">
-            <el-icon><Refresh /></el-icon> 刷新
+            <el-icon><Refresh /></el-icon> {{ t('common.refresh') }}
           </el-button>
         </div>
       </template>
       <el-descriptions :column="2" border v-if="executionDetail">
-        <el-descriptions-item label="状态">{{ execStatusLabel(executionDetail.status) }}</el-descriptions-item>
-        <el-descriptions-item label="耗时">{{ executionDetail.duration || 0 }}s</el-descriptions-item>
-        <el-descriptions-item label="开始">{{ formatTime(executionDetail.started_at) }}</el-descriptions-item>
-        <el-descriptions-item label="结束">{{ formatTime(executionDetail.finished_at) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.status')">{{ execStatusLabel(executionDetail.status) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('schedule.duration')">{{ executionDetail.duration || 0 }}s</el-descriptions-item>
+        <el-descriptions-item :label="t('schedule.startTime')">{{ formatTime(executionDetail.started_at) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('schedule.endTime')">{{ formatTime(executionDetail.finished_at) }}</el-descriptions-item>
       </el-descriptions>
       <div v-if="executionDetail?.result" class="detail-result">
-        <div class="detail-label">执行结果</div>
+        <div class="detail-label">{{ t('schedule.executionResult') }}</div>
         <pre class="result-pre">{{ formatResult(executionDetail.result) }}</pre>
       </div>
       <div v-if="executionDetail?.error_message" class="detail-error">
-        <div class="detail-label">错误信息</div>
+        <div class="detail-label">{{ t('schedule.errorMessage') }}</div>
         <pre class="error-pre">{{ executionDetail.error_message }}</pre>
       </div>
       <div v-if="executionDetail?.logs" class="detail-logs">
-        <div class="detail-label">执行日志</div>
+        <div class="detail-label">{{ t('schedule.executionLog') }}</div>
         <pre>{{ executionDetail.logs }}</pre>
       </div>
       <div v-else-if="executionDetail" class="detail-logs">
-        <div class="detail-label">执行日志</div>
-        <el-text type="info" size="small">暂无日志输出（流程脚本未产生 stdout）</el-text>
+        <div class="detail-label">{{ t('schedule.executionLog') }}</div>
+        <el-text type="info" size="small">{{ t('schedule.noLogs') }}</el-text>
       </div>
     </el-dialog>
   </div>
@@ -245,7 +245,10 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, Refresh } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import api from '@/api'
+
+const { t } = useI18n()
 
 interface Schedule {
   id: string
@@ -357,21 +360,25 @@ function timezoneLabel(tz?: string): string {
   return TZ_LABELS[tz] || tz
 }
 
+const weekdayNames = computed(() => [
+  t('schedule.mon'), t('schedule.tue'), t('schedule.wed'),
+  t('schedule.thu'), t('schedule.fri'), t('schedule.sat'), t('schedule.sun')
+])
+
 const cronHumanReadable = computed(() => {
-  const times = cronTimes.value.filter(t => t).map(t => {
-    const [h, m] = t.split(':')
+  const times = cronTimes.value.filter(t_item => t_item).map(t_item => {
+    const [h, m] = t_item.split(':')
     return `${h.padStart(2,'0')}:${m.padStart(2,'0')}`
   })
   if (!times.length) return ''
-  const tz = `（${timezoneLabel(cronTimezone.value)}）`
-  const timeStr = times.join('、')
-  if (cronFrequency.value === 'daily') return `每天 ${timeStr}${tz}`
+  const tz = t('schedule.tzFormat', { tz: timezoneLabel(cronTimezone.value) })
+  const timeStr = times.join(t('schedule.cronTimeSeparator'))
+  if (cronFrequency.value === 'daily') return `${t('schedule.daily')} ${timeStr}${tz}`
   if (cronFrequency.value === 'weekly') {
-    const names = ['一','二','三','四','五','六','日']
-    const days = cronWeekdays.value.map(d => '周' + names[d-1]).join('、')
-    return `每${days} ${timeStr}${tz}`
+    const days = cronWeekdays.value.map(d => t('schedule.cronWeekPrefix') + weekdayNames.value[d-1]).join(t('schedule.cronTimeSeparator'))
+    return `${t('schedule.cronWeeklyPrefix')}${days} ${timeStr}${tz}`
   }
-  if (cronFrequency.value === 'monthly') return `每月${cronMonthDay.value}号 ${timeStr}${tz}`
+  if (cronFrequency.value === 'monthly') return `${t('schedule.cronMonthlyLabel', { day: cronMonthDay.value })} ${timeStr}${tz}`
   return ''
 })
 
@@ -422,10 +429,10 @@ function pipelineName(id: string) {
 
 function formatInterval(seconds?: number) {
   if (!seconds) return '-'
-  if (seconds >= 86400) return `每 ${seconds / 86400} 天`
-  if (seconds >= 3600) return `每 ${seconds / 3600} 小时`
-  if (seconds >= 60) return `每 ${seconds / 60} 分钟`
-  return `每 ${seconds} 秒`
+  if (seconds >= 86400) return t('schedule.everyDays', { n: seconds / 86400 })
+  if (seconds >= 3600) return t('schedule.everyHours', { n: seconds / 3600 })
+  if (seconds >= 60) return t('schedule.everyMinutes', { n: seconds / 60 })
+  return t('schedule.everySeconds', { n: seconds })
 }
 
 function cronToHumanReadable(expr?: string): string {
@@ -443,15 +450,14 @@ function cronToHumanReadable(expr?: string): string {
     const [m, h, dom, , dow] = f
     const time = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`
     let freq: string
-    if (dom !== '*') freq = `每月${parseInt(dom)}号`
+    if (dom !== '*') freq = t('schedule.cronMonthlyLabel', { day: parseInt(dom) })
     else if (dow !== '*') {
-      const names = ['一', '二', '三', '四', '五', '六', '日']
-      freq = '每' + dow.split(',').map(Number).sort((a, b) => a - b).map((d: number) => '周' + names[d - 1]).join('、')
-    } else freq = '每天'
+      freq = t('schedule.cronWeeklyPrefix') + dow.split(',').map(Number).sort((a, b) => a - b).map((d: number) => t('schedule.cronWeekPrefix') + weekdayNames.value[d - 1]).join(t('schedule.cronTimeSeparator'))
+    } else freq = t('schedule.daily')
     if (!groups[freq]) { groups[freq] = []; order.push(freq) }
     groups[freq].push(time)
   }
-  return order.map(freq => `${freq} ${groups[freq].join('、')}`).join('；')
+  return order.map(freq => `${freq} ${groups[freq].join(t('schedule.cronTimeSeparator'))}`).join(t('schedule.cronGroupSeparator'))
 }
 
 function formatTime(t?: string) {
@@ -469,7 +475,14 @@ function execStatusColor(s: string) {
 }
 
 function execStatusLabel(s: string) {
-  return { success: '成功', failed: '失败', running: '执行中', pending: '等待中', timeout: '超时' }[s] || s
+  const labels: Record<string, string> = {
+    success: t('schedule.success'),
+    failed: t('schedule.failed'),
+    running: t('schedule.running'),
+    pending: t('schedule.pending'),
+    timeout: t('schedule.timeout'),
+  }
+  return labels[s] || s
 }
 
 function formatResult(r: any): string {
@@ -484,7 +497,7 @@ async function loadSchedules() {
   loading.value = true
   try {
     schedules.value = await api.get('/schedules', { params: { limit: 100 } }) as any
-  } catch { ElMessage.error('加载调度列表失败') }
+  } catch { ElMessage.error(t('schedule.loadListFailed')) }
   finally { loading.value = false }
 }
 
@@ -512,13 +525,13 @@ watch(() => form.value.task_target_id, (newId) => {
   if (editing.value) return
   if (newId) {
     const p = pipelines.value.find(p => p.id === newId)
-    if (p) form.value.name = (p.display_name || p.name) + '_调度'
+    if (p) form.value.name = (p.display_name || p.name) + t('schedule.nameSuffix')
   }
 })
 
 watch(() => form.value.run_mode, (mode) => {
   if (editing.value) return
-  const suffix = '（自修复）'
+  const suffix = t('schedule.autoFixSuffix')
   if (mode === 'auto_fix' && !form.value.name.endsWith(suffix)) {
     form.value.name += suffix
   } else if (mode === 'normal' && form.value.name.endsWith(suffix)) {
@@ -548,7 +561,7 @@ function openEditDialog(row: Schedule) {
 }
 
 async function saveSchedule() {
-  if (!form.value.name || !form.value.task_target_id) { ElMessage.warning('请填写名称和选择流程'); return }
+  if (!form.value.name || !form.value.task_target_id) { ElMessage.warning(t('schedule.nameAndPipelineRequired')); return }
   saving.value = true
   try {
     const payload: any = {
@@ -573,11 +586,11 @@ async function saveSchedule() {
     } else {
       await api.post('/schedules', payload)
     }
-    ElMessage.success(editing.value ? '已更新' : '已创建')
+    ElMessage.success(editing.value ? t('common.updateSuccess') : t('common.createSuccess'))
     showDialog.value = false
     await loadSchedules()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
+    ElMessage.error(e.response?.data?.detail || t('schedule.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -585,35 +598,35 @@ async function saveSchedule() {
 
 async function triggerNow(row: Schedule) {
   try {
-    await ElMessageBox.confirm(`立即执行 "${row.name}"？`, '确认', { type: 'info' })
+    await ElMessageBox.confirm(t('schedule.triggerConfirm', { name: row.name }), t('common.confirm'), { type: 'info' })
     await api.post(`/schedules/${row.id}/trigger`)
-    ElMessage.success('已触发，正在执行…')
+    ElMessage.success(t('schedule.triggered'))
     await loadSchedules()
     await viewExecutions(row)
   } catch (e: any) {
     if (e === 'cancel') return
-    ElMessage.error(e.response?.data?.detail || '触发失败')
+    ElMessage.error(e.response?.data?.detail || t('schedule.triggerFailed'))
   }
 }
 
 async function pauseSchedule(row: Schedule) {
   try { await api.post(`/schedules/${row.id}/pause`); await loadSchedules() }
-  catch { ElMessage.error('暂停失败') }
+  catch { ElMessage.error(t('schedule.pauseFailed')) }
 }
 
 async function resumeSchedule(row: Schedule) {
   try { await api.post(`/schedules/${row.id}/resume`); await loadSchedules() }
-  catch { ElMessage.error('恢复失败') }
+  catch { ElMessage.error(t('schedule.resumeFailed')) }
 }
 
 async function deleteSchedule(row: Schedule) {
-  if (row.is_builtin) { ElMessage.warning('内置调度不可删除'); return }
+  if (row.is_builtin) { ElMessage.warning(t('schedule.builtinSchedule')); return }
   try {
-    await ElMessageBox.confirm(`删除调度 "${row.name}"？`, '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(t('schedule.deleteScheduleConfirm', { name: row.name }), t('common.deleteConfirm'), { type: 'warning' })
     await api.delete(`/schedules/${row.id}`)
-    ElMessage.success('已删除')
+    ElMessage.success(t('common.deleteSuccess'))
     await loadSchedules()
-  } catch (e: any) { if (e !== 'cancel') ElMessage.error('删除失败') }
+  } catch (e: any) { if (e !== 'cancel') ElMessage.error(t('schedule.deleteFailed')) }
 }
 
 async function viewExecutions(row: Schedule) {
@@ -628,7 +641,7 @@ async function refreshExecutions() {
   historyLoading.value = true
   try {
     executions.value = await api.get(`/schedules/${currentScheduleId.value}/executions`, { params: { limit: 20 } }) as any
-  } catch { ElMessage.error('加载历史失败') }
+  } catch { ElMessage.error(t('schedule.loadHistoryFailed')) }
   finally { historyLoading.value = false }
 }
 
@@ -660,7 +673,7 @@ async function refreshExecutionDetail() {
   detailLoading.value = true
   try {
     executionDetail.value = await api.get(`/schedules/executions/${currentExecutionId.value}`) as any
-  } catch { ElMessage.error('加载详情失败') }
+  } catch { ElMessage.error(t('schedule.loadDetailFailed')) }
   finally { detailLoading.value = false }
 }
 

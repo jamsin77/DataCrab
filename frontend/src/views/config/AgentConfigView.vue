@@ -3,10 +3,10 @@
     <el-card class="config-card">
       <template #header>
         <div class="card-header">
-          <span>性格设定 (soul.md)</span>
+          <span>{{ t('config.agent.soulMdTitle') }}</span>
           <div style="display: flex; gap: 8px; align-items: center;">
             <el-tag :type="content ? 'success' : 'warning'">
-              {{ content ? '已配置' : '未配置' }}
+              {{ content ? t('config.agent.configured') : t('config.agent.notConfigured') }}
             </el-tag>
           </div>
         </div>
@@ -17,26 +17,26 @@
           v-model="content"
           type="textarea"
           :rows="20"
-          placeholder="请输入性格设定配置内容（Markdown格式）..."
+          :placeholder="t('config.agent.placeholder')"
           style="font-family: monospace;"
         />
       </div>
 
       <div style="margin-top: 16px; display: flex; gap: 8px;">
         <el-button type="primary" @click="saveConfig" :loading="saving">
-          保存配置
+          {{ t('config.agent.saveConfig') }}
         </el-button>
         <el-button @click="loadConfig">
-          刷新
+          {{ t('common.refresh') }}
         </el-button>
         <el-button @click="resetDefault" :loading="resetting">
-          恢复默认
+          {{ t('config.agent.resetToDefault') }}
         </el-button>
       </div>
 
       <el-alert
         v-if="saveResult"
-        :title="saveResult.success ? '保存成功' : '保存失败'"
+        :title="saveResult.success ? t('config.agent.saveSuccess') : t('config.agent.saveFailed')"
         :type="saveResult.success ? 'success' : 'error'"
         :description="saveResult.message"
         show-icon
@@ -48,23 +48,23 @@
 
     <el-card style="margin-top: 16px">
       <template #header>
-        <span>配置说明</span>
+        <span>{{ t('config.agent.helpTitle') }}</span>
       </template>
       <div class="help-content">
-        <p><strong>soul.md</strong> 是助手的"灵魂文件"，定义了助手的身份、性格和行为准则。</p>
-        <h4>核心配置项</h4>
+        <p><strong>soul.md</strong> {{ t('config.agent.helpSoulMd') }}</p>
+        <h4>{{ t('config.agent.coreConfig') }}</h4>
         <ul>
-          <li><strong>你是谁</strong>：定义智能体的身份和角色定位</li>
-          <li><strong>你的灵魂与个性</strong>：定义智能体的说话风格和态度</li>
-          <li><strong>核心行为准则</strong>：定义智能体必须遵守的行为规则</li>
-          <li><strong>关键行为规则</strong>：最高优先级规则，覆盖所有默认行为</li>
+          <li><strong>{{ t('config.agent.whoYouAre') }}</strong>：{{ t('config.agent.whoYouAreDesc') }}</li>
+          <li><strong>{{ t('config.agent.soul') }}</strong>：{{ t('config.agent.soulDesc') }}</li>
+          <li><strong>{{ t('config.agent.coreRules') }}</strong>：{{ t('config.agent.coreRulesDesc') }}</li>
+          <li><strong>{{ t('config.agent.keyRules') }}</strong>：{{ t('config.agent.keyRulesDesc') }}</li>
         </ul>
-        <h4>注意事项</h4>
+        <h4>{{ t('config.agent.notes') }}</h4>
         <ul>
-          <li>修改后保存即生效，无需重启服务</li>
-          <li>内容使用 Markdown 格式编写</li>
-          <li>建议保持"关键行为规则"部分不变，避免智能体行为异常</li>
-          <li>可使用"恢复默认"按钮恢复初始配置</li>
+          <li>{{ t('config.agent.note1') }}</li>
+          <li>{{ t('config.agent.note2') }}</li>
+          <li>{{ t('config.agent.note3') }}</li>
+          <li>{{ t('config.agent.note4') }}</li>
         </ul>
       </div>
     </el-card>
@@ -73,9 +73,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
 const resetting = ref(false)
@@ -173,7 +175,7 @@ async function loadConfig() {
     content.value = res.content || ''
     originalContent.value = content.value
   } catch (e: any) {
-    ElMessage.error('加载智能体配置失败')
+    ElMessage.error(t('config.agent.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -186,11 +188,11 @@ async function saveConfig() {
     const res = await api.post('/config/agent/soul-md', { content: content.value })
     saveResult.value = res
     if (res.success) {
-      ElMessage.success('智能体配置已保存')
+      ElMessage.success(t('config.agent.saveSuccess'))
       originalContent.value = content.value
     }
   } catch (e: any) {
-    saveResult.value = { success: false, message: e.response?.data?.detail || '保存失败' }
+    saveResult.value = { success: false, message: e.response?.data?.detail || t('config.agent.saveFailed') }
   } finally {
     saving.value = false
   }
@@ -199,15 +201,15 @@ async function saveConfig() {
 async function resetDefault() {
   try {
     await ElMessageBox.confirm(
-      '确定要恢复默认配置吗？当前的自定义内容将被覆盖。',
-      '恢复默认',
-      { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+      t('config.agent.resetConfirm'),
+      t('config.agent.resetToDefault'),
+      { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' }
     )
     content.value = DEFAULT_SOUL_MD
     saving.value = true
     const res = await api.post('/config/agent/soul-md', { content: content.value })
     if (res.success) {
-      ElMessage.success('已恢复默认配置')
+      ElMessage.success(t('config.agent.resetSuccess'))
       originalContent.value = content.value
     }
   } catch {

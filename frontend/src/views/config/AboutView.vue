@@ -5,53 +5,53 @@
         <div class="about-logo">
           <el-icon :size="56" color="#409EFF"><Platform /></el-icon>
         </div>
-        <h1 class="about-title">DataCrab</h1>
-        <p class="about-subtitle">数据工程智能体</p>
+        <h1 class="about-title">{{ t('config.about.projectName') }}</h1>
+        <p class="about-subtitle">{{ t('config.about.subtitle') }}</p>
         <el-tag type="primary" effect="plain" round>v{{ version || '...' }}</el-tag>
       </div>
 
       <el-divider />
 
       <div class="about-section">
-        <h2 class="section-title">项目简介</h2>
+        <h2 class="section-title">{{ t('config.about.intro') }}</h2>
         <p class="section-text">
-          DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提供 ChatGPT 风格的对话式数据交互体验。用户无需编写代码，通过自然语言对话即可完成数据的查询、清洗、转换、分析和可视化等操作。
+          {{ t('config.about.introP1') }}
         </p>
         <p class="section-text">
-          系统采用 <b>Orchestrator-Worker</b> 多智能体协作架构（参考 Claude Code / OpenAI Agents SDK）：DataProcessor 负责修改与执行，DataInspector 负责质量/标准/安全检查，DataAnalyst 承担只读分析。Handoff 由 RunTime 自动决策，Agent 不感知交接存在。内置自愈循环——AI 理解需求 → 执行 → 检查 → 自修复，全程无人干预，逐步迈向「Loop 化」终极目标。
+          {{ t('config.about.introP2') }}
         </p>
         <p class="section-text">
-          核心理念：<b>对话即处理 → 沉淀即资产 → 生态即闭环 → Loop 化</b>。AI 在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成；每次处理过程自动沉淀为可复用技能，越用越聪明。
+          {{ t('config.about.introP3') }}
         </p>
       </div>
 
       <el-divider />
 
       <div class="about-section">
-        <h2 class="section-title">核心特性</h2>
+        <h2 class="section-title">{{ t('config.about.features') }}</h2>
         <ul class="feature-list">
-          <li><el-icon color="#67C23A"><Check /></el-icon> 对话式数据工程，零代码完成查询/清洗/转换/分析/可视化全流程</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 三智能体协作闭环：DataProcessor 加工 + DataInspector 检查 + DataAnalyst 只读分析，Handoff 由 RunTime 自动决策</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> AI 调试助手：4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash），AI 修改脚本后自动执行验证</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 自我进化经验库：失败记录反例、修错后成功采集正例，LLM 归纳经验注入后续生成/修改/调试提示词</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 8 种数据源连接器：PostgreSQL / MySQL / SQLite / CSV / Excel / OBS-S3 / HDFS / ChromaDB；写入支持 7 种策略（fail/append/replace/overwrite/truncate/delete_rows/upsert）</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 技能 / 算子 / 流程三层编排，资产打包可跨机器迁移；流程 = Python 主函数，无需 DAG 引擎</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 31 条确定性数据检查（STD 标准 / DQ 质量 / SEC 安全），Markdown 规则库可编辑，检查报告表格化展示</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 定时调度系统：支持 Cron 表达式 / 固定间隔 / 手动触发，后台实际执行 + 并发控制</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 文档知识库 RAG：上传文档自动切片嵌入 ChromaDB，语义检索注入 Agent 提示词</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> RBAC 权限体系：用户 → 角色 → 权限（view/use/manage 三级），资源级访问控制</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> LLM 多模型支持：GLM / Qwen / SiliconFlow / Azure / 自定义 OpenAI 兼容；双模型架构 + 降级链 + CircuitBreaker 熔断；视觉/嵌入模型按 provider 自动选择</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 自定义数据源连接器 + LLM Provider 适配器：AI 生成代码，沙箱加载，用户自助扩展</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> 视频处理能力：关键帧抽取 + 元数据提取（ffmpeg 场景检测优先，回退 opencv）</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> Prefix Cache 优化：system prompt 字节稳定命中 GLM context cache，input 成本降 30%+；上下文压缩（Compaction）对齐 OpenCode</li>
-          <li><el-icon color="#67C23A"><Check /></el-icon> Docker 一键部署：前端多阶段构建 nginx 托管 + SSE 长连接支持 + 数据卷持久化</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat1') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat2') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat3') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat4') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat5') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat6') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat7') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat8') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat9') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat10') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat11') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat12') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat13') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat14') }}</li>
+          <li><el-icon color="#67C23A"><Check /></el-icon> {{ t('config.about.feat15') }}</li>
         </ul>
       </div>
 
       <el-divider />
 
       <div class="about-section">
-        <h2 class="section-title">技术栈</h2>
+        <h2 class="section-title">{{ t('config.about.techStack') }}</h2>
         <div class="tech-tags">
           <el-tag effect="plain">Python 3.11+</el-tag>
           <el-tag effect="plain" type="success">FastAPI + Uvicorn</el-tag>
@@ -68,7 +68,7 @@
           <el-tag effect="plain" type="danger">PostgreSQL 14+</el-tag>
           <el-tag effect="plain" type="danger">SQLite</el-tag>
           <el-tag effect="plain" type="info">ChromaDB</el-tag>
-          <el-tag effect="plain" type="info">GLM / Qwen / SiliconFlow / Azure / 自定义</el-tag>
+          <el-tag effect="plain" type="info">GLM / Qwen / SiliconFlow / Azure / {{ t('config.about.custom') }}</el-tag>
         </div>
       </div>
 
@@ -76,13 +76,13 @@
 
       <div class="about-section about-footer">
         <div class="footer-row">
-          <span class="footer-label">开源地址：</span>
+          <span class="footer-label">{{ t('config.about.openSource') }}：</span>
           <el-link type="primary" :underline="false" @click="openLink">
             https://gitee.com/DataCrab/DataCrab
             <el-icon class="link-icon"><Link /></el-icon>
           </el-link>
         </div>
-        <p class="footer-copy">© 2026 DataCrab · 开源协作，共同进步</p>
+        <p class="footer-copy">{{ t('config.about.copyright') }}</p>
       </div>
     </div>
   </div>
@@ -90,9 +90,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Platform, Check, Link } from '@element-plus/icons-vue'
 import { useVersionStore } from '@/stores/version'
 
+const { t } = useI18n()
 const versionStore = useVersionStore()
 const version = ref('')
 

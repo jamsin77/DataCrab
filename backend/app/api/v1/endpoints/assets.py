@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.i18n import t
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.services.asset_io import build_export_zip, import_from_zip, read_zip_manifest
@@ -78,13 +79,13 @@ async def import_preview(
     """上传 zip 后预览：显示 manifest（各类型数量），不执行导入。"""
     zip_bytes = await file.read()
     if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=422, detail="请上传 .zip 文件")
+        raise HTTPException(status_code=422, detail=t("upload_zip_required"))
     try:
         manifest = await read_zip_manifest(zip_bytes)
     except (zipfile.BadZipFile, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
+        raise HTTPException(status_code=422, detail=t("invalid_zip", error=str(e)))
     if not manifest:
-        raise HTTPException(status_code=422, detail="zip 中缺少 manifest.json，可能不是 DataCrab 导出的资产包")
+        raise HTTPException(status_code=422, detail=t("manifest_missing"))
     return manifest
 
 
@@ -102,17 +103,17 @@ async def import_assets(
     zip_bytes = await file.read()
     logger.info(f"[资产导入] file={file.filename} size={len(zip_bytes)} types={types} overwrite_types={overwrite_types}")
     if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=422, detail="请上传 .zip 文件")
+        raise HTTPException(status_code=422, detail=t("upload_zip_required"))
     type_list = [t.strip() for t in types.split(",") if t.strip()]
     overwrite_set = set(t.strip() for t in overwrite_types.split(",") if t.strip())
     try:
         result = await import_from_zip(zip_bytes, type_list, db, current_user.id, overwrite_set)
     except (zipfile.BadZipFile, KeyError) as e:
-        raise HTTPException(status_code=422, detail=f"无效的 zip 文件: {e}")
+        raise HTTPException(status_code=422, detail=t("invalid_zip", error=str(e)))
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"[资产导入] 导入失败 file={file.filename}: {e}")
-        raise HTTPException(status_code=500, detail=f"导入失败: {e}")
+        raise HTTPException(status_code=500, detail=t("import_failed_error", error=str(e)))
     await db.commit()
     return result

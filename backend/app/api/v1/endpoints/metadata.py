@@ -13,6 +13,7 @@ from sqlalchemy import select, func, or_
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.datasource import DataSource, TableMetadata
 from app.models.user import User
 from app.api.deps import get_current_user
@@ -156,7 +157,7 @@ async def get_metadata(
     )
     meta = result.scalar_one_or_none()
     if not meta:
-        raise HTTPException(status_code=404, detail="元数据不存在")
+        raise HTTPException(status_code=404, detail=t("metadata_not_found"))
     ds_name = None
     if meta.data_source_id:
         ds_r = await db.execute(select(DataSource.name).where(DataSource.id == meta.data_source_id))
@@ -179,7 +180,7 @@ async def update_metadata(
     )
     meta = result.scalar_one_or_none()
     if not meta:
-        raise HTTPException(status_code=404, detail="元数据不存在")
+        raise HTTPException(status_code=404, detail=t("metadata_not_found"))
 
     editable_fields = [
         "business_name", "business_description", "business_tags", "business_purpose",
@@ -250,7 +251,7 @@ async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str)
     )
 
     if not llm_result or not llm_result.strip():
-        raise ValueError("AI返回空内容")
+        raise ValueError(t("ai_empty_response"))
 
     llm_result = llm_result.strip()
     if llm_result.startswith("```"):
@@ -284,7 +285,7 @@ async def ai_enrich_business_metadata(
     )
     meta = result.scalar_one_or_none()
     if not meta:
-        raise HTTPException(status_code=404, detail="元数据不存在")
+        raise HTTPException(status_code=404, detail=t("metadata_not_found"))
 
     ds_result = await db.execute(
         select(DataSource).where(DataSource.id == meta.data_source_id)
@@ -296,7 +297,7 @@ async def ai_enrich_business_metadata(
         logger.info(f"AI enrich done: {meta.table_name}")
     except Exception as e:
         logger.error(f"AI enrich failed [{meta.table_name}]: {e}")
-        raise HTTPException(status_code=500, detail=f"AI增强失败: {e}")
+        raise HTTPException(status_code=500, detail=t("ai_enrich_failed", error=str(e)))
 
     await db.flush()
     await db.refresh(meta)
@@ -319,13 +320,13 @@ async def sync_datasource_metadata(
     )
     ds = result.scalar_one_or_none()
     if not ds:
-        raise HTTPException(status_code=404, detail="数据源不存在")
+        raise HTTPException(status_code=404, detail=t("datasource_not_found"))
 
     # 虚拟数据源受保护，跳过同步
     if getattr(ds, "is_virtual", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"虚拟数据源「{ds.name}」受保护，无需同步元数据",
+            detail=t("virtual_ds_no_sync", name=ds.name),
         )
 
     connector = get_connector(ds.type, ds.connection_config or {})

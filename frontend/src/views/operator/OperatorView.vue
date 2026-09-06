@@ -4,7 +4,7 @@
       <div class="toolbar-left">
         <el-button type="success" @click="showGenerateDialog = true">
           <el-icon><MagicStick /></el-icon>
-          生成算子
+          {{ t('operator.createOperator') }}
         </el-button>
         <el-upload
           :show-file-list="false"
@@ -14,18 +14,18 @@
         >
           <el-button type="primary">
             <el-icon><Upload /></el-icon>
-            导入算子
+            {{ t('operator.importOperator') }}
           </el-button>
         </el-upload>
       </div>
       <div class="toolbar-right">
         <el-select v-model="sortBy" style="width: 120px" @change="loadOperators">
-          <el-option label="创建时间" value="created" />
-          <el-option label="修改时间" value="updated" />
+          <el-option :label="t('operator.sortCreatedAt')" value="created" />
+          <el-option :label="t('operator.sortUpdatedAt')" value="updated" />
         </el-select>
         <el-input
           v-model="searchQuery"
-          placeholder="搜索算子"
+          :placeholder="t('operator.searchPlaceholder')"
           style="width: 220px"
           clearable
           :prefix-icon="Search"
@@ -40,7 +40,7 @@
               <span class="op-name">{{ op.display_name || op.name }}</span>
             </div>
           </template>
-          <p class="op-desc">{{ op.description || '暂无描述' }}</p>
+          <p class="op-desc">{{ op.description || t('operator.noDescription') }}</p>
           <div class="op-meta">
             <el-tag
               v-for="(param, idx) in (op.parameters || [])"
@@ -55,30 +55,30 @@
           <div class="op-actions">
             <div class="op-actions-row">
               <el-button size="small" type="primary" @click="openModifyDialog(op)">
-                <el-icon><Edit /></el-icon> 修改
+                <el-icon><Edit /></el-icon> {{ t('common.edit') }}
               </el-button>
               <el-button size="small" type="success" plain @click="openDebug(op)">
-                <el-icon><VideoPlay /></el-icon> 调试
+                <el-icon><VideoPlay /></el-icon> {{ t('common.debug') }}
               </el-button>
               <el-button size="small" @click="openCloneDialog(op)">
-                <el-icon><CopyDocument /></el-icon> 另存
+                <el-icon><CopyDocument /></el-icon> {{ t('common.duplicate') }}
               </el-button>
               <el-button size="small" @click="downloadOperator(op)">
-                <el-icon><Download /></el-icon> 下载
+                <el-icon><Download /></el-icon> {{ t('common.download') }}
               </el-button>
               <el-button size="small" type="danger" plain @click="confirmDelete(op)">
-                <el-icon><Delete /></el-icon> 删除
+                <el-icon><Delete /></el-icon> {{ t('common.delete') }}
               </el-button>
             </div>
           </div>
         </el-card>
     </div>
 
-    <el-empty v-if="filteredOperators.length === 0" description="暂无算子，请导入算子" />
+    <el-empty v-if="filteredOperators.length === 0" :description="t('operator.empty')" />
 
     <el-dialog
       v-model="debugDrawer"
-      :title="'调试: ' + (debugOperator?.display_name || debugOperator?.name || '')"
+      :title="t('operator.debugTitle', { name: (debugOperator?.display_name || debugOperator?.name || '') })"
       width="95%"
       top="2vh"
       :close-on-click-modal="false"
@@ -89,9 +89,9 @@
       <div v-if="debugOperator" class="debug-layout">
         <div class="debug-left">
           <div class="debug-section-title">
-            <span>算子参数</span>
+            <span>{{ t('operator.operatorParams') }}</span>
             <el-button size="small" text type="primary" @click="refreshOpScript" :loading="saving">
-              <el-icon><Refresh /></el-icon> 刷新脚本
+              <el-icon><Refresh /></el-icon> {{ t('operator.refreshScript') }}
             </el-button>
           </div>
 
@@ -103,12 +103,12 @@
           </div>
 
           <div v-if="debugInputs.length" class="param-group">
-            <div class="group-title">入参</div>
+            <div class="group-title">{{ t('operator.inputs') }}</div>
             <div v-for="input in debugInputs" :key="'in-' + input.name" class="param-section">
               <div class="label">
                 {{ input.name }}
                 <el-tag size="small" type="primary" effect="plain">{{ input.type }}</el-tag>
-                <el-tag size="small" type="danger" effect="plain">必填</el-tag>
+                <el-tag size="small" type="danger" effect="plain">{{ t('common.required') }}</el-tag>
               </div>
               <el-input
                 v-model="debugInputValues[input.name]"
@@ -120,13 +120,13 @@
           </div>
 
           <div v-if="debugOptionalParams.length" class="param-group">
-            <div class="group-title">可选参数</div>
+            <div class="group-title">{{ t('operator.optionalParams') }}</div>
             <div v-for="param in debugOptionalParams" :key="'opt-' + param.name" class="param-section">
               <div class="label">
                 {{ param.name }}
                 <el-tag size="small" type="warning" effect="plain">{{ param.type }}</el-tag>
                 <el-tag size="small" effect="plain" v-if="param.default !== null && param.default !== undefined">
-                  默认: {{ param.default }}
+                  {{ t('operator.defaultValue', { value: param.default }) }}
                 </el-tag>
               </div>
               <el-input
@@ -137,7 +137,7 @@
           </div>
 
           <div v-if="debugOperator?.outputs?.length" class="param-group">
-            <div class="group-title">出参</div>
+            <div class="group-title">{{ t('operator.outputs') }}</div>
             <div class="output-info">
               <el-tag type="success" effect="plain">
                 {{ debugOperator.outputs[0].name }}: {{ debugOperator.outputs[0].type }}
@@ -146,14 +146,14 @@
           </div>
 
           <el-button type="primary" @click="runDebug" :loading="debugRunning" style="width: 100%; margin-top: 8px">
-            <el-icon><CaretRight /></el-icon> 执行调试
+            <el-icon><CaretRight /></el-icon> {{ t('operator.runDebug') }}
           </el-button>
         </div>
 
         <div class="debug-right">
           <div class="debug-chat-header">
             <el-icon><ChatDotRound /></el-icon>
-            <span>AI 代码助手</span>
+            <span>{{ t('operator.aiCodeAssistant') }}</span>
             <el-button
               size="small"
               plain
@@ -162,12 +162,12 @@
               :disabled="opStreaming || opMessages.length === 0"
               @click="clearOpDebugHistory"
             >
-              <el-icon><Delete /></el-icon> 清空记录
+              <el-icon><Delete /></el-icon> {{ t('operator.clearHistory') }}
             </el-button>
           </div>
           <div class="debug-message-list" ref="opMsgListRef" @scroll="onOpListScroll">
             <div v-if="opMessages.length === 0" class="debug-empty">
-              <p>输入消息调试算子代码，例如"帮我修一下这个报错"、"优化这段代码"</p>
+              <p>{{ t('operator.debugEmptyHint') }}</p>
             </div>
             <div
               v-for="(msg, idx) in opMessages"
@@ -177,7 +177,7 @@
             >
               <div class="debug-msg-avatar">
                 <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
-                <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+                <el-avatar :size="32" v-else style="background:#67c23a">{{ t('common.me') }}</el-avatar>
               </div>
               <div class="debug-msg-body">
                 <template v-if="msg.role === 'user'">
@@ -191,7 +191,7 @@
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                      <span>推理过程<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
+                      <span>{{ t('operator.thinking') }}<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
                       <el-button text size="small" @click.stop="copyText(msg.thinking)" class="msg-copy-btn"><el-icon><CopyDocument /></el-icon></el-button>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
@@ -199,8 +199,8 @@
                   <el-collapse v-if="msg.content" :model-value="msg._contentOpen === false ? [] : ['content']" @change="(v: any) => { msg._contentOpen = v.length > 0 }">
                     <el-collapse-item name="content">
                       <template #title>
-                        <span class="collapse-label">AI回复</span>
-                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                        <span class="collapse-label">{{ t('operator.aiReply') }}</span>
+                        <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
                       <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
                     </el-collapse-item>
@@ -213,7 +213,7 @@
                   <div v-if="msg.runResult" class="debug-msg-runresult">
                     <div class="runresult-header">
                       <el-tag :type="msg.runResult.success ? 'success' : 'danger'" size="small">
-                        {{ msg.runResult.success ? '执行成功' : '执行失败' }}
+                        {{ msg.runResult.success ? t('operator.runSuccess') : t('operator.runFailed') }}
                       </el-tag>
                       <span v-if="msg.runResult.execution_time_ms" class="exec-time">{{ msg.runResult.execution_time_ms }}ms</span>
                     </div>
@@ -221,8 +221,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">错误信息</span>
-                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('operator.errorInfo') }}</span>
+                            <el-button text size="small" @click.stop="copyText(msg.runResult.error)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ msg.runResult.error }}</pre>
                         </el-collapse-item>
@@ -232,8 +232,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">标准输出</span>
-                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('operator.stdout') }}</span>
+                            <el-button text size="small" @click="copyText(msg.runResult.stdout)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ msg.runResult.stdout }}</pre>
                         </el-collapse-item>
@@ -243,8 +243,8 @@
                       <el-collapse>
                         <el-collapse-item>
                           <template #title>
-                            <span class="collapse-label">返回结果</span>
-                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                            <span class="collapse-label">{{ t('operator.runResult') }}</span>
+                            <el-button text size="small" @click.stop="copyText(formatResult(msg.runResult.result))" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                           </template>
                           <pre>{{ formatResult(msg.runResult.result) }}</pre>
                         </el-collapse-item>
@@ -256,15 +256,15 @@
                       <el-collapse-item name="report">
                         <template #title>
                           <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
-                          <span class="collapse-label">数据检查报告</span>
-                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> 复制</el-button>
+                          <span class="collapse-label">{{ t('operator.inspectionReport') }}</span>
+                          <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                         </template>
                         <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
                       </el-collapse-item>
                     </el-collapse>
                   </div>
                   <div v-if="msg.scriptUpdated" class="debug-msg-script-updated">
-                    <el-tag type="warning" size="small">代码已更新: {{ msg.scriptUpdated }}</el-tag>
+                    <el-tag type="warning" size="small">{{ t('operator.codeUpdated', { name: msg.scriptUpdated }) }}</el-tag>
                   </div>
                 </div>
               </div>
@@ -283,7 +283,7 @@
               type="textarea"
               :rows="2"
               :autosize="{ minRows: 1, maxRows: 4 }"
-              placeholder="输入调试指令... (Enter发送，↑↓切换历史)"
+              :placeholder="t('operator.debugInputPlaceholder')"
               @keydown="handleOpKeyDown"
               :disabled="opStreaming"
             />
@@ -309,14 +309,14 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showGenerateDialog" title="AI 生成算子" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" :title="t('operator.generateOperator')" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
       <el-form label-width="80px">
-        <el-form-item label="需求描述">
+        <el-form-item :label="t('operator.requirementDesc')">
           <el-input
             v-model="generatePrompt"
             type="textarea"
             :rows="4"
-            placeholder="用自然语言描述你需要什么算子，例如：按照年代筛选文物数据，支持根据数据源名称查询，返回前100条（↑↓ 切换历史输入）"
+            :placeholder="t('operator.generatePlaceholder')"
             @keydown="onGenerateHistoryKey"
           />
         </el-form-item>
@@ -325,7 +325,7 @@
         <div v-for="(msg, idx) in genMessages" :key="idx" class="debug-message" :class="msg.role">
           <div class="debug-msg-avatar">
             <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
-            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">{{ t('common.me') }}</el-avatar>
           </div>
           <div class="debug-msg-body">
             <template v-if="msg.role === 'user'">
@@ -336,7 +336,7 @@
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                   <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                  <span>推理过程</span>
+                  <span>{{ t('operator.thinking') }}</span>
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
@@ -347,63 +347,63 @@
         </div>
       </div>
       <template #footer>
-        <el-button @click="showGenerateDialog = false" :disabled="generating">取消</el-button>
+        <el-button @click="showGenerateDialog = false" :disabled="generating">{{ t('common.cancel') }}</el-button>
         <el-button
           v-if="generating"
           type="danger"
           @click="stopGenerate"
         >
-          <el-icon><VideoPause /></el-icon> 停止
+          <el-icon><VideoPause /></el-icon> {{ t('common.stop') }}
         </el-button>
         <el-button type="primary" @click="handleGenerate" :loading="generating || checkingSimilar" :disabled="generating || checkingSimilar">
-          {{ generating ? 'AI 生成中...' : (checkingSimilar ? '检测相似算子...' : '开始生成') }}
+          {{ generating ? t('operator.generating') : (checkingSimilar ? t('operator.checkingSimilar') : t('operator.startGenerate')) }}
         </el-button>
       </template>
     </el-dialog>
 
-    <!-- ==================== 相似算子检测对话框 ==================== -->
-    <el-dialog v-model="showSimilarDialog" title="发现相似算子" width="600px" :close-on-click-modal="false">
+    <!-- ==================== Similar Operator Detection Dialog ==================== -->
+    <el-dialog v-model="showSimilarDialog" :title="t('operator.similarFound')" width="600px" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
-        <template #title>以下算子可能与您的需求相似，建议优先复用：</template>
+        <template #title>{{ t('operator.similarHint') }}</template>
       </el-alert>
 
       <div v-for="op in similarOperators" :key="op.id" class="similar-op-item">
         <div class="similar-op-header">
           <span class="similar-op-name">{{ op.display_name || op.name }}</span>
-          <span class="similar-op-score">相似度 {{ (op.similarity * 100).toFixed(0) }}%</span>
+          <span class="similar-op-score">{{ t('operator.similarity') }} {{ (op.similarity * 100).toFixed(0) }}%</span>
         </div>
-        <div class="similar-op-desc">{{ op.description || '(无描述)' }}</div>
+        <div class="similar-op-desc">{{ op.description || t('operator.noDescriptionParen') }}</div>
 
         <div v-if="op.can_use" class="similar-op-actions">
-          <el-button type="primary" size="small" @click="openExistingOperator(op)">查看此算子</el-button>
+          <el-button type="primary" size="small" @click="openExistingOperator(op)">{{ t('operator.viewOperator') }}</el-button>
         </div>
         <div v-else class="similar-op-contact">
           <el-alert type="info" :closable="false">
             <template #title>
-              您无权限使用此算子，请联系创建者：{{ op.owner_name }}（{{ op.owner_email }}）
+              {{ t('operator.noPermission', { owner: op.owner_name, email: op.owner_email }) }}
             </template>
           </el-alert>
         </div>
       </div>
 
       <template #footer>
-        <el-button @click="showSimilarDialog = false">取消</el-button>
-        <el-button type="primary" @click="proceedToGenerate">仍然创建新算子</el-button>
+        <el-button @click="showSimilarDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="proceedToGenerate">{{ t('operator.stillCreate') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showModifyDialog" title="AI 修改算子" width="95%" top="2vh" :close-on-press-escape="false" @closed="onModifyDialogClosed">
+    <el-dialog v-model="showModifyDialog" :title="t('operator.modifyOperator')" width="95%" top="2vh" :close-on-press-escape="false" @closed="onModifyDialogClosed">
       <div v-if="modifyTarget" class="modify-target-info">
         <el-tag>{{ modifyTarget.display_name || modifyTarget.name }}</el-tag>
-        <span class="modify-desc">{{ modifyTarget.description || '暂无描述' }}</span>
+        <span class="modify-desc">{{ modifyTarget.description || t('operator.noDescription') }}</span>
       </div>
       <el-form label-width="80px" style="margin-top: 12px">
-        <el-form-item label="修改指令">
+        <el-form-item :label="t('operator.modifyInstruction')">
           <el-input
             v-model="modifyInstruction"
             type="textarea"
             :rows="4"
-            placeholder="你希望如何修改这个算子？例如：增加数量限制参数，默认返回50条（↑↓ 切换历史输入）"
+            :placeholder="t('operator.modifyPlaceholder')"
             @keydown="onModifyHistoryKey"
           />
         </el-form-item>
@@ -412,7 +412,7 @@
         <div v-for="(msg, idx) in modifyMessages" :key="idx" class="debug-message" :class="msg.role">
           <div class="debug-msg-avatar">
             <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
-            <el-avatar :size="32" v-else style="background:#67c23a">我</el-avatar>
+            <el-avatar :size="32" v-else style="background:#67c23a">{{ t('common.me') }}</el-avatar>
           </div>
           <div class="debug-msg-body">
             <template v-if="msg.role === 'user'">
@@ -423,7 +423,7 @@
               <div v-if="msg.thinking" class="debug-msg-thinking">
                 <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                   <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                  <span>推理过程</span>
+                  <span>{{ t('operator.thinking') }}</span>
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
@@ -434,38 +434,38 @@
         </div>
       </div>
       <template #footer>
-        <el-button @click="showModifyDialog = false" :disabled="modifying">取消</el-button>
+        <el-button @click="showModifyDialog = false" :disabled="modifying">{{ t('common.cancel') }}</el-button>
         <el-button
           v-if="modifying"
           type="danger"
           @click="stopModify"
         >
-          <el-icon><VideoPause /></el-icon> 停止
+          <el-icon><VideoPause /></el-icon> {{ t('common.stop') }}
         </el-button>
         <el-button type="primary" @click="handleModify" :loading="modifying" :disabled="modifying">
-          {{ modifying ? 'AI 修改中...' : '开始修改' }}
+          {{ modifying ? t('operator.modifying') : t('operator.startModify') }}
         </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showCloneDialog" title="另存为" width="450px" @closed="cloneName = ''; cloneTarget = null">
+    <el-dialog v-model="showCloneDialog" :title="t('operator.cloneTitle')" width="450px" @closed="cloneName = ''; cloneTarget = null">
       <div v-if="cloneTarget" class="modify-target-info">
         <el-tag>{{ cloneTarget.display_name || cloneTarget.name }}</el-tag>
-        <span class="modify-desc">将复制脚本和全部配置</span>
+        <span class="modify-desc">{{ t('operator.cloneHint') }}</span>
       </div>
       <el-form label-width="80px" style="margin-top: 12px">
-        <el-form-item label="新名称" required>
+        <el-form-item :label="t('operator.newName')" required>
           <el-input
             v-model="cloneName"
-            placeholder="输入新算子的名称"
+            :placeholder="t('operator.newNamePlaceholder')"
             @keyup.enter="handleClone"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showCloneDialog = false">取消</el-button>
+        <el-button @click="showCloneDialog = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" @click="handleClone" :loading="cloning" :disabled="!cloneName.trim()">
-          {{ cloning ? '复制中...' : '确认复制' }}
+          {{ cloning ? t('operator.cloning') : t('operator.confirmClone') }}
         </el-button>
       </template>
     </el-dialog>
@@ -474,11 +474,14 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, nextTick, watch, type Ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh, CircleCheck } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
 import { formatTime } from '@/utils/time'
+
+const { t } = useI18n()
 
 const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string) {
@@ -489,7 +492,7 @@ function formatMsgTime(ts?: string): string {
 }
 
 function copyText(text: string) {
-  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制')).catch(() => ElMessage.error('复制失败'))
+  navigator.clipboard.writeText(text).then(() => ElMessage.success(t('common.copied'))).catch(() => ElMessage.error(t('common.copyFailed')))
 }
 
 const operators = ref<any[]>([])
@@ -514,7 +517,7 @@ async function loadOperators() {
   try {
     operators.value = await api.get(`/operators?sort_by=${sortBy.value}`)
   } catch (e: any) {
-    ElMessage.error('加载算子失败')
+    ElMessage.error(t('operator.loadFailed'))
   }
 }
 
@@ -525,17 +528,17 @@ async function uploadOperator(options: any) {
     const res = await api.post('/operators/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    ElMessage.success(`算子 "${res.display_name || res.name}" 创建成功`)
+    ElMessage.success(t('operator.uploadSuccess', { name: (res.display_name || res.name) }))
     await loadOperators()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '上传失败')
+    ElMessage.error(e.response?.data?.detail || t('operator.uploadFailed'))
   }
 }
 
 function handleUpload(file: any) {
   const isPython = file.name.toLowerCase().endsWith('.py')
   if (!isPython) {
-    ElMessage.error('只能上传 .py 文件')
+    ElMessage.error(t('operator.pyOnly'))
     return false
   }
   return true
@@ -561,16 +564,16 @@ function downloadOperator(op: any) {
 async function confirmDelete(op: any) {
   try {
     await ElMessageBox.confirm(
-      `确定要删除算子 "${op.display_name || op.name}" 吗？`,
-      '确认删除',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+      t('operator.deleteOperatorConfirm', { name: (op.display_name || op.name) }),
+      t('operator.confirmDeleteTitle'),
+      { confirmButtonText: t('common.delete'), cancelButtonText: t('common.cancel'), type: 'warning' }
     )
     await api.delete(`/operators/${op.id}`)
-    ElMessage.success('删除成功')
+    ElMessage.success(t('operator.deleteSuccess'))
     await loadOperators()
   } catch (e: any) {
     if (e !== 'cancel') {
-      ElMessage.error(e.response?.data?.detail || '删除失败')
+      ElMessage.error(e.response?.data?.detail || t('operator.deleteFailed'))
     }
   }
 }
@@ -636,12 +639,12 @@ const signatureParams = computed(() => {
 })
 
 function getInputPlaceholder(input: any) {
-  const hint = '（↑↓ 切换历史输入）'
-  const t = input.type || 'any'
-  if (t === 'DataFrame' || t === 'list') return `输入 JSON 数组，如 [{"col": 1}] ${hint}`
-  if (t === 'str') return `输入字符串 ${hint}`
-  if (t === 'int' || t === 'float') return `输入数值 ${hint}`
-  return `输入 JSON 数据 ${hint}`
+  const hint = t('operator.historyHint')
+  const inputType = input.type || 'any'
+  if (inputType === 'DataFrame' || inputType === 'list') return `${t('operator.inputPlaceholderJson')} ${hint}`
+  if (inputType === 'str') return `${t('operator.inputPlaceholderStr')} ${hint}`
+  if (inputType === 'int' || inputType === 'float') return `${t('operator.inputPlaceholderNum')} ${hint}`
+  return `${t('operator.inputPlaceholderDefault')} ${hint}`
 }
 
 interface OpDebugSession {
@@ -688,7 +691,7 @@ function saveOpDebugSession(opId: number | string, data: OpDebugSession) {
 }
 
 function openDebug(op: any, restore?: Partial<OpDebugSession>) {
-  // 无 restore 时从 localStorage 加载该算子的历史
+  // Load operator history from localStorage when no restore is provided
   if (!restore) {
     restore = loadOpDebugSession(op.id) || undefined
   }
@@ -768,7 +771,7 @@ watch(
   { deep: true }
 )
 
-// 息屏防护：页面不可见时阻止对话框关闭
+// Screen-off protection: prevent dialog close when page is not visible
 watch(debugDrawer, (newVal, oldVal) => {
   if (oldVal === true && newVal === false && document.hidden) {
     nextTick(() => { debugDrawer.value = true })
@@ -777,7 +780,7 @@ watch(debugDrawer, (newVal, oldVal) => {
 
 function handleDebugBeforeClose(done: () => void) {
   if (opStreaming.value || debugRunning.value) {
-    ElMessage.warning('正在执行中，请先等待完成或点击停止')
+    ElMessage.warning(t('operator.executingWarn'))
     return
   }
   done()
@@ -785,13 +788,13 @@ function handleDebugBeforeClose(done: () => void) {
 
 async function clearOpDebugHistory() {
   try {
-    await ElMessageBox.confirm('确认清空当前算子的调试记录？此操作不可撤销。', '提示', { type: 'warning' })
+    await ElMessageBox.confirm(t('operator.clearDebugConfirm'), t('common.info'), { type: 'warning' })
   } catch { return }
   if (debugOperator.value) {
     localStorage.removeItem(opDebugKey(debugOperator.value.id))
   }
   opMessages.value = []
-  ElMessage.success('已清空调试记录')
+  ElMessage.success(t('operator.clearDebugSuccess'))
 }
 
 function resetDebug() {
@@ -800,7 +803,7 @@ function resetDebug() {
     opAbortController = null
   }
   opStreaming.value = false
-  // 清理中止后不完整的 assistant 消息（既无执行结果也无脚本更新）
+  // Clean up incomplete assistant message after abort (no result, no script update)
   const lastMsg = opMessages.value[opMessages.value.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.runResult && !lastMsg.scriptUpdated) {
     const trimmed = (lastMsg.llmContent || lastMsg.content || '').replace(/\[已停止生成\]/g, '').trim()
@@ -816,10 +819,10 @@ async function refreshOpScript() {
   try {
     const fresh = await api.get(`/operators/${debugOperator.value.id}`)
     debugOperator.value = fresh
-    ElMessage.success('算子数据已刷新')
+    ElMessage.success(t('operator.refreshSuccess'))
     await loadOperators()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '刷新失败')
+    ElMessage.error(e.response?.data?.detail || t('operator.refreshFailed'))
   } finally {
     saving.value = false
   }
@@ -844,7 +847,7 @@ async function runDebug() {
   if (!debugOperator.value) return
   debugRunning.value = true
   const _userText = opInput.value.trim()
-  opMessages.value.push({ role: 'user', content: _userText ? `${_userText}\n运行这个技能吧` : '运行这个技能吧', created_at: new Date().toISOString() })
+  opMessages.value.push({ role: 'user', content: _userText ? `${_userText}\n${t('operator.runSkillHint')}` : t('operator.runSkillHint'), created_at: new Date().toISOString() })
   opInput.value = ''
   nextTick(() => scrollOpToBottom(true))
 
@@ -891,13 +894,13 @@ async function runDebug() {
     })
     opMessages.value.push({
       role: 'assistant',
-      content: res?.success ? '执行完成' : '执行失败',
+      content: res?.success ? t('operator.executionComplete') : t('operator.runFailed'),
       runResult: res,
     })
   } catch (e: any) {
     opMessages.value.push({
       role: 'assistant',
-      content: '执行失败',
+      content: t('operator.runFailed'),
       runResult: {
         success: false,
         error: e.response?.data?.detail || String(e),
@@ -947,7 +950,7 @@ function onModifyDialogClosed() {
 
 async function handleGenerate() {
   if (!generatePrompt.value.trim()) {
-    ElMessage.warning('请输入需求描述')
+    ElMessage.warning(t('operator.requirementRequired'))
     return
   }
   const userText = generatePrompt.value.trim()
@@ -960,7 +963,7 @@ async function handleGenerate() {
       return
     }
   } catch {
-    // 检测失败不阻断，继续生成
+    // Similarity check failure does not block; continue generation
   } finally {
     checkingSimilar.value = false
   }
@@ -1013,7 +1016,7 @@ async function doGenerate(userText: string) {
           if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (thinkingDone && msg.thinking) { msg.thinking += `\n\n${t('operator.newRoundReasoning')}\n`; msg.thinkingOpen = false; thinkingDone = false }
             if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
@@ -1024,14 +1027,14 @@ async function doGenerate(userText: string) {
             msg.content += (msg.content ? '\n' : '') + `**[${data.message}]**`
           } else if (data.type === 'done') {
             const op = data.operator
-            msg.content += (msg.content ? '\n\n' : '') + `✅ 算子 "${op.display_name || op.name}" 已生成`
-            ElMessage.success(`算子 "${op.display_name || op.name}" 已生成`)
+            msg.content += (msg.content ? '\n\n' : '') + `✅ ${t('operator.generateSuccessMsg', { name: (op.display_name || op.name) })}`
+            ElMessage.success(t('operator.generateSuccessMsg', { name: (op.display_name || op.name) }))
             showGenerateDialog.value = false
             await loadOperators()
             setTimeout(() => openDebug(op), 300)
           } else if (data.type === 'error') {
-            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || '生成失败'}`
-            ElMessage.error(data.content || '生成失败')
+            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || t('operator.generateFailedMsg')}`
+            ElMessage.error(data.content || t('operator.generateFailedMsg'))
           }
         } catch { /* skip */ }
       }
@@ -1040,9 +1043,9 @@ async function doGenerate(userText: string) {
     const msg = genMessages.value[genMessages.value.length - 1]
     if (msg) {
       if (e.name === 'AbortError') {
-        msg.content += '\n\n*[已取消生成]*'
+        msg.content += `\n\n${t('operator.generateCancelled')}`
       } else {
-        msg.content += `\n\n❌ ${e.message || '生成失败'}`
+        msg.content += `\n\n❌ ${e.message || t('operator.generateFailedMsg')}`
       }
     }
   } finally {
@@ -1080,7 +1083,7 @@ function openModifyDialog(op: any) {
 
 async function handleModify() {
   if (!modifyInstruction.value.trim()) {
-    ElMessage.warning('请输入修改指令')
+    ElMessage.warning(t('operator.modifyRequired'))
     return
   }
   if (!modifyTarget.value) return
@@ -1131,7 +1134,7 @@ async function handleModify() {
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''; msg.content = ''; msg.thinkingOpen = false; thinkingDone = false
           } else if (data.type === 'thinking') {
-            if (thinkingDone && msg.thinking) { msg.thinking += '\n\n--- 新一轮推理 ---\n'; msg.thinkingOpen = false; thinkingDone = false }
+            if (thinkingDone && msg.thinking) { msg.thinking += `\n\n${t('operator.newRoundReasoning')}\n`; msg.thinkingOpen = false; thinkingDone = false }
             if (!msg.thinking) msg.thinkingOpen = false
             msg.thinking = (msg.thinking || '') + data.content
           } else if (data.type === 'content') {
@@ -1142,15 +1145,15 @@ async function handleModify() {
             msg.content += (msg.content ? '\n' : '') + `**[${data.message}]**`
           } else if (data.type === 'done') {
             const op = data.operator
-            msg.content += (msg.content ? '\n\n' : '') + `✅ 算子 "${op.display_name || op.name}" 已修改`
-            ElMessage.success(`算子 "${op.display_name || op.name}" 已修改`)
+            msg.content += (msg.content ? '\n\n' : '') + `✅ ${t('operator.modifySuccessMsg', { name: (op.display_name || op.name) })}`
+            ElMessage.success(t('operator.modifySuccessMsg', { name: (op.display_name || op.name) }))
             showModifyDialog.value = false
             modifyTarget.value = null
             await loadOperators()
             setTimeout(() => openDebug(op), 300)
           } else if (data.type === 'error') {
-            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || '修改失败'}`
-            ElMessage.error(data.content || '修改失败')
+            msg.content += (msg.content ? '\n\n' : '') + `❌ ${data.content || t('operator.modifyFailedMsg')}`
+            ElMessage.error(data.content || t('operator.modifyFailedMsg'))
           }
         } catch { /* skip */ }
       }
@@ -1159,9 +1162,9 @@ async function handleModify() {
     const msg = modifyMessages.value[modifyMessages.value.length - 1]
     if (msg) {
       if (e.name === 'AbortError') {
-        msg.content += '\n\n*[已取消修改]*'
+        msg.content += `\n\n${t('operator.modifyCancelled')}`
       } else {
-        msg.content += `\n\n❌ ${e.message || '修改失败'}`
+        msg.content += `\n\n❌ ${e.message || t('operator.modifyFailedMsg')}`
       }
     }
   } finally {
@@ -1183,13 +1186,13 @@ const cloning = ref(false)
 
 function openCloneDialog(op: any) {
   cloneTarget.value = op
-  cloneName.value = (op.display_name || op.name) + ' (副本)'
+  cloneName.value = (op.display_name || op.name) + t('operator.copySuffix')
   showCloneDialog.value = true
 }
 
 async function handleClone() {
   if (!cloneName.value.trim()) {
-    ElMessage.warning('请输入新名称')
+    ElMessage.warning(t('operator.newNameRequired'))
     return
   }
   if (!cloneTarget.value) return
@@ -1198,20 +1201,20 @@ async function handleClone() {
     const res = await api.post(`/operators/${cloneTarget.value.id}/clone`, {
       name: cloneName.value.trim(),
     })
-    ElMessage.success(`算子 "${res.display_name || res.name}" 复制成功`)
+    ElMessage.success(t('operator.cloneSuccess', { name: (res.display_name || res.name) }))
     showCloneDialog.value = false
     cloneName.value = ''
     cloneTarget.value = null
     await loadOperators()
     setTimeout(() => openDebug(res), 300)
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '复制失败')
+    ElMessage.error(e.response?.data?.detail || t('operator.cloneFailed'))
   } finally {
     cloning.value = false
   }
 }
 
-// ==================== 输入历史记录（localStorage 持久化） ====================
+// ==================== Input History (localStorage persistence) ====================
 const HISTORY_MAX = 100
 
 function loadOpHistory(key: string): string[] {
@@ -1410,7 +1413,7 @@ async function handleOpSend() {
     const token = localStorage.getItem('access_token')
     const history = opMessages.value.slice(0, assistantIdx - 1).map(m => ({
       role: m.role,
-      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n[执行结果: ${m.runResult.success ? '成功' : '失败'}]` + (m.runResult.error ? ` 错误: ${m.runResult.error}` : '') : '') + (m.scriptUpdated ? `\n\n[代码已更新: ${m.scriptUpdated}]` : ''),
+      content: (m.llmContent != null ? m.llmContent : m.content) + (m.runResult ? `\n\n${t('operator.execResultHistory', { result: m.runResult.success ? t('common.success') : t('common.failed') })}` + (m.runResult.error ? t('operator.errorHistory', { error: m.runResult.error }) : '') : '') + (m.scriptUpdated ? `\n\n${t('operator.codeUpdatedHistory', { name: m.scriptUpdated })}` : ''),
     }))
 
     const contextData: Record<string, string> = {}
@@ -1426,7 +1429,7 @@ async function handleOpSend() {
     }
     const lastRunMsg = [...opMessages.value].reverse().find(m => m.runResult)
     if (lastRunMsg?.runResult) {
-      contextData['last_result'] = lastRunMsg.runResult.success ? '成功' : '失败'
+      contextData['last_result'] = lastRunMsg.runResult.success ? t('common.success') : t('common.failed')
       if (lastRunMsg.runResult.error) contextData['last_error'] = lastRunMsg.runResult.error
     }
 
@@ -1473,7 +1476,7 @@ async function handleOpSend() {
           if (data.type === 'model') {
             msg.model = data.content
           } else if (data.type === 'ping') {
-            // SSE 心跳，忽略
+            // SSE heartbeat, ignore
           } else if (data.type === 'clear_thinking') {
             msg.thinking = ''
             msg.content = ''
@@ -1482,7 +1485,7 @@ async function handleOpSend() {
             thinkingDone = false
           } else if (data.type === 'thinking') {
             if (thinkingDone && msg.thinking) {
-              msg.thinking += '\n\n--- 新一轮推理 ---\n'
+              msg.thinking += `\n\n${t('operator.newRoundReasoning')}\n`
               msg.thinkingOpen = false
               thinkingDone = false
             }
@@ -1519,7 +1522,7 @@ async function handleOpSend() {
           } else if (data.type === 'progress') {
             msg.executingMsg = data.message || ''
           } else if (data.type === 'executing') {
-            msg.executingMsg = data.message || '正在执行...'
+            msg.executingMsg = data.message || t('operator.executingMsg')
           } else if (data.type === 'run_result') {
             msg.executingMsg = ''
             const r = data.result || {}
@@ -1527,35 +1530,35 @@ async function handleOpSend() {
             const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
             msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
             if (failed) {
-              const errMsg = String(r.error || inner.error || '未知错误').substring(0, 300)
-              msg.content += `\n❌ 执行失败：${errMsg}\n`
+              const errMsg = String(r.error || inner.error || t('operator.unknownError')).substring(0, 300)
+              msg.content += `\n❌ ${t('operator.execFailedPrefix', { error: errMsg })}\n`
             } else if (!msg.content) {
-              msg.content = '执行完成'
+              msg.content = t('operator.executionComplete')
             }
           } else if (data.type === 'error') {
-            msg.content += `\n\n错误: ${data.content || '未知错误'}`
+            msg.content += `\n\n${t('operator.errorHistory', { error: (data.content || t('operator.unknownError')) }).trimStart()}`
           } else if (data.type === 'inspection_report') {
             msg.inspectionReport = data.report
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
-            msg.content += `\n\n🔍 ${data.message || 'DataInspector 正在检查数据质量...'}\n`
+            msg.content += `\n\n🔍 ${data.message || t('operator.inspectingData')}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'retry') {
             msg.executingMsg = ''
-            msg.content += `\n\n---\n🔄 ${data.message || '开始修复...'}\n`
+            msg.content += `\n\n---\n🔄 ${data.message || t('operator.startFix')}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'round') {
             msg.executingMsg = ''
             msg.thinkingOpen = false
             thinkingDone = true
-            msg.content += `\n\n─── 第${data.round}次${data.action === 'execute' ? '执行' : '修改'} ───\n`
+            msg.content += `\n\n─── ${t('operator.roundLabel', { n: data.round, action: data.action === 'execute' ? t('operator.executeAction') : t('operator.modifyAction') })} ───\n`
           } else if (data.type === 'give_up') {
-            msg.content += `\n\n⚠ **修复失败**${data.reason ? '\n' + data.reason : '——无法自动修复'}`
+            msg.content += `\n\n⚠ **${t('operator.fixFailedTitle')}**${data.reason ? '\n' + data.reason : t('operator.cannotAutoFix')}`
           } else if (data.type === 'fatal') {
             const issues = data.issues || []
-            let fatalText = `\n\n🚫 **致命问题——数据违反法律法规，已停止处理**\n\n${data.summary || ''}\n`
+            let fatalText = `\n\n🚫 **${t('operator.fatalIssue')}**\n\n${data.summary || ''}\n`
             for (const issue of issues) {
               fatalText += `\n- [FATAL] ${issue.description || ''}`
               if (issue.suggestion) fatalText += `\n  → ${issue.suggestion}`
@@ -1563,25 +1566,25 @@ async function handleOpSend() {
             msg.content += fatalText
           } else if (data.type === 'warning_confirmation') {
             const issues = data.issues || []
-            let warnText = `\n\n⚠ **检查发现以下警告问题，是否需要修复？**\n\n${data.summary || ''}\n`
+            let warnText = `\n\n⚠ **${t('operator.warningIssues')}**\n\n${data.summary || ''}\n`
             for (const issue of issues) {
               warnText += `\n- [WARNING] ${issue.description || ''}`
-              if (issue.column) warnText += ` (列: ${issue.column})`
+              if (issue.column) warnText += t('common.columnLabel', { column: issue.column })
               if (issue.suggestion) warnText += `\n  → ${issue.suggestion}`
             }
-            warnText += '\n\n> 如需修复，请回复"修复警告问题"'
+            warnText += `\n\n> ${t('operator.fixWarningReply')}`
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
             msg.executingMsg = ''
-            msg.content += `\n\n🔧 **平台能力缺失——这不是脚本问题，修改脚本无法解决**\n\n${data.message || ''}\n`
+            msg.content += `\n\n🔧 **${t('operator.platformIssueDesc')}**\n\n${data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'done') {
             msg.executingMsg = ''
             if (!msg.content || msg.content.trim() === '') {
-              msg.content = '✅ 调试完成'
+              msg.content = t('operator.debugComplete')
             } else if (!msg.content.includes('✅') && !msg.content.includes('⚠') && !msg.content.includes('🔧') && !msg.content.includes('🚫')) {
-              msg.content += '\n\n✅ 调试完成'
+              msg.content += `\n\n${t('operator.debugComplete')}`
             }
             msg.thinkingOpen = false
           }
@@ -1594,19 +1597,19 @@ async function handleOpSend() {
 
     const finalMsg = opMessages.value[assistantIdx]
     if (finalMsg.thinking && !thinkingDone) {
-      finalMsg.thinking += '\n\n[推理过程已中断]'
+      finalMsg.thinking += `\n\n${t('operator.thinkingInterrupted')}`
     }
 
   } catch (e: any) {
     if (e.name === 'AbortError') {
       const msg = opMessages.value[assistantIdx]
       if (msg.content) {
-        msg.content += '\n\n*[已停止生成]*'
+        msg.content += `\n\n${t('operator.stoppedGenerate')}`
       } else {
-        msg.content = '*[已停止生成]*'
+        msg.content = t('operator.stoppedGenerate')
       }
     } else {
-      opMessages.value[assistantIdx].content = `请求出错: ${e.message === 'network error' || e.message === 'Failed to fetch' ? '连接异常，请检查后端是否正常运行' : e.message || String(e)}`
+      opMessages.value[assistantIdx].content = t('operator.requestError', { msg: (e.message === 'network error' || e.message === 'Failed to fetch' ? t('operator.connectionError') : e.message || String(e)) })
     }
   } finally {
     opStreaming.value = false

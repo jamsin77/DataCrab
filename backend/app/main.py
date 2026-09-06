@@ -11,8 +11,9 @@ except ImportError:
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from loguru import logger
 
 from app.core.config import settings
@@ -561,6 +562,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# i18n 中间件——从请求头读取语言设置
+class I18nMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        lang = request.headers.get("X-Lang", "")
+        if not lang:
+            ql = request.query_params.get("lang", "")
+            lang = ql if ql else "zh"
+        from app.core.i18n import set_lang
+        set_lang(lang)
+        return await call_next(request)
+
+
+app.add_middleware(I18nMiddleware)
 
 # 注册API路由
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)

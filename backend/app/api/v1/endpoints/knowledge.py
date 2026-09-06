@@ -11,6 +11,7 @@ from sqlalchemy import select
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.knowledge import KnowledgeDocument, KnowledgeChunk
@@ -54,11 +55,11 @@ async def upload_document(
 ):
     """上传文档到知识库（自动解析、切片、嵌入）"""
     if not file.filename:
-        raise HTTPException(status_code=400, detail="未提供文件名")
+        raise HTTPException(status_code=400, detail=t("filename_required"))
     file_type = os.path.splitext(file.filename)[1].lower().lstrip(".")
     supported = {"txt", "md", "markdown", "csv", "json", "log", "py", "js", "ts", "html", "xml", "yml", "yaml", "xlsx", "xls", "pdf", "docx"}
     if file_type not in supported:
-        raise HTTPException(status_code=400, detail=f"暂不支持该格式: .{file_type}")
+        raise HTTPException(status_code=400, detail=t("format_not_supported", file_type=file_type))
 
     doc_id = uuid4()
     doc_dir = os.path.join(kb_service.KB_DOC_DIR, str(doc_id))
@@ -111,7 +112,7 @@ async def delete_document(
     )
     doc = result.scalar_one_or_none()
     if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail=t("doc_not_found"))
     await db.commit()  # 释放后再调 service（service 内自建 session）
     await kb_service.delete_document(str(doc_id))
     return {"ok": True}
@@ -131,7 +132,7 @@ async def list_chunks(
         )
     )
     if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise HTTPException(status_code=404, detail=t("doc_not_found"))
     result = await db.execute(
         select(KnowledgeChunk)
         .where(KnowledgeChunk.document_id == doc_id)
@@ -159,7 +160,7 @@ async def search_documents(
     query = (body or {}).get("query", "").strip()
     top_k = (body or {}).get("top_k", 5) or 5
     if not query:
-        raise HTTPException(status_code=400, detail="请输入检索内容")
+        raise HTTPException(status_code=400, detail=t("search_query_required"))
     from app.services.llm import init_user_llm_context
     await init_user_llm_context(current_user.id)
     results = await kb_service.search(query, str(current_user.id), top_k=max(1, min(int(top_k), 20)))

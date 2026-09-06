@@ -14,32 +14,27 @@
       >
         <el-menu-item index="/chat">
           <el-icon><ChatDotRound /></el-icon>
-          <template #title>对话</template>
+          <template #title>{{ t('layout.menu.chat') }}</template>
         </el-menu-item>
-        <!-- 数据源管理已移至「系统配置」 -->
-        <!-- <el-menu-item index="/datasource">
-          <el-icon><Connection /></el-icon>
-          <template #title>数据源</template>
-        </el-menu-item> -->
         <el-menu-item index="/operator">
           <el-icon><Operation /></el-icon>
-          <template #title>算子</template>
+          <template #title>{{ t('layout.menu.operator') }}</template>
         </el-menu-item>
         <el-menu-item index="/skill">
           <el-icon><MagicStick /></el-icon>
-          <template #title>技能</template>
+          <template #title>{{ t('layout.menu.skill') }}</template>
         </el-menu-item>
         <el-menu-item index="/pipeline">
           <el-icon><Share /></el-icon>
-          <template #title>流程</template>
+          <template #title>{{ t('layout.menu.pipeline') }}</template>
         </el-menu-item>
         <el-menu-item index="/schedule">
           <el-icon><Timer /></el-icon>
-          <template #title>调度</template>
+          <template #title>{{ t('layout.menu.schedule') }}</template>
         </el-menu-item>
         <el-menu-item index="/config">
           <el-icon><Tools /></el-icon>
-          <template #title>配置</template>
+          <template #title>{{ t('layout.menu.config') }}</template>
         </el-menu-item>
       </el-menu>
       <div class="sidebar-footer">
@@ -57,16 +52,19 @@
           <span class="page-title">{{ pageTitle }}</span>
         </div>
         <div class="header-right">
+          <el-button text @click="i18nStore.toggle()">
+            {{ i18nStore.locale === 'zh' ? 'EN' : '中文' }}
+          </el-button>
           <el-dropdown @command="handleUserCommand">
             <span class="user-info">
               <el-avatar :size="32" :src="authStore.user?.avatar || undefined">
                 {{ authStore.user?.display_name?.charAt(0) || 'U' }}
               </el-avatar>
-              <span class="username">{{ authStore.user?.display_name || '用户' }}</span>
+              <span class="username">{{ authStore.user?.display_name || t('layout.user') }}</span>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+                <el-dropdown-item command="logout">{{ t('layout.logout') }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -86,14 +84,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useVersionStore } from '@/stores/version'
+import { useI18nStore } from '@/stores/i18n'
 import { ChatDotRound, Operation, MagicStick, Share, Timer, Tools, Fold, Expand } from '@element-plus/icons-vue'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const versionStore = useVersionStore()
+const i18nStore = useI18nStore()
 const isCollapsed = ref(false)
 const version = ref('')
 
@@ -104,27 +106,29 @@ onMounted(async () => {
 const currentRoute = computed(() => route.path)
 const pageTitle = computed(() => {
   const titles: Record<string, string> = {
-    '/chat': '对话',
-    '/datasource': '数据源',
-    '/metadata': '元数据',
-    '/skill': '技能',
-    '/operator': '算子',
-    '/pipeline': '流程',
-    '/schedule': '调度',
-    '/filelink': '文件链接',
-    '/config': '配置',
+    '/chat': t('layout.menu.chat'),
+    '/datasource': t('layout.menu.datasource'),
+    '/metadata': t('layout.menu.metadata'),
+    '/skill': t('layout.menu.skill'),
+    '/operator': t('layout.menu.operator'),
+    '/pipeline': t('layout.menu.pipeline'),
+    '/schedule': t('layout.menu.schedule'),
+    '/filelink': t('layout.menu.filelink'),
+    '/config': t('layout.menu.config'),
   }
   if (route.path === '/config') {
     const tab = route.query.tab as string
     const tabLabels: Record<string, string> = {
-      agent: '性格设定管理',
-      datasource: '数据源管理',
-      model: '大模型管理',
-      standards: '数据规则管理',
-      metadata: '元数据管理',
-      permission: '权限管理',
+      agent: t('layout.configTabs.agent'),
+      datasource: t('layout.configTabs.datasource'),
+      model: t('layout.configTabs.model'),
+      standards: t('layout.configTabs.standards'),
+      metadata: t('layout.configTabs.metadata'),
+      permission: t('layout.configTabs.permission'),
+      asset: t('layout.configTabs.asset'),
+      about: t('layout.configTabs.about'),
     }
-    if (tab && tabLabels[tab]) return `配置 - ${tabLabels[tab]}`
+    if (tab && tabLabels[tab]) return `${t('layout.menu.config')} - ${tabLabels[tab]}`
   }
   return titles[route.path] || 'DataCrab'
 })

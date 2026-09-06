@@ -7,74 +7,72 @@
         accept=".txt,.md,.csv,.json,.xlsx,.xls,.pdf,.docx"
       >
         <el-button type="primary" :loading="uploading">
-          <el-icon><Upload /></el-icon> 上传文档
+          <el-icon><Upload /></el-icon> {{ t('kb.uploadDocument') }}
         </el-button>
       </el-upload>
       <el-text size="small" type="info" class="tip">
-        支持 txt/md/csv/json/xlsx/pdf/docx，自动切片+嵌入
+        {{ t('kb.supportedFormatsHint') }}
       </el-text>
       <div class="spacer" />
       <el-input
         v-model="searchQuery"
-        placeholder="语义检索知识库..."
+        :placeholder="t('kb.searchPlaceholderSemantic')"
         style="width: 300px"
         clearable
         :prefix-icon="Search"
         @keyup.enter="doSearch"
       />
       <el-button type="primary" @click="doSearch" :loading="searching">
-        <el-icon><Search /></el-icon> 检索
+        <el-icon><Search /></el-icon> {{ t('kb.retrieve') }}
       </el-button>
     </div>
 
     <el-tabs v-model="activeTab">
-      <el-tab-pane label="文档列表" name="docs">
+      <el-tab-pane :label="t('kb.documentList')" name="docs">
         <el-table :data="documents" v-loading="loading" stripe>
-          <el-table-column label="文档名" min-width="200">
+          <el-table-column :label="t('kb.documentName')" min-width="200">
             <template #default="{ row }">
               <el-icon style="vertical-align: middle; margin-right: 4px;"><Document /></el-icon>
               <span>{{ row.name }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="类型" width="80" prop="file_type" />
-          <el-table-column label="大小" width="90" align="right">
+          <el-table-column :label="t('common.type')" width="80" prop="file_type" />
+          <el-table-column :label="t('kb.size')" width="90" align="right">
             <template #default="{ row }">{{ formatSize(row.size_bytes) }}</template>
           </el-table-column>
-          <el-table-column label="切片数" width="80" align="right" prop="chunk_count" />
-          <el-table-column label="状态" width="110">
+          <el-table-column :label="t('kb.chunkCount')" width="80" align="right" prop="chunk_count" />
+          <el-table-column :label="t('common.status')" width="110">
             <template #default="{ row }">
-              <el-tag v-if="row.status === 'ready'" type="success" size="small">就绪</el-tag>
-              <el-tag v-else-if="row.status === 'processing'" type="warning" size="small">处理中</el-tag>
-              <el-tag v-else type="danger" size="small" :title="row.error">失败</el-tag>
+              <el-tag v-if="row.status === 'ready'" type="success" size="small">{{ t('kb.ready') }}</el-tag>
+              <el-tag v-else-if="row.status === 'processing'" type="warning" size="small">{{ t('kb.processing') }}</el-tag>
+              <el-tag v-else type="danger" size="small" :title="row.error">{{ t('kb.failed') }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="上传时间" width="160">
+          <el-table-column :label="t('kb.uploadTime')" width="160">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="150" align="center">
+          <el-table-column :label="t('common.actions')" width="150" align="center">
             <template #default="{ row }">
-              <el-button size="small" text type="primary" @click="openChunks(row.id, -1)">查看切片</el-button>
-              <el-button size="small" text type="danger" @click="deleteDoc(row)">删除</el-button>
+              <el-button size="small" text type="primary" @click="openChunks(row.id, -1)">{{ t('kb.viewChunks') }}</el-button>
+              <el-button size="small" text type="danger" @click="deleteDoc(row)">{{ t('common.delete') }}</el-button>
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!loading && !documents.length" description="暂无文档，上传一个开始构建知识库" />
+        <el-empty v-if="!loading && !documents.length" :description="t('kb.emptyHint')" />
       </el-tab-pane>
 
-      <el-tab-pane :label="`检索结果${searchResults.length ? ' (' + searchResults.length + ')' : ''}`" name="results">
-        <div v-if="!searchResults.length && !searching" class="empty-hint">
-          输入自然语言检索，结果带<strong>证据链</strong>：来源文档 + 位置 + 高亮片段，可点击查看上下文。
-        </div>
+      <el-tab-pane :label="`${t('kb.searchResult')}${searchResults.length ? ' (' + searchResults.length + ')' : ''}`" name="results">
+        <div v-if="!searchResults.length && !searching" class="empty-hint" v-html="t('kb.searchHint')"></div>
         <div v-for="(r, i) in searchResults" :key="i" class="result-card">
           <div class="result-head">
             <el-icon><Document /></el-icon>
             <span class="doc-name" @click="openChunks(r.document_id, r.chunk_index)">{{ r.doc_name }}</span>
             <el-tag size="small" type="info">{{ r.location }}</el-tag>
-            <el-tag v-if="r.score != null" size="small" type="success">相似度 {{ r.score }}</el-tag>
+            <el-tag v-if="r.score != null" size="small" type="success">{{ t('kb.similarity') }} {{ r.score }}</el-tag>
           </div>
           <div class="result-snippet" v-html="highlight(r.content, lastQuery)"></div>
           <el-button text size="small" type="primary" @click="openChunks(r.document_id, r.chunk_index)">
-            查看上下文 →
+            {{ t('kb.viewContext') }}
           </el-button>
         </div>
       </el-tab-pane>
@@ -95,7 +93,7 @@
           </div>
           <pre class="chunk-content">{{ c.content }}</pre>
         </div>
-        <el-empty v-if="!chunksLoading && !chunks.length" description="暂无切片" />
+        <el-empty v-if="!chunksLoading && !chunks.length" :description="t('kb.noChunks')" />
       </div>
     </el-drawer>
   </div>
@@ -105,7 +103,10 @@
 import { ref, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Document, Search } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import { knowledgeApi, type KbDocument, type KbSearchResult } from '@/api/knowledge'
+
+const { t } = useI18n()
 
 const documents = ref<KbDocument[]>([])
 const loading = ref(false)
@@ -128,7 +129,7 @@ async function loadDocuments() {
   try {
     documents.value = await knowledgeApi.listDocuments()
   } catch {
-    ElMessage.error('加载文档列表失败')
+    ElMessage.error(t('kb.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -139,10 +140,10 @@ async function handleUpload(opt: any) {
   uploading.value = true
   try {
     await knowledgeApi.upload(file)
-    ElMessage.success(`${file.name} 已导入`)
+    ElMessage.success(t('kb.imported', { name: file.name }))
     await loadDocuments()
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '上传失败')
+    ElMessage.error(e.response?.data?.detail || t('kb.uploadFailed'))
   } finally {
     uploading.value = false
   }
@@ -150,12 +151,12 @@ async function handleUpload(opt: any) {
 
 async function deleteDoc(row: KbDocument) {
   try {
-    await ElMessageBox.confirm(`确定删除「${row.name}」？切片与向量会一并删除。`, '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(t('kb.deleteConfirmMsg', { name: row.name }), t('kb.deleteTitle'), { type: 'warning' })
     await knowledgeApi.deleteDocument(row.id)
-    ElMessage.success('已删除')
+    ElMessage.success(t('kb.deleteSuccess'))
     await loadDocuments()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error('删除失败')
+    if (e !== 'cancel') ElMessage.error(t('kb.deleteFailed'))
   }
 }
 
@@ -169,9 +170,9 @@ async function doSearch() {
     const res = await knowledgeApi.search(q, 5)
     lastQuery.value = q
     searchResults.value = res.results || []
-    if (!searchResults.value.length) ElMessage.info('未检索到相关内容')
+    if (!searchResults.value.length) ElMessage.info(t('kb.noResult'))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '检索失败')
+    ElMessage.error(e.response?.data?.detail || t('kb.searchFailed'))
   } finally {
     searching.value = false
   }
@@ -183,7 +184,7 @@ async function openChunks(docId: string, chunkIdx: number) {
   chunks.value = []
   highlightChunk.value = chunkIdx
   const doc = documents.value.find(d => d.id === docId)
-  chunksDocName.value = doc?.name || '文档切片'
+  chunksDocName.value = doc?.name || t('kb.docChunks')
   try {
     chunks.value = await knowledgeApi.getChunks(docId)
     if (chunkIdx >= 0) {
@@ -192,7 +193,7 @@ async function openChunks(docId: string, chunkIdx: number) {
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
   } catch {
-    ElMessage.error('加载切片失败')
+    ElMessage.error(t('kb.loadChunksFailed'))
   } finally {
     chunksLoading.value = false
   }

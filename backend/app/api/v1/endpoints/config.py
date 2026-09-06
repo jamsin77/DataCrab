@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.i18n import t
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.services.llm import llm_manager
@@ -187,7 +188,7 @@ async def get_llm_config(
         )
     except Exception as e:
         logger.error(f"获取配置失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取配置失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=t("get_config_failed", error=str(e)))
 
 
 @router.post("/llm", response_model=ConfigUpdateResult)
@@ -267,14 +268,14 @@ async def update_llm_config(
         logger.info(f"用户 {current_user.username} 的 LLM 配置已更新")
         return ConfigUpdateResult(
             success=True,
-            message="配置已保存并生效（API Key 已加密存储）",
+            message=t("config_saved_effective"),
             restart_required=False,
         )
     except Exception as e:
         logger.error(f"配置更新失败: {e}")
         return ConfigUpdateResult(
             success=False,
-            message=f"配置保存失败: {str(e)}",
+            message=t("config_save_error", error=str(e)),
         )
 
 
@@ -335,9 +336,9 @@ async def test_llm_connection(
         async def _test_one(label: str, prov: str, mdl: str, key: str, base: str) -> dict:
             """测试单个模型连接"""
             if not key:
-                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": "API Key 未设置，请在上方输入框填写"}
+                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": t("api_key_not_set_input")}
             if not mdl:
-                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": "模型未设置"}
+                return {"label": label, "provider": prov, "model": mdl, "success": False, "message": t("model_not_set")}
             try:
                 if prov in _custom_adapter_cache:
                     adapter_cls = _custom_adapter_cache[prov]
@@ -352,23 +353,23 @@ async def test_llm_connection(
                     max_tokens=10,
                 )
                 text = response.choices[0].message.content or ""
-                return {"label": label, "provider": prov, "model": mdl, "success": True, "message": f"连接成功: {text[:20]}"}
+                return {"label": label, "provider": prov, "model": mdl, "success": True, "message": t("connection_success_text", text=text[:20])}
             except Exception as e:
                 msg = str(e)
                 if "401" in msg or "Authentication" in msg or "身份验证失败" in msg or "invalid api key" in msg.lower():
-                    msg = "API Key 无效或已过期，请检查密钥是否正确"
+                    msg = t("api_key_invalid_expired")
                 elif "404" in msg or "model" in msg.lower() and "not found" in msg.lower():
-                    msg = f"模型 '{mdl}' 不存在或无权访问，请检查模型名"
+                    msg = t("model_not_found_or_no_access", model=mdl)
                 elif "429" in msg or "rate limit" in msg.lower() or "quota" in msg.lower():
-                    msg = "请求过于频繁或额度已用完，请稍后重试"
+                    msg = t("rate_limit_exceeded")
                 elif "Connection" in msg or "connect" in msg.lower() or "timeout" in msg.lower() or "timed out" in msg.lower():
-                    msg = f"无法连接到服务（{base}），请检查网络或 API 地址"
+                    msg = t("cannot_connect_service", base=base)
                 elif "403" in msg or "forbidden" in msg.lower():
-                    msg = "访问被拒绝，该 API Key 可能无权使用此模型"
+                    msg = t("access_denied_model")
                 return {"label": label, "provider": prov, "model": mdl, "success": False, "message": msg}
 
         # 测试主模型
-        results.append(await _test_one("主模型", provider, model, api_key, api_base))
+        results.append(await _test_one(t("main_model_label"), provider, model, api_key, api_base))
 
         # 测试备用模型
         fallbacks = body.get("fallback_models") or []
@@ -400,14 +401,14 @@ async def test_llm_connection(
             if not fb_base:
                 fb_base = get_provider_api_base(fb_provider) or ""
 
-            results.append(await _test_one(f"备用 {i+1}", fb_provider, fb_model, fb_key, fb_base))
+            results.append(await _test_one(t("fallback_model_label", n=i + 1), fb_provider, fb_model, fb_key, fb_base))
 
         success_count = sum(1 for r in results if r["success"])
         all_success = success_count == len(results)
 
         return {
             "success": all_success,
-            "message": f"{success_count}/{len(results)} 个模型连接成功",
+            "message": t("models_connection_result", success=success_count, total=len(results)),
             "results": results,
         }
 
@@ -415,7 +416,7 @@ async def test_llm_connection(
         logger.error(f"LLM测试失败: {e}")
         return {
             "success": False,
-            "message": f"测试失败: {str(e)}",
+            "message": t("test_failed_error", error=str(e)),
         }
 
 
@@ -431,7 +432,7 @@ async def get_soul_md():
         return {"content": content, "exists": True}
     except Exception as e:
         logger.error(f"读取soul.md失败: {e}")
-        raise HTTPException(status_code=500, detail=f"读取soul.md失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=t("read_soul_md_failed", error=str(e)))
 
 
 @router.post("/agent/soul-md", response_model=ConfigUpdateResult)
@@ -447,10 +448,10 @@ async def update_soul_md(
         from app.services.agent_config import agent_config
         agent_config._load_from_md()
         logger.info(f"soul.md已更新 by user {current_user.username}")
-        return ConfigUpdateResult(success=True, message="性格设定已保存")
+        return ConfigUpdateResult(success=True, message=t("persona_saved"))
     except Exception as e:
         logger.error(f"更新soul.md失败: {e}")
-        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+        return ConfigUpdateResult(success=False, message=t("save_failed_error", error=str(e)))
 
 
 def _standards_paths(name: str):
@@ -485,7 +486,7 @@ def _write_md(name: str, content: str) -> None:
 def _reset_md(name: str) -> str:
     runtime, default = _standards_paths(name)
     if not os.path.exists(default):
-        raise HTTPException(status_code=500, detail="默认模板不存在")
+        raise HTTPException(status_code=500, detail=t("default_template_not_found"))
     os.makedirs(os.path.dirname(runtime), exist_ok=True)
     with open(default, "r", encoding="utf-8") as f:
         content = f.read()
@@ -513,9 +514,9 @@ async def update_data_standards(
     try:
         _write_md("data_standards.md", req.content)
         logger.info(f"数据标准库已更新 by {current_user.username}")
-        return ConfigUpdateResult(success=True, message="数据标准库已保存")
+        return ConfigUpdateResult(success=True, message=t("data_standards_saved"))
     except Exception as e:
-        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+        return ConfigUpdateResult(success=False, message=t("save_failed_error", error=str(e)))
 
 
 @router.post("/data-standards/reset", response_model=ConfigUpdateResult)
@@ -523,7 +524,7 @@ async def reset_data_standards(current_user: User = Depends(get_current_user)):
     """恢复数据标准库默认值"""
     try:
         _reset_md("data_standards.md")
-        return ConfigUpdateResult(success=True, message="已恢复默认数据标准库")
+        return ConfigUpdateResult(success=True, message=t("data_standards_reset"))
     except Exception as e:
         return ConfigUpdateResult(success=False, message=str(e))
 
@@ -547,9 +548,9 @@ async def update_data_quality(
     try:
         _write_md("data_quality_rules.md", req.content)
         logger.info(f"数据质量库已更新 by {current_user.username}")
-        return ConfigUpdateResult(success=True, message="数据质量库已保存")
+        return ConfigUpdateResult(success=True, message=t("data_quality_saved"))
     except Exception as e:
-        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+        return ConfigUpdateResult(success=False, message=t("save_failed_error", error=str(e)))
 
 
 @router.post("/data-quality/reset", response_model=ConfigUpdateResult)
@@ -557,7 +558,7 @@ async def reset_data_quality(current_user: User = Depends(get_current_user)):
     """恢复数据质量库默认值"""
     try:
         _reset_md("data_quality_rules.md")
-        return ConfigUpdateResult(success=True, message="已恢复默认数据质量库")
+        return ConfigUpdateResult(success=True, message=t("data_quality_reset"))
     except Exception as e:
         return ConfigUpdateResult(success=False, message=str(e))
 
@@ -581,9 +582,9 @@ async def update_data_security(
     try:
         _write_md("data_security_rules.md", req.content)
         logger.info(f"数据安全规则库已更新 by {current_user.username}")
-        return ConfigUpdateResult(success=True, message="数据安全规则库已保存")
+        return ConfigUpdateResult(success=True, message=t("data_security_saved"))
     except Exception as e:
-        return ConfigUpdateResult(success=False, message=f"保存失败: {str(e)}")
+        return ConfigUpdateResult(success=False, message=t("save_failed_error", error=str(e)))
 
 
 @router.post("/data-security/reset", response_model=ConfigUpdateResult)
@@ -591,7 +592,7 @@ async def reset_data_security(current_user: User = Depends(get_current_user)):
     """恢复数据安全规则库默认值"""
     try:
         _reset_md("data_security_rules.md")
-        return ConfigUpdateResult(success=True, message="已恢复默认数据安全规则库")
+        return ConfigUpdateResult(success=True, message=t("data_security_reset"))
     except Exception as e:
         return ConfigUpdateResult(success=False, message=str(e))
 
@@ -605,34 +606,34 @@ async def list_available_models(
     # 预定义的常用模型列表
     models = {
         "openai": [
-            {"id": "gpt-4", "name": "GPT-4", "description": "最强大的模型"},
-            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "description": "更快更便宜"},
-            {"id": "gpt-4o", "name": "GPT-4o", "description": "最新多模态模型"},
-            {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "description": "性价比高"},
+            {"id": "gpt-4", "name": "GPT-4", "description": t("model_desc_gpt4")},
+            {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "description": t("model_desc_gpt4_turbo")},
+            {"id": "gpt-4o", "name": "GPT-4o", "description": t("model_desc_gpt4o")},
+            {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "description": t("model_desc_gpt35_turbo")},
         ],
         "qwen": [
-            {"id": "qwen-max", "name": "通义千问 Max", "description": "阿里云最强模型"},
-            {"id": "qwen-plus", "name": "通义千问 Plus", "description": "平衡性能与成本"},
-            {"id": "qwen-turbo", "name": "通义千问 Turbo", "description": "快速响应"},
-            {"id": "qwen-long", "name": "通义千问 Long", "description": "超长上下文"},
+            {"id": "qwen-max", "name": "通义千问 Max", "description": t("model_desc_qwen_max")},
+            {"id": "qwen-plus", "name": "通义千问 Plus", "description": t("model_desc_qwen_plus")},
+            {"id": "qwen-turbo", "name": "通义千问 Turbo", "description": t("model_desc_qwen_turbo")},
+            {"id": "qwen-long", "name": "通义千问 Long", "description": t("model_desc_qwen_long")},
         ],
         "glm": [
-            {"id": "glm-5.2", "name": "GLM-5.2", "description": "智谱AI最新一代模型"},
-            {"id": "glm-5.1", "name": "GLM-5.1", "description": "智谱AI新一代模型"},
-            {"id": "glm-5", "name": "GLM-5", "description": "智谱AI新一代模型"},
-            {"id": "glm-4", "name": "GLM-4", "description": "智谱AI主力模型"},
-            {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "增强版模型"},
-            {"id": "glm-3-turbo", "name": "GLM-3 Turbo", "description": "快速响应模型"},
+            {"id": "glm-5.2", "name": "GLM-5.2", "description": t("model_desc_glm_5_2")},
+            {"id": "glm-5.1", "name": "GLM-5.1", "description": t("model_desc_glm_5_1")},
+            {"id": "glm-5", "name": "GLM-5", "description": t("model_desc_glm_5")},
+            {"id": "glm-4", "name": "GLM-4", "description": t("model_desc_glm_4")},
+            {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": t("model_desc_glm_4_plus")},
+            {"id": "glm-3-turbo", "name": "GLM-3 Turbo", "description": t("model_desc_glm_3_turbo")},
         ],
         "embedding": [
-            {"id": "text-embedding-ada-002", "name": "Ada-002", "description": "标准嵌入模型"},
-            {"id": "text-embedding-3-small", "name": "Embedding-3 Small", "description": "新一代小型嵌入"},
-            {"id": "text-embedding-3-large", "name": "Embedding-3 Large", "description": "新一代大型嵌入"},
+            {"id": "text-embedding-ada-002", "name": "Ada-002", "description": t("model_desc_ada_002")},
+            {"id": "text-embedding-3-small", "name": "Embedding-3 Small", "description": t("model_desc_emb_3_small")},
+            {"id": "text-embedding-3-large", "name": "Embedding-3 Large", "description": t("model_desc_emb_3_large")},
         ],
         "other": [
-            {"id": "claude-3-opus", "name": "Claude 3 Opus", "description": "Anthropic最强模型"},
-            {"id": "claude-3-sonnet", "name": "Claude 3 Sonnet", "description": "Anthropic平衡模型"},
-            {"id": "claude-3-haiku", "name": "Claude 3 Haiku", "description": "Anthropic快速模型"},
+            {"id": "claude-3-opus", "name": "Claude 3 Opus", "description": t("model_desc_claude_opus")},
+            {"id": "claude-3-sonnet", "name": "Claude 3 Sonnet", "description": t("model_desc_claude_sonnet")},
+            {"id": "claude-3-haiku", "name": "Claude 3 Haiku", "description": t("model_desc_claude_haiku")},
         ]
     }
 

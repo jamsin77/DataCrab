@@ -16,6 +16,7 @@ from loguru import logger
 _active_stream_events: dict[str, asyncio.Event] = {}
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.chat import ChatSession, ChatMessage
 from app.models.user import User
 from app.models.filelink import FileLink
@@ -84,16 +85,16 @@ async def upload_attachment(
     from app.models.datasource import DataSource
 
     if not file.filename:
-        raise HTTPException(status_code=400, detail="未提供文件名")
+        raise HTTPException(status_code=400, detail=t('filename_not_provided'))
     filename = os.path.basename(file.filename)  # 防路径穿越
     ext = os.path.splitext(filename)[1].lower()
     is_image = ext in _ALLOWED_IMAGE_EXTS
 
     content = await file.read()
     if len(content) > _MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=400, detail=f"文件大小超过 5MB 限制（当前 {len(content)/1024/1024:.1f}MB)")
+        raise HTTPException(status_code=400, detail=t('file_too_large_detail', size=f"{len(content)/1024/1024:.1f}"))
     if not content:
-        raise HTTPException(status_code=400, detail="文件为空")
+        raise HTTPException(status_code=400, detail=t('file_empty'))
 
     # 同名文件加时间戳后缀，保留多版本不覆盖
     base = os.path.splitext(filename)[0]
@@ -434,7 +435,7 @@ async def create_session(
     """创建对话会话"""
     session = ChatSession(
         user_id=current_user.id,
-        title=request.title or "新会话",
+        title=request.title or t('new_session'),
     )
     db.add(session)
     await db.flush()
@@ -475,7 +476,7 @@ async def get_session(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found'))
     return session
 
 
@@ -495,7 +496,7 @@ async def update_session(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found'))
 
     session.title = request.title
     await db.flush()
@@ -520,7 +521,7 @@ async def update_session_context(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found'))
     ctx = dict(session.context or {})
     ctx.update(payload)
     session.context = ctx
@@ -546,7 +547,7 @@ async def delete_session(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found'))
     # 显式删除关联消息（SQLite 默认不启用外键级联）
     await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
     await db.delete(session)
@@ -567,7 +568,7 @@ async def list_messages(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在或无权访问")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found_or_no_access'))
     result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
@@ -592,7 +593,7 @@ async def update_message_metadata(
     )
     msg = result.scalar_one_or_none()
     if not msg:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="消息不存在或无权访问")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('message_not_found_or_no_access'))
     msg.meta = body
     await db.commit()
     return {"success": True}
@@ -613,7 +614,7 @@ async def clear_messages(
     )
     session = result.scalar_one_or_none()
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('session_not_found'))
     await db.execute(
         delete(ChatMessage).where(ChatMessage.session_id == session_id)
     )
@@ -704,33 +705,33 @@ async def stream_response(
         """已确定的参数列表"""
         params = []
         if ctx.get("source_datasource_name"):
-            params.append(f"源数据源: {ctx['source_datasource_name']}")
+            params.append(t('param_source_ds', name=ctx['source_datasource_name']))
         if ctx.get("source_data_name"):
-            params.append(f"源表: {ctx['source_data_name']}")
+            params.append(t('param_source_table', name=ctx['source_data_name']))
         if ctx.get("target_datasource_name"):
-            params.append(f"目标数据源: {ctx['target_datasource_name']}")
+            params.append(t('param_target_ds', name=ctx['target_datasource_name']))
         if ctx.get("target_data_name"):
-            params.append(f"目标表: {ctx['target_data_name']}")
+            params.append(t('param_target_table', name=ctx['target_data_name']))
         _wmode = ctx.get("target_write_mode", "")
         if _wmode:
-            _wmode_label = {"overwrite": "覆盖", "append": "追加", "direct": "直接使用", "create": "新建表"}.get(_wmode, _wmode)
-            params.append(f"写入策略: {_wmode_label}（if_table_exists={_wmode}）")
+            _wmode_label = {"overwrite": t('write_mode_overwrite'), "append": t('write_mode_append'), "direct": t('write_mode_direct'), "create": t('write_mode_create')}.get(_wmode, _wmode)
+            params.append(t('write_strategy', label=_wmode_label, mode=_wmode))
         if ctx.get("last_skill_name") or ctx.get("last_pipeline_name"):
-            params.append(f"技能: {ctx.get('last_skill_name') or ctx.get('last_pipeline_name')}")
+            params.append(t('param_skill_name', name=ctx.get('last_skill_name') or ctx.get('last_pipeline_name')))
         return params
 
     def _get_missing_params(ctx: dict, msg_type: str) -> list:
         """缺失的参数列表"""
         missing = []
         if not ctx.get("source_datasource_id") and not ctx.get("source_datasource_name"):
-            missing.append("源数据源")
+            missing.append(t('missing_source_ds'))
         if not ctx.get("source_data_name") and not ctx.get("source_table_name"):
-            missing.append("源数据表")
+            missing.append(t('missing_source_table'))
         if msg_type == "processing":
             if not ctx.get("target_datasource_id") and not ctx.get("target_datasource_name"):
-                missing.append("目标数据源")
+                missing.append(t('missing_target_ds'))
             if not ctx.get("target_data_name") and not ctx.get("target_table_name"):
-                missing.append("目标数据表")
+                missing.append(t('missing_target_table'))
         return missing
 
     def _build_params_hint(ctx: dict, msg_type: str) -> str:
@@ -739,11 +740,11 @@ async def stream_response(
         missing = _get_missing_params(ctx, msg_type)
         hint = ""
         if ready:
-            hint += "✅ 已确定参数：" + "，".join(ready)
+            hint += t('params_confirmed_label') + "，".join(ready)
         if missing:
             if hint:
                 hint += "\n\n"
-            hint += "⚠️ 还缺：" + "、".join(missing) + "，请补充"
+            hint += t('params_missing_label', missing="、".join(missing))
         return hint
 
     async def generate():
@@ -794,7 +795,7 @@ async def stream_response(
                 _llm_cfg = await init_user_llm_context(current_user.id)
 
                 if not _llm_cfg:
-                    _err_msg = "❌ 未配置大模型，请在「系统设置 → 大模型管理」中配置 API Key 和模型后重试。"
+                    _err_msg = t('llm_not_configured')
                     yield f"data: {json.dumps({'type': 'content', 'content': _err_msg}, ensure_ascii=False)}\n\n"
                     full_response = _err_msg
                     async with _stream_session() as save_session:
@@ -1017,20 +1018,20 @@ async def stream_response(
                 # 展示已确定的参数
                 _ready = _get_ready_params(_session_ctx)
                 if _ready:
-                    yield f"data: {json.dumps({'type': 'executing', 'message': '已确定参数：' + '，'.join(_ready)}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'executing', 'message': t('params_confirmed_short') + '，'.join(_ready)}, ensure_ascii=False)}\n\n"
                 # 检查参数是否齐全
                 _missing = _get_missing_params(_session_ctx, _msg_type)
                 if _missing:
                     yield f"data: {json.dumps({'type': 'content', 'content': _build_params_hint(_session_ctx, _msg_type)}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     return
-                _type_label = {"analysis": "数据分析", "processing": "数据处理"}.get(_msg_type, _msg_type)
+                _type_label = {"analysis": t('type_analysis'), "processing": t('type_processing')}.get(_msg_type, _msg_type)
                 logger.info(f"[direct_execute] session={session_id} msg_type={_msg_type}")
                 _skill_instruction_generated = False
                 # 用户点「使用技能」走调试模式调用技能；「直接处理」不走技能
                 if request.use_skill and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
                     _skill_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
-                    yield f"data: {json.dumps({'type': 'executing', 'message': f'正在调用技能...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'executing', 'message': t('calling_skill')}, ensure_ascii=False)}\n\n"
                     _skill_instruction_generated = True
                     try:
                         from app.models.skill import Skill as _SkillModel
@@ -1059,20 +1060,20 @@ async def stream_response(
                             _src_tbl = _session_ctx.get("source_data_name", "")
                             _tgt_ds = _session_ctx.get("target_datasource_name", "")
                             _tgt_tbl = _session_ctx.get("target_data_name", "")
-                            _skill_info = f"📋 技能：{_sk_display}"
+                            _skill_info = t('skill_label', name=_sk_display)
                             if _sk_desc:
-                                _skill_info += f"\n描述：{_sk_desc}"
+                                _skill_info += "\n" + t('description_label', desc=_sk_desc)
                             if _ready:
-                                _skill_info += "\n\n✅ 数据参数：" + "，".join(_ready)
+                                _skill_info += "\n\n" + t('data_params_label') + "，".join(_ready)
                             # 拼具体需求
                             _detail = request.content
                             if _src_ds and _src_tbl:
-                                _detail = f"把 {_src_ds} 的 {_src_tbl} 表"
+                                _detail = t('export_from', ds=_src_ds, table=_src_tbl)
                                 if _tgt_ds and _tgt_tbl:
-                                    _detail += f"导出到 {_tgt_ds} 的 {_tgt_tbl} 表"
+                                    _detail += t('export_to', ds=_tgt_ds, table=_tgt_tbl)
                                 else:
                                     _detail += f" {request.content}"
-                            _skill_info += f"\n\n📝 执行需求：{_detail}"
+                            _skill_info += "\n\n" + t('execution_requirement', detail=_detail)
                             full_response += _skill_info
                             yield f"data: {json.dumps({'type': 'content', 'content': _skill_info}, ensure_ascii=False)}\n\n"
                             _runtime = ensure_agent_runtime()
@@ -1112,7 +1113,7 @@ async def stream_response(
                                     if not done:
                                         _fut.cancel()
                                         logger.error(f"[direct_execute] 技能执行超时: {_sk.name}")
-                                        yield f"data: {json.dumps({'type': 'error', 'content': '技能执行超时，请稍后重试'}, ensure_ascii=False)}\n\n"
+                                        yield f"data: {json.dumps({'type': 'error', 'content': t('skill_timeout')}, ensure_ascii=False)}\n\n"
                                         _exec_failed = True
                                         break
                                 try:
@@ -1121,7 +1122,7 @@ async def stream_response(
                                     break
                                 except Exception as e:
                                     logger.error(f"[direct_execute] Agent 执行异常: {e}", exc_info=True)
-                                    yield f"data: {json.dumps({'type': 'error', 'content': f'技能执行出错: {e}'}, ensure_ascii=False)}\n\n"
+                                    yield f"data: {json.dumps({'type': 'error', 'content': t('skill_exec_error', error=str(e))}, ensure_ascii=False)}\n\n"
                                     _exec_failed = True
                                     break
                                 _t = _agent_event.get("type")
@@ -1140,7 +1141,7 @@ async def stream_response(
                                     yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
                             # 保存 assistant 消息到 DB（含异常时部分内容恢复）
                             async with _new_session() as save_session:
-                                _save_content = full_response or ("技能执行失败" if _exec_failed else "技能执行完成")
+                                _save_content = full_response or (t('skill_exec_failed') if _exec_failed else t('skill_exec_done'))
                                 save_session.add(ChatMessage(
                                     session_id=request.session_id, role="assistant",
                                     content=_save_content,
@@ -1153,10 +1154,10 @@ async def stream_response(
                             return
                     except Exception as e:
                         logger.warning(f"[direct_execute] 技能调用失败: {e}")
-                        yield f"data: {json.dumps({'type': 'content', 'content': f'⚠ 技能调用失败: {e}'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'content', 'content': t('skill_call_failed', error=str(e))}, ensure_ascii=False)}\n\n"
             else:
                 # ===== classify: 一次 LLM 判断意图 + keep =====
-                yield f"data: {json.dumps({'type': 'executing', 'message': '正在理解您的需求...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'executing', 'message': t('understanding_request')}, ensure_ascii=False)}\n\n"
                 _msg_type, _keep_source, _keep_target, _keep_skill, _classify_events = await classify_message(request.content, _session_ctx)
                 for _ev in _classify_events:
                     if _ev.get("type") == "error":
@@ -1164,8 +1165,8 @@ async def stream_response(
                         full_response += _ev["content"]
                     elif _ev.get("type") in ("model", "thinking"):
                         yield f"data: {json.dumps(_ev, ensure_ascii=False)}\n\n"
-                _type_label = {"analysis": "数据分析", "processing": "数据处理", "chat": "智能对话"}.get(_msg_type, _msg_type)
-                yield f"data: {json.dumps({'type': 'executing', 'message': f'已识别：{_type_label}，正在为您准备...'}, ensure_ascii=False)}\n\n"
+                _type_label = {"analysis": t('type_analysis'), "processing": t('type_processing'), "chat": t('type_chat')}.get(_msg_type, _msg_type)
+                yield f"data: {json.dumps({'type': 'executing', 'message': t('recognized_type', type=_type_label)}, ensure_ascii=False)}\n\n"
                 logger.info(f"[classify] session={session_id} msg_type={_msg_type} keep_source={_keep_source} keep_target={_keep_target} keep_skill={_keep_skill} content={request.content[:50]!r}")
 
                 # keep=change → 清 context 对应项（keep=true 不清，保留已有参数）
@@ -1250,7 +1251,7 @@ async def stream_response(
                     payload={"user_message": _user_msg, "history": compressed_history},
                     context=_chat_context,
                 )
-                yield f"data: {json.dumps({'type': 'executing', 'message': '正在思考...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'executing', 'message': t('thinking_status')}, ensure_ascii=False)}\n\n"
                 try:
                     async for event in stream_agent_events_sse(_runtime, _chat_msg, _chat_context, user_id=current_user.id, agent_name="chat_agent"):
                         if event.startswith("data: "):
@@ -1263,8 +1264,8 @@ async def stream_response(
                         yield event
                 except Exception as e:
                     logger.error(f"chat LLM 调用失败: {e}")
-                    full_response += f"\n\n❌ 响应出错: {e}"
-                    yield f"data: {json.dumps({'type': 'content', 'content': f'❌ 响应出错: {e}'}, ensure_ascii=False)}\n\n"
+                    full_response += "\n\n" + t('response_error', error=str(e))
+                    yield f"data: {json.dumps({'type': 'content', 'content': t('response_error', error=str(e))}, ensure_ascii=False)}\n\n"
                 # 把 last_config_target 写回 session_ctx（持久化到 DB，下次对话能用）
                 if _chat_context.get("last_config_target"):
                     _session_ctx["last_config_target"] = _chat_context["last_config_target"]
@@ -1470,31 +1471,31 @@ async def stream_response(
                         if _need_source:
                             if _mentioned_ds:
                                 _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
-                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配数据表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_source_table', ds_names=_ds_names_str, count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                             else:
-                                yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定数据源'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('ds_name_not_recognized')}, ensure_ascii=False)}\n\n"
                         elif _session_ctx.get("source_datasource_name") and _session_ctx.get("source_data_name"):
                             _src_ds = _session_ctx["source_datasource_name"]
                             _src_tbl = _session_ctx["source_data_name"]
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的数据：{_src_ds} → {_src_tbl}'}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'type': 'executing', 'message': t('reuse_last_data', ds=_src_ds, table=_src_tbl)}, ensure_ascii=False)}\n\n"
                         if _need_target:
                             if _mentioned_ds:
                                 _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
-                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在从「{_ds_names_str}」匹配目标表（{_mentioned_tbl_cnt} 张表中）...'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_target_table', ds_names=_ds_names_str, count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                             else:
-                                yield f"data: {json.dumps({'type': 'executing', 'message': '未识别到数据源名称，请指定目标数据源'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('target_ds_name_not_recognized')}, ensure_ascii=False)}\n\n"
                         elif _msg_type == "processing" and _session_ctx.get("target_datasource_name"):
                             _tgt_ds = _session_ctx["target_datasource_name"]
                             _tgt_tbl = _session_ctx["target_data_name"]
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的目标表：{_tgt_ds} → {_tgt_tbl}'}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'type': 'executing', 'message': t('reuse_last_target', ds=_tgt_ds, table=_tgt_tbl)}, ensure_ascii=False)}\n\n"
                         if _need_skill:
                             if _msg_type == "processing":
-                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能/流程（{len(_pipe_pool)} 个流程，{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_skill_pipeline', pipe_count=len(_pipe_pool), skill_count=len(_skill_pool))}, ensure_ascii=False)}\n\n"
                             else:
-                                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在匹配技能（{len(_skill_pool)} 个技能中）...'}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_skill', count=len(_skill_pool))}, ensure_ascii=False)}\n\n"
                         elif _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name"):
                             _sk = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name")
-                            yield f"data: {json.dumps({'type': 'executing', 'message': f'✓ 沿用上次选定的技能：{_sk}'}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'type': 'executing', 'message': t('reuse_last_skill', name=_sk)}, ensure_ascii=False)}\n\n"
                         if cancel_event.is_set():
                             yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
                             return
@@ -1532,28 +1533,28 @@ async def stream_response(
                     _result_lines = []
                     for _res in _all_suggestions:
                         if _res["type"] == "data_suggestion":
-                            _result_lines.append(f"✓ 数据表匹配到 {len(_res['matches'])} 个结果")
+                            _result_lines.append(t('source_table_matched', count=len(_res['matches'])))
                         elif _res["type"] == "target_suggestion":
-                            _result_lines.append(f"✓ 目标表匹配到 {len(_res['matches'])} 个结果")
+                            _result_lines.append(t('target_table_matched', count=len(_res['matches'])))
                         elif _res["type"] == "skill_suggestion":
-                            _result_lines.append(f"✓ 技能/流程匹配到 {len(_res['matches'])} 个结果")
+                            _result_lines.append(t('skill_matched', count=len(_res['matches'])))
                         elif _res["type"] == "missing_source":
-                            _result_lines.append("✗ 未识别到数据源名称")
+                            _result_lines.append(t('source_ds_not_recognized'))
                         elif _res["type"] == "missing_target":
-                            _result_lines.append("✗ 未识别到目标数据源名称")
+                            _result_lines.append(t('target_ds_not_recognized'))
                         elif _res["type"] == "data_no_match":
-                            _result_lines.append("✗ 数据表未匹配到结果")
+                            _result_lines.append(t('source_table_no_match_result'))
                         elif _res["type"] == "target_no_match":
-                            _result_lines.append("✗ 目标表未匹配到结果")
+                            _result_lines.append(t('target_table_no_match_result'))
                         elif _res["type"] == "skill_no_match":
-                            _result_lines.append("✗ 技能/流程未匹配到结果")
+                            _result_lines.append(t('skill_no_match_result'))
                     if _result_lines:
                         yield f"data: {json.dumps({'type': 'executing', 'message': '，'.join(_result_lines)}, ensure_ascii=False)}\n\n"
 
                     # 保存消息 + yield 所有匹配结果事件（每路独立，不复杂判断）
                     # 展示已确定的参数和缺失的参数
                     _params_hint = _build_params_hint(_session_ctx, _msg_type)
-                    _match_msg = "检测到匹配结果，请选择操作。"
+                    _match_msg = t('match_result_select')
                     if _params_hint:
                         _match_msg += "\n\n" + _params_hint
                     async with _new_session() as save_session:
@@ -1592,7 +1593,7 @@ async def stream_response(
                     return
                 except Exception as e:
                     import traceback as _tb
-                    _err = f"⚠️ 匹配检测出错：{e}\n\n"
+                    _err = t('match_error', error=str(e)) + "\n\n"
                     logger.error(f"[match] 匹配出错，停止处理: {e}\n{_tb.format_exc()}")
                     yield f"data: {json.dumps({'type': 'content', 'content': _err}, ensure_ascii=False)}\n\n"
                     full_response += _err
@@ -1616,7 +1617,7 @@ async def stream_response(
             if not _skill_instruction_generated and not request.direct_execute and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
                 _skill_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
                 _skill_name = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name") or ""
-                yield f"data: {json.dumps({'type': 'executing', 'message': f'正在生成技能调用指令...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'executing', 'message': t('generating_skill_instruction')}, ensure_ascii=False)}\n\n"
                 try:
                     from app.services.skill_parser import read_skill_md
                     from app.models.skill import Skill as _SkillModel
@@ -1660,7 +1661,7 @@ async def stream_response(
                             _instruction = "\n".join(_lines[1:-1]) if len(_lines) > 2 else _instruction.strip("`")
                         if _instruction:
                             _user_msg = _instruction
-                            yield f"data: {json.dumps({'type': 'content', 'content': f'📋 技能调用指令：\n\n{_instruction}'}, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'type': 'content', 'content': t('skill_instruction_label', instruction=_instruction)}, ensure_ascii=False)}\n\n"
                             logger.info(f"[route] 生成技能指令: {_instruction[:100]!r}")
                 except Exception as e:
                     logger.warning(f"[route] 技能指令生成失败: {e}")
@@ -1727,9 +1728,9 @@ async def stream_response(
                     async with _new_session() as save_session:
                         partial = full_response or ""
                         if partial:
-                            partial += "\n\n*[已停止]*"
+                            partial += "\n\n" + t('stopped')
                         else:
-                            partial = "*[已停止]*"
+                            partial = t('stopped')
                         save_session.add(ChatMessage(
                             session_id=request.session_id, role="assistant",
                             content=partial,
@@ -1746,7 +1747,7 @@ async def stream_response(
                     done, pending = await asyncio.wait({fut}, timeout=120)
                     if not done:
                         fut.cancel()
-                        yield f"data: {json.dumps({'type': 'error', 'content': '等待 Agent 响应超时'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'error', 'content': t('agent_timeout')}, ensure_ascii=False)}\n\n"
                         return
                 try:
                     event = fut.result()
@@ -1754,7 +1755,7 @@ async def stream_response(
                     break
                 except Exception as e:
                     logger.error(f"Agent 执行异常: {e}", exc_info=True)
-                    yield f"data: {json.dumps({'type': 'error', 'content': f'响应出错: {e}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'content': t('response_error_plain', error=str(e))}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     return
 
@@ -1797,9 +1798,9 @@ async def stream_response(
             async with _new_session() as save_session:
                 partial = full_response or ""
                 if partial:
-                    partial += "\n\n*[已停止]*"
+                    partial += "\n\n" + t('stopped')
                 else:
-                    partial = "*[已停止]*"
+                    partial = t('stopped')
                 save_session.add(ChatMessage(
                     session_id=request.session_id, role="assistant",
                     content=partial,
@@ -1812,7 +1813,7 @@ async def stream_response(
             logger.error(f"流式响应失败: {err_detail}")
             # 先推错误到前端（SSE 可能还没关闭）
             try:
-                yield f"data: {json.dumps({'type': 'content', 'content': f'❌ 响应出错: {e}'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'content', 'content': t('response_error', error=str(e))}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'error', 'content': err_detail}, ensure_ascii=False)}\n\n"
             except Exception:
                 pass
@@ -1822,7 +1823,7 @@ async def stream_response(
                 partial = full_response or ""
                 if partial:
                     partial += "\n\n"
-                partial += f"❌ 响应出错: {e}"
+                partial += t('response_error', error=str(e))
                 ai_message = ChatMessage(
                     session_id=request.session_id,
                     role="assistant",
@@ -1849,8 +1850,8 @@ async def stop_generation(session_id: str = Query(..., description="要停止的
     event = _active_stream_events.get(session_id)
     if event:
         event.set()
-        return {"message": "已停止生成"}
-    return {"message": "没有活跃的生成任务"}
+        return {"message": t('stop_success')}
+    return {"message": t('no_active_generation')}
 
 
 # ===== 自然语言数据处理 =====

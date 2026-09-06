@@ -2,12 +2,12 @@
   <div class="login-container">
     <div class="login-card">
       <h1 class="title">DataCrab</h1>
-      <p class="subtitle">数据工程智能体</p>
+      <p class="subtitle">{{ t('login.subtitle') }}</p>
       <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleLogin">
         <el-form-item prop="username">
           <el-input
             v-model="form.username"
-            placeholder="用户名"
+            :placeholder="t('login.username')"
             prefix-icon="User"
             size="large"
           />
@@ -16,7 +16,7 @@
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="密码"
+            :placeholder="t('login.password')"
             prefix-icon="Lock"
             size="large"
             show-password
@@ -31,57 +31,57 @@
             style="width: 100%"
             @click="handleLogin"
           >
-            登录
+            {{ t('login.signIn') }}
           </el-button>
         </el-form-item>
       </el-form>
       <div class="register-link">
-        还没有账号？
-        <el-link type="primary" @click="showRegister = true">注册</el-link>
+        {{ t('login.noAccount') }}
+        <el-link type="primary" @click="showRegister = true">{{ t('login.register') }}</el-link>
         <span class="divider">|</span>
-        <el-link type="primary" @click="showReset = true">修改密码</el-link>
+        <el-link type="primary" @click="showReset = true">{{ t('login.resetPassword') }}</el-link>
       </div>
       <div v-if="version" class="login-version">v{{ version }}</div>
     </div>
 
     <!-- 注册对话框 -->
-    <el-dialog v-model="showRegister" title="注册" width="400px">
+    <el-dialog v-model="showRegister" :title="t('login.registerTitle')" width="400px">
       <el-form ref="registerFormRef" :model="registerForm" :rules="registerRules">
-        <el-form-item prop="username" label="用户名">
+        <el-form-item prop="username" :label="t('login.username')">
           <el-input v-model="registerForm.username" />
         </el-form-item>
-        <el-form-item prop="email" label="邮箱">
+        <el-form-item prop="email" :label="t('login.email')">
           <el-input v-model="registerForm.email" />
         </el-form-item>
-        <el-form-item prop="password" label="密码">
+        <el-form-item prop="password" :label="t('login.password')">
           <el-input v-model="registerForm.password" type="password" show-password />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showRegister = false">取消</el-button>
-        <el-button type="primary" :loading="registerLoading" @click="handleRegister">注册</el-button>
+        <el-button @click="showRegister = false">{{ t('login.cancel') }}</el-button>
+        <el-button type="primary" :loading="registerLoading" @click="handleRegister">{{ t('login.register') }}</el-button>
       </template>
     </el-dialog>
 
     <!-- 修改密码对话框 -->
-    <el-dialog v-model="showReset" title="修改密码" width="400px">
+    <el-dialog v-model="showReset" :title="t('login.resetTitle')" width="400px">
       <el-form ref="resetFormRef" :model="resetForm" :rules="resetRules">
-        <el-form-item prop="username" label="用户名">
+        <el-form-item prop="username" :label="t('login.username')">
           <el-input v-model="resetForm.username" />
         </el-form-item>
-        <el-form-item prop="old_password" label="旧密码">
+        <el-form-item prop="old_password" :label="t('login.oldPassword')">
           <el-input v-model="resetForm.old_password" type="password" show-password />
         </el-form-item>
-        <el-form-item prop="new_password" label="新密码">
+        <el-form-item prop="new_password" :label="t('login.newPassword')">
           <el-input v-model="resetForm.new_password" type="password" show-password />
         </el-form-item>
-        <el-form-item prop="confirm_password" label="确认新密码">
+        <el-form-item prop="confirm_password" :label="t('login.confirmPassword')">
           <el-input v-model="resetForm.confirm_password" type="password" show-password />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showReset = false">取消</el-button>
-        <el-button type="primary" :loading="resetLoading" @click="handleReset">确认修改</el-button>
+        <el-button @click="showReset = false">{{ t('login.cancel') }}</el-button>
+        <el-button type="primary" :loading="resetLoading" @click="handleReset">{{ t('login.confirmModify') }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -90,12 +90,14 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useVersionStore } from '@/stores/version'
 import { authApi } from '@/api/auth'
 import { ElMessage } from 'element-plus'
 import type { FormInstance } from 'element-plus'
 
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const versionStore = useVersionStore()
@@ -116,23 +118,23 @@ const resetFormRef = ref<FormInstance>()
 
 const form = reactive({ username: '', password: '' })
 const rules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  username: [{ required: true, message: t('login.rules.usernameRequired'), trigger: 'blur' }],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
+    { required: true, message: t('login.rules.passwordRequired'), trigger: 'blur' },
+    { min: 6, message: t('login.rules.passwordMin'), trigger: 'blur' },
   ],
 }
 
 const registerForm = reactive({ username: '', email: '', password: '' })
 const registerRules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  username: [{ required: true, message: t('login.rules.usernameRequired'), trigger: 'blur' }],
   email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email' as const, message: '请输入有效邮箱', trigger: 'blur' },
+    { required: true, message: t('login.rules.emailRequired'), trigger: 'blur' },
+    { type: 'email' as const, message: t('login.rules.emailInvalid'), trigger: 'blur' },
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
+    { required: true, message: t('login.rules.passwordRequired'), trigger: 'blur' },
+    { min: 6, message: t('login.rules.passwordMin'), trigger: 'blur' },
   ],
 }
 
@@ -145,7 +147,7 @@ function extractError(e: any): string {
       return detail.map((d: any) => d.msg || String(d)).join('; ')
     }
   }
-  return e?.message || '操作失败'
+  return e?.message || t('common.operationFailed')
 }
 
 async function handleLogin() {
@@ -154,10 +156,10 @@ async function handleLogin() {
   loading.value = true
   try {
     await authStore.login(form.username, form.password)
-    ElMessage.success('登录成功')
+    ElMessage.success(t('login.signInSuccess'))
     router.push('/')
   } catch (e: any) {
-    ElMessage.error(extractError(e) || '登录失败')
+    ElMessage.error(extractError(e) || t('login.signInFailed'))
   } finally {
     loading.value = false
   }
@@ -166,21 +168,21 @@ async function handleLogin() {
 const resetForm = reactive({ username: '', old_password: '', new_password: '', confirm_password: '' })
 
 const resetRules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  username: [{ required: true, message: t('login.rules.usernameRequired'), trigger: 'blur' }],
   old_password: [
-    { required: true, message: '请输入旧密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
+    { required: true, message: t('login.rules.oldPasswordRequired'), trigger: 'blur' },
+    { min: 6, message: t('login.rules.passwordMin'), trigger: 'blur' },
   ],
   new_password: [
-    { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 6, message: '密码至少6位', trigger: 'blur' },
+    { required: true, message: t('login.rules.newPasswordRequired'), trigger: 'blur' },
+    { min: 6, message: t('login.rules.passwordMin'), trigger: 'blur' },
   ],
   confirm_password: [
-    { required: true, message: '请确认新密码', trigger: 'blur' },
+    { required: true, message: t('login.rules.confirmPasswordRequired'), trigger: 'blur' },
     {
       validator: (_rule: any, value: string, callback: any) => {
         if (value !== resetForm.new_password) {
-          callback(new Error('两次输入的密码不一致'))
+          callback(new Error(t('login.rules.passwordMismatch')))
         } else {
           callback()
         }
@@ -196,14 +198,14 @@ async function handleReset() {
   resetLoading.value = true
   try {
     await authApi.resetPassword(resetForm.username, resetForm.old_password, resetForm.new_password)
-    ElMessage.success('密码修改成功，请用新密码登录')
+    ElMessage.success(t('login.resetSuccess'))
     showReset.value = false
     resetForm.username = ''
     resetForm.old_password = ''
     resetForm.new_password = ''
     resetForm.confirm_password = ''
   } catch (e: any) {
-    ElMessage.error(extractError(e) || '修改失败')
+    ElMessage.error(extractError(e) || t('login.resetFailed'))
   } finally {
     resetLoading.value = false
   }
@@ -215,10 +217,10 @@ async function handleRegister() {
   registerLoading.value = true
   try {
     await authStore.register(registerForm.username, registerForm.email, registerForm.password)
-    ElMessage.success('注册成功，请登录')
+    ElMessage.success(t('login.registerSuccess'))
     showRegister.value = false
   } catch (e: any) {
-    ElMessage.error(extractError(e) || '注册失败')
+    ElMessage.error(extractError(e) || t('login.registerFailed'))
   } finally {
     registerLoading.value = false
   }

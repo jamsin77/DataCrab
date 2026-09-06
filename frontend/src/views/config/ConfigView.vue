@@ -1,28 +1,28 @@
 <template>
   <div class="config-container">
     <el-tabs v-model="activeTab" @tab-change="handleTabChange">
-      <el-tab-pane label="性格设定管理" name="agent">
+      <el-tab-pane :label="t('layout.configTabs.agent')" name="agent">
         <AgentConfigView />
       </el-tab-pane>
-      <el-tab-pane label="数据源管理" name="datasource">
+      <el-tab-pane :label="t('layout.configTabs.datasource')" name="datasource">
         <DataSourceView />
       </el-tab-pane>
-      <el-tab-pane label="大模型管理" name="model">
+      <el-tab-pane :label="t('layout.configTabs.model')" name="model">
         <ModelConfigView />
       </el-tab-pane>
-      <el-tab-pane label="数据规则管理" name="standards">
+      <el-tab-pane :label="t('layout.configTabs.standards')" name="standards">
         <DataStandardsConfig />
       </el-tab-pane>
-      <el-tab-pane label="元数据管理" name="metadata">
+      <el-tab-pane :label="t('layout.configTabs.metadata')" name="metadata">
         <MetadataView />
       </el-tab-pane>
-      <el-tab-pane label="权限管理" name="permission">
+      <el-tab-pane :label="t('layout.configTabs.permission')" name="permission">
         <PermissionView />
       </el-tab-pane>
-      <el-tab-pane label="资产管理" name="assets">
+      <el-tab-pane :label="t('layout.configTabs.asset')" name="assets">
         <AssetManagerView />
       </el-tab-pane>
-      <el-tab-pane label="关于" name="about">
+      <el-tab-pane :label="t('layout.configTabs.about')" name="about">
         <AboutView />
       </el-tab-pane>
     </el-tabs>
@@ -32,6 +32,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import AgentConfigView from './AgentConfigView.vue'
 import ModelConfigView from './ModelConfigView.vue'
 import DataStandardsConfig from './DataStandardsConfig.vue'
@@ -43,6 +44,7 @@ import DataSourceView from '@/views/datasource/DataSourceView.vue'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 const activeTab = ref('agent')
 
 onMounted(() => {

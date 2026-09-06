@@ -9,6 +9,7 @@ from sqlalchemy import select, func, or_
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.custom_extension import CustomConnector, LLMProvider
 from app.models.user import User
 from app.api.deps import get_current_user
@@ -76,7 +77,7 @@ async def create_custom_connector(
     """新增连接器：验证代码 → 存 DB → 注册到内存（默认私有）"""
     name = payload.name.strip().lower()
     if not name or not payload.code:
-        raise HTTPException(status_code=400, detail="name 和 code 必填")
+        raise HTTPException(status_code=400, detail=t("connector_identifier_required"))
 
     existing = await db.execute(
         select(CustomConnector).where(
@@ -85,13 +86,13 @@ async def create_custom_connector(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="已存在同名或同显示名称的连接器，请编辑已有连接器而非新建")
+        raise HTTPException(status_code=400, detail=t("connector_name_exists_edit"))
 
     from app.services.connectors import register_custom_connector
     try:
         register_custom_connector(name, payload.code)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"代码验证失败: {e}")
+        raise HTTPException(status_code=400, detail=t("code_validation_failed", error=str(e)))
 
     record = CustomConnector(
         name=name,
@@ -103,7 +104,7 @@ async def create_custom_connector(
     )
     db.add(record)
     await db.commit()
-    return {"ok": True, "id": str(record.id), "message": f"连接器 '{name}' 已创建"}
+    return {"ok": True, "id": str(record.id), "message": t("connector_created_msg", name=name)}
 
 
 @router.put("/connectors/custom/{connector_id}")
@@ -117,9 +118,9 @@ async def update_custom_connector(
     result = await db.execute(select(CustomConnector).where(CustomConnector.id == connector_id))
     record = result.scalar_one_or_none()
     if not record:
-        raise HTTPException(status_code=404, detail="连接器不存在")
+        raise HTTPException(status_code=404, detail=t("connector_not_found"))
     if record.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="无权修改此连接器")
+        raise HTTPException(status_code=403, detail=t("no_permission_modify_connector"))
 
     from app.services.connectors import register_custom_connector
     new_code = payload.code if payload.code is not None else record.code
@@ -127,7 +128,7 @@ async def update_custom_connector(
         try:
             register_custom_connector(record.name, new_code)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"代码验证失败: {e}")
+            raise HTTPException(status_code=400, detail=t("code_validation_failed", error=str(e)))
 
     if payload.display_name is not None:
         record.display_name = payload.display_name
@@ -138,7 +139,7 @@ async def update_custom_connector(
     if payload.config_template is not None:
         record.config_template = payload.config_template
     await db.commit()
-    return {"ok": True, "message": f"连接器 '{record.name}' 已更新"}
+    return {"ok": True, "message": t("connector_updated_msg", name=record.name)}
 
 
 @router.delete("/connectors/custom/{connector_id}")
@@ -151,9 +152,9 @@ async def delete_custom_connector(
     result = await db.execute(select(CustomConnector).where(CustomConnector.id == connector_id))
     connector = result.scalar_one_or_none()
     if not connector:
-        raise HTTPException(status_code=404, detail="连接器不存在")
+        raise HTTPException(status_code=404, detail=t("connector_not_found"))
     if connector.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="无权删除此连接器")
+        raise HTTPException(status_code=403, detail=t("no_permission_delete_connector"))
 
     # 限制：已有数据源使用的连接器不能删除，避免数据源孤立
     from app.models.datasource import DataSource
@@ -166,7 +167,7 @@ async def delete_custom_connector(
     if ds_count and ds_count > 0:
         raise HTTPException(
             status_code=400,
-            detail=f"该连接器已被 {ds_count} 个数据源使用，无法删除。请先删除或迁移相关数据源。",
+            detail=t("connector_in_use", count=ds_count),
         )
 
     from app.services.connectors import _connector_registry, _sync_supported_types
@@ -226,9 +227,9 @@ async def delete_provider(
     result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider 不存在")
+        raise HTTPException(status_code=404, detail=t("provider_not_found"))
     if provider.created_by != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="无权删除此 Provider")
+        raise HTTPException(status_code=403, detail=t("no_permission_delete_provider"))
 
     from app.services.llm import _custom_adapter_cache, _provider_registry
     _custom_adapter_cache.pop(provider.provider_name, None)

@@ -11,6 +11,7 @@ from croniter import croniter
 from zoneinfo import ZoneInfo
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.schedule import Schedule, TaskExecution
 from app.models.user import User
 from app.models.operator import Operator
@@ -47,16 +48,16 @@ async def create_schedule(
     if request.task_type == "operator":
         result = await db.execute(select(Operator).where(Operator.id == request.task_target_id))
         if not result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="算子不存在")
+            raise HTTPException(status_code=404, detail=t("operator_not_found"))
     elif request.task_type == "skill":
         result = await db.execute(select(Skill).where(Skill.id == request.task_target_id))
         if not result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="技能不存在")
+            raise HTTPException(status_code=404, detail=t("skill_not_found"))
     
     # 验证Cron表达式
     if request.schedule_type == "cron":
         if not request.cron_expression:
-            raise HTTPException(status_code=400, detail="Cron调度需要提供cron_expression")
+            raise HTTPException(status_code=400, detail=t("cron_expression_required"))
         try:
             next_run_at = _validate_cron_and_next_run(request.cron_expression, request.timezone)
         except ValueError as e:
@@ -121,7 +122,7 @@ async def get_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
     return schedule
 
 
@@ -136,7 +137,7 @@ async def update_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
 
     update_data = request.model_dump(exclude_unset=True)
 
@@ -151,7 +152,7 @@ async def update_schedule(
                 _min, _hour, _dom, _mon, _dow = _parts
                 _freq = (_min != "0" or _hour != "0" or _dom != "*" or _mon != "*" or _dow != "*")
                 if _freq:
-                    raise HTTPException(status_code=400, detail="内置调度不支持高于每天的频率，请使用每天或更低频率（如每周、每月）")
+                    raise HTTPException(status_code=400, detail=t("builtin_schedule_freq_limit"))
     
     # 如果更新了Cron表达式，重新计算下次执行时间
     if "cron_expression" in update_data and schedule.schedule_type == "cron":
@@ -182,9 +183,9 @@ async def delete_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
     if getattr(schedule, "is_builtin", False):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="内置调度不可删除")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("schedule_builtin_not_deletable"))
     await db.delete(schedule)
 
 
@@ -198,7 +199,7 @@ async def pause_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
     schedule.status = "paused"
     await db.flush()
     await db.refresh(schedule)
@@ -215,7 +216,7 @@ async def resume_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
     schedule.status = "active"
     
     # 重新计算下次执行时间
@@ -244,7 +245,7 @@ async def trigger_schedule(
     result = await db.execute(select(Schedule).where(Schedule.id == schedule_id))
     schedule = result.scalar_one_or_none()
     if not schedule:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="调度不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("schedule_not_found"))
     
     # 创建执行记录
     execution = TaskExecution(
@@ -304,7 +305,7 @@ async def get_execution(
     result = await db.execute(select(TaskExecution).where(TaskExecution.id == execution_id))
     execution = result.scalar_one_or_none()
     if not execution:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("task_execution_log_not_found"))
     return execution
 
 
@@ -319,10 +320,10 @@ async def validate_cron(
         try:
             tz = ZoneInfo(tz_name)
         except Exception:
-            return CronValidateResponse(valid=False, message=f"无效的时区: {tz_name}")
+            return CronValidateResponse(valid=False, message=t("invalid_timezone", timezone=tz_name))
         exprs = [e.strip() for e in request.cron_expression.split(";") if e.strip()]
         if not exprs:
-            return CronValidateResponse(valid=False, message="Cron表达式为空")
+            return CronValidateResponse(valid=False, message=t("cron_expression_empty"))
         now_local = datetime.now(tz).replace(tzinfo=None)
         for expr in exprs:
             croniter(expr, now_local)

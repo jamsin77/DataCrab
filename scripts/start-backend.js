@@ -29,13 +29,14 @@ const isWin = process.platform === "win32";
  */
 function checkPython(cmd) {
   const { spawnSync } = require("child_process");
-  const v = spawnSync(cmd, ["--version"], {
+  const parts = cmd.includes(" ") ? cmd.split(" ") : [cmd];
+  const v = spawnSync(parts[0], [...parts.slice(1), "--version"], {
     encoding: "utf8",
     shell: isWin,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (v.status !== 0 || !v.stdout) return null;
-  const m = v.stdout.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  const m = v.stdout.trim().match(/(\d+)\.(\d+)\.(\d+)/);
   if (!m) return null;
   const major = +m[1];
   const minor = +m[2];
@@ -59,7 +60,7 @@ function findPython() {
   // 2. 系统已安装的 DataCrab（pip install -e 装到全局 / 用户站点）
   //    用 python -c 检测能否 import app.main
   const systemCandidates = isWin
-    ? ["python", "py -3"]
+    ? ["python", "py -3", "python3", "C:\\Users\\Suiqi\\AppData\\Local\\Programs\\Python\\Python314\\python.exe"]
     : ["python3", "python"];
   for (const c of systemCandidates) {
     const parts = c.includes(" ") ? c.split(" ") : [c];

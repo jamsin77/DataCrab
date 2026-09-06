@@ -3,7 +3,7 @@
     <!-- 会话列表侧边栏 -->
     <div class="session-sidebar">
       <el-button class="new-session-btn" @click="handleNewSession">
-        <el-icon><Plus /></el-icon> 新建会话
+        <el-icon><Plus /></el-icon> {{ t('chat.newSession') }}
       </el-button>
       <div class="session-list">
         <div
@@ -14,14 +14,14 @@
           @click="chatStore.switchSession(session.id)"
         >
           <el-icon><ChatDotRound /></el-icon>
-          <span class="session-title">{{ session.title || '新会话' }}</span>
+          <span class="session-title">{{ session.title || t('chat.untitledSession') }}</span>
           <el-dropdown trigger="click" @command="(cmd: string) => handleSessionCommand(cmd, session.id)">
             <el-icon class="session-more" @click.stop><MoreFilled /></el-icon>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                <el-dropdown-item command="export">导出对话</el-dropdown-item>
-                <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                <el-dropdown-item command="rename">{{ t('chat.renameSession') }}</el-dropdown-item>
+                <el-dropdown-item command="export">{{ t('chat.exportConversation') }}</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>{{ t('common.delete') }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -33,13 +33,13 @@
     <div class="chat-main">
       <div v-if="!chatStore.currentSessionId" class="empty-chat">
         <el-icon :size="64" color="#ccc"><ChatDotRound /></el-icon>
-        <h2>开始新对话</h2>
-        <p>输入自然语言描述，AI将帮你处理数据</p>
+        <h2>{{ t('chat.newConversation') }}</h2>
+        <p>{{ t('chat.welcomeDesc') }}</p>
       </div>
       <template v-else>
         <!-- 顶部工具栏 -->
         <div class="chat-toolbar">
-          <span class="chat-toolbar-title">{{ currentSessionTitle || '新会话' }}</span>
+          <span class="chat-toolbar-title">{{ currentSessionTitle || t('chat.untitledSession') }}</span>
           <div class="chat-toolbar-actions">
             <el-button
               class="export-btn"
@@ -48,7 +48,7 @@
               :disabled="chatStore.messages.length === 0"
               @click="handleExportCurrent"
             >
-              导出对话
+              {{ t('chat.exportConversation') }}
             </el-button>
             <el-button
               class="clear-history-btn"
@@ -57,7 +57,7 @@
               :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
               @click="handleClearMessages"
             >
-              清空记录
+              {{ t('chat.clearHistory') }}
             </el-button>
           </div>
         </div>
@@ -71,14 +71,14 @@
           >
             <div class="message-avatar">
               <el-avatar :size="36" v-if="msg.role === 'assistant'" style="background:#409eff">{{ agentName }}</el-avatar>
-              <el-avatar :size="36" v-else>我</el-avatar>
+              <el-avatar :size="36" v-else>{{ t('chat.me') }}</el-avatar>
             </div>
               <div class="message-content">
               <!-- 推理过程（默认折叠，点击展开） -->
               <div v-if="msg.role === 'assistant' && msg.reasoning" class="reasoning-section">
                 <div class="reasoning-header" @click="toggleReasoning(msg.id)">
                   <el-icon :class="{ 'is-rotated': reasoningExpanded[msg.id] }"><CaretRight /></el-icon>
-                  <span>推理过程</span>
+                  <span>{{ t('chat.thinking') }}</span>
                   <el-tag v-if="msg.model" size="small" type="info">{{ msg.model }}</el-tag>
                 </div>
                 <div v-show="reasoningExpanded[msg.id]" class="reasoning-content">
@@ -90,7 +90,7 @@
                 <div class="executing-toggle" @click="msg._execCollapsed = !msg._execCollapsed">
                   <el-icon v-if="!msg._execCollapsed"><ArrowDown /></el-icon>
                   <el-icon v-else><ArrowRight /></el-icon>
-                  <span>{{ msg.executingMsgs.length }} 条进度信息</span>
+                  <span>{{ t('chat.progressCount', { n: msg.executingMsgs.length }) }}</span>
                 </div>
                 <div v-show="!msg._execCollapsed">
                   <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
@@ -107,105 +107,105 @@
                 <template v-if="sug.type === 'data_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><Coin /></el-icon>
-                    <span>检测到相关数据（共 {{ sug.matches.length }} 个），请选择要使用的数据</span>
+                    <span>{{ t('chat.detectedData', { count: sug.matches.length }) }}</span>
                   </div>
                   <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
-                      <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
-                      <span v-if="m.column_count != null" class="meta-col">列数: {{ m.column_count }}</span>
+                      <span v-if="m.row_count != null" class="meta-row">{{ t('chat.rowCount') }}: {{ m.row_count?.toLocaleString() }}</span>
+                      <span v-if="m.column_count != null" class="meta-col">{{ t('chat.columnCount') }}: {{ m.column_count }}</span>
                     </div>
                     <div class="suggestion-actions">
-                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectData(msg, m)">选择此数据</el-button>
-                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">查看数据</el-button>
-                      <el-button v-else type="warning" size="small" @click="requestPermission('datasource', m.datasource_id, m)">申请数据权限</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectData(msg, m)">{{ t('chat.selectThisData') }}</el-button>
+                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">{{ t('chat.viewData') }}</el-button>
+                      <el-button v-else type="warning" size="small" @click="requestPermission('datasource', m.datasource_id, m)">{{ t('chat.requestDataPermission') }}</el-button>
                     </div>
                   </div>
                   <div v-if="sug.matches.length > 3" class="suggestion-pager">
-                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">上一页</el-button>
+                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">{{ t('chat.prevPage') }}</el-button>
                     <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
-                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
+                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">{{ t('chat.nextPage') }}</el-button>
                   </div>
                   <div class="suggestion-actions" style="margin-top: 8px;">
-                    <el-button size="small" @click="abandonDataSuggestion(msg, sug, sugIdx)">放弃选择</el-button>
+                    <el-button size="small" @click="abandonDataSuggestion(msg, sug, sugIdx)">{{ t('chat.abandonSelection') }}</el-button>
                   </div>
                 </template>
                 <template v-else-if="sug.type === 'target_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><WarningFilled /></el-icon>
-                    <span>检测到目标表已存在（共 {{ sug.matches.length }} 个），可能已处理过</span>
+                    <span>{{ t('chat.targetTableExists', { count: sug.matches.length }) }}</span>
                   </div>
                   <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
-                      <span v-if="m.row_count != null" class="meta-row">行数: {{ m.row_count?.toLocaleString() }}</span>
-                      <span v-if="m.column_count != null" class="meta-col">列数: {{ m.column_count }}</span>
+                      <span v-if="m.row_count != null" class="meta-row">{{ t('chat.rowCount') }}: {{ m.row_count?.toLocaleString() }}</span>
+                      <span v-if="m.column_count != null" class="meta-col">{{ t('chat.columnCount') }}: {{ m.column_count }}</span>
                     </div>
                     <div class="suggestion-actions">
-                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectTargetTable(msg, m, sugIdx)">选择此数据</el-button>
-                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">查看数据</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" @click="selectTargetTable(msg, m, sugIdx)">{{ t('chat.selectThisData') }}</el-button>
+                      <el-button v-if="m.can_use" size="small" @click="viewTable(m)">{{ t('chat.viewData') }}</el-button>
                     </div>
                     <!-- 选中后显示写入策略 -->
                     <div v-if="msg._selectedTarget === sugIdx + '_' + m._idx" class="target-write-mode">
                       <el-radio-group v-model="msg._writeMode" size="small">
-                        <el-radio-button label="overwrite">覆盖</el-radio-button>
-                        <el-radio-button label="append">追加</el-radio-button>
-                        <el-radio-button label="direct">直接使用</el-radio-button>
+                        <el-radio-button label="overwrite">{{ t('chat.overwrite') }}</el-radio-button>
+                        <el-radio-button label="append">{{ t('chat.append') }}</el-radio-button>
+                        <el-radio-button label="direct">{{ t('chat.directUse') }}</el-radio-button>
                       </el-radio-group>
-                      <el-button v-if="msg._writeMode" type="primary" size="small" style="margin-left: 8px;" @click="confirmTargetTable(msg, m)">{{ msg._writeMode === 'direct' ? '确认使用' : '确认' }}</el-button>
+                      <el-button v-if="msg._writeMode" type="primary" size="small" style="margin-left: 8px;" @click="confirmTargetTable(msg, m)">{{ msg._writeMode === 'direct' ? t('chat.confirmUse') : t('common.confirm') }}</el-button>
                     </div>
                   </div>
                   <!-- 不选择：新建目标表 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
-                    <span style="font-size: 12px; color: #909399;">新建目标表：</span>
-                    <el-input v-model="msg._newTableName" size="small" placeholder="输入新表名" style="width: 200px;"></el-input>
-                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">确认</el-button>
+                    <span style="font-size: 12px; color: #909399;">{{ t('chat.newTargetTable') }}</span>
+                    <el-input v-model="msg._newTableName" size="small" :placeholder="t('chat.inputNewTableName')" style="width: 200px;"></el-input>
+                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">{{ t('common.confirm') }}</el-button>
                   </div>
                 </template>
                 <template v-else-if="sug.type === 'target_table_no_match'">
                   <div class="suggestion-header">
                     <el-icon><WarningFilled /></el-icon>
-                    <span>目标表不存在，将新建表</span>
+                    <span>{{ t('chat.targetTableNotExist') }}</span>
                   </div>
                   <div class="suggestion-actions">
-                    <span style="font-size: 12px; color: #909399;">新建目标表名：</span>
+                    <span style="font-size: 12px; color: #909399;">{{ t('chat.newTargetTableName') }}</span>
                     <el-input v-model="msg._newTableName" size="small" :placeholder="defaultNewTableName()" style="width: 200px;"></el-input>
-                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">确认</el-button>
+                    <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">{{ t('common.confirm') }}</el-button>
                   </div>
                 </template>
                 <template v-else-if="sug.type === 'skill_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><MagicStick /></el-icon>
-                    <span>检测到匹配{{ (sug.matches[0]?.type === 'pipeline') ? '流程' : '技能' }}（共 {{ sug.matches.length }} 个）</span>
+                    <span>{{ (sug.matches[0]?.type === 'pipeline') ? t('chat.detectedMatchPipeline', { count: sug.matches.length }) : t('chat.detectedMatchSkill', { count: sug.matches.length }) }}</span>
                   </div>
                   <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.name }}</div>
                     <div class="suggestion-item-desc">{{ m.description }}</div>
                     <div class="suggestion-actions" style="gap: 8px;">
-                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="useMatched(m, msg)">使用技能</el-button>
-                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="debugSkill(m, msg)">调试技能</el-button>
-                      <el-button v-if="!m.can_use" type="warning" size="small" @click="requestPermission(m.type, m.id, m)">申请权限</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="useMatched(m, msg)">{{ t('chat.useSkill') }}</el-button>
+                      <el-button v-if="m.can_use" type="primary" size="small" :disabled="!isParamsReady(msg, sug)" @click="debugSkill(m, msg)">{{ t('chat.debugSkill') }}</el-button>
+                      <el-button v-if="!m.can_use" type="warning" size="small" @click="requestPermission(m.type, m.id, m)">{{ t('chat.requestPermission') }}</el-button>
                     </div>
                   </div>
                   <div v-if="sug.matches.length > 3" class="suggestion-pager">
-                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">上一页</el-button>
+                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">{{ t('chat.prevPage') }}</el-button>
                     <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
-                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">下一页</el-button>
+                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">{{ t('chat.nextPage') }}</el-button>
                   </div>
                   <div class="suggestion-actions" style="margin-top: 8px; gap: 8px;">
-                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
-                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
+                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">{{ t('chat.createSkill') }}</el-button>
+                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? t('chat.directAnalyze') : t('chat.directProcess') }}</el-button>
                   </div>
                 </template>
                 <!-- skill_no_match 渲染卡片，其余 no_match 类型提示在 content 里不渲染卡片 -->
                 <template v-else-if="sug.type === 'skill_no_match'">
                   <div class="suggestion-header">
                     <el-icon><WarningFilled /></el-icon>
-                    <span>未找到匹配的技能</span>
+                    <span>{{ t('chat.skillNoMatch') }}</span>
                   </div>
                   <div class="suggestion-actions" style="margin-top: 8px; gap: 8px;">
-                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">创建新技能</el-button>
-                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? '直接分析' : '直接处理' }}</el-button>
+                    <el-button type="primary" size="small" @click="goCreateSkill(msg)">{{ t('chat.createSkill') }}</el-button>
+                    <el-button type="primary" size="small" @click="continueProcessing(msg)">{{ sug.msg_type === 'analysis' ? t('chat.directAnalyze') : t('chat.directProcess') }}</el-button>
                   </div>
                 </template>
               </div>
@@ -221,7 +221,7 @@
                   <el-collapse-item name="report">
                     <template #title>
                       <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
-                      <span class="collapse-label">数据检查报告</span>
+                      <span class="collapse-label">{{ t('chat.inspectionReport') }}</span>
                     </template>
                     <div class="markdown-content" v-html="renderMarkdown(msg.inspectionReport)"></div>
                   </el-collapse-item>
@@ -233,12 +233,12 @@
                   :key="att.filename"
                   class="user-attachment-card"
                   @click="reuseAttachment(att)"
-                  title="点击重新引用此文件"
+                  :title="t('chat.clickToReuse')"
                 >
                   <el-icon class="att-icon"><Document /></el-icon>
                   <div class="att-info">
                     <div class="att-name">{{ att.filename }}</div>
-                    <div class="att-meta" v-if="att.sheets && att.sheets.length">{{ att.sheets.length }} 个工作表</div>
+                    <div class="att-meta" v-if="att.sheets && att.sheets.length">{{ t('chat.sheets', { n: att.sheets.length }) }}</div>
                   </div>
                   <el-icon class="att-reuse"><RefreshRight /></el-icon>
                 </div>
@@ -253,7 +253,7 @@
                   circle
                   size="small"
                   @click="handleCopy(msg.content)"
-                  title="复制"
+                  :title="t('common.copy')"
                 />
               </div>
             </div>
@@ -281,7 +281,7 @@
               :rows="2"
               :autosize="{ minRows: 1, maxRows: 6 }"
               :disabled="chatStore.isStreaming"
-              placeholder="输入消息... (Enter发送, Shift+Enter换行, ↑↓浏览历史)"
+              :placeholder="t('chat.inputMsgPlaceholder')"
               @keydown="handleKeyDown"
             />
             <div class="input-actions">
@@ -295,7 +295,7 @@
                   circle
                   :loading="uploading"
                   :disabled="chatStore.isStreaming"
-                  title="上传文件附件（≤5MB）"
+                  :title="t('chat.uploadFileTip')"
                 >
                   <el-icon v-if="!uploading"><Paperclip /></el-icon>
                 </el-button>
@@ -328,6 +328,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right } from '@element-plus/icons-vue'
@@ -337,6 +338,7 @@ import api from '@/api/index'
 import { chatApi } from '@/api/chat'
 
 const router = useRouter()
+const { t } = useI18n()
 const chatStore = useChatStore()
 const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
@@ -395,7 +397,7 @@ function renderMarkdown(content: string): string {
     try {
       data = JSON.parse(jsonStr.trim())
     } catch (e) {
-      return `<div class="echart-error">⚠️ 图表数据解析失败: ${(e as Error).message}</div>`
+      return `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${(e as Error).message}</div>`
     }
 
     // 构造 ECharts option
@@ -410,7 +412,7 @@ function renderMarkdown(content: string): string {
 
 function buildEchartsOption(type: string, title: string, xLabel: string, yLabel: string, data: any): any {
   const categories = data.categories || []
-  const series = data.series || [{ name: title || '数据', values: data.values || [] }]
+  const series = data.series || [{ name: title || t('chat.chartData'), values: data.values || [] }]
   const option: any = {
     title: title ? { text: title, left: 'center' } : undefined,
     tooltip: { trigger: type === 'pie' ? 'item' : 'axis' },
@@ -474,7 +476,7 @@ function toggleReasoning(msgId: string) {
 async function handleCopy(content: string) {
   try {
     await navigator.clipboard.writeText(content)
-    ElMessage.success('已复制到剪贴板')
+    ElMessage.success(t('common.copied'))
   } catch {
     const textarea = document.createElement('textarea')
     textarea.value = content
@@ -484,7 +486,7 @@ async function handleCopy(content: string) {
     textarea.select()
     document.execCommand('copy')
     document.body.removeChild(textarea)
-    ElMessage.success('已复制到剪贴板')
+    ElMessage.success(t('common.copied'))
   }
 }
 
@@ -724,26 +726,26 @@ function updateParamsHint(msg: any) {
   const sel = chatStore.selectedData
   const ready: string[] = []
   const hasSource = !!sel?.datasource_id && !!sel?.table_name
-  if (sel?.datasource_name) ready.push(`源数据源: ${sel.datasource_name}`)
-  if (sel?.table_name) ready.push(`源表: ${sel.table_name}`)
-  if (sel?.target_datasource_name) ready.push(`目标数据源: ${sel.target_datasource_name}`)
-  if (sel?.target_table_name) ready.push(`目标表: ${sel.target_table_name}`)
-  if (sel?.skill_name) ready.push(`技能: ${sel.skill_name}`)
+  if (sel?.datasource_name) ready.push(`${t('chat.sourceDataSource')}: ${sel.datasource_name}`)
+  if (sel?.table_name) ready.push(`${t('chat.sourceTable')}: ${sel.table_name}`)
+  if (sel?.target_datasource_name) ready.push(`${t('chat.targetDataSource')}: ${sel.target_datasource_name}`)
+  if (sel?.target_table_name) ready.push(`${t('chat.targetTableLabel')}: ${sel.target_table_name}`)
+  if (sel?.skill_name) ready.push(`${t('chat.skill')}: ${sel.skill_name}`)
   const missing: string[] = []
   if (!hasSource) {
-    if (!sel?.datasource_id) missing.push('源数据源')
-    if (!sel?.table_name) missing.push('源数据表')
+    if (!sel?.datasource_id) missing.push(t('chat.sourceDataSource'))
+    if (!sel?.table_name) missing.push(t('chat.sourceDataTable'))
   }
   if (msg.suggestions) {
     const hasTarget = (msg.suggestions as any[]).some(s => s.type === 'target_suggestion' || s.type === 'target_table_no_match' || s.type === 'target_datasource_no_match')
     if (hasTarget) {
-      if (!sel?.target_datasource_id) missing.push('目标数据源')
-      if (!sel?.target_table_name) missing.push('目标数据表')
+      if (!sel?.target_datasource_id) missing.push(t('chat.targetDataSource'))
+      if (!sel?.target_table_name) missing.push(t('chat.targetDataTable'))
     }
   }
-  let hint = '检测到匹配结果，请选择操作。'
-  if (ready.length) hint += '\n\n✅ 已确定参数：' + ready.join('，')
-  if (missing.length) hint += '\n\n⚠️ 还缺：' + missing.join('、') + '，请补充'
+  let hint = t('chat.detectedMatch')
+  if (ready.length) hint += '\n\n✅ ' + t('chat.paramsReady') + '：' + ready.join('，')
+  if (missing.length) hint += '\n\n⚠️ ' + t('chat.paramsMissing') + '：' + missing.join('、') + t('chat.pleaseSupply')
   msg.content = hint
   chatStore.messages = [...chatStore.messages]
 }
@@ -756,7 +758,7 @@ function selectData(msg: any, m: any) {
     table_name: m.table_name,
     filename: m.filename || m.table_name,
   } as any
-  ElMessage.success(`已选择数据：${m.datasource_name} → ${m.filename || m.table_name}`)
+  ElMessage.success(t('chat.dataSelected', { ds: m.datasource_name, table: m.filename || m.table_name }))
   updateParamsHint(msg)
   // 持久化源数据上下文
   const sid = chatStore.currentSessionId
@@ -780,7 +782,7 @@ function selectData(msg: any, m: any) {
 function abandonDataSuggestion(msg: any, sug: any, sugIdx: number) {
   chatStore.selectedData = null
   updateParamsHint(msg)
-  msg.content = (msg.content ? msg.content + '\n\n' : '') + '没有您想要的数据吗？请再描述一下数据的详细特征'
+  msg.content = (msg.content ? msg.content + '\n\n' : '') + t('chat.noDesiredData')
   chatStore.messages = [...chatStore.messages]
   nextTick(() => {
     const textarea = document.querySelector('.input-area textarea') as HTMLTextAreaElement
@@ -834,7 +836,7 @@ function confirmTargetTable(msg: any, m: any) {
       target_filename: m.filename || m.table_name,
       target_write_mode: 'direct',
     } as any
-    ElMessage.success(`已选择直接使用目标表：${m.datasource_name} → ${m.table_name}`)
+    ElMessage.success(t('chat.directTargetSelected', { ds: m.datasource_name, table: m.table_name }))
     updateParamsHint(msg)
     _persistTargetContext()
     return
@@ -847,7 +849,7 @@ function confirmTargetTable(msg: any, m: any) {
     target_filename: m.filename || m.table_name,
     target_write_mode: mode,
   } as any
-  ElMessage.success(`已选择目标表：${m.datasource_name} → ${m.table_name}（${mode === 'overwrite' ? '覆盖' : '追加'}）`)
+  ElMessage.success(t('chat.targetTableSelected', { ds: m.datasource_name, table: m.table_name, mode: mode === 'overwrite' ? t('chat.overwrite') : t('chat.append') }))
   updateParamsHint(msg)
   _persistTargetContext()
   nextTick(() => {
@@ -866,7 +868,7 @@ function confirmNewTargetTable(msg: any) {
     target_filename: msg._newTableName,
     target_write_mode: 'create',
   } as any
-  ElMessage.success(`已确认目标表：${chatStore.selectedData?.target_datasource_name} → ${msg._newTableName}（新建）`)
+  ElMessage.success(t('chat.targetTableConfirmed', { ds: chatStore.selectedData?.target_datasource_name, table: msg._newTableName }))
   updateParamsHint(msg)
   _persistTargetContext()
   nextTick(() => {
@@ -888,10 +890,10 @@ function isParamsReady(msg: any, sug: any): boolean {
 function getMissingParams(msg: any, sug: any): string[] {
   const sel = chatStore.selectedData
   const missing = []
-  if (!sel?.datasource_id) missing.push('源数据源')
-  if (!sel?.table_name) missing.push('源数据表')
+  if (!sel?.datasource_id) missing.push(t('chat.sourceDataSource'))
+  if (!sel?.table_name) missing.push(t('chat.sourceDataTable'))
   if (sug?.msg_type !== 'analysis') {
-    if (!sel?.target_datasource_id && !msg._newTableName) missing.push('目标数据表')
+    if (!sel?.target_datasource_id && !msg._newTableName) missing.push(t('chat.targetDataTable'))
   }
   return missing
 }
@@ -916,7 +918,7 @@ function goCreateSkill(msg: any) {
   const recentUserMsgs: string[] = []
   for (let i = 0; i <= msgIdx; i++) {
     const m = allMsgs[i]
-    if (m.role === 'user' && m.content && !m.content.startsWith('检测到匹配结果')) {
+    if (m.role === 'user' && m.content && !m.content.startsWith(t('chat.detectedMatch'))) {
       recentUserMsgs.push(m.content.trim())
     }
   }
@@ -929,15 +931,15 @@ function goCreateSkill(msg: any) {
   if (recentUserMsgs.length > 0) {
     const recent = recentUserMsgs.slice(-2)
     if (recent.length > 0) {
-      lines.push(`（对话背景：${recent.join('；')}）`)
+      lines.push(t('chat.dialogContext', { text: recent.join('；') }))
     }
   }
   // 数据上下文
   if (sel?.datasource_name && (sel.table_name)) {
-    lines.push(`数据来源：${sel.datasource_name} 的 ${sel.table_name}`)
+    lines.push(t('chat.dataFrom', { ds: sel.datasource_name, table: sel.table_name }))
   }
   if (sel?.target_datasource_name && sel?.target_table_name) {
-    lines.push(`输出目标：${sel.target_datasource_name} 的 ${sel.target_table_name}`)
+    lines.push(t('chat.outputTarget', { ds: sel.target_datasource_name, table: sel.target_table_name }))
   }
   const desc = encodeURIComponent(lines.join('\n'))
   router.push({ path: '/skill', query: { create: 'true', desc } })
@@ -962,7 +964,7 @@ async function continueProcessing(msg: any) {
   // 检查是否有 data_suggestion 但用户没选源表
   const hasDataSuggestion = (msg.suggestions || []).some((s: any) => s.type === 'data_suggestion')
   if (hasDataSuggestion && !chatStore.selectedData?.datasource_id) {
-    ElMessage.warning('请先选择源数据表，再继续处理')
+    ElMessage.warning(t('chat.selectSourceFirst'))
     return
   }
   // 检查 target_table_no_match 或 target_suggestion 时用户输入了新表名
@@ -990,22 +992,22 @@ async function requestPermission(resourceType: string, resourceId: string, m: an
       resource_type: resourceType,
       resource_id: resourceId,
       requested_level: 'use',
-      reason: `在对话中需要使用此${resourceType === 'datasource' ? '数据源' : resourceType === 'pipeline' ? '流程' : '技能'}`,
+      reason: t('chat.permissionReason', { type: resourceType === 'datasource' ? t('chat.dataSource') : resourceType === 'pipeline' ? t('layout.menu.pipeline') : t('chat.skill') }),
     })
-    ElMessage.success('权限申请已提交，等待资源所有者审批')
+    ElMessage.success(t('chat.permissionSubmitted'))
   } catch (e: any) {
     const detail = e?.response?.data?.detail
     if (detail && typeof detail === 'string') {
       ElMessage.warning(detail)
     } else {
-      ElMessage.error('权限申请失败')
+      ElMessage.error(t('chat.permissionFailed'))
     }
   }
 }
 
 function beforeUpload(file: File): boolean {
   if (file.size > 5 * 1024 * 1024) {
-    ElMessage.error(`文件大小超过 5MB 限制（当前 ${(file.size / 1024 / 1024).toFixed(1)}MB）`)
+    ElMessage.error(t('chat.fileSizeExceeded', { size: (file.size / 1024 / 1024).toFixed(1) }))
     return false
   }
   return true
@@ -1030,13 +1032,13 @@ async function handleUpload(opt: any) {
       is_image: _isImage,
     } as any
     if (_isImage) {
-      ElMessage.success(`已上传图片: ${res.filename}`)
+      ElMessage.success(t('chat.imageUploaded', { name: res.filename }))
     } else {
-      ElMessage.success(`已上传: ${res.filename}`)
+      ElMessage.success(t('chat.fileUploaded', { name: res.filename }))
     }
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || String(e)
-    ElMessage.error(`上传失败: ${detail}`)
+    ElMessage.error(t('chat.uploadFailed', { detail }))
   } finally {
     uploading.value = false
   }
@@ -1045,26 +1047,26 @@ async function handleUpload(opt: any) {
 // 点击历史消息里的文件卡片，重新引用该文件
 function reuseAttachment(att: { filename: string; table_name_prefix?: string; sheets?: string[] }) {
   chatStore.selectedData = {
-    datasource_name: '聊天上传数据',
+    datasource_name: t('chat.uploadedData'),
     table_name: att.table_name_prefix || att.filename,
     filename: att.filename,
   } as any
-  ElMessage.success(`已引用: ${att.filename}`)
+  ElMessage.success(t('chat.fileReused', { name: att.filename }))
 }
 
 async function handleClearMessages() {
   try {
     await ElMessageBox.confirm(
-      '确定清空当前会话的所有消息吗？此操作不可恢复。',
-      '清空记录',
-      { type: 'warning', confirmButtonText: '清空', cancelButtonText: '取消' }
+      t('chat.clearMessagesConfirm'),
+      t('chat.clearHistory'),
+      { type: 'warning', confirmButtonText: t('chat.clear'), cancelButtonText: t('common.cancel') }
     )
   } catch {
     return
   }
   await chatStore.clearMessages()
   reasoningExpanded.value = {}
-  ElMessage.success('已清空当前会话记录')
+  ElMessage.success(t('chat.clearedMessages'))
 }
 
 function handleKeyDown(e: KeyboardEvent) {
@@ -1096,10 +1098,10 @@ function handleKeyDown(e: KeyboardEvent) {
 
 async function handleSessionCommand(command: string, sessionId: string) {
   if (command === 'delete') {
-    await ElMessageBox.confirm('确定删除此会话？', '提示', { type: 'warning' })
+    await ElMessageBox.confirm(t('chat.deleteSessionConfirm'), t('common.info'), { type: 'warning' })
     await chatStore.deleteSession(sessionId)
   } else if (command === 'rename') {
-    const { value } = await ElMessageBox.prompt('请输入新名称', '重命名')
+    const { value } = await ElMessageBox.prompt(t('chat.enterNewName'), t('chat.renameSession'))
     if (value) {
       const { chatApi } = await import('@/api/chat')
       await chatApi.updateSession(sessionId, value)
@@ -1130,33 +1132,33 @@ async function exportSession(sessionId: string) {
     msgs = await chatApi.listMessages(sessionId)
   }
   if (!msgs || msgs.length === 0) {
-    ElMessage.warning('该会话没有消息可导出')
+    ElMessage.warning(t('chat.noMessagesToExport'))
     return
   }
 
   const session = chatStore.sessions.find((s) => s.id === sessionId)
-  const sessionTitle = session?.title || '新会话'
+  const sessionTitle = session?.title || t('chat.untitledSession')
 
   const lines: string[] = []
   lines.push(`# ${sessionTitle}`)
   lines.push('')
-  lines.push(`> 导出时间：${formatExportTime(new Date().toISOString())}`)
-  lines.push(`> 消息数：${msgs.length}`)
+  lines.push(`> ${t('chat.exportTime')}${formatExportTime(new Date().toISOString())}`)
+  lines.push(`> ${t('chat.messageCount')}${msgs.length}`)
   lines.push('')
   lines.push('---')
   lines.push('')
 
   for (const msg of msgs) {
-    const role = msg.role === 'user' ? '用户' : '助手'
+    const role = msg.role === 'user' ? t('chat.userRole') : t('chat.assistantRole')
     const time = formatExportTime(msg.created_at)
     lines.push(`## ${role}  ${time}`)
     lines.push('')
     if (msg.model) {
-      lines.push(`*模型：${msg.model}*`)
+      lines.push(`*${t('chat.modelLabel')}${msg.model}*`)
       lines.push('')
     }
     if (msg.reasoning) {
-      lines.push('<details><summary>推理过程</summary>')
+      lines.push(`<details><summary>${t('chat.thinking')}</summary>`)
       lines.push('')
       lines.push(msg.reasoning)
       lines.push('')
@@ -1180,7 +1182,7 @@ async function exportSession(sessionId: string) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-  ElMessage.success(`已导出 ${msgs.length} 条对话`)
+  ElMessage.success(t('chat.exportedCount', { count: msgs.length }))
 }
 
 async function handleExportCurrent() {

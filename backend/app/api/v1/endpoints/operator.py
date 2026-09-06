@@ -1,4 +1,4 @@
-﻿"""算子管理API端点"""
+"""算子管理API端点"""
 
 import asyncio
 import io
@@ -15,6 +15,7 @@ from sqlalchemy import select, or_
 from loguru import logger
 
 from app.core.database import get_db, async_session
+from app.core.i18n import t
 from app.models.operator import Operator
 from app.models.user import User
 from app.services.permission_service import assert_resource_access
@@ -116,20 +117,20 @@ async def upload_operator(
 ):
     """上传Python脚本，自动解析生成算子"""
     if not file.filename or not file.filename.lower().endswith(".py"):
-        raise HTTPException(status_code=400, detail="请上传.py文件")
+        raise HTTPException(status_code=400, detail=t('upload_py_only'))
 
     script_content = (await file.read()).decode("utf-8")
 
     try:
         parsed = parse_python_script(script_content)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"Python脚本语法错误: {e}")
+        raise HTTPException(status_code=400, detail=t('python_syntax_error', e=str(e)))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"脚本解析失败: {e}")
+        raise HTTPException(status_code=400, detail=t('script_parse_failed', e=str(e)))
 
     func_name = parsed.get("function_name")
     if not func_name:
-        raise HTTPException(status_code=400, detail="脚本中未找到可用的函数定义")
+        raise HTTPException(status_code=400, detail=t('no_function_definition'))
 
     script_name = extract_script_name(file.filename)
 
@@ -164,11 +165,11 @@ async def download_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "view")
 
     if not operator.script_content:
-        raise HTTPException(status_code=404, detail="该算子没有可下载的脚本")
+        raise HTTPException(status_code=404, detail=t('operator_no_script_download'))
 
     filename = operator.script_filename or f"{operator.name}.py"
     content = operator.script_content.encode("utf-8")
@@ -191,11 +192,11 @@ async def debug_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "use")
 
     if not operator.script_content:
-        raise HTTPException(status_code=400, detail="该算子没有可执行的脚本")
+        raise HTTPException(status_code=400, detail=t('operator_no_script'))
 
     start_time = time.time()
     params = request.parameters or {}
@@ -263,19 +264,19 @@ async def update_operator_script(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "manage")
 
     try:
         parsed = parse_python_script(request.script_content)
     except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"Python脚本语法错误: {e}")
+        raise HTTPException(status_code=400, detail=t('python_syntax_error', e=str(e)))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"脚本解析失败: {e}")
+        raise HTTPException(status_code=400, detail=t('script_parse_failed', e=str(e)))
 
     func_name = parsed.get("function_name")
     if not func_name:
-        raise HTTPException(status_code=400, detail="脚本中未找到可用的函数定义")
+        raise HTTPException(status_code=400, detail=t('no_function_definition'))
 
     operator.script_content = request.script_content
     operator.function_name = func_name
@@ -353,7 +354,7 @@ async def get_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "view")
     return operator
 
@@ -369,7 +370,7 @@ async def update_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "manage")
 
     update_data = request.model_dump(exclude_unset=True)
@@ -393,7 +394,7 @@ async def delete_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="算子不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "manage")
     await db.delete(operator)
     await db.flush()
@@ -412,7 +413,7 @@ async def clone_operator(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "view")
 
     script_name = request.name.lower().replace(" ", "_")
@@ -573,7 +574,7 @@ async def generate_operator(
         raw_code = await llm_manager.chat_with_messages(messages, temperature=0.3, max_tokens=3000)
     except Exception as e:
         logger.error(f"LLM生成算子失败: {e}")
-        raise HTTPException(status_code=500, detail=f"AI生成失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=t('ai_generate_failed', e=str(e)))
 
     script_content = _strip_code_fences(raw_code)
 
@@ -584,18 +585,18 @@ async def generate_operator(
             break
         except SyntaxError as e:
             if fix_round >= MAX_FIX_ROUNDS:
-                raise HTTPException(status_code=400, detail=f"生成脚本语法错误且自动修复失败: {e}")
+                raise HTTPException(status_code=400, detail=t('script_syntax_fix_failed', e=str(e)))
             logger.warning(f"生成的脚本语法错误(修复第{fix_round+1}轮): {e}")
             try:
                 script_content = await _llm_fix_operator_script(messages, script_content, f"语法错误: {e}")
             except Exception as fix_err:
-                raise HTTPException(status_code=400, detail=f"生成脚本语法错误且自动修复失败: {e}")
+                raise HTTPException(status_code=400, detail=t('script_syntax_fix_failed', e=str(e)))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"生成脚本解析失败: {e}")
+            raise HTTPException(status_code=400, detail=t('script_generate_parse_failed', e=str(e)))
 
     func_name = parsed.get("function_name")
     if not func_name:
-        raise HTTPException(status_code=400, detail="生成的脚本中未找到可用的函数定义")
+        raise HTTPException(status_code=400, detail=t('generated_no_function'))
 
     script_name = func_name.replace("_", " ").title().replace(" ", "_").lower()
 
@@ -666,7 +667,7 @@ async def generate_operator_stream(
         import json as json_mod
         full_content = ""
         try:
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': 'AI 正在推理和生成算子代码...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'generating', 'message': t('ai_generating_operator')}, ensure_ascii=False)}\n\n"
 
             async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "model":
@@ -680,7 +681,7 @@ async def generate_operator_stream(
             raw_code = full_content.strip()
             script_content = _strip_code_fences(raw_code)
 
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'parsing', 'message': '解析生成的脚本...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'parsing', 'message': t('parsing_generated_script')}, ensure_ascii=False)}\n\n"
 
             MAX_FIX_ROUNDS = 2
             for fix_round in range(MAX_FIX_ROUNDS + 1):
@@ -689,21 +690,21 @@ async def generate_operator_stream(
                     break
                 except SyntaxError as e:
                     if fix_round >= MAX_FIX_ROUNDS:
-                        yield f"data: {json_mod.dumps({'type': 'error', 'content': f'生成脚本语法错误且自动修复失败: {e}'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json_mod.dumps({'type': 'error', 'content': t('script_syntax_fix_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                         return
-                    yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': f'语法错误，自动修复(第{fix_round+1}轮)...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': t('syntax_fixing_round', round=fix_round+1)}, ensure_ascii=False)}\n\n"
                     try:
                         script_content = await _llm_fix_operator_script(messages, script_content, f"语法错误: {e}")
                     except Exception:
-                        yield f"data: {json_mod.dumps({'type': 'error', 'content': f'生成脚本语法错误且自动修复失败: {e}'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json_mod.dumps({'type': 'error', 'content': t('script_syntax_fix_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                         return
                 except Exception as e:
-                    yield f"data: {json_mod.dumps({'type': 'error', 'content': f'生成脚本解析失败: {e}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'error', 'content': t('script_generate_parse_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                     return
 
             func_name = parsed.get("function_name")
             if not func_name:
-                yield f"data: {json_mod.dumps({'type': 'error', 'content': '生成的脚本中未找到可用的函数定义'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json_mod.dumps({'type': 'error', 'content': t('generated_no_function')}, ensure_ascii=False)}\n\n"
                 return
 
             script_name = func_name.replace("_", " ").title().replace(" ", "_").lower()
@@ -726,11 +727,11 @@ async def generate_operator_stream(
             await db.flush()
             await db.refresh(operator)
 
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'validating', 'message': '验证生成的算子...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'validating', 'message': t('validating_operator')}, ensure_ascii=False)}\n\n"
 
             success, error_msg = _validate_operator_script(script_content, current_user.id)
             if not success:
-                yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': '验证失败，尝试自动修复...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': t('validation_failed_fixing')}, ensure_ascii=False)}\n\n"
                 for fix_round in range(MAX_FIX_ROUNDS):
                     try:
                         prompt_messages = [
@@ -774,11 +775,11 @@ async def modify_operator_stream(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "manage")
 
     if not operator.script_content:
-        raise HTTPException(status_code=400, detail="该算子没有可修改的脚本")
+        raise HTTPException(status_code=400, detail=t('operator_no_script_modify'))
 
     await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
@@ -794,7 +795,7 @@ async def modify_operator_stream(
         import json as json_mod
         full_content = ""
         try:
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': 'AI 正在推理和修改算子代码...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'modifying', 'message': t('ai_modifying_operator')}, ensure_ascii=False)}\n\n"
 
             async for chunk in llm_manager.chat_stream_with_thinking(messages, temperature=0.3):
                 if chunk["type"] == "model":
@@ -808,7 +809,7 @@ async def modify_operator_stream(
             raw_code = full_content.strip()
             script_content = _strip_code_fences(raw_code)
 
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'parsing', 'message': '解析修改后的脚本...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'parsing', 'message': t('parsing_modified_script')}, ensure_ascii=False)}\n\n"
 
             MAX_FIX_ROUNDS = 2
             for fix_round in range(MAX_FIX_ROUNDS + 1):
@@ -817,21 +818,21 @@ async def modify_operator_stream(
                     break
                 except SyntaxError as e:
                     if fix_round >= MAX_FIX_ROUNDS:
-                        yield f"data: {json_mod.dumps({'type': 'error', 'content': f'修改后脚本语法错误且自动修复失败: {e}'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json_mod.dumps({'type': 'error', 'content': t('modified_script_syntax_fix_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                         return
-                    yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': f'语法错误，自动修复(第{fix_round+1}轮)...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': t('syntax_fixing_round', round=fix_round+1)}, ensure_ascii=False)}\n\n"
                     try:
                         script_content = await _llm_fix_operator_script(messages, script_content, f"语法错误: {e}")
                     except Exception:
-                        yield f"data: {json_mod.dumps({'type': 'error', 'content': f'修改后脚本语法错误且自动修复失败: {e}'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json_mod.dumps({'type': 'error', 'content': t('modified_script_syntax_fix_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                         return
                 except Exception as e:
-                    yield f"data: {json_mod.dumps({'type': 'error', 'content': f'修改后脚本解析失败: {e}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_mod.dumps({'type': 'error', 'content': t('modified_script_parse_failed', e=str(e))}, ensure_ascii=False)}\n\n"
                     return
 
             func_name = parsed.get("function_name")
             if not func_name:
-                yield f"data: {json_mod.dumps({'type': 'error', 'content': '修改后的脚本中未找到可用的函数定义'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json_mod.dumps({'type': 'error', 'content': t('modified_no_function')}, ensure_ascii=False)}\n\n"
                 return
 
             operator.script_content = script_content
@@ -859,11 +860,11 @@ async def modify_operator_stream(
             await db.flush()
             await db.refresh(operator)
 
-            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'validating', 'message': '验证修改后的算子...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'validating', 'message': t('validating_modified_operator')}, ensure_ascii=False)}\n\n"
 
             success, error_msg = _validate_operator_script(script_content, current_user.id)
             if not success:
-                yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': '验证失败，尝试自动修复...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json_mod.dumps({'type': 'phase', 'phase': 'fixing', 'message': t('validation_failed_fixing')}, ensure_ascii=False)}\n\n"
                 for fix_round in range(MAX_FIX_ROUNDS):
                     try:
                         fixed_content = await _llm_fix_operator_script(messages, script_content, error_msg)
@@ -905,7 +906,7 @@ async def debug_operator_chat(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "use")
 
     await init_user_llm_context(current_user.id)
@@ -987,7 +988,7 @@ async def get_operator_experience(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "view")
     base = experience.operator_experience_dir(operator_id)
     return {
@@ -1008,14 +1009,14 @@ async def summarize_operator_experience(
     result = await db.execute(select(Operator).where(Operator.id == operator_id))
     operator = result.scalar_one_or_none()
     if not operator:
-        raise HTTPException(status_code=404, detail="算子不存在")
+        raise HTTPException(status_code=404, detail=t('operator_not_found'))
     await assert_resource_access(db, current_user, "operator", operator, "view")
 
     base = experience.operator_experience_dir(operator_id)
     errors = experience.read_negative(base)
     positives = experience.read_positive(base)
     if not errors and not positives:
-        return {"success": True, "message": "暂无错误/成功记录", "error_count": 0, "lessons": ""}
+        return {"success": True, "message": t('no_error_success_records'), "error_count": 0, "lessons": ""}
 
     await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
@@ -1074,13 +1075,13 @@ async def summarize_operator_experience(
             prompt_messages, temperature=0.3, max_tokens=1500
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM总结失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=t('llm_summarize_failed', e=str(e)))
 
     experience.write_lessons(base, lessons_text.strip())
 
     return {
         "success": True,
-        "message": f"已总结 {len(errors)} 条错误记录并更新经验库",
+        "message": t('summarized_errors_exp', count=len(errors)),
         "error_count": len(errors),
         "lessons": lessons_text.strip(),
     }

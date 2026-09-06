@@ -10,6 +10,7 @@ from sqlalchemy import select, and_
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.api.deps import get_current_user
 from app.models.user import User, PermissionRequest
 from app.services import permission_service as ps
@@ -67,7 +68,7 @@ async def grant_permission(
             permission_level=req.permission_level,
         )
         await db.commit()
-        return {"success": True, "id": str(perm.id), "message": "授权成功"}
+        return {"success": True, "id": str(perm.id), "message": t("grant_success")}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -92,7 +93,7 @@ async def revoke_permission(
             permission_level=req.permission_level,
         )
         await db.commit()
-        return {"success": True, "message": "已撤销权限"}
+        return {"success": True, "message": t("revoke_success")}
     except Exception as e:
         logger.error(f"撤销权限失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -127,7 +128,7 @@ async def list_user_permissions(
 ):
     """列出指定用户的所有权限（需要超管权限）"""
     if not current_user.is_superuser and str(current_user.id) != user_id:
-        raise HTTPException(status_code=403, detail="无权查看其他用户的权限")
+        raise HTTPException(status_code=403, detail=t("no_permission_view_others_perms"))
     return await ps.list_user_permissions(db, uuid.UUID(user_id))
 
 
@@ -139,10 +140,10 @@ async def copy_permissions(
 ):
     """复制用户权限给另一个用户或角色"""
     if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有管理员可以复制权限")
+        raise HTTPException(status_code=403, detail=t("admin_only_copy_perms"))
 
     if not req.target_user_id and not req.target_role_id:
-        raise HTTPException(status_code=400, detail="必须指定目标用户或角色")
+        raise HTTPException(status_code=400, detail=t("target_user_or_role_required"))
 
     try:
         count = await ps.copy_permissions(
@@ -153,7 +154,7 @@ async def copy_permissions(
             granted_by=current_user.id,
         )
         await db.commit()
-        return {"success": True, "copied_count": count, "message": f"已复制{count}条权限"}
+        return {"success": True, "copied_count": count, "message": t("permissions_copied_count", count=count)}
     except Exception as e:
         logger.error(f"复制权限失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -205,7 +206,7 @@ async def create_role(
 ):
     """创建角色"""
     if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有管理员可以创建角色")
+        raise HTTPException(status_code=403, detail=t("admin_only_create_role"))
     try:
         role = await ps.create_role(db, name=req.name, display_name=req.display_name, description=req.description)
         await db.commit()
@@ -217,7 +218,7 @@ async def create_role(
         }
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=f"创建角色失败: {str(e)}")
+        raise HTTPException(status_code=400, detail=t("create_role_failed", error=str(e)))
 
 
 @router.get("/roles/{role_id}/members")
@@ -239,11 +240,11 @@ async def assign_role_member(
 ):
     """给角色添加成员"""
     if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有管理员可以分配角色")
+        raise HTTPException(status_code=403, detail=t("admin_only_assign_role"))
     try:
         await ps.assign_role_to_user(db, uuid.UUID(role_id), uuid.UUID(req.user_id))
         await db.commit()
-        return {"success": True, "message": "已添加成员"}
+        return {"success": True, "message": t("member_added")}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -258,10 +259,10 @@ async def remove_role_member(
 ):
     """从角色移除成员"""
     if not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有管理员可以移除角色成员")
+        raise HTTPException(status_code=403, detail=t("admin_only_remove_member"))
     await ps.remove_role_from_user(db, uuid.UUID(role_id), uuid.UUID(user_id))
     await db.commit()
-    return {"success": True, "message": "已移除成员"}
+    return {"success": True, "message": t("member_removed")}
 
 
 # ===== 权限申请流程 =====
@@ -331,14 +332,14 @@ async def create_permission_request(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="已有一份待审批的申请，请等待资源所有者处理")
+        raise HTTPException(status_code=409, detail=t("pending_request_exists"))
 
     has_perm = await ps.check_permission(
         db, current_user.id, req.resource_type, uuid.UUID(req.resource_id), req.requested_level,
         is_superuser=current_user.is_superuser,
     )
     if has_perm:
-        raise HTTPException(status_code=400, detail="您已拥有该权限，无需申请")
+        raise HTTPException(status_code=400, detail=t("already_have_permission"))
 
     pr = PermissionRequest(
         resource_type=req.resource_type,
@@ -422,13 +423,13 @@ async def approve_request(
     result = await db.execute(select(PermissionRequest).where(PermissionRequest.id == uuid.UUID(request_id)))
     pr = result.scalar_one_or_none()
     if not pr:
-        raise HTTPException(status_code=404, detail="申请不存在")
+        raise HTTPException(status_code=404, detail=t("permission_request_not_found"))
     if pr.status != "pending":
-        raise HTTPException(status_code=400, detail="该申请已处理")
+        raise HTTPException(status_code=400, detail=t("request_already_processed"))
 
     owner_id = await _get_resource_owner_id(db, pr.resource_type, pr.resource_id)
     if owner_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有资源所有者或管理员可以审批")
+        raise HTTPException(status_code=403, detail=t("owner_or_admin_only_approve"))
 
     await ps.grant_permission(
         db, pr.resource_type, pr.resource_id, current_user.id,
@@ -440,7 +441,7 @@ async def approve_request(
     pr.reviewed_at = datetime.utcnow()
     await db.flush()
     await db.commit()
-    return {"success": True, "message": "已批准权限申请"}
+    return {"success": True, "message": t("request_approved")}
 
 
 @router.post("/requests/{request_id}/reject")
@@ -454,13 +455,13 @@ async def reject_request(
     result = await db.execute(select(PermissionRequest).where(PermissionRequest.id == uuid.UUID(request_id)))
     pr = result.scalar_one_or_none()
     if not pr:
-        raise HTTPException(status_code=404, detail="申请不存在")
+        raise HTTPException(status_code=404, detail=t("permission_request_not_found"))
     if pr.status != "pending":
-        raise HTTPException(status_code=400, detail="该申请已处理")
+        raise HTTPException(status_code=400, detail=t("request_already_processed"))
 
     owner_id = await _get_resource_owner_id(db, pr.resource_type, pr.resource_id)
     if owner_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="只有资源所有者或管理员可以审批")
+        raise HTTPException(status_code=403, detail=t("owner_or_admin_only_approve"))
 
     pr.status = "rejected"
     pr.reviewer_id = current_user.id
@@ -468,4 +469,4 @@ async def reject_request(
     pr.reviewed_at = datetime.utcnow()
     await db.flush()
     await db.commit()
-    return {"success": True, "message": "已驳回权限申请"}
+    return {"success": True, "message": t("request_rejected")}

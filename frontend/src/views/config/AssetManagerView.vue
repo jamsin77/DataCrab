@@ -1,7 +1,7 @@
 <template>
   <div class="asset-manager">
     <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px">
-      导出技能/算子/流程/LLM配置/连接器/调度到 zip 包，在新机器导入即可迁移。只导出当前用户创建的资产；API Key / 密码不导出，导入后需手动填写。
+      {{ t('config.asset.exportHint') }}
     </el-alert>
 
     <el-row :gutter="20">
@@ -9,23 +9,23 @@
       <el-col :span="12">
         <el-card>
           <template #header>
-            <span style="font-weight: bold">导出资产</span>
+            <span style="font-weight: bold">{{ t('config.asset.export') }}</span>
           </template>
-          <p style="color: #909399; margin-bottom: 16px">选择要导出的资产类型</p>
+          <p style="color: #909399; margin-bottom: 16px">{{ t('config.asset.selectExportTypes') }}</p>
           <el-checkbox v-model="exportAll" :indeterminate="exportIndeterminate" @change="toggleExportAll" style="margin-bottom: 4px; font-weight: bold">
-            全选 / 取消全选
+            {{ t('config.asset.selectAllOrNone') }}
           </el-checkbox>
           <el-checkbox-group v-model="exportTypes" @change="onExportTypesChange" style="display: flex; flex-direction: column; gap: 8px; margin-left: 8px">
-            <el-checkbox label="skills">技能（{{ counts.skills }} 个）</el-checkbox>
-            <el-checkbox label="operators">算子（{{ counts.operators }} 个）</el-checkbox>
-            <el-checkbox label="pipelines">流程（{{ counts.pipelines }} 个）</el-checkbox>
-            <el-checkbox label="llm_config">大模型 Provider（{{ counts.llm_config }} 个）</el-checkbox>
-            <el-checkbox label="custom_extensions">自定义连接器（{{ counts.custom_extensions }} 个）</el-checkbox>
-            <el-checkbox label="datasources">数据源（{{ counts.datasources }} 个）</el-checkbox>
-            <el-checkbox label="schedules">调度（{{ counts.schedules }} 个）</el-checkbox>
+            <el-checkbox label="skills">{{ t('config.asset.skills') }}（{{ counts.skills }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="operators">{{ t('config.asset.operators') }}（{{ counts.operators }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="pipelines">{{ t('config.asset.pipelines') }}（{{ counts.pipelines }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="llm_config">{{ t('config.asset.llmProvider') }}（{{ counts.llm_config }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="custom_extensions">{{ t('config.asset.customConnector') }}（{{ counts.custom_extensions }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="datasources">{{ t('config.asset.datasources') }}（{{ counts.datasources }} {{ t('config.asset.unit') }}）</el-checkbox>
+            <el-checkbox label="schedules">{{ t('config.asset.schedules') }}（{{ counts.schedules }} {{ t('config.asset.unit') }}）</el-checkbox>
           </el-checkbox-group>
           <el-button type="primary" :loading="exporting" :disabled="!exportTypes.length" @click="doExport" style="margin-top: 16px">
-            导出 zip
+            {{ t('config.asset.exportZip') }}
           </el-button>
         </el-card>
       </el-col>
@@ -34,10 +34,10 @@
       <el-col :span="12">
         <el-card>
           <template #header>
-            <span style="font-weight: bold">导入资产</span>
+            <span style="font-weight: bold">{{ t('config.asset.import') }}</span>
           </template>
           <el-upload :show-file-list="false" :before-upload="onFileSelected" accept=".zip">
-            <el-button type="primary" plain>选择 zip 文件</el-button>
+            <el-button type="primary" plain>{{ t('config.asset.selectZip') }}</el-button>
           </el-upload>
           <div v-if="selectedFile" style="margin-top: 12px; display: flex; align-items: center; gap: 8px">
             <el-icon><Document /></el-icon>
@@ -45,40 +45,40 @@
             <el-tag size="small" type="info">{{ (selectedFile.size / 1024).toFixed(1) }} KB</el-tag>
           </div>
           <div v-if="previewManifest" style="margin-top: 16px">
-            <p style="color: #909399; margin-bottom: 8px">检测到以下资产：</p>
+            <p style="color: #909399; margin-bottom: 8px">{{ t('config.asset.detectedAssets') }}</p>
             <div style="display: flex; align-items: center; gap: 24px; margin-bottom: 4px">
               <el-checkbox v-model="importAllComputed" :indeterminate="importIndeterminateComputed" style="flex: 1; font-weight: bold">
-                全选
+                {{ t('config.asset.selectAll') }}
               </el-checkbox>
               <el-checkbox v-model="overwriteAllComputed" :indeterminate="overwriteIndeterminateComputed" size="small">
-                全选覆盖
+                {{ t('config.asset.selectAllOverwrite') }}
               </el-checkbox>
             </div>
             <div style="display: flex; flex-direction: column; gap: 8px; margin-left: 8px">
               <div v-for="(v, k) in previewManifest.counts" :key="k" style="display: flex; align-items: center; gap: 24px">
                 <el-checkbox :model-value="importTypes.includes(k)" @update:model-value="toggleImportType(k, $event)" style="flex: 1">
-                  {{ typeLabel(k) }}（{{ v }} 个）
+                  {{ typeLabel(k) }}（{{ v }} {{ t('config.asset.unit') }}）
                 </el-checkbox>
                 <el-checkbox :model-value="overwriteTypes.includes(k)" @update:model-value="toggleOverwriteType(k, $event)" :disabled="!importTypes.includes(k)" size="small">
-                  覆盖
+                  {{ t('config.asset.overwriteLabel') }}
                 </el-checkbox>
               </div>
             </div>
             <div style="margin-top: 16px">
               <el-button type="success" :loading="importing" :disabled="!importTypes.length" @click="doImport">
-                导入选中
+                {{ t('config.asset.importSelected') }}
               </el-button>
-              <el-button @click="resetImport" style="margin-left: 8px">取消</el-button>
+              <el-button @click="resetImport" style="margin-left: 8px">{{ t('common.cancel') }}</el-button>
             </div>
           </div>
           <div v-if="importResult" style="margin-top: 16px">
             <el-divider />
-            <p style="font-weight: bold; margin-bottom: 8px">导入结果</p>
+            <p style="font-weight: bold; margin-bottom: 8px">{{ t('config.asset.importResultTitle') }}</p>
             <el-tag v-for="(v, k) in importResult" :key="k" :type="v.skipped ? 'warning' : 'success'" style="margin: 2px">
-              {{ typeLabel(k) }}：导入 {{ v.imported }}{{ v.updated ? ` / 更新 ${v.updated}` : '' }} / 跳过 {{ v.skipped }}
+              {{ typeLabel(k) }}：{{ t('config.asset.imported') }} {{ v.imported }}<template v-if="v.updated"> / {{ t('config.asset.updated') }} {{ v.updated }}</template> / {{ t('config.asset.skipped') }} {{ v.skipped }}
             </el-tag>
             <el-alert type="warning" :closable="false" show-icon style="margin-top: 12px" v-if="importTypes.includes('llm_config')">
-              LLM Provider 已导入，但 API Key 未导入。请到「大模型管理」为各 Provider 填写 API Key。
+              {{ t('config.asset.llmKeyHint') }}
             </el-alert>
           </div>
         </el-card>
@@ -89,10 +89,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Document } from '@element-plus/icons-vue'
 import api from '@/api/index'
 
+const { t } = useI18n()
 const exportTypes = ref<string[]>([])
 const exportAll = ref(false)
 const exportIndeterminate = ref(false)
@@ -147,8 +149,8 @@ async function loadCounts() {
 
 function typeLabel(k: string): string {
   const m: Record<string, string> = {
-    skills: '技能', operators: '算子', pipelines: '流程',
-    llm_config: '大模型 Provider', custom_extensions: '自定义连接器', datasources: '数据源', schedules: '调度',
+    skills: t('config.asset.skills'), operators: t('config.asset.operators'), pipelines: t('config.asset.pipelines'),
+    llm_config: t('config.asset.llmProvider'), custom_extensions: t('config.asset.customConnector'), datasources: t('config.asset.datasources'), schedules: t('config.asset.schedules'),
   }
   return m[k] || k
 }
@@ -157,7 +159,7 @@ function extractErr(e: any): string {
   const detail = e?.response?.data?.detail
   if (typeof detail === 'string') return detail
   if (Array.isArray(detail)) return detail.map((d: any) => d?.msg || JSON.stringify(d)).join('; ')
-  return e?.message || '未知错误'
+  return e?.message || t('config.asset.unknownError')
 }
 
 function toggleExportAll(val: boolean) {
@@ -207,9 +209,9 @@ async function doExport() {
     a.download = `datacrab_${ts}.zip`
     a.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    ElMessage.success(t('config.asset.exportSuccess'))
   } catch (e: any) {
-    ElMessage.error('导出失败: ' + extractErr(e))
+    ElMessage.error(t('config.asset.exportFailed') + ': ' + extractErr(e))
   } finally {
     exporting.value = false
   }
@@ -229,7 +231,7 @@ async function onFileSelected(file: File) {
       importTypes.value = Object.keys(previewManifest.value.counts)
     }
   } catch (e: any) {
-    ElMessage.error('读取 zip 失败: ' + extractErr(e))
+    ElMessage.error(t('config.asset.readZipFailed') + ': ' + extractErr(e))
   }
   return false // 阻止自动上传
 }
@@ -244,10 +246,10 @@ async function doImport() {
     fd.append('overwrite_types', overwriteTypes.value.join(','))
     const data = await api.post('/assets/import', fd) as any
     importResult.value = data
-    ElMessage.success('导入完成')
+    ElMessage.success(t('config.asset.importComplete'))
     loadCounts()
   } catch (e: any) {
-    ElMessage.error('导入失败: ' + extractErr(e))
+    ElMessage.error(t('config.asset.importFailed') + ': ' + extractErr(e))
   } finally {
     importing.value = false
   }

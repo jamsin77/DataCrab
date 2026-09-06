@@ -29,6 +29,7 @@ from sqlalchemy.orm import selectinload
 from app.services.permission_service import get_accessible_resource_ids, check_permission
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.models.datasource import DataSource, TableMetadata
 from app.models.user import User
 from app.schemas.datasource import (
@@ -103,9 +104,9 @@ async def _auto_create_file_link(db: AsyncSession, datasource: DataSource, user_
         return
 
     link = FileLink(
-        name=f"[自动] {datasource.name}",
+        name=t("auto_file_link_name", name=datasource.name),
         path=dir_path,
-        description=f"数据源 {datasource.name} 自动授权目录",
+        description=t("auto_file_link_desc", name=datasource.name),
         link_type="directory",
         created_by=user_id,
     )
@@ -147,7 +148,7 @@ def _reject_virtual(datasource, action: str):
     if getattr(datasource, "is_virtual", False):
         raise HTTPException(
             status_code=status_code.HTTP_403_FORBIDDEN,
-            detail=f"虚拟数据源「{datasource.name}」受保护，不可{action}",
+            detail=t("virtual_ds_protected_action", name=datasource.name, action=action),
         )
 
 
@@ -161,12 +162,12 @@ async def get_datasource(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
     is_owner = datasource.created_by == current_user.id
     if not is_owner and not current_user.is_superuser:
         has_perm = await check_permission(db, current_user.id, "datasource", datasource_id, "view", is_owner=False)
         if not has_perm:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此数据源")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("no_permission"))
     return datasource
 
 
@@ -181,9 +182,9 @@ async def update_datasource(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
-    _reject_virtual(datasource, "修改")
+    _reject_virtual(datasource, t("action_modify"))
 
     update_data = request.model_dump(exclude_unset=True)
 
@@ -223,8 +224,8 @@ async def delete_datasource(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
-    _reject_virtual(datasource, "删除")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
+    _reject_virtual(datasource, t("action_delete"))
     datasource.is_active = False
     await db.flush()
 
@@ -239,23 +240,23 @@ async def test_connection(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
-    _reject_virtual(datasource, "测试")
+    _reject_virtual(datasource, t("action_test"))
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
         success = await connector.test_connection()
         await connector.close()
         if success:
-            return ConnectionTestResult(success=True, message="连接测试成功")
+            return ConnectionTestResult(success=True, message=t("test_connection_success"))
         else:
-            return ConnectionTestResult(success=False, message="连接测试失败")
+            return ConnectionTestResult(success=False, message=t("test_connection_failed"))
     except ValueError as e:
         return ConnectionTestResult(success=False, message=str(e))
     except Exception as e:
         logger.error(f"测试连接异常: {e}")
-        return ConnectionTestResult(success=False, message=f"连接测试异常: {str(e)}")
+        return ConnectionTestResult(success=False, message=t("connection_test_error", error=str(e)))
 
 
 @router.get("/{datasource_id}/tree", response_model=list[TreeNode])
@@ -268,7 +269,7 @@ async def get_datasource_tree(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
@@ -337,7 +338,7 @@ async def get_table_data(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
@@ -380,7 +381,7 @@ async def get_table_stats(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
@@ -410,7 +411,7 @@ async def get_table_quality(
     result = await db.execute(select(DataSource).where(DataSource.id == datasource_id))
     datasource = result.scalar_one_or_none()
     if not datasource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据源不存在")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("datasource_not_found"))
 
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
@@ -433,13 +434,13 @@ async def get_table_quality(
                 null_pct = null_count / len(df) * 100
                 issues.append({
                     "column": col,
-                    "issue": "缺失值",
+                    "issue": t("missing_value"),
                     "count": null_count,
                     "percentage": round(null_pct, 2),
                 })
                 suggestions.append({
                     "column": col,
-                    "suggestion": f"建议填充或删除{col}列的缺失值（{round(null_pct, 1)}%缺失）",
+                    "suggestion": t("missing_value_suggestion", column=col, percentage=round(null_pct, 1)),
                 })
 
             if df[col].dtype in ("int64", "float64"):
@@ -450,7 +451,7 @@ async def get_table_quality(
                 if len(outliers) > 0:
                     issues.append({
                         "column": col,
-                        "issue": "异常值",
+                        "issue": t("outlier_value"),
                         "count": len(outliers),
                         "percentage": round(len(outliers) / len(df) * 100, 2),
                     })
@@ -478,7 +479,7 @@ def _validate_file_path(path: str, allowed_dirs: list) -> str:
         allowed_resolved = Path(allowed).resolve()
         if str(resolved).startswith(str(allowed_resolved)):
             return str(resolved)
-    raise HTTPException(status_code=403, detail=f"路径不在授权目录范围内: {path}")
+    raise HTTPException(status_code=403, detail=t("path_not_in_allowed_dirs", path=path))
 
 
 async def _collect_allowed_dirs(db: AsyncSession, user_id) -> list[str]:
@@ -536,12 +537,12 @@ async def internal_execute_tool(body: dict, db: AsyncSession = Depends(get_db)):
     user_id = body.get("user_id")
 
     if not tool_name:
-        raise HTTPException(status_code=400, detail="tool_name 必填")
+        raise HTTPException(status_code=400, detail=t("tool_name_required"))
 
     _ensure_registered()
     td = _REGISTRY.get(tool_name)
     if not td:
-        raise HTTPException(status_code=400, detail=f"未知工具: {tool_name}")
+        raise HTTPException(status_code=400, detail=t("unknown_tool", name=tool_name))
 
     _uid = None
     if user_id:

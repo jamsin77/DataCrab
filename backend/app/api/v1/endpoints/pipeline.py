@@ -1,4 +1,4 @@
-﻿"""流程管理API端点"""
+"""流程管理API端点"""
 
 import json
 import re
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.database import get_db
+from app.core.i18n import t
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.services.permission_service import assert_resource_access
@@ -89,7 +90,7 @@ async def get_pipeline(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "view")
     return _build_response(p)
 
@@ -106,7 +107,7 @@ async def update_pipeline(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "manage")
 
     update_data = req.model_dump(exclude_unset=True)
@@ -137,10 +138,10 @@ async def delete_pipeline(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "manage")
     if getattr(p, "is_builtin", False):
-        raise HTTPException(status_code=403, detail="内置流程不可删除")
+        raise HTTPException(status_code=403, detail=t('builtin_not_deletable'))
     p.is_active = False
     await db.flush()
     from app.services.match_service import delete_pipeline_index
@@ -173,7 +174,7 @@ async def create_pipeline_from_skill(
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill 不存在")
+        raise HTTPException(status_code=404, detail=t('skill_not_found'))
     await assert_resource_access(db, current_user, "skill", skill, "view")
 
     logger.info(f"从 Skill 生成 Pipeline: {skill.name} ({skill_id})")
@@ -191,7 +192,7 @@ async def create_pipeline_from_skill(
 
     fixed_params = _read_last_success_params(skill.skill_path)
     if not fixed_params:
-        raise HTTPException(status_code=400, detail="该技能尚未有成功执行记录，请先在调试页面成功执行一次后再转流程")
+        raise HTTPException(status_code=400, detail=t('skill_no_success_record'))
 
     try:
         built = await build_pipeline_from_skill(
@@ -203,9 +204,9 @@ async def create_pipeline_from_skill(
         )
     except Exception as e:
         logger.error(f"Pipeline 生成失败: {e}")
-        raise HTTPException(status_code=500, detail=f"流程生成失败: {e}")
+        raise HTTPException(status_code=500, detail=t('pipeline_generate_failed', e=str(e)))
 
-    display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
+    display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name}{t('pipeline_suffix')}"
 
     # 查重：当前用户已为该技能转过的同名流程
     pl_name = f"pl_{skill.name}"
@@ -218,7 +219,7 @@ async def create_pipeline_from_skill(
         raise HTTPException(
             status_code=409,
             detail={
-                "message": f"流程 '{pl_name}' 已存在",
+                "message": t('pipeline_already_exists', name=pl_name),
                 "existing_pipeline_id": str(existing.id),
                 "existing_display_name": existing.display_name or existing.name,
             },
@@ -240,7 +241,7 @@ async def create_pipeline_from_skill(
         )
     except Exception as e:
         logger.error(f"Pipeline 生成失败: {e}")
-        raise HTTPException(status_code=500, detail=f"流程生成失败: {e}")
+        raise HTTPException(status_code=500, detail=t('pipeline_generate_failed', e=str(e)))
 
     if existing and mode == "overwrite":
         existing.main_code = built["main_code"]
@@ -304,7 +305,7 @@ async def create_pipeline_from_skill_stream(
     result = await db.execute(select(Skill).where(Skill.id == skill_id))
     skill = result.scalar_one_or_none()
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill 不存在")
+        raise HTTPException(status_code=404, detail=t('skill_not_found'))
     await assert_resource_access(db, current_user, "skill", skill, "view")
 
     from app.services.skill_parser import read_skill_md
@@ -313,11 +314,11 @@ async def create_pipeline_from_skill_stream(
     async def event_stream():
         import json as json_mod
         try:
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在读取调试好的脚本...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': t('reading_debug_script')}, ensure_ascii=False)}\n\n"
 
             fixed_params = _read_last_success_params(skill.skill_path)
             if not fixed_params:
-                yield f"data: {json_mod.dumps({'type': 'error', 'message': '该技能尚未有成功执行记录，请先在调试页面成功执行一次后再转流程'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json_mod.dumps({'type': 'error', 'message': t('skill_no_success_record')}, ensure_ascii=False)}\n\n"
                 return
 
             skill_path = Path(skill.skill_path)
@@ -329,7 +330,7 @@ async def create_pipeline_from_skill_stream(
             if not func_desc:
                 func_desc = skill.description or ""
 
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在根据参数生成流程名称和描述...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': t('generating_pipeline_name')}, ensure_ascii=False)}\n\n"
 
             display_name = ""
             description = ""
@@ -368,7 +369,7 @@ async def create_pipeline_from_skill_stream(
                 logger.warning(f"LLM 生成流程名称失败: {e}")
 
             if not display_name:
-                display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name} - 流程"
+                display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name}{t('pipeline_suffix')}"
             if not description:
                 description = func_desc
 
@@ -395,7 +396,7 @@ async def create_pipeline_from_skill_stream(
                 pl_name = f"pl_{skill.name}_{_uuid.uuid4().hex[:6]}"
                 existing = None  # 新建
 
-            yield f"data: {json_mod.dumps({'type': 'status', 'message': '正在转换脚本并创建流程...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'status', 'message': t('converting_creating_pipeline')}, ensure_ascii=False)}\n\n"
 
             built = await build_pipeline_from_skill(
                 skill_path_str=skill.skill_path,
@@ -474,7 +475,7 @@ async def run_pipeline(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "use")
 
     execution = await execute_pipeline(
@@ -507,7 +508,7 @@ async def run_pipeline_stream(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "use")
 
     async def event_stream():
@@ -532,7 +533,7 @@ async def debug_pipeline_chat(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "use")
 
     ctx = req.context or {}
@@ -558,7 +559,7 @@ async def debug_pipeline_chat(
         history=history, user_message=user_msg, user_context=ctx,
     )
     if not runtime:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
 
     return StreamingResponse(
         stream_agent_events_sse(runtime, message, context, user_id=current_user.id),
@@ -579,7 +580,7 @@ async def list_executions(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", p, "view")
 
     result = await db.execute(
@@ -618,7 +619,7 @@ async def get_execution(
     )
     e = result.scalar_one_or_none()
     if not e:
-        raise HTTPException(status_code=404, detail="执行记录不存在")
+        raise HTTPException(status_code=404, detail=t('task_execution_log_not_found'))
     return PipelineExecutionResponse(
         id=e.id,
         pipeline_id=e.pipeline_id,
@@ -645,13 +646,13 @@ async def clone_pipeline(
     )
     original = result.scalar_one_or_none()
     if not original:
-        raise HTTPException(status_code=404, detail="流程不存在")
+        raise HTTPException(status_code=404, detail=t('pipeline_not_found'))
     await assert_resource_access(db, current_user, "pipeline", original, "view")
 
     clone = Pipeline(
         id=uuid4(),
         name=f"{original.name}_clone",
-        display_name=f"{original.display_name} (副本)",
+        display_name=f"{original.display_name}{t('copy_suffix')}",
         description=original.description,
         main_code=original.main_code,
         entry_function=original.entry_function,

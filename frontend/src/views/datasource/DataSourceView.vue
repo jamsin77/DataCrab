@@ -3,11 +3,11 @@
     <div class="toolbar">
       <div class="toolbar-left">
         <el-button type="primary" @click="openCreateDialog">
-          <el-icon><Plus /></el-icon> 新建数据源
+          <el-icon><Plus /></el-icon> {{ t('datasource.createDataSource') }}
         </el-button>
       </div>
       <div class="toolbar-right">
-        <el-select v-model="typeFilter" placeholder="类型筛选" clearable @change="fetchDataSources" style="width: 160px;">
+        <el-select v-model="typeFilter" :placeholder="t('datasource.typeFilter')" clearable @change="fetchDataSources" style="width: 160px;">
           <el-option
             v-for="c in connectors"
             :key="c.name"
@@ -19,43 +19,43 @@
     </div>
 
     <el-table :data="dataSources" stripe>
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="type" label="类型" width="120">
+      <el-table-column prop="name" :label="t('datasource.name')" />
+      <el-table-column prop="type" :label="t('datasource.type')" width="120">
         <template #default="{ row }">
           <el-tag :type="getTypeTagType(row.type)">{{ getTypeLabel(row.type) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="is_active" label="状态" width="80">
+      <el-table-column prop="is_active" :label="t('datasource.status')" width="80">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'danger'">
-            {{ row.is_active ? '活跃' : '停用' }}
+            {{ row.is_active ? t('common.active') : t('common.inactive') }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="180">
+      <el-table-column prop="created_at" :label="t('common.createdAt')" width="180">
         <template #default="{ row }">
           {{ formatDate(row.created_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="400">
+      <el-table-column :label="t('common.actions')" width="400">
         <template #default="{ row }">
           <div class="table-actions">
-            <el-button v-if="!row.is_virtual" size="small" @click="testConnection(row.id)">测试</el-button>
-            <el-button size="small" @click="browseDataSource(row)">浏览</el-button>
-            <el-button v-if="!row.is_virtual" size="small" type="success" @click="syncMetadata(row)" :loading="row._syncing">同步元数据</el-button>
-            <el-button v-if="!row.is_virtual" size="small" type="warning" @click="editDataSource(row)">修改</el-button>
-            <el-button v-if="!row.is_virtual" size="small" type="danger" @click="deleteDataSource(row.id)">删除</el-button>
+            <el-button v-if="!row.is_virtual" size="small" @click="testConnection(row.id)">{{ t('common.test') }}</el-button>
+            <el-button size="small" @click="browseDataSource(row)">{{ t('datasource.browse') }}</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="success" @click="syncMetadata(row)" :loading="row._syncing">{{ t('datasource.syncMetadata') }}</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="warning" @click="editDataSource(row)">{{ t('common.edit') }}</el-button>
+            <el-button v-if="!row.is_virtual" size="small" type="danger" @click="deleteDataSource(row.id)">{{ t('common.delete') }}</el-button>
           </div>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="showCreateDialog" :title="editId ? '编辑数据源' : '新建数据源'" width="600px" @closed="resetForm">
+    <el-dialog v-model="showCreateDialog" :title="editId ? t('datasource.editDataSource') : t('datasource.createDataSource')" width="600px" @closed="resetForm">
       <el-form :model="configForm" label-position="top" ref="formRef">
-        <el-form-item label="名称" required>
-          <el-input v-model="configForm.name" placeholder="请输入数据源名称" />
+        <el-form-item :label="t('datasource.name')" required>
+          <el-input v-model="configForm.name" :placeholder="t('datasource.nameRequired')" />
         </el-form-item>
-        <el-form-item label="类型" required>
+        <el-form-item :label="t('datasource.type')" required>
           <el-select v-model="configForm.type" @change="onTypeChange" style="width: 100%;">
             <el-option
               v-for="c in connectors"
@@ -66,7 +66,7 @@
           </el-select>
         </el-form-item>
 
-        <el-divider content-position="left">连接配置</el-divider>
+        <el-divider content-position="left">{{ t('datasource.connectionConfig') }}</el-divider>
 
         <el-form-item
           v-for="field in currentConfigTemplate"
@@ -77,7 +77,7 @@
         >
           <el-input v-if="field.type === 'string'" v-model="configValues[field.name]" :placeholder="field.placeholder || ''" />
           <el-input-number v-else-if="field.type === 'number'" v-model="configValues[field.name]" :min="1" :max="65535" style="width: 100%;" />
-          <el-input v-else-if="field.type === 'password'" v-model="configValues[field.name]" type="password" show-password :placeholder="editId ? '留空则不修改' : '请输入'" />
+          <el-input v-else-if="field.type === 'password'" v-model="configValues[field.name]" type="password" show-password :placeholder="editId ? t('datasource.leaveBlankHint') : t('common.placeholder')" />
           <el-switch v-else-if="field.type === 'boolean'" v-model="configValues[field.name]" />
           <el-select v-else-if="field.type === 'select'" v-model="configValues[field.name]" style="width: 100%;">
             <el-option v-for="opt in (field.options || [])" :key="opt.value" :label="opt.label" :value="opt.value" />
@@ -90,27 +90,27 @@
           </el-input>
           <div v-else-if="field.type === 'filepath_list'" style="width: 100%;">
             <div v-for="(p, i) in (configValues[field.name] || [])" :key="i" class="multi-file-row">
-              <el-input v-model="configValues[field.name][i]" placeholder="文件路径">
+              <el-input v-model="configValues[field.name][i]" :placeholder="t('datasource.filePath')">
                 <template #prepend><el-button @click="openFsBrowserForField(field.name, 'file', i)" :icon="Document" /></template>
               </el-input>
               <el-button text type="danger" :icon="Delete" @click="configValues[field.name].splice(i, 1)" />
             </div>
-            <el-button size="small" type="primary" plain @click="ensureList(field.name); configValues[field.name].push('')">+ 添加文件</el-button>
+            <el-button size="small" type="primary" plain @click="ensureList(field.name); configValues[field.name].push('')">{{ t('datasource.addFile') }}</el-button>
           </div>
           <el-input v-else v-model="configValues[field.name]" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="editId ? updateDataSource() : createDataSource()" :loading="saving">{{ editId ? '保存' : '创建' }}</el-button>
+        <el-button @click="showCreateDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="editId ? updateDataSource() : createDataSource()" :loading="saving">{{ editId ? t('common.save') : t('common.create') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showBrowseDialog" :title="`浏览: ${browsingSource?.name || ''}`" width="96%" top="1vh" @opened="onBrowseOpened">
+    <el-dialog v-model="showBrowseDialog" :title="t('datasource.browseTitle', { name: browsingSource?.name || '' })" width="96%" top="1vh" @opened="onBrowseOpened">
       <div class="browse-layout">
         <div class="browse-sidebar">
           <div class="browse-sidebar-title">
-            <span>数据表</span>
+            <span>{{ t('datasource.tables') }}</span>
             <el-button size="small" text :loading="browseLoading" @click="refreshCurrentTable">
               <el-icon><Refresh /></el-icon>
             </el-button>
@@ -132,18 +132,18 @@
               <span v-if="item.metadata?.data_updated_at" class="browse-table-time">{{ formatUpdateTime(item.metadata.data_updated_at) }}</span>
             </div>
           </el-tooltip>
-          <el-empty v-if="browseTree.length === 0 && !browseLoading" :description="isFileSource ? '详见右侧' : '暂无数据表'" :image-size="60" />
+          <el-empty v-if="browseTree.length === 0 && !browseLoading" :description="isFileSource ? t('datasource.seeRightSide') : t('datasource.noTables')" :image-size="60" />
         </div>
         <div class="browse-content">
           <div v-if="selectedTable && !isFileSource" class="browse-content-header">
             <el-tooltip :content="selectedTable" placement="top" :show-after="300">
               <span class="browse-table-name">{{ selectedTable }}</span>
             </el-tooltip>
-            <span class="browse-row-count">共 {{ browseTotal }} 条，显示前 {{ browseRows.length }} 行</span>
+            <span class="browse-row-count">{{ t('datasource.totalRowsShowing', { total: browseTotal, shown: browseRows.length }) }}</span>
           </div>
           <div v-if="isFileSource && browseTree.length > 0" class="browse-content-header">
-            <span class="browse-table-name">文件列表</span>
-            <span class="browse-row-count">共 {{ browseTotal }} 个文件</span>
+            <span class="browse-table-name">{{ t('datasource.fileList') }}</span>
+            <span class="browse-row-count">{{ t('datasource.totalFiles', { count: browseTotal }) }}</span>
           </div>
           <el-table v-if="(selectedTable || isFileSource) && browseRows.length > 0" :data="browseRows" stripe border max-height="80vh" style="width: 100%;">
             <el-table-column
@@ -156,7 +156,7 @@
             />
           </el-table>
           <div v-if="!selectedTable && !isFileSource && !browseLoading" class="browse-placeholder">
-            <el-empty description="请从左侧选择一张数据表" :image-size="80" />
+            <el-empty :description="t('datasource.selectTableHint')" :image-size="80" />
           </div>
           <div v-if="browseLoading" class="browse-placeholder">
             <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -165,51 +165,51 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showConnectorManager" title="连接器管理" width="720px">
+    <el-dialog v-model="showConnectorManager" :title="t('datasource.connectorManagement')" width="720px">
       <div style="margin-bottom: 12px;">
         <el-button type="primary" size="small" @click="openConnectorCreate">
-          <el-icon><Plus /></el-icon> 新建连接器
+          <el-icon><Plus /></el-icon> {{ t('datasource.createConnector') }}
         </el-button>
       </div>
       <el-table :data="connectorList" stripe size="small">
-        <el-table-column prop="display_name" label="名称" width="160" />
-        <el-table-column prop="name" label="标识" width="140" />
-        <el-table-column prop="description" label="描述" show-overflow-tooltip />
-        <el-table-column label="类型" width="80">
+        <el-table-column prop="display_name" :label="t('datasource.name')" width="160" />
+        <el-table-column prop="name" :label="t('datasource.identifier')" width="140" />
+        <el-table-column prop="description" :label="t('common.description')" show-overflow-tooltip />
+        <el-table-column :label="t('datasource.type')" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.is_seed ? 'success' : 'info'" size="small">{{ row.is_seed ? '预置' : '自建' }}</el-tag>
+            <el-tag :type="row.is_seed ? 'success' : 'info'" size="small">{{ row.is_seed ? t('datasource.seedConnector') : t('datasource.customConnector') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column :label="t('common.actions')" width="160">
           <template #default="{ row }">
-            <el-button size="small" @click="openConnectorEdit(row)" :disabled="!row.can_edit">编辑</el-button>
-            <el-button size="small" type="danger" @click="deleteConnector(row)" :disabled="!row.can_edit">删除</el-button>
+            <el-button size="small" @click="openConnectorEdit(row)" :disabled="!row.can_edit">{{ t('common.edit') }}</el-button>
+            <el-button size="small" type="danger" @click="deleteConnector(row)" :disabled="!row.can_edit">{{ t('common.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? '编辑连接器' : '新建连接器'" width="680px">
+    <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? t('datasource.editConnector') : t('datasource.createConnector')" width="680px">
       <el-form label-position="top">
-        <el-form-item label="标识" required>
-          <el-input v-model="connectorEditForm.name" :disabled="!!connectorEditForm.id" placeholder="英文小写，如 mongodb" />
+        <el-form-item :label="t('datasource.identifier')" required>
+          <el-input v-model="connectorEditForm.name" :disabled="!!connectorEditForm.id" :placeholder="t('datasource.identifierPlaceholder')" />
         </el-form-item>
-        <el-form-item label="显示名称">
+        <el-form-item :label="t('datasource.displayName')">
           <el-input v-model="connectorEditForm.display_name" />
         </el-form-item>
-        <el-form-item label="描述">
+        <el-form-item :label="t('common.description')">
           <el-input v-model="connectorEditForm.description" type="textarea" :rows="2" />
         </el-form-item>
-        <el-form-item label="连接器代码" required>
-          <el-input v-model="connectorEditForm.code" type="textarea" :rows="12" placeholder="继承 BaseConnector 的 Python 类代码" style="font-family: monospace; font-size: 12px;" />
+        <el-form-item :label="t('datasource.connectorCode')" required>
+          <el-input v-model="connectorEditForm.code" type="textarea" :rows="12" :placeholder="t('datasource.connectorCodePlaceholder')" style="font-family: monospace; font-size: 12px;" />
         </el-form-item>
-        <el-form-item label="配置模板">
-          <el-input v-model="connectorEditForm.config_template" type="textarea" :rows="6" placeholder='JSON 数组，如 [{"name":"host","label":"主机","type":"string","required":true}]' style="font-family: monospace; font-size: 12px;" />
+        <el-form-item :label="t('datasource.configTemplate')">
+          <el-input v-model="connectorEditForm.config_template" type="textarea" :rows="6" :placeholder="t('datasource.configTemplatePlaceholder')" style="font-family: monospace; font-size: 12px;" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showConnectorEditDialog = false">取消</el-button>
-        <el-button type="primary" :loading="connectorSaving" @click="saveConnector">保存</el-button>
+        <el-button @click="showConnectorEditDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="connectorSaving" @click="saveConnector">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -226,11 +226,14 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, computed, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, FolderOpened, Refresh, Setting, Delete, Grid } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 import { formatTime } from '@/utils/time'
+
+const { t } = useI18n()
 
 const dataSources = ref<any[]>([])
 const showCreateDialog = ref(false)
@@ -368,7 +371,7 @@ function extractError(e: any): string {
     if (typeof detail === 'string') return detail
     if (Array.isArray(detail)) return detail.map((d: any) => d.msg || String(d)).join('; ')
   }
-  return e?.message || '操作失败'
+  return e?.message || t('common.operationFailed')
 }
 
 function onTypeChange() {
@@ -443,7 +446,7 @@ async function fetchDataSources() {
 
 async function createDataSource() {
   if (!configForm.name.trim()) {
-    ElMessage.warning('请输入数据源名称')
+    ElMessage.warning(t('datasource.nameRequired'))
     return
   }
   saving.value = true
@@ -454,7 +457,7 @@ async function createDataSource() {
       type: configForm.type,
       connection_config: connectionConfig,
     })
-    ElMessage.success('创建成功')
+    ElMessage.success(t('common.createSuccess'))
     showCreateDialog.value = false
     await fetchDataSources()
   } catch (e: any) {
@@ -466,7 +469,7 @@ async function createDataSource() {
 
 async function updateDataSource() {
   if (!configForm.name.trim()) {
-    ElMessage.warning('请输入数据源名称')
+    ElMessage.warning(t('datasource.nameRequired'))
     return
   }
   if (!editId.value) return
@@ -477,7 +480,7 @@ async function updateDataSource() {
       name: configForm.name,
       connection_config: connectionConfig,
     })
-    ElMessage.success('保存成功')
+    ElMessage.success(t('common.saveSuccess'))
     showCreateDialog.value = false
     await fetchDataSources()
   } catch (e: any) {
@@ -491,9 +494,9 @@ async function testConnection(id: string) {
   try {
     const res = await api.post(`/datasources/${id}/test`)
     if (res.success) {
-      ElMessage.success(res.message || '连接测试成功')
+      ElMessage.success(res.message || t('datasource.connectionTestSuccess'))
     } else {
-      ElMessage.warning(res.message || '连接测试失败')
+      ElMessage.warning(res.message || t('datasource.connectionTestFailed'))
     }
   } catch (e: any) {
     ElMessage.error(extractError(e))
@@ -572,9 +575,9 @@ async function refreshCurrentTable() {
 
 async function deleteDataSource(id: string) {
   try {
-    await ElMessageBox.confirm('确定要删除此数据源吗？删除后不可恢复。', '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(t('datasource.deleteConfirm'), t('common.deleteConfirm'), { type: 'warning' })
     await api.delete(`/datasources/${id}`)
-    ElMessage.success('删除成功')
+    ElMessage.success(t('common.deleteSuccess'))
     await fetchDataSources()
   } catch (e: any) {
     if (e !== 'cancel') {
@@ -587,9 +590,9 @@ async function syncMetadata(row: any) {
   row._syncing = true
   try {
     const res = await api.post(`/metadata/datasources/${row.id}/sync`, {}, { timeout: 120000 })
-    ElMessage.success(`元数据同步完成: ${res.synced} 张表${res.deleted_stale ? `，清理 ${res.deleted_stale} 张过期表` : ''}`)
+    ElMessage.success(t('datasource.syncComplete', { count: res.synced }) + (res.deleted_stale ? t('datasource.cleanStaleTables', { count: res.deleted_stale }) : ''))
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || '同步失败')
+    ElMessage.error(e.response?.data?.detail || t('datasource.syncFailed'))
   } finally {
     row._syncing = false
   }
@@ -645,7 +648,7 @@ function openConnectorEdit(c: any) {
 
 async function saveConnector() {
   if (!connectorEditForm.name.trim() || !connectorEditForm.code.trim()) {
-    ElMessage.warning('标识和代码必填')
+    ElMessage.warning(t('datasource.identifierAndCodeRequired'))
     return
   }
   connectorSaving.value = true
@@ -665,7 +668,7 @@ async function saveConnector() {
     } else {
       await api.post('/connectors/custom', { name: connectorEditForm.name.trim().toLowerCase(), ...payload })
     }
-    ElMessage.success('保存成功')
+    ElMessage.success(t('common.saveSuccess'))
     showConnectorEditDialog.value = false
     connectorList.value = await api.get('/connectors/custom')
     await fetchConnectors()
@@ -678,9 +681,9 @@ async function saveConnector() {
 
 async function deleteConnector(c: any) {
   try {
-    await ElMessageBox.confirm(`确定删除连接器「${c.display_name}」吗？已被数据源使用的连接器无法删除。`, '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(t('datasource.deleteConnectorConfirm', { name: c.display_name }), t('common.deleteConfirm'), { type: 'warning' })
     await api.delete(`/connectors/custom/${c.id}`)
-    ElMessage.success('删除成功')
+    ElMessage.success(t('common.deleteSuccess'))
     connectorList.value = await api.get('/connectors/custom')
     await fetchConnectors()
   } catch (e: any) {
