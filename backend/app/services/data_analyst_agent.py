@@ -126,7 +126,7 @@ class DataAnalystAgent(BaseAgent):
     tools = get_tool_schemas([
         "web_fetch", "kb_search", "list_user_datasources",
         "query_table_data", "get_table_schema", "execute_sql", "llm_vision",
-        "iter_table_data", "read_file", "llm_generate",
+        "extract_image_table", "iter_table_data", "read_file", "llm_generate",
         "edit_script", "run_script", "read_script", "grep_script",
     ])
     capabilities = ["data_query", "data_analysis"]

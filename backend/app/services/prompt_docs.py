@@ -31,6 +31,7 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 按名查数据源: `call_tool("list_user_datasources", by_name="数据源名")` → {"id": "uuid", "name": ..., "type": ...}
 - LLM 调用: `call_tool("llm_generate", prompt="...", system_prompt="...")` → {"content": "回复文本"}
 - 图片 OCR: `call_tool("llm_vision", image_path="...", prompt="...")` → {"result": "分析文本"}
+- 表格图片提取: `call_tool("extract_image_table", image_path="...")` → {"is_table": true, "headers": [...], "rows": [[...]], "row_count": N}
 - 分块读取: `call_tool("iter_table_data", datasource_id=..., table_name=..., page=1, page_size=10000)` → {"columns", "rows", "page", "total", "has_next"}
 - 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}
 - 写文件: `call_tool("write_file", path="...", data=..., format="csv")` → {"success", "path", "size"}
@@ -42,7 +43,8 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 中英文翻译使用 `call_tool("llm_generate", prompt=..., system_prompt="你是翻译助手")`
 
 ### 图片 OCR 场景
-- 图片文字提取/识别**必须用 `call_tool("llm_vision", image_path=..., prompt=...)`**
+- 图片文字提取/识别用 `call_tool("llm_vision", image_path=..., prompt=...)`
+- 表格图片完整数据提取用 `call_tool("extract_image_table", image_path=...)`（分页提取不截断，返回结构化 JSON）
 
 ### 视频处理场景
 - 视频信息提取用 `call_tool("extract_video_info", video_path=...)`

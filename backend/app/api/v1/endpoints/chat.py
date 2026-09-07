@@ -106,7 +106,7 @@ async def upload_attachment(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    table_name_prefix = os.path.splitext(saved_filename)[0]  # stem（不含后缀），与 GenericFileConnector.get_schema() 一致
+    table_name_prefix = saved_filename  # 完整文件名（带后缀），与 GenericFileConnector.get_schema() 一致
 
     if is_image:
         sheet_names = []
@@ -181,6 +181,12 @@ async def upload_attachment(
 
         tech = dict(datasource.tech_metadata or {})
         files_meta = list(tech.get("files", []))
+        # 修复旧记录：把 stem 格式的 table_name_prefix 更新为带后缀的 saved_filename
+        for fm in files_meta:
+            sf = fm.get("saved_filename", "")
+            tp = fm.get("table_name_prefix", "")
+            if sf and tp and tp != sf:
+                fm["table_name_prefix"] = sf
         files_meta.append(file_meta)
         tech["files"] = files_meta
         datasource.tech_metadata = tech

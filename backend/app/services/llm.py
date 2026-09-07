@@ -955,34 +955,16 @@ class LLMManager:
             try:
                 client = self._client_for(cfg)
                 logger.info(f"LLM vision调用: provider={cfg['provider']}, model={vis_model}")
-                full_content = ""
-                vision_messages = list(messages)
-                for _cont in range(6):
-                    try:
-                        resp = await asyncio.wait_for(
-                            client.chat.completions.create(
-                                model=vis_model,
-                                messages=vision_messages,
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                            ),
-                            timeout=120.0,
-                        )
-                    except Exception:
-                        if not full_content:
-                            raise
-                        logger.warning(f"LLM vision 续写失败 round={_cont+1}，返回已累积内容")
-                        return full_content
-                    choice = resp.choices[0]
-                    partial = choice.message.content or ""
-                    full_content += partial
-                    if choice.finish_reason != "length":
-                        return full_content
-                    logger.info(f"LLM vision 截断续写 round={_cont+1} finish_reason=length")
-                    vision_messages.append({"role": "assistant", "content": partial})
-                    vision_messages.append({"role": "user", "content": "继续"})
-                logger.warning(f"LLM vision 截断续写达上限(5轮)，返回已累积内容")
-                return full_content
+                resp = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=vis_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=120.0,
+                )
+                return resp.choices[0].message.content
             except Exception as e:
                 _err_str = str(e)
                 # max_tokens 超模型上限 → clamp 到 1024 重试（对齐 OpenCode：错误信号驱动，不维护模型上限表）
@@ -991,34 +973,16 @@ class LLMManager:
                     if _clamped != max_tokens:
                         logger.warning(f"LLM vision max_tokens={max_tokens} 超限，clamp 到 {_clamped} 重试 [{vis_model}]")
                         try:
-                            _full = ""
-                            _vmsgs = list(messages)
-                            for _cont in range(6):
-                                try:
-                                    resp = await asyncio.wait_for(
-                                        client.chat.completions.create(
-                                            model=vis_model,
-                                            messages=_vmsgs,
-                                            temperature=temperature,
-                                            max_tokens=_clamped,
-                                        ),
-                                        timeout=120.0,
-                                    )
-                                except Exception:
-                                    if not _full:
-                                        raise
-                                    logger.warning(f"LLM vision(clamp) 续写失败 round={_cont+1}，返回已累积内容")
-                                    return _full
-                                _choice = resp.choices[0]
-                                _partial = _choice.message.content or ""
-                                _full += _partial
-                                if _choice.finish_reason != "length":
-                                    return _full
-                                logger.info(f"LLM vision(clamp) 截断续写 round={_cont+1}")
-                                _vmsgs.append({"role": "assistant", "content": _partial})
-                                _vmsgs.append({"role": "user", "content": "继续"})
-                            logger.warning(f"LLM vision(clamp) 截断续写达上限(5轮)")
-                            return _full
+                            resp = await asyncio.wait_for(
+                                client.chat.completions.create(
+                                    model=vis_model,
+                                    messages=messages,
+                                    temperature=temperature,
+                                    max_tokens=_clamped,
+                                ),
+                                timeout=120.0,
+                            )
+                            return resp.choices[0].message.content
                         except Exception as e2:
                             errors.append(f"[{cfg['provider']}/{vis_model}] {e2}")
                             logger.warning(f"LLM vision clamp 重试仍失败 [{cfg['provider']}/{vis_model}]: {e2}，尝试下一个配置")

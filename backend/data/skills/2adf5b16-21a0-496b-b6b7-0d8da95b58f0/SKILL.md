@@ -16,6 +16,8 @@ tags:
 ## 功能说明
 使用视觉大模型识别图片中的表格，提取表头与行数据，写入目标数据源（默认为「交易数据」Excel 数据源）。如果图片不包含表格（如普通照片、文档段落、非表格截图），脚本会报错并停止解析，不会写入任何数据。
 
+源数据源选图片文件时，脚本自动从源表数据中读取 `file_path` 字段定位图片，无需手动指定 `image_path`。
+
 ## 使用方式
 ```
 解析图片 /path/to/table_image.png 中的表格，保存到交易数据
@@ -31,7 +33,7 @@ tags:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `image_path` | str | ✅ | - | 待解析的表格图片文件路径（必填） |
+| `image_path` | str | ❌ | - | 待解析的表格图片文件路径（留空则自动从源表 file_path 字段获取） |
 | `target_datasource_name` | str | ❌ | 交易数据 | 目标数据源名称（例如：交易数据、文物列表、聊天上传数据） |
 | `target_table_name` | str | ❌ | parsed_image_table | 目标表名，默认 `parsed_image_table` |
 | `if_table_exists` | str | ❌ | fail | 写入策略：fail/append/replace/overwrite/truncate/upsert |
@@ -41,7 +43,7 @@ tags:
 
 | 脚本 | 说明 |
 |------|------|
-| `main.py` | 核心脚本：调用 `llm_vision` 识别图片，解析表格 JSON，校验非表格图片，写入目标数据源 |
+| `main.py` | 核心脚本：调用 `extract_image_table` 工具分页提取表格数据，规范化后写入目标数据源 |
 
 ## 注意事项
 - 图片路径必须是可被沙箱访问的本地文件路径（例如 `D:/images/xxx.png`）。

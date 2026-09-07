@@ -312,8 +312,8 @@ def _register_data_tools():
             "name": "llm_vision",
             "description": (
                 "用视觉大模型分析图片内容（OCR、图表识别、画面描述）。"
-                "适用于：识别图片中的文字/数据表格、描述图片内容、提取关键信息。"
-                "限制：图片必须在文件链接授权目录内；单次调用可能耗时 10-30 秒。"
+                "适用于：识别图片中的文字/描述图片内容/提取关键信息。"
+                "限制：图片必须在文件链接授权目录内；单次调用可能耗时 10-30 秒；大表格输出可能截断，表格数据提取建议用 extract_image_table。"
             ),
             "parameters": {
                 "type": "object",
@@ -325,6 +325,27 @@ def _register_data_tools():
             },
         },
     }, _llm_vision_handler, cacheable=False)
+
+    register_tool("extract_image_table", {
+        "type": "function",
+        "function": {
+            "name": "extract_image_table",
+            "description": (
+                "从图片中分页提取表格数据，返回结构化 JSON（headers + rows）。"
+                "适用：数据表/报价单/报表等表格图片的完整数据提取。"
+                "限制：合并单元格可能不准；非表格图片返回 is_table=false；单次调用可能耗时 30-120 秒（多页识别）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string", "description": "图片文件路径（从附件信息中获取 file_path）"},
+                    "page_size": {"type": "integer", "description": "每页提取行数，默认 8", "default": 8},
+                    "max_retries": {"type": "integer", "description": "每页识别失败重试次数，默认 2", "default": 2},
+                },
+                "required": ["image_path"],
+            },
+        },
+    }, _extract_image_table_handler, cacheable=False)
 
     register_tool("write_table_data", {
         "type": "function",
@@ -861,6 +882,251 @@ async def _llm_vision_handler(args, db, user_id, context):
         return json.dumps({"image_path": image_path, "result": result_text}, ensure_ascii=False)
     except Exception as e:
         logger.error(f"llm_vision handler 异常: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _extract_image_table_handler(args, db, user_id, context):
+    """从图片中分页提取表格数据，返回结构化 JSON。
+    复用 image-table-to-excel 技能的分页策略：先识别表头→分页提取行→竖线分隔格式+末行锚点定位。
+    """
+    import base64, io as _io, re, json as _json
+    from pathlib import Path
+    from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
+    from app.services.llm import llm_manager, init_user_llm_context, get_user_llm_config
+
+    image_path = args.get("image_path", "").strip()
+    if not image_path:
+        return json.dumps({"error": "缺少 image_path"}, ensure_ascii=False)
+    page_size = int(args.get("page_size", 8))
+    max_retries = int(args.get("max_retries", 2))
+
+    try:
+        allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        validated = _validate_file_path(image_path, allowed_dirs)
+        p = Path(validated)
+        if not p.exists():
+            return json.dumps({"error": "图片文件不存在"}, ensure_ascii=False)
+        ext = p.suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
+            return json.dumps({"error": f"不支持的图片格式: {ext}"}, ensure_ascii=False)
+
+        # 压缩图片
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
+        mime = mime_map.get(ext, "image/jpeg")
+        raw_bytes = p.read_bytes()
+        try:
+            from PIL import Image as _PILImage
+            img = _PILImage.open(_io.BytesIO(raw_bytes))
+            if img.width > 1024 or img.height > 1024:
+                ratio = min(1024 / img.width, 1024 / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, _PILImage.LANCZOS)
+            buf = _io.BytesIO()
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85)
+            image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            mime = "image/jpeg"
+        except Exception:
+            image_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+
+        if user_id:
+            await init_user_llm_context(user_id)
+        await llm_manager.initialize()
+        _user_cfg = get_user_llm_config()
+        if not _user_cfg:
+            return json.dumps({"error": "未配置 LLM Provider，请在配置页面设置"}, ensure_ascii=False)
+
+        # ---- 内部辅助函数（复用 image-table-to-excel 技能的分页策略）----
+
+        async def _vision_json(prompt: str, max_tokens: int = 8000) -> dict:
+            """调 vision 并解析 JSON"""
+            last_err = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    text = await llm_manager.vision(image_b64, mime, prompt, max_tokens=max_tokens)
+                    if not text or not text.strip():
+                        raise ValueError("视觉模型返回为空")
+                    t = text.strip()
+                    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", t, re.DOTALL | re.IGNORECASE)
+                    if fenced:
+                        t = fenced.group(1).strip()
+                    try:
+                        return _json.loads(t)
+                    except _json.JSONDecodeError:
+                        match = re.search(r"\{.*\}", t, re.DOTALL)
+                        if match:
+                            try:
+                                return _json.loads(match.group(0))
+                            except _json.JSONDecodeError:
+                                pass
+                        raise ValueError(f"无法解析 JSON，回复前200字符: {t[:200]}")
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries:
+                        logger.info(f"extract_image_table 识别/解析失败，重试 ({attempt}/{max_retries}): {e}")
+                    else:
+                        raise RuntimeError(f"视觉识别失败，已重试 {max_retries} 次: {last_err}") from last_err
+
+        async def _vision_text(prompt: str, max_tokens: int = 8000) -> str:
+            """调 vision 返回原始文本"""
+            last_err = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    text = await llm_manager.vision(image_b64, mime, prompt, max_tokens=max_tokens)
+                    if not text or not text.strip():
+                        raise ValueError("视觉模型返回为空")
+                    return text
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries:
+                        logger.info(f"extract_image_table 识别失败，重试 ({attempt}/{max_retries}): {e}")
+                    else:
+                        raise RuntimeError(f"视觉识别失败，已重试 {max_retries} 次: {last_err}") from last_err
+
+        def _build_header_prompt() -> str:
+            return ('请观察这张表格图片。请识别表头行的所有列名（从左到右顺序），'
+                    '并估算表格中数据行的总数（不含表头行）。严格按以下 JSON 返回，不要输出任何其他文字：\n'
+                    '{"headers": ["列1", "列2", ...], "total_rows": 50}')
+
+        def _build_rows_prompt(headers, start, end, last_key="") -> str:
+            header_line = "、".join(str(h) for h in headers)
+            ncols = len(headers)
+            if last_key:
+                locate = (f"第 1 到第 {start - 1} 行此前已经提取完成，"
+                          f"最后一条记录的第一列值是「{last_key}」。"
+                          f"请从「{last_key}」所在行的下一行开始，向下提取 {end - start + 1} 行数据。")
+            else:
+                locate = f"请从表格第一行数据（第一条记录）开始，向下提取 {end - start + 1} 行数据。"
+            return (f"这张图片是一个数据表格。表头列从左到右依次为：{header_line}（共 {ncols} 列）。\n{locate}\n"
+                    "每一行输出该行全部单元格的值，单元格之间用竖线 | 分隔，一行写一条记录，空单元格输出为空字符串。\n"
+                    "不要输出表头、不要输出行号、不要输出任何解释文字，只输出数据行。\n格式示例：\n值1|值2|值3|值4\n值1|值2|值3|值4")
+
+        def _parse_rows_text(text: str) -> list:
+            if not text or not text.strip():
+                return []
+            t = text.strip()
+            fenced = re.search(r"```(?:text|txt|plain)?\s*(.*?)\s*```", t, re.DOTALL | re.IGNORECASE)
+            if fenced:
+                t = fenced.group(1).strip()
+            rows = []
+            for line in t.splitlines():
+                line = line.strip()
+                if not line or "|" not in line:
+                    continue
+                rows.append([c.strip() for c in line.split("|")])
+            return rows
+
+        def _row_key(row, n=2):
+            parts = [str(c).strip() for c in (row or [])[:n] if c is not None and str(c).strip() != ""]
+            if not parts:
+                parts = [str(c).strip() for c in (row or []) if c is not None]
+            return "|".join(parts)
+
+        def _snake_case_columns(headers):
+            result = []
+            for h in headers:
+                h = str(h).strip() if h is not None else ""
+                if not h:
+                    h = f"col_{len(result) + 1}"
+                elif re.match(r"^\d", h):
+                    m = re.match(r"^(\d{4})\s*年?", h)
+                    if m:
+                        h = f"year_{m.group(1)}"
+                    else:
+                        h = "col_" + re.sub(r"\s+", "_", h)
+                result.append(h)
+            return result
+
+        # ---- 主流程 ----
+
+        # 1. 识别表头 + 估算总行数
+        header_data = await _vision_json(_build_header_prompt())
+        headers = (header_data or {}).get("headers")
+        if not isinstance(headers, list) or len(headers) == 0:
+            result = {"is_table": False, "error": "未能识别表格表头，图片可能不是表格"}
+            return json.dumps(result, ensure_ascii=False)
+        headers = [str(h).strip() for h in headers]
+        total_rows_est = int((header_data or {}).get("total_rows", 0) or 0)
+        logger.info(f"extract_image_table: 表头 {len(headers)} 列, 估算 {total_rows_est} 行")
+
+        # 2. 分页提取数据行
+        ncols = len(headers)
+        upper_bound = max(total_rows_est, 1) + 60
+        all_rows = []
+        seen_keys = set()
+        hdr_norm = [str(h).strip() for h in headers]
+        TRUNC_THRESHOLD = 1900
+        last_key = ""
+        page_idx = 0
+        cur_page_size = page_size
+
+        while page_idx < 80:
+            start = page_idx * cur_page_size + 1
+            end = start + cur_page_size - 1
+            raw = await _vision_text(_build_rows_prompt(headers, start, end, last_key=last_key))
+            rows = _parse_rows_text(raw)
+
+            valid_rows = []
+            for row in rows:
+                if len([c for c in row if c]) < 2:
+                    continue
+                norm = ["".join(c.split()) for c in row]
+                if norm == hdr_norm or norm[:ncols] == hdr_norm:
+                    continue
+                valid_rows.append(row)
+
+            added = 0
+            last_seen_key = last_key
+            for row in valid_rows:
+                key = _row_key(row, n=1)
+                if key and key not in seen_keys:
+                    seen_keys.add(key)
+                    all_rows.append(row)
+                    last_seen_key = key
+                    added += 1
+
+            logger.info(f"extract_image_table: 批次 {page_idx + 1} 解析 {len(rows)} 行, 有效 {len(valid_rows)} 行, 新增 {added} 行, 累计 {len(all_rows)} 行")
+
+            # 截断判断
+            truncated = len(raw) >= TRUNC_THRESHOLD and len(valid_rows) < cur_page_size
+            if truncated and cur_page_size > 2:
+                cur_page_size = max(2, cur_page_size // 2)
+                logger.info(f"extract_image_table: 疑似截断，缩页为 {cur_page_size} 行重试")
+                continue
+
+            if len(valid_rows) < cur_page_size:
+                break
+            if added == 0:
+                break
+            last_key = last_seen_key
+            page_idx += 1
+
+        if not all_rows:
+            result = {"is_table": False, "error": "表格数据为空"}
+            return json.dumps(result, ensure_ascii=False)
+
+        # 3. 规范化列名 + 列数对齐
+        norm_headers = _snake_case_columns(headers)
+        norm_rows = []
+        for row in all_rows:
+            if len(row) < len(norm_headers):
+                row = row + [None] * (len(norm_headers) - len(row))
+            elif len(row) > len(norm_headers):
+                row = row[:len(norm_headers)]
+            norm_rows.append(row)
+
+        result = {
+            "is_table": True,
+            "headers": norm_headers,
+            "rows": norm_rows,
+            "row_count": len(norm_rows),
+        }
+        logger.info(f"extract_image_table: 完成, 共 {len(norm_rows)} 行 {len(norm_headers)} 列")
+        return json.dumps(result, ensure_ascii=False)
+
+    except Exception as e:
+        logger.error(f"extract_image_table handler 异常: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

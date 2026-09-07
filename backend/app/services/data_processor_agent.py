@@ -74,6 +74,7 @@ MAIN_TOOLS = [
     "web_fetch", "kb_search", "list_user_datasources",
     "query_table_data", "get_table_schema", "execute_sql",
     "list_user_file_links", "save_file_to_link", "llm_vision",
+    "extract_image_table",
     "write_table_data", "iter_table_data", "read_file", "write_file",
     "llm_generate", "extract_video_info", "extract_keyframes",
     "edit_script", "run_script", "read_script", "grep_script",

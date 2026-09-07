@@ -103,13 +103,13 @@
               
               <!-- 技能/流程/数据匹配建议（可能多个同时出现） -->
               <template v-if="msg.role === 'assistant'">
-              <div v-for="(sug, sugIdx) in (msg.suggestions || (msg.suggestion ? [msg.suggestion] : []))" :key="sugIdx" class="suggestion-card">
+              <div v-for="(sug, sugIdx) in (msg.suggestions || (msg.suggestion ? [msg.suggestion] : []))" :key="sug.type + '_' + sugIdx" class="suggestion-card">
                 <template v-if="sug.type === 'data_suggestion'">
                   <div class="suggestion-header">
                     <el-icon><Coin /></el-icon>
                     <span>{{ t('chat.detectedData', { count: sug.matches.length }) }}</span>
                   </div>
-                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="sug.type + '_' + m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
                       <span v-if="m.row_count != null" class="meta-row">{{ t('chat.rowCount') }}: {{ m.row_count?.toLocaleString() }}</span>
@@ -135,7 +135,7 @@
                     <el-icon><WarningFilled /></el-icon>
                     <span>{{ t('chat.targetTableExists', { count: sug.matches.length }) }}</span>
                   </div>
-                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="sug.type + '_' + m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.datasource_name }} → {{ m.table_name }}</div>
                     <div class="suggestion-item-meta">
                       <span v-if="m.row_count != null" class="meta-row">{{ t('chat.rowCount') }}: {{ m.row_count?.toLocaleString() }}</span>
@@ -178,7 +178,7 @@
                     <el-icon><MagicStick /></el-icon>
                     <span>{{ (sug.matches[0]?.type === 'pipeline') ? t('chat.detectedMatchPipeline', { count: sug.matches.length }) : t('chat.detectedMatchSkill', { count: sug.matches.length }) }}</span>
                   </div>
-                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="m._idx" class="suggestion-item">
+                  <div v-for="m in suggestionPageFor(sug, sugIdx)" :key="sug.type + '_' + m._idx" class="suggestion-item">
                     <div class="suggestion-item-name">{{ m.name }}</div>
                     <div class="suggestion-item-desc">{{ m.description }}</div>
                     <div class="suggestion-actions" style="gap: 8px;">

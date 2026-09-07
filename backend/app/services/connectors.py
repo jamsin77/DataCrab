@@ -1628,7 +1628,7 @@ class GenericFileConnector(BaseConnector):
         files = self._get_files()
         return [
             {
-                "table_name": f.stem,
+                "table_name": f.name,
                 "table_type": "file",
                 "data_type": f.suffix.lower().lstrip("."),
                 "file_path": str(f),
@@ -1642,11 +1642,19 @@ class GenericFileConnector(BaseConnector):
         if not files:
             return pd.DataFrame()
 
-        # table 是文件 stem（get_schema 返回的 table_name = f.stem）
+        # table 是完整文件名（get_schema 返回的 table_name = f.name）
         # 选中具体文件时，解析该文件内容；未选中时返回文件列表
         target = None
         if table:
-            target = next((f for f in files if f.stem == table), None)
+            target = next((f for f in files if f.name == table), None)
+            if not target:
+                target = next((f for f in files if f.stem == table), None)
+            if not target:
+                # 尝试从 "filename.xlsx_SheetName" 格式中提取文件名
+                target = next((f for f in files if table.startswith(f.name + "_")), None)
+            if not target:
+                # 尝试从 "stem_SheetName" 格式中提取 stem
+                target = next((f for f in files if table.startswith(f.stem + "_") and f.stem != table), None)
 
         if target:
             ext = target.suffix.lower().lstrip(".")
@@ -1656,16 +1664,21 @@ class GenericFileConnector(BaseConnector):
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
                 elif ext in ("xlsx", "xls"):
-                    # table 可能是 "stem_sheetname" 格式
+                    # table 可能是 "filename.xlsx_sheetname" 或 "stem_sheetname" 格式
                     sheet_name = 0
-                    if "_" in table and table.rsplit("_", 1)[-1] != target.stem:
-                        candidate_sheet = table.rsplit("_", 1)[-1]
-                        try:
-                            xls = pd.ExcelFile(target)
-                            if candidate_sheet in xls.sheet_names:
-                                sheet_name = candidate_sheet
-                        except Exception:
-                            pass
+                    stem = target.stem
+                    if "_" in table:
+                        # 去掉文件名部分，剩下的可能是 sheet 名
+                        for base in (target.name, stem):
+                            if table.startswith(base + "_"):
+                                candidate_sheet = table[len(base) + 1:]
+                                try:
+                                    xls = pd.ExcelFile(target)
+                                    if candidate_sheet in xls.sheet_names:
+                                        sheet_name = candidate_sheet
+                                except Exception:
+                                    pass
+                                break
                     df = pd.read_excel(target, sheet_name=sheet_name)
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
@@ -1729,7 +1742,13 @@ class GenericFileConnector(BaseConnector):
     async def get_table_stats(self, table):
         files = self._get_files()
         if table:
-            target = next((f for f in files if f.stem == table), None)
+            target = next((f for f in files if f.name == table), None)
+            if not target:
+                target = next((f for f in files if f.stem == table), None)
+            if not target:
+                target = next((f for f in files if table.startswith(f.name + "_")), None)
+            if not target:
+                target = next((f for f in files if table.startswith(f.stem + "_") and f.stem != table), None)
             if target:
                 ext = target.suffix.lower().lstrip(".")
                 try:
