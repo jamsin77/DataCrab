@@ -382,8 +382,6 @@ def main(**params):
         return {"success": False, "error": "缺少源数据源标识"}
     if not source_table:
         return {"success": False, "error": "缺少源表名"}
-    if not target_table:
-        return {"success": False, "error": "缺少目标表名"}
 
     print(f"[1/3] 导出: {source_ds_name or source_ds_id}.{source_table} -> {target_ds_name or '(同源)'}.{target_table}")
 
@@ -440,6 +438,7 @@ def main(**params):
     total = len(records)
     print(f"[2/3] 读取完成: {total} 行, {len(all_columns)} 列")
 
+    # 统一执行表导出：读取源表并原样写入目标表，不隐式路由到图片 OCR 解析
     # 写入目标表（分批）
     batch_size = 1000
     clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}

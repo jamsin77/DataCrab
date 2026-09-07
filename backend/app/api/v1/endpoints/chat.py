@@ -106,7 +106,7 @@ async def upload_attachment(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    table_name_prefix = saved_filename  # 表名 = 完整文件名（带后缀），唯一标识
+    table_name_prefix = os.path.splitext(saved_filename)[0]  # stem（不含后缀），与 GenericFileConnector.get_schema() 一致
 
     if is_image:
         sheet_names = []
@@ -201,9 +201,8 @@ async def upload_attachment(
                 _ctx = dict(_sess_obj.context or {})
                 _ctx["source_datasource_id"] = str(datasource.id)
                 _ctx["source_datasource_name"] = _VIRTUAL_DS_NAME
-                if not is_image:
-                    _ctx["source_data_name"] = table_name_prefix
-                    _ctx["source_filename"] = saved_filename
+                _ctx["source_data_name"] = table_name_prefix
+                _ctx["source_filename"] = saved_filename
                 _sess_obj.context = _ctx
                 await db.commit()
         except Exception as e:
@@ -992,9 +991,10 @@ async def stream_response(
                             # 把虚拟数据源写入 session_ctx（与用户选择数据源一致）
                             _session_ctx["source_datasource_id"] = str(virtual_ds.id)
                             _session_ctx["source_datasource_name"] = _VIRTUAL_DS_NAME
-                            # 数据文件设 source_data_name（表名前缀），图片不设（不是数据表）
-                            if _data_files:
-                                _session_ctx["source_data_name"] = _data_files[0].get("table_name_prefix", "")
+                            # 设 source_data_name（stem，图片也是源数据）
+                            _src_file = _image_files[0] if _image_files else (_data_files[0] if _data_files else None)
+                            if _src_file:
+                                _session_ctx["source_data_name"] = _src_file.get("table_name_prefix", "")
 
                 # 无附件或附件未匹配到文件时，才推断数据源
                 if not _attachment_matched:

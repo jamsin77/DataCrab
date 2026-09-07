@@ -99,6 +99,16 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "工具: run_script\nAI输出: 我已确认关键信息：凭证库（`39eedc33`）里的\"交易数据\"表实际是一张图片 `D:\\Data\\images\\交易数据.png`（2.05MB 的 PNG），目标数据源\"凭证检索库\"（`e5f3fffa`）是 PostgreSQL，且已存在一张\"交易数据\"表。\n\n现在按用户要求\"只执行不修改代码\"，直接用当前脚本运行，传入图片路径与目标数据源/表信息：\n\n"
+    },
+    {
+      "timestamp": "2026-09-07T14:13:16.586991",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "缺少源数据源标识",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 源表是 1 行的图片文件记录表（含 file_path/file_name）。当前脚本 `main()` 检测到单行文件记录时会路由到图片解析，且目标表名会加时间戳、默认还会跳到\"交易数据\"数据源。我先用任务给的参数实际运行一遍，确认具体行为与报错。"
     }
   ],
   "positive": [
@@ -122,6 +132,20 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'rows': 1, 'columns': ['file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time'], 'target_table': '交易数据', 'target_datasource': '凭证检索库', 'message': '表导出成功'}"
+    },
+    {
+      "timestamp": "2026-09-07T10:06:10.484398",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'rows': 1, 'columns': ['file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time'], 'target_table': '交易数据_20260901', 'target_datasource': '交易数据', 'message': '"
+    },
+    {
+      "timestamp": "2026-09-07T10:20:15.952903",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'rows': 224, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020'], 'target_table': '交易数据_"
     }
   ],
   "lessons": ""
