@@ -2,13 +2,6 @@ import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-
-def log(level: str, msg: str) -> None:
-    """环境未注入 log 函数，这里提供简单实现（info/warn 打印带前缀的进度信息）。"""
-    prefix = {"info": "[INFO]", "warn": "[WARN]", "error": "[ERROR]"}.get(level, f"[{level.upper()}]")
-    print(f"{prefix} {msg}")
-
-
 # ============================================================
 # 常见凭证拼音→中文映射表
 # ============================================================
@@ -545,32 +538,7 @@ def main(**kwargs):
     return extract_image_info(**resolved)
 
 
-def _probe_ocr_functions():
-    """探测沙箱中可用的OCR/视觉相关函数"""
-    import builtins
-    # 列出所有内置全局名称
-    all_names = dir(builtins)
-    # 也检查全局命名空间
-    try:
-        g = globals()
-        all_names = list(set(all_names + list(g.keys())))
-    except:
-        pass
-    
-    ocr_related = []
-    for name in sorted(all_names):
-        name_lower = name.lower()
-        if any(kw in name_lower for kw in ['ocr', 'vision', 'image', 'recognize', 'read', 'llm', 'chat', 'extract']):
-            ocr_related.append(name)
-    
-    print("OCR/视觉相关函数:", ocr_related)
-    print("\n所有非下划线开头的全局名称:")
-    for name in sorted(all_names):
-        if not name.startswith('_'):
-            print(f"  {name}")
-    return {"ocr_related": ocr_related}
 
-_probe_ocr_functions()
 
 
 def _sanitize_pii(text: str) -> str:
