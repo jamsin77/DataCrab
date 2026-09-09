@@ -69,6 +69,16 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "工具: run_script\nAI输出: 我理清了错误来源：报错的 `_probe_ocr_functions` / `import builtins` 既不在当前磁盘脚本里，也不在平台模板里，说明 run_script 第一次执行时用的是 context 里残留的旧脚本版本；而随后 read_script 已经将 context 里的 `debug_script_content` 刷新成了不含探测代码的新版本。我直接再执行一次验证。"
+    },
+    {
+      "timestamp": "2026-09-09T16:00:36.490062",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "llm_give_up",
+      "error_message": "非脚本问题（修改脚本无法解决）：Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmprgf5k0vs.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmprgf5k0vs.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmprgf5k0vs.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "LLM归因: 我直接调用 run_script 执行固化好的入口流程，检查运行结果。"
     }
   ],
   "positive": [

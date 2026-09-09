@@ -256,7 +256,12 @@ def _logged_call_tool(tool_name, **args):
         # 记录 write_table_data 的目标表信息（供 RunTime handoff Inspector 用）
         if tool_name == "write_table_data" and _success:
             _log_entry["datasource_id"] = args.get("datasource_id", "")
-            _log_entry["table_name"] = args.get("table_name", "")
+            # 优先用 connector 返回的实际表名（可能被 hash/create_new 改名），回退入参
+            _log_entry["table_name"] = ""
+            if isinstance(_result, dict):
+                _log_entry["table_name"] = _result.get("table_name", "") or args.get("table_name", "")
+            else:
+                _log_entry["table_name"] = args.get("table_name", "")
         _TOOL_CALL_LOG.append(_log_entry)
         return _result
     except Exception as _e:
@@ -269,12 +274,13 @@ def _logged_call_tool(tool_name, **args):
         raise
 
 _builtins.call_tool = _logged_call_tool
+call_tool = _logged_call_tool  # 替换模块全局名，确保脚本函数引用的是 logged 版
 
 # atexit 确保脚本崩溃时也输出 tool_call_log
 import atexit as _atexit
 def _print_tool_call_log():
     if _TOOL_CALL_LOG:
-        print("__TOOL_CALL_LOG__" + json.dumps(_sanitize_nans(_TOOL_CALL_LOG), ensure_ascii=False, default=str))
+        print("__TOOL_CALL_LOG__" + json.dumps(_sanitize_nans(_TOOL_CALL_LOG), ensure_ascii=False, default=str), flush=True)
 _atexit.register(_print_tool_call_log)
 
 # __SCRIPT_CONTENT__
@@ -293,7 +299,7 @@ if __name__ == "__main__":
         result = {function_name}(input_data, **params) if input_data is not None else {function_name}(**params)
         if result is not None:
             if hasattr(result, "to_dict"):
-                print("__RESULT__" + json.dumps(_sanitize_nans(result.to_dict(orient="records")), ensure_ascii=False, default=str))
+                print("__RESULT__" + json.dumps(_sanitize_nans(result.to_dict(orient="records")), ensure_ascii=False, default=str), flush=True)
             elif isinstance(result, dict):
                 serializable = {{}}
                 for k, v in result.items():
@@ -301,11 +307,14 @@ if __name__ == "__main__":
                         serializable[k] = _sanitize_nans(v.to_dict(orient="records"))
                     else:
                         serializable[k] = _sanitize_nans(v)
-                print("__RESULT__" + json.dumps(serializable, ensure_ascii=False, default=str))
+                print("__RESULT__" + json.dumps(serializable, ensure_ascii=False, default=str), flush=True)
             elif isinstance(result, list):
-                print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str))
+                print("__RESULT__" + json.dumps(_sanitize_nans(result), ensure_ascii=False, default=str), flush=True)
             else:
-                print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False))
+                print("__RESULT__" + json.dumps({{"value": str(result)}}, ensure_ascii=False), flush=True)
+        # 显式输出 tool_call_log（不依赖 atexit，避免 stdout pipe 在退出阶段已关闭）
+        if _TOOL_CALL_LOG:
+            print("__TOOL_CALL_LOG__" + json.dumps(_sanitize_nans(_TOOL_CALL_LOG), ensure_ascii=False, default=str), flush=True)
         # 检查是否有写入表记录（通过 call_tool 的 write_table_data 返回值追踪）
         # _WRITTEN_TABLES 由 handler 侧管理，通过 result 返回
 """

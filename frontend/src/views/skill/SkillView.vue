@@ -1878,6 +1878,7 @@ function processDebugSSEEvent(
       if (!msg.content) msg.content = ''
       msg.content += data.content
       msg.llmContent = (msg.llmContent || '') + data.content
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'tool_action': {
       msg.toolActions = msg.toolActions || []
@@ -1893,6 +1894,7 @@ function processDebugSSEEvent(
         msg.content += (msg.content ? '\n' : '') + line
         msg.toolActions.push(act)
       }
+      nextTick(() => scrollSkillDebugToBottom())
       break
     }
     case 'tool_summary': {
@@ -1900,44 +1902,53 @@ function processDebugSSEEvent(
       for (const s of (data.summaries || [])) {
         msg.content += (msg.content ? '\n' : '') + `[${_tsTime}] ${s}`
       }
+      nextTick(() => scrollSkillDebugToBottom())
       break
     }
     case 'executing':
       execPhase.value = 'executing'
       setExecutingMsg(msg, data.message || t('skill.executingScript'))
       setThinkingDone()
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'progress':
       setExecutingMsg(msg, data.message || '')
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'inspecting':
       archiveExecutingMsg(msg)
       setExecutingMsg(msg, data.message || t('skill.executingInspection'))
       msg.thinkingOpen = false
       state.thinkingDone = true
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'inspection_result':
       msg.inspectionResult = data.result
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'inspection_report':
       msg.inspectionReport = data.report
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'retry':
       archiveExecutingMsg(msg)
       ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔄 ${data.message || t('skill.startFixMsg')}`)
       msg.thinkingOpen = false
       state.thinkingDone = true
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'round':
       archiveExecutingMsg(msg)
       msg.thinkingOpen = false
       state.thinkingDone = true
       msg.content += `\n\n─── ` + t('skill.modifyAttemptRound', { round: data.round, action: data.action === 'execute' ? t('skill.executeAction') : t('skill.modifyAction') }) + ` ───\n`
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'fixing':
       execPhase.value = 'executing'
       archiveExecutingMsg(msg)
       ;(msg.flowEvents = msg.flowEvents || []).push(`[${timePrefix()}] 🔧 ${data.message || t('skill.autoFixingMsg')}`)
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'run_result':
       setThinkingDone()
@@ -1954,6 +1965,7 @@ function processDebugSSEEvent(
           msg.content = t('skill.skillExecComplete')
         }
       }
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'script_updated':
       msg.scriptUpdated = data.script_name
@@ -1970,6 +1982,7 @@ function processDebugSSEEvent(
       msg.content += `\n\n` + t('skill.platformIssueContent', { message: data.reason || data.message || '' })
       msg.thinkingOpen = false
       state.thinkingDone = true
+      nextTick(() => scrollSkillDebugToBottom())
       break
     case 'fatal': {
       const issues = data.issues || []
@@ -1992,6 +2005,7 @@ function processDebugSSEEvent(
       }
       warnText += '\n\n> ' + t('skill.fixWarningReply')
       msg.content += warnText
+      nextTick(() => scrollSkillDebugToBottom())
       break
     }
     case 'done':

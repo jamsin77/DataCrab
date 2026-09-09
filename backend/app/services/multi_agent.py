@@ -183,7 +183,13 @@ class AgentRuntime:
                 from_agent=current_agent.name, to_agent=target_name,
                 reason=reason.value, trace_id=current_message.trace_id,
             )
-            guard.record(target_name, payload.get("datasource_id", ""), payload.get("table_name", ""))
+            _guard_ds = payload.get("datasource_id", "")
+            _guard_tbl = payload.get("table_name", "")
+            if not _guard_ds and payload.get("output_tables"):
+                _guard_ds = payload["output_tables"][0].get("datasource_id", "")
+            if not _guard_tbl and payload.get("output_tables"):
+                _guard_tbl = payload["output_tables"][0].get("table_name", "")
+            guard.record(target_name, _guard_ds, _guard_tbl)
             if guard.is_diverged():
                 yield {"type": "content", "content": "自动修复未能收敛，同一问题反复出现，请人工介入检查。"}
                 yield {"type": "done", "result": {"agent": "runtime", "content": "收敛失败"}}
@@ -233,27 +239,34 @@ class AgentRuntime:
             # Processor 执行成功 → 交 Inspector 检查
             if not done_result.get("execution_success"):
                 return None
-            # 只检查脚本实际写入的表（output_datasource_id / output_table）
-            # 不 fallback 到 debug 参数的源/目标表——避免检查源数据本身的预存问题
-            ds_id = done_result.get("output_datasource_id", "")
-            tbl = done_result.get("output_table", "")
-            if not ds_id or not tbl:
+            # 收集所有写入的表（多表检查）
+            _output_tables = done_result.get("output_tables", [])
+            if not _output_tables:
+                # 兜底：单表字段
+                ds_id = done_result.get("output_datasource_id", "")
+                tbl = done_result.get("output_table", "")
+                if ds_id and tbl:
+                    _output_tables = [{"datasource_id": ds_id, "table_name": tbl}]
+            if not _output_tables:
                 return None
             if context.get("debug_max_inspections", 7) <= 0:
                 return None
             _round = context.get("debug_inspection_round", 0)
             reason = HandoffReason.FIX_COMPLETED if _round > 0 else HandoffReason.INSPECT_RESULT
+            _tables_desc = ", ".join(t["table_name"] for t in _output_tables[:5])
             _payload = {
-                "datasource_id": ds_id, "table_name": tbl,
+                "output_tables": _output_tables,
                 "operation_description": f"第 {_round} 轮修复后复查" if _round > 0 else "技能调试执行成功，自动交接质量检查",
-                "result_summary": "执行成功",
+                "result_summary": f"检查表: {_tables_desc}",
             }
             # 传递技能路径，供 Inspector 加载技能专属规则
             if context.get("debug_skill_path"):
                 _payload["skill_path"] = context["debug_skill_path"]
-            # 记录 Inspector 检查目标到 context，供 Inspector→Processor 回交使用
-            context["debug_output_datasource_id"] = ds_id
-            context["debug_output_table"] = tbl
+            # 记录 Inspector 检查目标到 context（供 Inspector→Processor 回交使用）
+            context["debug_output_tables"] = _output_tables
+            # 兼容单值字段
+            context["debug_output_datasource_id"] = _output_tables[0].get("datasource_id", "")
+            context["debug_output_table"] = _output_tables[0].get("table_name", "")
             return ("data_inspector", reason, _payload)
 
         if agent_name == "data_inspector":
@@ -269,17 +282,20 @@ class AgentRuntime:
             _round = context.get("debug_inspection_round", 0)
             if _round >= context.get("debug_max_inspections", 7):
                 return None
-            ds_id = (context.get("debug_output_datasource_id", "")
-                     or context.get("debug_target_datasource_id", "")
-                     or context.get("debug_source_datasource_id", ""))
-            tbl = (context.get("debug_output_table", "")
-                   or context.get("debug_target_data_name", "")
-                   or context.get("debug_source_data_name", ""))
+            # 回交带全部写入表（Processor 全部重跑）
+            _output_tables = context.get("debug_output_tables", [])
+            if not _output_tables:
+                ds_id = (context.get("debug_output_datasource_id", "")
+                         or context.get("debug_target_datasource_id", "")
+                         or context.get("debug_source_datasource_id", ""))
+                tbl = (context.get("debug_output_table", "")
+                       or context.get("debug_target_data_name", "")
+                       or context.get("debug_source_data_name", ""))
+                _output_tables = [{"datasource_id": ds_id, "table_name": tbl}] if ds_id and tbl else []
             return ("data_processor", HandoffReason.FIX_REQUIRED, {
                 "issues": issues,
                 "summary": (done_result.get("content") or "")[:500],
-                "datasource_id": ds_id,
-                "table_name": tbl,
+                "output_tables": _output_tables,
             })
 
         return None

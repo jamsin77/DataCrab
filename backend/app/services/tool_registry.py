@@ -1154,15 +1154,16 @@ async def _write_table_data_handler(args, db, user_id, context):
         mgr = ConnectorManager(db)
         result = await mgr.write_table(str(ds_id), table_name, records, **kwargs)
 
-        # 更新 TableMetadata.data_updated_at
+        # 更新 TableMetadata：用 connector 实际使用的表名（可能是 hash 名/create_new 后缀名）
         if isinstance(result, dict) and result.get("success", True):
             from datetime import datetime as _dt
             from app.models.datasource import TableMetadata
+            actual_table = result.get("table_name") or table_name
             try:
                 meta_result = await db.execute(
                     select(TableMetadata).where(
                         TableMetadata.data_source_id == _uuid.UUID(str(ds_id)),
-                        TableMetadata.table_name == table_name,
+                        TableMetadata.table_name == actual_table,
                     )
                 )
                 meta = meta_result.scalar_one_or_none()
@@ -1171,7 +1172,7 @@ async def _write_table_data_handler(args, db, user_id, context):
                 else:
                     db.add(TableMetadata(
                         data_source_id=_uuid.UUID(str(ds_id)),
-                        table_name=table_name,
+                        table_name=actual_table,
                         data_updated_at=_dt.utcnow(),
                     ))
             except Exception as e:

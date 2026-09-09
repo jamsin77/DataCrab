@@ -319,6 +319,26 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "LLM归因: 三处修改完成，重新运行验证。\n\n"
+    },
+    {
+      "timestamp": "2026-09-09T17:07:18.429617",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 通用知识库\n数据源已找到(内置映射): 通用知识库 (id=e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n  调用平",
+      "context_summary": "工具: run_script\nAI输出: 所有修改完成。语法检查已通过。总结一下三个需求的实现，然后运行验证。\n\n## 修改说明\n\n**需求1（提取失败重试不跳过）**：重构了 LLM 提取逻辑——每段先原片做 3 级参数阶梯重试（max_tokens 10000→16000→20000、temperature 逐步微调）；原片全部失败后，进入「细切重试」层：把该段以 2500 字符/重叠 800 重新切成更小片再逐片提取，而不是直接跳过"
+    },
+    {
+      "timestamp": "2026-09-09T17:19:04.845669",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 通用知识库\n数据源已找到(内置映射): 通用知识库 (id=e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n  调用平",
+      "context_summary": "工具: run_script\nAI输出: 修改完成。超时根因：reasoning 模型在 max_tokens=16000/20000 下思考时间过长（第 2 段第一次空 content 后，用 16000 重试拖满 300 秒）。已把重试阶梯改为 8192/8192/12000（贴近已验证能稳定输出 49 条的 8192 区间），并把并发 6→3 减少慢调用叠加。\n\n现在运行验证：\n\n"
     }
   ],
   "positive": [
@@ -342,6 +362,48 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'extracted_rules': 26, 'total_rules_written': 26, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+    },
+    {
+      "timestamp": "2026-09-09T10:10:39.379320",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 86, 'total_rules_written': 86, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+    },
+    {
+      "timestamp": "2026-09-09T11:54:02.210494",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 72, 'total_rules_written': 72, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+    },
+    {
+      "timestamp": "2026-09-09T14:19:23.326856",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 55, 'total_rules_written': 55, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+    },
+    {
+      "timestamp": "2026-09-09T15:49:48.548015",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 100, 'total_rules_written': 100, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+    },
+    {
+      "timestamp": "2026-09-09T16:56:46.325304",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 159, 'total_rules_written': 159, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'电网知识': 5, '电网知识_状态量': 20, '电网知识_检修策略': 132, '电网知识_试验要求':"
+    },
+    {
+      "timestamp": "2026-09-09T17:27:51.137228",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 167, 'total_rules_written': 167, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'电网知识': 2, '电网知识_检修类别表': 58, '电网知识_状态评价标准表': 5, '电网知识_检修策"
     }
   ],
   "lessons": ""

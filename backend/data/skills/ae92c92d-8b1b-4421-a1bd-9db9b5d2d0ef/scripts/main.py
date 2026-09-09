@@ -29,7 +29,7 @@ STANDARD_COLUMNS = [
     "updated_at",
 ]
 
-DEFAULT_TARGET_DATASOURCE = "培训知识库"
+DEFAULT_TARGET_DATASOURCE = "通用知识库"
 DEFAULT_TARGET_TABLE = "电网知识"
 
 # 数据源名称 -> UUID 内置映射，避免调用 list_user_datasources 时阻塞
@@ -42,8 +42,30 @@ _DATASOURCE_UUID_MAP = {
     "聊天上传数据": "86e3ba97-4482-4164-9a1f-1b6397e159d1",
     "培训视频": "142dc039-06a8-4050-9b68-715bb34b030c",
     "培训知识库": "e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf",
+    "通用知识库": "e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf",
     "电网数据": "e270806b-7244-40e7-b66e-11ef9423f158",
 }
+
+# 知识库多表存储结构：category -> 子表名。
+# 主表（target_table_name，默认「电网知识」）存放综述/范围/术语等「其他」类条目；
+# 其余按业务类别分表，便于结构化检索（状态量/评价标准/试验要求是六张表格的主要归宿）。
+_CATEGORY_TABLE_SUFFIX = {
+    "检修策略": "检修策略",
+    "检修项目": "检修策略",
+    "状态量": "状态量",
+    "评价标准": "评价标准",
+    "试验要求": "试验要求",
+    "缺陷判断": "缺陷判断",
+    "安全要求": "安全要求",
+}
+
+
+def _category_to_table(category: str, main_table: str) -> str:
+    """将条目分类映射到目标集合（表）名。主表存放「其他」未分类条目。"""
+    suffix = _CATEGORY_TABLE_SUFFIX.get(category)
+    if suffix:
+        return f"{main_table}_{suffix}"
+    return main_table
 
 
 def _get_datasource_id(name: str) -> str:
@@ -123,10 +145,16 @@ def _extract_text_from_file(path: str) -> str:
     return text
 
 
-def _split_text(text: str, max_chunk: int = 6000) -> List[str]:
-    """将长文本按最大长度切分为多个片段，尽量在换行或句号处断开"""
+def _split_text(text: str, max_chunk: int = 6000, overlap: int = 1500) -> List[str]:
+    """将长文本按最大长度切分为多个片段，尽量在换行或句号处断开。
+
+    采用滑动窗口 + 重叠区（overlap）：相邻片段间保留 overlap 字符的重叠，
+    确保跨页/跨段的大表格即使落在切分边界附近，也会被相邻片段完整覆盖。
+    """
     if len(text) <= max_chunk:
         return [text]
+    if overlap >= max_chunk:
+        overlap = max_chunk // 3
     chunks = []
     start = 0
     while start < len(text):
@@ -134,15 +162,16 @@ def _split_text(text: str, max_chunk: int = 6000) -> List[str]:
         if end >= len(text):
             chunks.append(text[start:])
             break
-        # 优先在换行符处断开
+        # 优先在换行符处断开（表格行之间通常以换行分隔，换行处最安全）
         split_pos = text.rfind("\n", start, end)
         if split_pos == -1 or split_pos < start + max_chunk // 2:
             # 其次在句号处断开
             split_pos = text.rfind("。", start, end)
         if split_pos == -1 or split_pos < start + max_chunk // 2:
             split_pos = end
-        chunks.append(text[start:split_pos])
-        start = split_pos
+        chunks.append(text[start:split_pos + 1])
+        # 下一段起点回退 overlap，形成重叠，避免大表格在边界被切断
+        start = max(start + 1, split_pos + 1 - overlap)
     return chunks
 
 
@@ -218,11 +247,135 @@ def _repair_truncated_json_array(text: str) -> List[Dict[str, Any]]:
     return [o for o in objs if isinstance(o, dict)]
 
 
-def _extract_rules_from_text(text: str, max_workers: int = 2) -> List[Dict[str, Any]]:
+def _extract_outline(text: str, max_len: int = 8000) -> str:
+    """抽取文档章节标题 + 每节首段要点，生成精简大纲，供 LLM 设计表结构。
+
+    PDF 纯文本提取后无分页标记，但标准文档（DL/T 1684）有明确条款编号，
+    据此抽取「编号 + 标题 + 节首要点」，得到远小于全文的大纲文本。
+    """
+    heading_re = re.compile(r"^\s*(\d+(?:\.\d+){0,3})\s*[、.．\s]+\s*(\S.*)$")
+    lines = text.split("\n")
+    parts: List[str] = []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        m = heading_re.match(s)
+        if not m or len(s) >= 80:
+            continue
+        # 收集标题后的前几行作为该节要点（表格文字常紧随其后）
+        following = []
+        for j in range(i + 1, min(i + 8, len(lines))):
+            t = lines[j].strip()
+            if not t:
+                continue
+            following.append(t)
+            if len(following) >= 4:
+                break
+        parts.append(f"{m.group(1)} {m.group(2)}：{' '.join(following)[:180]}")
+    outline = "\n".join(parts)
+    if len(outline) > max_len:
+        outline = outline[:max_len]
+    return outline
+
+
+def _analyze_document_structure(text: str) -> Dict[str, Any]:
+    """通读文档大纲，为知识库设计合适的多表结构（需求3：先设计表结构，再提取）。
+
+    返回 schema_plan：
+      {
+        "main_table": 主表名（存综述/范围/术语等）,
+        "tables": [ {"name": 子表名, "description": 表用途, "keywords": [匹配关键词...]}, ... ]
+      }
+    """
+    outline = _extract_outline(text)
+    if not outline.strip():
+        print("  [结构分析] 未抽取到章节大纲，使用默认多表结构")
+        return {
+            "main_table": "其他",
+            "tables": [
+                {"name": "检修策略", "description": "检修分类/周期/策略", "keywords": ["检修策略", "检修周期", "检修项目"]},
+                {"name": "状态量", "description": "状态量及检测", "keywords": ["状态量", "监测量", "检测"]},
+                {"name": "评价标准", "description": "状态评价/判据", "keywords": ["评价", "判据", "分级"]},
+                {"name": "试验要求", "description": "试验/检测要求", "keywords": ["试验", "测试", "检测"]},
+                {"name": "缺陷判断", "description": "缺陷/异常判断", "keywords": ["缺陷", "异常", "故障"]},
+                {"name": "安全要求", "description": "安全防护", "keywords": ["安全", "防护", "禁止"]},
+            ],
+        }
+
+    prompt = f"""你是电力行业标准文档结构化专家。请通读下面这份《DL/T 1684 油浸式变压器(电抗器)状态检修导则》的章节大纲，为知识库设计合适的表结构。
+
+要求：
+1. 文档中约有六张核心表格，是检修规则的重点；请围绕这些表格及对应章节设计子表。
+2. 每个子表对应一类知识（如状态量、评价标准、试验要求、检修策略、缺陷判断、安全要求等），不要只设计一张大表。
+3. 综述、范围、术语、引用文件等归入主表「其他」。
+
+必须只输出一个 JSON 对象（不要 Markdown 代码围栏、不要解释），结构如下：
+{{
+  "main_table": "其他",
+  "tables": [
+    {{"name": "子表名", "description": "该表存放哪类知识", "keywords": ["关键词1", "关键词2"]}}
+  ]
+}}
+
+文档大纲如下：
+---
+{outline}
+---"""
+    for attempt, cfg in enumerate([
+        {"temperature": 0.0, "max_tokens": 2000},
+        {"temperature": 0.2, "max_tokens": 4000},
+    ], 1):
+        try:
+            response = call_tool(
+                "llm_generate",
+                prompt=prompt,
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
+            )
+            if not isinstance(response, dict):
+                raise RuntimeError(f"llm_generate 返回非 dict: {response!r}")
+            if "error" in response:
+                raise RuntimeError(f"llm_generate 失败: {response['error']}")
+            content = str(response.get("content") or "").strip()
+            if not content:
+                raise RuntimeError("llm_generate 返回空 content")
+            parsed = _parse_llm_json(content)
+            if parsed and isinstance(parsed[0], dict) and "tables" in parsed[0]:
+                data = parsed[0]
+                print(
+                    f"  [结构分析] 设计出 {len(data.get('tables') or [])} 张子表: "
+                    f"{[t.get('name') for t in (data.get('tables') or [])]}"
+                )
+                return data
+            raise RuntimeError(f"结构分析结果缺少 tables 字段: {content[:200]!r}")
+        except Exception as e:
+            print(f"  [结构分析] 第 {attempt} 次失败: {e}")
+            if attempt == 2:
+                print("  [结构分析] 分析失败，使用默认多表结构兜底")
+    # 兜底：默认多表结构
+    return {
+        "main_table": "其他",
+        "tables": [
+            {"name": "检修策略", "description": "检修分类/周期/策略", "keywords": ["检修策略", "检修周期", "检修项目"]},
+            {"name": "状态量", "description": "状态量及检测", "keywords": ["状态量", "监测量", "检测"]},
+            {"name": "评价标准", "description": "状态评价/判据", "keywords": ["评价", "判据", "分级"]},
+            {"name": "试验要求", "description": "试验/检测要求", "keywords": ["试验", "测试", "检测"]},
+            {"name": "缺陷判断", "description": "缺陷/异常判断", "keywords": ["缺陷", "异常", "故障"]},
+            {"name": "安全要求", "description": "安全防护", "keywords": ["安全", "防护", "禁止"]},
+        ],
+    }
+
+
+def _extract_rules_from_text(
+    text: str,
+    max_workers: int = 3,
+    schema_plan: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """使用 LLM 并发从文本提取关键知识/规则条目（每条含 title/content/category 等）
 
-    推理型(reasoning)模型并发能力差、单次思考久，并发过高会互相拖慢并叠加 180s 超时，
-    这里控制为 2 路；切片约 2 段时 2 路正好完全并行。
+    提取是 LLM I/O 密集型任务，使用多路并发提速；切片更细（3000 字符），
+    避免表格与规则细节因跨段截断而丢失。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -245,23 +398,47 @@ def _extract_rules_from_text(text: str, max_workers: int = 2) -> List[Dict[str, 
         )
     print("  [探测] llm_generate 正常返回，继续 LLM 并发提取。")
 
-    chunks = _split_text(text, max_chunk=6000)
+    chunks = _split_text(text, max_chunk=6000, overlap=1500)
     total = len(chunks)
-    print(f"  [LLM提取] 文本共 {total} 段，并发 {max_workers} 路提取...")
+    print(f"  [LLM提取] 文本共 {total} 段（6000字符/段，重叠1500），并发 {max_workers} 路提取...")
 
-    def _process(idx: int, chunk: str) -> tuple:
-        prompt = f"""请从以下电力设备检修导则文档片段中提取关键知识和规则，直接从正文输出结果，不要输出任何思考过程或推理文字。
+    def _build_prompt(chunk: str) -> str:
+        schema_block = ""
+        main_table = "其他"
+        if schema_plan:
+            tables = schema_plan.get("tables") or []
+            main_table = schema_plan.get("main_table") or "其他"
+            rows = [f"- 主表「{main_table}」：综述、范围、术语、引用文件等综合内容"]
+            for t in tables:
+                kw = "、".join(t.get("keywords") or [])
+                rows.append(
+                    f"- 子表「{t.get('name')}」：{t.get('description')}"
+                    + (f"（关键词：{kw}）" if kw else "")
+                )
+            schema_block = "【知识库表结构】\n" + "\n".join(rows) + "\n\n"
+
+        return f"""请从以下电力设备检修导则文档片段中提取关键知识和规则，直接从正文输出结果，不要输出任何思考过程或推理文字。
 
 对每条知识/规则输出一个 JSON 对象，字段如下：
-- title: 条目标题（简短，概括本条知识/规则；若原文有条款编号如 5.1.2 请保留在标题里）
+- title: 条目标题（简短，概括本条知识/规则；若原文有条款编号如 5.1.2.3 请保留在标题里）
 - content: 条目完整内容（保留原文关键表述、数值、阈值、周期、判据，不要遗漏细节）
 - category: 分类，可选：检修策略/状态量/评价标准/检修项目/试验要求/缺陷判断/安全要求/其他
+- table: 本条归属的表名（从下方【知识库表结构】中选择最匹配的一个表名；无法判断时填主表名「{main_table}」）
 - tags: 关键词，多个用逗号分隔
 - severity: 重要程度，可选：high/medium/low
 
+{schema_block}【表格复原要求（非常重要）】
+正文中混有表格内容，且表格常被转置（行列互换）。提取时：
+1. 先识别表头和单元格边界，还原「表头字段 + 对应取值」的行列对应关系；
+2. 转置表格要还原为「每行一个设备/项目，每列一个属性」的形式；
+3. 表格中每一行（每一组完整对应关系）必须作为一条独立规则提取，字段名作为关键词；
+4. 不得因表格文字被纵向堆叠而丢弃可识别内容；
+5. 若表格跨页/跨段，请结合上下文把被截断的行补全，不要漏行。
+
 要求：
-- 每段最多提取 4 条，只保留有实质内容的条目，忽略目录、前言、引用文件清单、过渡性语句。
-- 相近的表述合并为一条，避免重复。
+- 每段最多提取 50 条，只保留有实质内容的条目，忽略目录、前言、引用文件清单、过渡性语句。
+- 表格行是核心知识，必须逐行提取，不得整列合并、不得因为内容相似就跳过某行。
+- 相近但字段不同的表格行不要合并，宁可多提不可漏提。
 - 内容用简体中文精炼转述，但关键数值、阈值、周期、判据必须逐字保留。
 
 必须只输出一个 JSON 数组（以 [ 开头、以 ] 结尾），不要输出 Markdown 代码围栏、解释或任何其他文字。
@@ -270,40 +447,102 @@ def _extract_rules_from_text(text: str, max_workers: int = 2) -> List[Dict[str, 
 ---
 {chunk}
 ---"""
-        last_err = ""
-        for attempt in range(1, 4):
+
+    # 重试参数阶梯：提取失败时逐级调大 max_tokens、微调 temperature，
+    # 以应对「输出被 max_tokens 截断 / JSON 解析失败 / 空 content」等不同失败原因。
+    RETRY_CONFIGS = [
+        {"temperature": 0.0, "max_tokens": 8192},
+        {"temperature": 0.1, "max_tokens": 8192},
+        {"temperature": 0.2, "max_tokens": 12000},
+    ]
+
+    def _call_once(idx: int, chunk: str, attempt: int, cfg: Dict[str, Any]):
+        """对单个切片发起一次 LLM 调用。
+
+        返回:
+          - "ok"      : (标记, parsed列表) 成功
+          - "timeout" : (标记, None) 平台调用超时（原地重试无效，应立即细切）
+          - "fail"    : (标记, None) 其他失败（可换参数重试）
+        """
+        prompt = _build_prompt(chunk)
+        try:
             response = call_tool(
                 "llm_generate",
                 prompt=prompt,
-                temperature=0.0,
-                max_tokens=4096,
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
             )
-            if not isinstance(response, dict):
-                raise RuntimeError(f"llm_generate 返回非 dict: {response!r}")
-            if "error" in response:
-                raise RuntimeError(f"llm_generate 调用失败: {response['error']}")
-            content = str(response.get("content") or "").strip()
-            if content:
-                return idx, content
-            last_err = f"第 {attempt} 次调用返回空 content（响应: {str(response)[:300]!r}）"
-            if attempt < 3:
-                print(f"    [重试] 第 {idx} 段 {last_err}，稍后重试...", flush=True)
-        raise RuntimeError(
-            f"{last_err}。当前模型为推理型（reasoning）模型，输出进入 reasoning_content 而 content 为空，"
-            "建议在平台配置中改用非推理（non-reasoning）模型后重试。"
-        )
+        except Exception as e:
+            msg = str(e).lower()
+            if "timed out" in msg or "timeout" in msg:
+                print(f"    [超时] 第 {idx} 段第 {attempt} 次调用超时，立即转入细切...")
+                return "timeout", None
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次调用异常: {e}，换参数重试...")
+            return "fail", None
+        if not isinstance(response, dict):
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次返回非 dict: {response!r}")
+            return "fail", None
+        if "error" in response:
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次调用失败: {response['error']}")
+            return "fail", None
+        content = str(response.get("content") or "").strip()
+        if not content:
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次返回空 content")
+            return "fail", None
+        try:
+            parsed = _parse_llm_json(content)
+        except Exception as e:
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次 JSON 解析失败: {e}（返回前200字符: {content[:200]!r}）")
+            return "fail", None
+        if not parsed:
+            print(f"    [重试] 第 {idx} 段第 {attempt} 次解析结果为空列表")
+            return "fail", None
+        return "ok", parsed
+
+    def _process_with_refinement(idx: int, chunk: str):
+        """对一段文本提取知识：先原片多参数重试；遇超时或仍失败则细切（较小窗口+重叠）
+        后再逐个提取，尽量不丢失跨页/跨段的大表格内容（需求1/2）。"""
+        last_err = "原片 "
+        # 第一层：原片多参数重试（遇 timeout 立即停止原地重试，转入细切）
+        for attempt, cfg in enumerate(RETRY_CONFIGS, 1):
+            status, parsed = _call_once(idx, chunk, attempt, cfg)
+            if status == "ok":
+                return idx, parsed
+            if status == "timeout":
+                last_err = f"原片第 {attempt} 次超时"
+                break
+            last_err = f"原片 {len(RETRY_CONFIGS)} 次重试均失败"
+        # 第二层：小切片重切再提取（针对跨页大表格/长段落：更小窗口更易命中完整行）
+        print(f"    [细切重试] 第 {idx} 段失败（{last_err}），改为 1800 字符/重叠 600 细切后重试...")
+        sub_chunks = _split_text(chunk, max_chunk=1800, overlap=600)
+        all_parsed: List[Dict[str, Any]] = []
+        sub_ok = 0
+        for s_idx, sub in enumerate(sub_chunks, 1):
+            got = None
+            for attempt, cfg in enumerate(RETRY_CONFIGS, 1):
+                status, got = _call_once(s_idx, sub, attempt, cfg)
+                if status == "ok":
+                    break
+                if status == "timeout":
+                    break  # 细切片再超时也放弃该片，不再空转
+            if got is not None:
+                all_parsed.extend(got)
+                sub_ok += 1
+        if not all_parsed:
+            raise RuntimeError(f"第 {idx} 段原片与细切片重试均失败。{last_err}")
+        print(f"    [细切成功] 第 {idx} 段细切 {len(sub_chunks)} 片，{sub_ok} 片成功，共 {len(all_parsed)} 条")
+        return idx, all_parsed
 
     results_by_idx = {}
     errors = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_process, idx, chunk): idx for idx, chunk in enumerate(chunks, 1)}
+        futures = {executor.submit(_process_with_refinement, idx, chunk): idx for idx, chunk in enumerate(chunks, 1)}
         done = 0
         for fut in as_completed(futures):
             idx = futures[fut]
             done += 1
             try:
-                _, content = fut.result()
-                parsed = _parse_llm_json(content)
+                _, parsed = fut.result()
                 results_by_idx[idx] = parsed
                 print(f"    [进度 {done}/{total}] 第 {idx} 段提取到 {len(parsed)} 条")
             except Exception as e:
@@ -324,16 +563,18 @@ def _extract_rules_from_text(text: str, max_workers: int = 2) -> List[Dict[str, 
     for idx in sorted(results_by_idx):
         all_entries.extend(results_by_idx[idx])
 
-    # 按 title 去重，保留 content 更完整的条目
+    # 仅去除「标题与内容均完全相同」的条目。
+    # 表格中不同行即使 title 相同（例如同为「状态量限值」），content 必然不同，
+    # 必须全部保留，不能按 title 合并，否则 30 行表格会被压成 1 行。
     unique = {}
     for e in all_entries:
         title = str(e.get("title") or "").strip()
-        if not title:
+        content = str(e.get("content") or "").strip()
+        if not title or not content:
             continue
-        cur_len = len(str(e.get("content") or ""))
-        old_len = len(str(unique.get(title, {}).get("content") or ""))
-        if title not in unique or cur_len > old_len:
-            unique[title] = e
+        key = (title, content)
+        if key not in unique:
+            unique[key] = e
     return list(unique.values())
 
 
@@ -445,6 +686,7 @@ def _to_chroma_records(entries: List[Dict[str, Any]], source_document: str) -> L
         if not title or not content:
             continue
         category = str(e.get("category") or "其他").strip()
+        table_assign = str(e.get("table") or "").strip()  # LLM 判定的表归属（需求3）
         tags = str(e.get("tags") or "").strip()
         severity = str(e.get("severity") or "medium").strip()
         # 生成稳定唯一 id：标题清洗 + 序号
@@ -464,6 +706,7 @@ def _to_chroma_records(entries: List[Dict[str, Any]], source_document: str) -> L
             "metadata": {
                 "title": title,
                 "category": category,
+                "table": table_assign,
                 "tags": tags,
                 "severity": severity,
                 "source_document": source_document,
@@ -471,6 +714,26 @@ def _to_chroma_records(entries: List[Dict[str, Any]], source_document: str) -> L
             },
         })
     return records
+
+
+def _partition_records_by_table(records: List[Dict[str, Any]], main_table: str) -> Dict[str, List[Dict[str, Any]]]:
+    """将记录路由到不同集合（表）。
+
+    优先级：条目若带 LLM 判定的 table 归属（需求3，与设计出的表结构匹配），
+    则直接写入对应子表；否则回退按 category 映射路由；「其他」/主表判定写入主表。
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for r in records:
+        meta = r.get("metadata") or {}
+        tbl_assign = str(meta.get("table") or "").strip()
+        if tbl_assign and tbl_assign != "其他" and tbl_assign != main_table:
+            # LLM 明确指定了子表名：规范化为 主表_子表 形式
+            tbl = tbl_assign if tbl_assign.startswith(main_table) else f"{main_table}_{tbl_assign}"
+        else:
+            cat = str(meta.get("category") or "其他").strip()
+            tbl = _category_to_table(cat, main_table)
+        groups.setdefault(tbl, []).append(r)
+    return groups
 
 
 def _write_chroma(ds_id: str, table_name: str, records: List[Dict[str, Any]], if_table_exists: str = "replace") -> int:
@@ -542,13 +805,21 @@ def extract_rules_to_kb(
     # 2. 获取目标数据源 ID
     target_ds_id = _get_datasource_id(target_datasource_name)
 
-    # 3. 逐个文档提取关键知识与规则
+    # 3. 逐个文档：先通读大纲设计多表结构，再提取关键知识与规则
     all_entries = []
+    schema_plan: Optional[Dict[str, Any]] = None
     for idx, path in enumerate(paths, 1):
         print(f"[{idx}/{len(paths)}] 处理文档: {path}")
         text = _extract_text_from_file(path)
         print(f"  文档文本总长 {len(text)} 字符")
-        entries = _extract_rules_from_text(text)
+
+        # 需求3：先通读文档大纲，为知识库设计合适的多表结构
+        schema_plan = _analyze_document_structure(text)
+        main_tbl = schema_plan.get("main_table") or "其他"
+        sub_tbls = [t.get("name") for t in (schema_plan.get("tables") or [])]
+        print(f"  [表结构] 主表「{main_tbl}」+ {len(sub_tbls)} 张子表: {sub_tbls}")
+
+        entries = _extract_rules_from_text(text, schema_plan=schema_plan)
         for e in entries:
             e["source_document"] = Path(path).name
         all_entries.extend(entries)
@@ -569,15 +840,35 @@ def extract_rules_to_kb(
             f"转换后无有效记录：共 {len(all_entries)} 条条目，但均缺少有效 title/content，无法写入知识库。"
         )
 
-    # 5. 写入目标集合
-    written = _write_chroma(target_ds_id, target_table_name, records, if_table_exists)
+    # 5. 按分类将记录路由到不同集合（多表存储）
+    grouped = _partition_records_by_table(records, target_table_name)
+    print("知识库多表存储方案：")
+    for tbl, recs in grouped.items():
+        print(f"  - 集合「{tbl}」: {len(recs)} 条")
+
+    # 6. 并发写入多个集合（每个集合内部也分批并发 append）。
+    #    每个集合独立写，集合间互不依赖，可并发提速。
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    written_total = 0
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(_write_chroma, target_ds_id, tbl, recs, if_table_exists): tbl
+            for tbl, recs in grouped.items()
+        }
+        for fut in as_completed(futures):
+            tbl = futures[fut]
+            n = fut.result()  # 传播异常，不吞
+            written_total += n
+            print(f"  [完成] 集合「{tbl}」写入 {n} 条")
 
     return {
         "success": True,
         "extracted_rules": len(all_entries),
-        "total_rules_written": written,
+        "total_rules_written": written_total,
         "target_table": target_table_name,
         "target_datasource": target_datasource_name,
+        "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()},
     }
 
 

@@ -708,35 +708,45 @@ class DataProcessorAgent(BaseAgent):
                         context["debug_execution_succeeded"] = True
                         _exec_failures_before_success = 0
                         context["debug_exec_failures"] = 0
-                        # 提取输出表名和数据源（脚本返回的 key 不统一，多 key 兜底）
-                        if _inner_r:
-                            for _tk in ("target_table", "output_table", "table_name"):
-                                _output_tbl = _inner_r.get(_tk)
-                                if _output_tbl:
-                                    context["debug_output_table"] = _output_tbl
-                                    break
-                            for _dk in ("target_datasource_id", "output_datasource_id", "datasource_id"):
-                                _output_dsid = _inner_r.get(_dk)
-                                if _output_dsid:
-                                    context["debug_output_datasource_id"] = str(_output_dsid)
-                                    break
+                        # 优先从 tool_call_log 取最可靠的 datasource_id + table_name（connector 实际用的）
+                        _tool_calls_log = rdata.get("tool_calls") or []
+                        logger.info(f"[handoff检查] rdata keys={list(rdata.keys())}, tool_calls_log={len(_tool_calls_log)} entries")
+                        _output_tables = []  # 收集所有写入的表 [{datasource_id, table_name}]
+                        for _tc in _tool_calls_log:
+                            if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
+                                _output_tables.append({
+                                    "datasource_id": _tc.get("datasource_id", ""),
+                                    "table_name": _tc.get("table_name", ""),
+                                })
+                        if _output_tables:
+                            context["debug_output_tables"] = _output_tables
+                            # 兼容单值字段（Inspector 回交/兜底逻辑用）
+                            context["debug_output_table"] = _output_tables[0]["table_name"]
+                            context["debug_output_datasource_id"] = _output_tables[0].get("datasource_id", "")
+                        else:
+                            # tool_call_log 没有的话，从脚本返回值兜底（key 不统一，多 key 尝试）
+                            if _inner_r:
+                                for _tk in ("target_table", "output_table", "table_name"):
+                                    _output_tbl = _inner_r.get(_tk)
+                                    if _output_tbl:
+                                        context["debug_output_table"] = _output_tbl
+                                        _output_tables = [{"datasource_id": "", "table_name": _output_tbl}]
+                                        break
+                            if not context.get("debug_output_datasource_id") and _inner_r:
+                                for _dk in ("target_datasource_id", "output_datasource_id", "datasource_id"):
+                                    _output_dsid = _inner_r.get(_dk)
+                                    if _output_dsid:
+                                        context["debug_output_datasource_id"] = str(_output_dsid)
+                                        if _output_tables:
+                                            _output_tables[0]["datasource_id"] = str(_output_dsid)
+                                        break
                             # 有数据源名但没 ID → 记下名，后面兜底解析
-                            if not context.get("debug_output_datasource_id"):
+                            if not context.get("debug_output_datasource_id") and _inner_r:
                                 for _dn in ("target_datasource", "output_datasource", "datasource_name"):
                                     _output_dsname = _inner_r.get(_dn)
                                     if _output_dsname:
                                         context["debug_output_datasource_name"] = str(_output_dsname)
                                         break
-                        # 脚本没返回 output_table 时，从 tool_call_log 里找 write_table_data 的目标表
-                        if not context.get("debug_output_table"):
-                            _tool_calls_log = rdata.get("tool_calls") or []
-                            logger.info(f"[handoff检查] rdata keys={list(rdata.keys())}, tool_calls_log={len(_tool_calls_log)} entries")
-                            for _tc in _tool_calls_log:
-                                if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
-                                    context["debug_output_table"] = _tc["table_name"]
-                                    if _tc.get("datasource_id"):
-                                        context["debug_output_datasource_id"] = _tc["datasource_id"]
-                                    break
                         # 有数据源名但没 ID → 通过 list_user_datasources 解析
                         _out_ds_name = context.get("debug_output_datasource_name", "")
                         if _out_ds_name and not context.get("debug_output_datasource_id"):
@@ -746,6 +756,10 @@ class DataProcessorAgent(BaseAgent):
                                 _ds_data = json.loads(_ds_result) if isinstance(_ds_result, str) else _ds_result
                                 if isinstance(_ds_data, dict) and _ds_data.get("id"):
                                     context["debug_output_datasource_id"] = str(_ds_data["id"])
+                                    if _output_tables:
+                                        for _t in _output_tables:
+                                            if not _t.get("datasource_id"):
+                                                _t["datasource_id"] = str(_ds_data["id"])
                                     logger.info(f"[handoff检查] 解析数据源名 '{_out_ds_name}' → ID={_ds_data['id']}")
                             except Exception as _ds_err:
                                 logger.warning(f"[handoff检查] 解析数据源名 '{_out_ds_name}' 失败: {_ds_err}")
@@ -754,7 +768,9 @@ class DataProcessorAgent(BaseAgent):
                             context["debug_output_datasource_id"] = context["debug_target_datasource_id"]
                         if not context.get("debug_output_table") and context.get("debug_target_data_name"):
                             context["debug_output_table"] = context["debug_target_data_name"]
-                        logger.info(f"[handoff检查] output_ds_id={context.get('debug_output_datasource_id', '')}, output_table={context.get('debug_output_table', '')}")
+                        if _output_tables and not context.get("debug_output_tables"):
+                            context["debug_output_tables"] = _output_tables
+                        logger.info(f"[handoff检查] output_ds_id={context.get('debug_output_datasource_id', '')}, output_table={context.get('debug_output_table', '')}, output_tables={len(context.get('debug_output_tables', []))} 张")
                         folder = context.get("debug_folder")
                         if folder:
                             try:
@@ -827,6 +843,7 @@ class DataProcessorAgent(BaseAgent):
                     "execution_success": True,
                     "output_datasource_id": context.get("debug_output_datasource_id", ""),
                     "output_table": context.get("debug_output_table", ""),
+                    "output_tables": context.get("debug_output_tables", []),
                 }}
                 return
 

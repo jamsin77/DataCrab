@@ -228,10 +228,7 @@ class PostgreSQLConnector(BaseConnector):
                         safe_remark = str(remark).replace("'", "''")
                         await self._connection.execute(f'COMMENT ON COLUMN "{table}"."{col_name}" IS \'{safe_remark}\'')
 
-            result = {"success": True, "rows_written": len(records)}
-            if actual_table != table:
-                result["table_name"] = table
-            return result
+            return {"success": True, "rows_written": len(records), "table_name": actual_table}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -409,10 +406,7 @@ class MySQLConnector(BaseConnector):
                     await cur.execute(f"ALTER TABLE `{table}` COMMENT = '{safe_remark}'")
 
             await self._connection.commit()
-            result = {"success": True, "rows_written": len(records)}
-            if actual_table != table:
-                result["table_name"] = table
-            return result
+            return {"success": True, "rows_written": len(records), "table_name": actual_table}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -512,10 +506,8 @@ class CSVConnector(BaseConnector):
                 df_old = pd.read_csv(file_path)
                 df_new = pd.concat([df_old, df_new], ignore_index=True)
             df_new.to_csv(file_path, index=False, encoding="utf-8-sig")
-            result = {"success": True, "rows_written": len(df_new)}
-            if strategy == "create_new":
-                result["file_path"] = file_path
-            return result
+            _table_name = _os.path.basename(file_path)
+            return {"success": True, "rows_written": len(df_new), "table_name": _table_name}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -755,7 +747,7 @@ class ExcelConnector(BaseConnector):
             target_sheet = sheet_name if isinstance(sheet_name, str) else "Sheet1"
             with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
                 df_new.to_excel(writer, sheet_name=target_sheet, index=False)
-            return {"success": True, "rows_written": len(df_new), "created_new_file": True}
+            return {"success": True, "rows_written": len(df_new), "created_new_file": True, "table_name": os.path.basename(file_path) + "|" + target_sheet}
 
         try:
             xl_check = pd.ExcelFile(file_path)
@@ -805,10 +797,8 @@ class ExcelConnector(BaseConnector):
             with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
                 for s, df in sheets_data.items():
                     df.to_excel(writer, sheet_name=s, index=False)
-            result = {"success": True, "rows_written": len(df_new)}
-            if strategy == "create_new" and actual_sheet != target_sheet_name:
-                result["sheet_name"] = actual_sheet
-            return result
+            _actual_table = os.path.basename(file_path) + "|" + actual_sheet
+            return {"success": True, "rows_written": len(df_new), "table_name": _actual_table}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -1000,7 +990,7 @@ class OBSConnector(BaseConnector):
                 len(buf.getvalue().encode("utf-8-sig")),
                 "text/csv",
             )
-            return {"success": True, "rows_written": len(df_new), "object": object_name}
+            return {"success": True, "rows_written": len(df_new), "table_name": object_name}
         except Exception as e:
             logger.error(f"OBS写入失败: {e}")
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
@@ -1197,7 +1187,7 @@ class HadoopHDFSConnector(BaseConnector):
                 headers={"Content-Type": "application/octet-stream"},
             )
             if put_resp.status_code in (200, 201):
-                return {"success": True, "rows_written": len(df_new), "file": file_name}
+                return {"success": True, "rows_written": len(df_new), "table_name": file_name}
             return {"success": False, "message": f"HDFS PUT 失败: HTTP {put_resp.status_code}"}
         except Exception as e:
             logger.error(f"HDFS写入失败: {e}")
@@ -1452,7 +1442,7 @@ class ChromaConnector(BaseConnector):
         if embeddings and any(e is not None for e in embeddings):
             upsert_kwargs["embeddings"] = [e for e in embeddings if e is not None]
         await asyncio.to_thread(collection.upsert, **upsert_kwargs)
-        return {"success": True, "rows_written": len(ids), "collection": actual_table}
+        return {"success": True, "rows_written": len(ids), "table_name": actual_table}
 
     async def close(self) -> None:
         self._client = None
@@ -1624,10 +1614,7 @@ class SQLiteConnector(BaseConnector):
                 await self._connection.execute(insert_sql, values)
 
             await self._connection.commit()
-            result = {"success": True, "rows_written": len(records)}
-            if actual_table != table:
-                result["table_name"] = table
-            return result
+            return {"success": True, "rows_written": len(records), "table_name": actual_table}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 
@@ -1879,7 +1866,7 @@ class GenericFileConnector(BaseConnector):
             else:
                 return {"success": False, "message": f"generic_file 不支持写入 {ext} 格式文件"}
 
-            return {"success": True, "rows_written": len(df), "file_path": str(out_path)}
+            return {"success": True, "rows_written": len(df), "table_name": out_path.name}
         except Exception as e:
             return {"success": False, "message": str(e), "error_type": type(e).__name__}
 

@@ -97,8 +97,16 @@ class DataInspectorAgent(BaseAgent):
         from app.core.database import async_session as _insp_session
 
         # 将 payload 中的数据源信息写入 context（供 RunTime 回交时使用）
-        context["current_datasource_id"] = message.payload.get("datasource_id", "")
-        context["current_table_name"] = message.payload.get("table_name", "")
+        _output_tables = message.payload.get("output_tables", [])
+        if not _output_tables:
+            # 兼容旧 payload（单值）
+            _ds = message.payload.get("datasource_id", "")
+            _tbl = message.payload.get("table_name", "")
+            if _ds and _tbl:
+                _output_tables = [{"datasource_id": _ds, "table_name": _tbl}]
+        context["current_datasource_id"] = _output_tables[0].get("datasource_id", "") if _output_tables else ""
+        context["current_table_name"] = _output_tables[0].get("table_name", "") if _output_tables else ""
+        context["debug_output_tables"] = _output_tables
 
         # 加载技能专属规则（如有 skill_path 且存在 rules.md）
         skill_rules = None
@@ -119,18 +127,26 @@ class DataInspectorAgent(BaseAgent):
         context["_local_messages"] = local_messages
 
         if message.reason == HandoffReason.INSPECT_RESULT or message.reason == HandoffReason.DELEGATE:
-            ds_id = message.payload.get("datasource_id", "")
-            table_name = message.payload.get("table_name", "")
             op_desc = message.payload.get("operation_description", "")
             result_summary = message.payload.get("result_summary", "")
 
-            # 预执行所有检查（加载数据1次 → 4项检查 → 紧凑报告）
-            yield {"type": "inspecting", "message": "正在执行数据质量检查..."}
+            # 预执行所有检查（遍历所有写入表）
+            yield {"type": "inspecting", "message": f"正在检查 {len(_output_tables)} 张表的数据质量..."}
             from app.services.inspector_tools import inspector_tools
-            async with _insp_session() as _chk_sess:
-                check_results = await inspector_tools.run_all_checks(ds_id, table_name, _chk_sess, skill_rules=skill_rules)
-            context["_check_results"] = check_results
-            report = inspector_tools.format_report(check_results)
+            _all_reports = []
+            _all_check_results = {}
+            for _tbl_info in _output_tables:
+                _ds_id = _tbl_info.get("datasource_id", "")
+                _tbl_name = _tbl_info.get("table_name", "")
+                if not _ds_id or not _tbl_name:
+                    continue
+                async with _insp_session() as _chk_sess:
+                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules)
+                _all_check_results[_tbl_name] = _cr
+                _rpt = inspector_tools.format_report(_cr)
+                _all_reports.append(f"### 表: {_tbl_name}\n\n{_rpt}")
+            context["_check_results"] = _all_check_results if len(_output_tables) > 1 else (list(_all_check_results.values())[0] if _all_check_results else {})
+            report = "\n\n---\n\n".join(_all_reports) if _all_reports else "无写入表可检查"
 
             inspect_prompt = f"数据已自动检查完成，结果如下：\n\n{report}\n\n"
             if op_desc:
@@ -142,16 +158,23 @@ class DataInspectorAgent(BaseAgent):
             yield {"type": "inspection_report", "report": report}
 
         elif message.reason == HandoffReason.FIX_COMPLETED:
-            ds_id = message.payload.get("datasource_id", "")
-            table_name = message.payload.get("table_name", "")
-
-            # 复查：重新预执行（清缓存，加载最新数据）
-            yield {"type": "inspecting", "message": "正在复查数据质量..."}
+            # 复查：重新预执行所有写入表（清缓存，加载最新数据）
+            yield {"type": "inspecting", "message": f"正在复查 {len(_output_tables)} 张表的数据质量..."}
             from app.services.inspector_tools import inspector_tools
-            async with _insp_session() as _chk_sess:
-                check_results = await inspector_tools.run_all_checks(ds_id, table_name, _chk_sess, skill_rules=skill_rules)
-            context["_check_results"] = check_results
-            report = inspector_tools.format_report(check_results)
+            _all_reports = []
+            _all_check_results = {}
+            for _tbl_info in _output_tables:
+                _ds_id = _tbl_info.get("datasource_id", "")
+                _tbl_name = _tbl_info.get("table_name", "")
+                if not _ds_id or not _tbl_name:
+                    continue
+                async with _insp_session() as _chk_sess:
+                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules)
+                _all_check_results[_tbl_name] = _cr
+                _rpt = inspector_tools.format_report(_cr)
+                _all_reports.append(f"### 表: {_tbl_name}\n\n{_rpt}")
+            context["_check_results"] = _all_check_results if len(_output_tables) > 1 else (list(_all_check_results.values())[0] if _all_check_results else {})
+            report = "\n\n---\n\n".join(_all_reports) if _all_reports else "无写入表可检查"
 
             inspect_prompt = f"数据已修复并重新检查，结果如下：\n\n{report}\n\n请确认之前的问题是否已修复，并检查是否引入新问题。"
 
