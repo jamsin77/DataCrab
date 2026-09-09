@@ -170,7 +170,7 @@
     </el-dialog>
 
     <!-- ==================== AI 生成对话框 ==================== -->
-    <el-dialog v-model="showGenerateDialog" :title="t('skill.generateSkill')" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed">
+    <el-dialog v-model="showGenerateDialog" :title="t('skill.generateSkill')" width="95%" top="2vh" :close-on-press-escape="false" @closed="onGenerateDialogClosed" @opened="scrollListToBottom(genMsgListRef)">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           {{ t('skill.generateHint') }}
@@ -270,6 +270,7 @@
       destroy-on-close
       :close-on-press-escape="false"
       class="detail-dialog"
+      @opened="scrollListToBottom(modifyMsgListRef)"
     >
       <div v-if="detailSkill" class="detail-container">
         <div class="nl-modify-section">
@@ -307,7 +308,7 @@
           <div v-if="modifyError" class="modify-error">
             <el-alert :title="modifyError" type="error" show-icon :closable="false" />
           </div>
-          <div v-if="modifyMessages.length" class="gen-msg-list">
+          <div v-if="modifyMessages.length" class="gen-msg-list" ref="modifyMsgListRef">
             <div v-for="(msg, idx) in modifyMessages" :key="idx" class="debug-message" :class="msg.role">
               <div class="debug-msg-avatar">
                 <el-avatar :size="32" v-if="msg.role === 'assistant'" style="background:#409eff">AI</el-avatar>
@@ -473,6 +474,7 @@
       :close-on-press-escape="false"
       :before-close="handleDebugBeforeClose"
       @closed="resetDebug"
+      @opened="scrollListToBottom(debugMsgListRef)"
     >
       <div v-if="debugSkill" class="debug-layout">
         <div class="debug-left">
@@ -1370,6 +1372,7 @@ const modifyInstruction = ref('')
 const modifying = ref(false)
 const modifyError = ref('')
 const modifyMessages = ref<any[]>([])
+const modifyMsgListRef = ref<HTMLElement | null>(null)
 const modifyAbortCtrl = ref<AbortController | null>(null)
 
 const expandedScript = ref('')
@@ -1771,6 +1774,10 @@ function scrollSkillDebugToBottom(force = false) {
   if (!force && !skillPinnedToBottom.value) return
   el.scrollTop = el.scrollHeight
 }
+function scrollListToBottom(el: HTMLElement | null | undefined) {
+  if (!el) return
+  nextTick(() => { el.scrollTop = el.scrollHeight })
+}
 function scrollThinkingBodyToBottom(msgIdx: number) {
   nextTick(() => {
     const list = debugMsgListRef.value
@@ -1960,7 +1967,7 @@ function processDebugSSEEvent(
       return 'break'
     case 'platform_issue':
       archiveExecutingMsg(msg)
-      msg.content += `\n\n` + t('skill.platformIssueContent', { message: data.message || '' })
+      msg.content += `\n\n` + t('skill.platformIssueContent', { message: data.reason || data.message || '' })
       msg.thinkingOpen = false
       state.thinkingDone = true
       break
@@ -2054,6 +2061,14 @@ async function readDebugSSEStream(
 const HISTORY_MAX = 100
 
 function loadHistory(key: string): string[] {
+  // generate history is global (not tied to a specific skill)
+  if (key === 'generate') {
+    try {
+      const raw = localStorage.getItem('dc_skill_history_generate')
+      if (raw) return JSON.parse(raw)
+      return []
+    } catch { return [] }
+  }
   if (!_curSkillId) return []
   const newKey = `dc_skill_history_${_curSkillId}_${key}`
   const oldKey = `dc_skill_history_${key}`
@@ -2075,6 +2090,12 @@ function loadHistory(key: string): string[] {
 }
 
 function saveHistory(key: string, list: string[]) {
+  if (key === 'generate') {
+    try {
+      localStorage.setItem('dc_skill_history_generate', JSON.stringify(list.slice(-HISTORY_MAX)))
+    } catch {}
+    return
+  }
   if (!_curSkillId) return
   try {
     localStorage.setItem(`dc_skill_history_${_curSkillId}_${key}`, JSON.stringify(list.slice(-HISTORY_MAX)))
@@ -2892,6 +2913,7 @@ onMounted(async () => {
   await loadSkills()
   loadDatasources()
   loadAgentConfig()
+  genHistory.value = loadHistory('generate')
 
   const debugId = route.query.debug as string
   if (debugId) {

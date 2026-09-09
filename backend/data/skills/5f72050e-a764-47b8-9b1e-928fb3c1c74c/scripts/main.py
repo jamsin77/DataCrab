@@ -176,12 +176,107 @@ def table_stats(
             "data": result_df.head(100).to_dict(orient="records"),
         }
 
+def _to_num(s):
+    """将收益率字符串转为数值，失败返回 None。"""
+    if s is None:
+        return None
+    if isinstance(s, float) and pd.isna(s):
+        return None
+    t = str(s).strip().replace("%", "").replace("％", "").replace(",", "").strip()
+    if t in ("", "-", "--", "nan", "None", "N/A"):
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def _analyze_trade(df: pd.DataFrame) -> Dict[str, Any]:
+    """针对交易数据表的专项分析（含列错位校正说明）。"""
+    print("=" * 70)
+    print("交易数据专项分析")
+    print("=" * 70)
+    n = len(df)
+    print(f"基金产品总数: {n}")
+
+    # 1. 列结构与错位说明
+    print("\n[1] 列结构（注意：存在列错位）")
+    for c in df.columns:
+        print(f"  {c}: 非空 {int(df[c].notna().sum())}/{n}")
+    print("\n  说明: '管理人'列全空；'管理规模'列实际存的是管理人名称；")
+    print("        '策略'列实际存的是管理规模档位 → 数据整体左移一列，真实'策略'信息已丢失。")
+
+    # 2. 数值化主要收益列
+    for c in ["近3年", "近2年", "近1年", "今年"]:
+        df[c + "_num"] = df[c].apply(_to_num)
+
+    # 3. 各期收益统计
+    stats_rows = []
+    for c in ["近3年", "近2年", "近1年", "今年"]:
+        s = df[c + "_num"].dropna()
+        if len(s) == 0:
+            continue
+        stats_rows.append({
+            "区间": c,
+            "样本数": int(len(s)),
+            "平均%": round(float(s.mean()), 2),
+            "中位数%": round(float(s.median()), 2),
+            "最高%": round(float(s.max()), 2),
+            "最低%": round(float(s.min()), 2),
+            "正收益占比%": round(float((s > 0).mean() * 100), 1),
+        })
+    stats_df = pd.DataFrame(stats_rows)
+    print("\n[2] 各期收益率统计")
+    print(stats_df.to_string(index=False))
+
+    # 4. 收益 Top10
+    for c in ["近3年", "近2年", "近1年", "今年"]:
+        top = df.sort_values(c + "_num", ascending=False).head(10)
+        print(f"\n[3] {c} 收益 Top10")
+        print(top[["基金简称", c]].to_string(index=False))
+
+    # 5. 管理规模档位分布（取自'策略'列，保留含'亿'或'以上'的档位）
+    print("\n[4] 管理规模档位分布（含'亿'或'以上'的档位）")
+    scale = df["策略"].astype(str).str.strip()
+    scale_filtered = scale[scale.str.contains("亿|以上", na=False)]
+    print(scale_filtered.value_counts().to_string())
+
+    # 6. 管理人频次（取自'管理规模'列）
+    print("\n[5] '管理规模'列（实为管理人）取值频次 Top20")
+    mgr_all = df["管理规模"].astype(str).str.strip()
+    mgr_all = mgr_all[mgr_all != ""]
+    print(mgr_all.value_counts().head(20).to_string())
+
+    print("\n" + "=" * 70)
+    print("分析完成")
+    print("=" * 70)
+
+    return {
+        "success": True,
+        "rows": n,
+        "columns": list(df.columns),
+        "收益统计": stats_rows,
+    }
+
+
 def main(**params):
     """主入口，系统注入参数，进行别名映射。"""
-    # 参数别名映射
     datasource_name = params.get("datasource_name") or params.get("datasource")
     table_name = params.get("table_name")
-    stat_type = params.get("stat_type")
+
+    if not datasource_name or not table_name:
+        raise ValueError("需要 datasource_name 和 table_name 参数")
+
+    df = _load_data(datasource_name, table_name)
+    if df.empty:
+        return {"success": True, "message": "表无数据"}
+
+    # 交易数据表走专项分析
+    if "交易数据" in str(table_name):
+        return _analyze_trade(df)
+
+    # 其余表走通用统计
+    stat_type = params.get("stat_type", "summary")
     sort_column = params.get("sort_column") or params.get("sort_by")
     sort_order = params.get("sort_order", "desc")
     top_k = params.get("top_k", 10)

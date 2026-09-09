@@ -126,62 +126,144 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _extract_first_column_ground_truth(image_path: str) -> List[str]:
-    """用 llm_vision 单独提取第一列完整清单，作为行对齐真值锚点。
+    """两次独立提取第一列并合并去重，弥补视觉模型单次整图提取的随机漏行。
 
-    extract_image_table 对长图分页时锚点不可靠，会漏行/幻觉编造行；
-    而单独提取一列（约48个名字）单次视觉输出即可完整容纳，可靠性高。
+    单次整图提取第一列偶发漏 1~2 行（导致总行数从 48 变成 47）；
+    两次独立调用各自漏不同行的概率低，合并后更接近完整 48 行。
     """
-    prompt = ("这是一张基金数据表格图片。请逐行从上到下，只把每一行数据的第一列值完整抄录出来，"
-              "每行一个，不要省略、不要合并、不要输出表头、不要输出其他列、不要加编号。")
-    try:
-        res = call_tool("llm_vision", image_path=image_path, prompt=prompt, max_tokens=4000)
-    except Exception as e:
-        print(f"[2/3] 提取真值清单失败（跳过对齐）: {e}")
+    prompt = ("这是一张基金数据表格图片。表格从表头下一行开始共有 48 行数据。\n"
+              "请把每一行数据第一列（基金简称）的值从上到下逐行完整抄录出来，每行一个，\n"
+              "不要省略任何一行、不要合并、不要输出表头、不要输出其他列、不要加编号、不要输出任何解释文字。")
+    round_names = []  # 每一轮提取的名单（分轮存放，便于以第一轮为基准做模糊去重）
+    for attempt in (1, 2):
+        try:
+            res = call_tool("llm_vision", image_path=image_path, prompt=prompt, max_tokens=4000)
+        except Exception as e:
+            print(f"[2/3] 名单提取第 {attempt} 次失败: {e}")
+            continue
+        text = _llm_result_text(res)
+        if not text:
+            continue
+        cur = []
+        for line in str(text).splitlines():
+            line = re.sub(r"^[\s\-–—•·\d\.\)、:：]*", "", line).strip()
+            if not line:
+                continue
+            # 过滤说明性句子（比基金名长得多），基金名一般不超过 25 字
+            if len(line) > 25:
+                continue
+            # 单轮内精确去重（保持顺序）
+            if line not in cur:
+                cur.append(line)
+        if cur:
+            round_names.append(cur)
+
+    if not round_names:
         return []
-    text = ""
+
+    import difflib
+
+    def _sim(a, b):
+        return difflib.SequenceMatcher(None, str(a), str(b)).ratio()
+
+    # 以第一轮（通常最完整）为基准名单；后续轮只做 OCR 变体归并/替换，不再新增行。
+    # 精确匹配去重无法合并 OCR 变体（如"天演资管"vs"天演资策"），会把同一基金的
+    # 另一种写法当成新基金追加，导致总行数虚增——这是"多出 20 行"的根因。
+    base = list(round_names[0])
+    for cur in round_names[1:]:
+        for name in cur:
+            best_r, best_i = 0.0, -1
+            for i, kept in enumerate(base):
+                r = _sim(name, kept)
+                if r > best_r:
+                    best_r, best_i = r, i
+            if best_r >= 0.5 and best_i >= 0:
+                # 视作同一基金，保留更完整的写法（更长的通常更接近真实全称）
+                if len(name) > len(base[best_i]):
+                    base[best_i] = name
+            # best_r < 0.5：不新增，宁可不补也不虚增（图片固定 48 行）
+    return base
+
+
+def _llm_result_text(res) -> str:
+    """从 llm_vision 返回值中取文本"""
     if isinstance(res, dict):
-        text = res.get("result") or res.get("content") or ""
-    if not text:
+        return str(res.get("result") or res.get("content") or "")
+    return str(res or "")
+
+
+def _extract_headers(image_path: str) -> List[str]:
+    """识别表头列名（从左到右，用竖线分隔）。"""
+    prompt = ("请观察这张图片表格的表头行，从左到右识别所有列名，"
+              "用竖线 | 分隔依次输出，每个列名一个，不要输出数据行、"
+              "不要输出任何解释文字，只输出一行列名。")
+    try:
+        res = call_tool("llm_vision", image_path=image_path, prompt=prompt, max_tokens=2000)
+    except Exception as e:
+        print(f"[1/3] 表头识别失败: {e}")
         return []
-    names = []
-    for line in str(text).splitlines():
-        line = re.sub(r"^\s*\d+[\s\.\)、:：\-]*", "", line).strip()
+    text = _llm_result_text(res)
+    for line in text.splitlines():
+        line = line.strip()
         if not line:
             continue
-        names.append(line)
-    seen, uniq = set(), []
-    for n in names:
-        if n and n not in seen:
-            seen.add(n)
-            uniq.append(n)
-    return uniq
-
-
-def _align_rows_to_ground_truth(df: pd.DataFrame, ground_truth: List[str]) -> pd.DataFrame:
-    """以真实第一列清单为锚点过滤对齐：清单外行（幻觉/编造）丢弃、缺失行补空、按清单顺序排列。"""
-    if not ground_truth or df.empty:
-        return df
-    first_col = df.columns[0]
-    row_map = {}
-    for _, r in df.iterrows():
-        key = str(r[first_col]).strip() if r[first_col] is not None else ""
-        if not key:
-            continue
-        filled = sum(1 for c in df.columns if r[c] not in (None, ""))
-        prev = row_map.get(key)
-        if prev is None or filled > prev[1]:
-            row_map[key] = (r, filled)
-    kept = set(row_map.keys())
-    aligned = []
-    for name in ground_truth:
-        name = str(name).strip()
-        if name in kept:
-            aligned.append(row_map[name][0].to_dict())
+        if "|" in line:
+            parts = [p.strip() for p in line.split("|")]
+        elif "，" in line or "," in line or "、" in line:
+            parts = [p.strip() for p in re.split(r"[，,、\t]+", line)]
         else:
-            aligned.append({c: None for c in df.columns})
-    if not aligned:
-        return df
-    return pd.DataFrame(aligned, columns=df.columns)
+            parts = [line.strip()]
+        parts = [p for p in parts if p]
+        if parts:
+            return parts
+    return []
+
+
+def _extract_col_group(image_path: str, names: List[str], cols: List[str], retries: int = 2) -> List[List[str]]:
+    """用「基金简称」名单做行锚，提取一组列的值。
+
+    对长图而言，视觉模型按行号定位中间行不可靠（漏行/错位/幻觉），
+    但单独按列顺序抄录第一列是可靠的。本函数把第一列完整名单喂给模型，
+    让模型按名单逐行「对号填值」，避免行号定位误差，同时控制单次输出体积。
+    """
+    if not names:
+        return []
+    names_block = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+    cols_str = "、".join(cols)
+    n = len(names)
+    prompt = (
+        f"这张图片是一个基金数据表格，表头列从左到右为：基金简称、{cols_str}。\n"
+        f"下面是第一列「基金简称」从表格第一行到最后一行共 {n} 行的完整值（顺序已固定）：\n"
+        f"{names_block}\n\n"
+        f"请严格按上面这 {n} 行的顺序，为每一行在图片中定位它对应的「{cols_str}」列的值，"
+        f"用竖线 | 分隔 {len(cols)} 个值，每行输出一个，共输出 {n} 行；空单元格输出为空（即连续两个 | 或行尾留空）。\n"
+        f"不要输出表头、不要输出「基金简称」列、不要输出行号、不要输出任何解释，只输出 {cols_str} 的值。\n"
+        f"示例：\n值1|值2|值3"
+    )
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            res = call_tool("llm_vision", image_path=image_path, prompt=prompt, max_tokens=4096)
+            text = _llm_result_text(res)
+            rows = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or "|" not in line:
+                    continue
+                cells = [c.strip() for c in line.split("|")]
+                cells = cells[:len(cols)]
+                cells += [""] * (len(cols) - len(cells))
+                rows.append(cells)
+            if rows:
+                if len(rows) < n:
+                    rows += [[""] * len(cols)] * (n - len(rows))
+                return rows[:n]
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                print(f"列组提取失败（第 {attempt} 次）: {e}")
+    print(f"列组 {cols} 提取最终失败: {last_err}")
+    return [[""] * len(cols)] * n
 
 
 def _write_to_datasource(
@@ -282,50 +364,67 @@ def main(
     if not image_path:
         return {"success": False, "error": "image_path 参数不能为空（请指定图片路径，或确保源表含 file_path 字段）"}
 
-    # 第一步：调 extract_image_table 工具分页提取表格数据
-    print("[1/3] 调用 extract_image_table 分页提取表格数据...")
-    table_result = call_tool(
-        "extract_image_table",
-        image_path=image_path,
-        max_retries=max_retries,
-        page_size=page_size,
-    )
-    if not isinstance(table_result, dict):
-        try:
-            table_result = json.loads(table_result) if isinstance(table_result, str) else {}
-        except Exception:
-            table_result = {}
-    if table_result.get("error"):
-        return {"success": False, "error": table_result["error"]}
-    if not table_result.get("is_table"):
-        return {"success": False, "error": table_result.get("error", "图片中未检测到表格")}
+    # 第一步：识别表头列名
+    print("[1/3] 识别表头列名...")
+    headers = _extract_headers(image_path)
+    _default_headers = ["基金简称", "管理人", "管理规模", "策略", "近3年", "近2年", "近1年",
+                        "今年", "2025年", "2024年", "2023年", "2022年", "2021年", "2020年", "2019年"]
+    if not headers:
+        headers = _default_headers
+        print(f"[1/3] 表头识别失败，使用默认列名（{len(headers)} 列）")
+    else:
+        print(f"[1/3] 表头识别成功: {len(headers)} 列 -> {headers}")
 
-    headers = table_result.get("headers", [])
-    rows = table_result.get("rows", [])
-    print(f"[1/3] 提取完成: {len(rows)} 行, {len(headers)} 列")
+    # 第二步：提取第一列「基金简称」完整名单作为行锚（两次提取合并去重，降低随机漏行）
+    print("[1/3] 提取第一列「基金简称」完整名单（行锚）...")
+    names = _extract_first_column_ground_truth(image_path)
+    print(f"[1/3] 第一列名单: {len(names)} 条")
+    if not names:
+        return {"success": False, "error": "未能提取第一列名单，停止解析"}
 
-    if not rows:
-        return {"success": False, "error": "表格数据为空，停止解析"}
+    rest_cols = headers[1:] if len(headers) > 1 else []
 
-    # 第二步：构造 DataFrame
-    table_data = {"is_table": True, "headers": headers, "rows": rows}
-    df = _normalize_table_data(table_data)
-    print(f"[2/3] 数据规范化完成: {len(df)} 行, {len(df.columns)} 列")
+    # 第三步：其余列按「基金简称」名单做行锚，分组逐组提取
+    print("[2/3] 按行锚分列组提取其余列...")
+    group_size = 3
+    col_groups = [rest_cols[i:i + group_size] for i in range(0, len(rest_cols), group_size)]
+    matrices = []
+    for gi, g in enumerate(col_groups):
+        print(f"[2/3] 提取列组 {gi + 1}/{len(col_groups)}: {g}")
+        mat = _extract_col_group(image_path, names, g, retries=2)
+        matrices.append(mat)
+        print(f"[2/3] 列组 {gi + 1} 提取完成: {len(mat)} 行")
 
+    # 第四步：清理单元格值 + 组装 DataFrame
+    def _clean_cell(v):
+        if v is None:
+            return ""
+        s = str(v).strip()
+        s = s.strip('"\'“”‘’「」').strip()
+        if s.lower() in ("", "-", "--", "---", "nan", "none", "null", "空", "无", "/"):
+            return ""
+        return s
+
+    norm_headers = _snake_case_columns(headers)
+    records = []
+    for i, name in enumerate(names):
+        row = {norm_headers[0]: _clean_cell(name)}
+        for gi, g in enumerate(col_groups):
+            vals = matrices[gi][i] if gi < len(matrices) and i < len(matrices[gi]) else [""] * len(g)
+            for j, c in enumerate(g):
+                col_name = _snake_case_columns([c])[0]
+                row[col_name] = _clean_cell(vals[j]) if j < len(vals) else ""
+        records.append(row)
+
+    # 仅在所有数据列（除基金简称外）都为空时才剔除该行
+    df = pd.DataFrame(records, columns=norm_headers)
+    if len(df.columns) > 1:
+        data_cols = list(df.columns[1:])
+        df = df[~df[data_cols].apply(lambda r: all(str(x).strip() in ("", "nan", "None", "null") for x in r), axis=1)]
+    df = df.dropna(how='all').reset_index(drop=True)
+    print(f"[2/3] 组装完成: {len(df)} 行, {len(df.columns)} 列")
     if df.empty:
         return {"success": False, "error": "表格数据为空，不再写入"}
-
-    # 2.5：修复错位串行（右移、占位行、串行重复、表头重复行）
-    before = len(df)
-    df = _repair_misaligned_rows(df)
-    print(f"[2/3] 错位串行修复完成: {before} 行 -> {len(df)} 行")
-
-    # 2.55：提取第一列真值清单，作为对齐锚点过滤幻觉行/补漏行
-    ground_truth = _extract_first_column_ground_truth(image_path)
-    print(f"[2/3] 第一列真值清单: {len(ground_truth)} 条")
-    before = len(df)
-    df = _align_rows_to_ground_truth(df, ground_truth)
-    print(f"[2/3] 按真值清单对齐完成: {before} 行 -> {len(df)} 行")
 
     # 2.6：表名带时间戳（若用户未显式指定）
     if not target_table_name or target_table_name == "parsed_image_table":

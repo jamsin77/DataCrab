@@ -91,14 +91,15 @@ DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_scri
 
 ## 错误处理（对齐 OpenCode）
 VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否正确。不要在没验证的情况下连续修改多次。
-收到执行错误后，系统会自动判断是脚本问题还是平台问题：
-- 脚本问题：你可以继续修复（看 error 信息，修 bug、加参数校验、加进度输出防超时等）
-- 平台问题：系统会自动终止，你不需要判断是否平台问题，专注修脚本即可
+收到执行错误后，看 traceback 自主判断：能修就修（修 bug、加参数校验、加进度输出防超时等），修不了就说明原因停止。
+系统会判断错误是否可以通过修改脚本解决——不能修改的错误会直接终止，你专注修脚本即可。
 不要反复尝试同一个修改。
 
 ## 平台规范
 - 脚本中所有数据操作通过 call_tool("工具名", **参数) 调用（如 call_tool("query_table_data", datasource_id=..., table_name=...)），返回 dict 含 success/data/columns 等字段
+- 沙箱禁止 import os/sys/subprocess/socket 等，脚本中如有这些 import 必须删除（数据操作改用 call_tool，路径操作改用 pathlib）
 - 不要在脚本中安装数据库扩展、不要直接调用外部 API
+- 不要吞掉异常：except 块必须 re-raise 或返回 success=False（不能静默返回 success=True 隐藏错误）
 - 下方「平台约定」文档列出了 call_tool 可用工具和返回格式，修改脚本前先看
 """
 
@@ -230,36 +231,50 @@ def _record_give_up(folder: str, reason: str, content: str, script_name: str) ->
 
 
 async def _check_platform_issue(error_msg: str, stdout: str, user_id) -> bool:
-    """用 LLM 判断执行错误是脚本问题还是平台问题。
+    """用 LLM 判断执行错误是否可以通过修改脚本解决。
 
-    不靠信号词匹配——给 LLM 完整 error + stdout，让它判断。
-    返回 True = 平台问题（应终止，不让 LLM 修）。
+    对齐 OpenCode：给 LLM 完整 error + stdout，让它自己推理，
+    不给具体标准例子（不教 LLM 模式匹配）。
+    返回 True = 非脚本问题（应终止，不让 LLM 修）。
     """
     from app.services.llm import llm_manager, init_user_llm_context
-    # "无错误输出"是平台层信号（进程崩了但没输出），直接判平台问题，不浪费 LLM 轮次
     if not error_msg or "无错误输出" in error_msg:
         return True
     try:
         if user_id:
             await init_user_llm_context(user_id)
         await llm_manager.initialize()
-        prompt = f"""判断以下脚本执行错误是"脚本问题"还是"平台问题"。
+        # traceback 异常类型在末尾，截断时保留末尾（开头行号信息次要）
+        # traceback 首尾保留：开头有调用链，末尾有异常类型，中间过长则省略
+        if len(error_msg) > 2000:
+            _head = error_msg[:1000]
+            _tail = error_msg[-1000:]
+            _err_for_prompt = f"{_head}\n\n... (已省略 {len(error_msg) - 2000} 字符) ...\n\n{_tail}"
+        else:
+            _err_for_prompt = error_msg
+        # stdout 同样首尾保留
+        _stdout_for_prompt = ""
+        if stdout:
+            _stdout_for_prompt = f"{stdout[:500]}\n\n... (已省略) ...\n\n{stdout[-500:]}" if len(stdout) > 1000 else stdout
+        prompt = f"""看下面的脚本执行错误，判断这个错误能否通过修改脚本代码来解决。
+
+核心判断：这个错误的根因是什么？
+- 脚本代码本身有 bug（逻辑错误、参数错误、数据处理格式不对等），修改脚本的逻辑或参数就能修复 → 能
+- 运行环境缺少能力（如缺少某个库/模块、平台工具不支持某功能、环境未配置），修改脚本无法真正解决 → 不能
+  注意：从头手写一个缺失库的功能（如用纯 Python 实现某个第三方库）不算修复脚本，是绕过平台限制，应判断为"不能"
 
 脚本错误信息：
-{error_msg[:2000]}
+{_err_for_prompt}
 
 脚本 stdout（如果有）：
-{(stdout or "")[:1000]}
+{_stdout_for_prompt}
 
-判断标准：
-- 脚本问题：脚本代码有 bug（如 KeyError、TypeError、逻辑错误、参数错误、数据格式不对等），可以通过修改脚本修复
-- 平台问题：沙箱限制（如 ImportError 沙箱禁止导入）、平台工具异常（如 call_tool HTTP 失败、连接器不支持某操作）、环境配置问题（如 LLM 未配置、数据源不可达）、平台代码 bug
-
-只输出一个词：脚本问题 或 平台问题"""
-        result = await llm_manager.chat(prompt, temperature=0.0, max_tokens=50)
+只输出一个词：能 或 不能"""
+        result = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=500)
         result = result.strip()
-        logger.info(f"[non_script_check] LLM判断: {result}")
-        return "平台" in result
+        _is_platform = "不能" in result
+        logger.info(f"[non_script_check] LLM判断: {repr(result)} -> platform_issue={_is_platform}")
+        return _is_platform
     except Exception as e:
         logger.warning(f"平台问题判断失败(非致命): {e}")
         return False
@@ -752,11 +767,10 @@ class DataProcessorAgent(BaseAgent):
                         _err_msg = _cls["err_msg"]
                         _stdout = rdata.get("stdout", "")
                         logger.info(f"[run] run_script失败: err_msg={_err_msg[:200]}")
-                        # 平台问题检测：用 LLM 判断是否平台问题（不靠信号词）
                         _is_platform = await _check_platform_issue(_err_msg, _stdout, user_id)
                         if _is_platform:
-                            _platform_reason = f"平台问题（非脚本错误，修改脚本无法解决）：{_err_msg[:300]}"
-                            logger.info(f"[platform_issue] {content[:200]}")
+                            _platform_reason = f"非脚本问题（修改脚本无法解决）：{_err_msg}"
+                            logger.info(f"[platform_issue] reason_len={len(_platform_reason)}")
                             _record_give_up(context.get("debug_folder", ""), _platform_reason, content, script_name)
                             yield {"type": "platform_issue", "reason": _platform_reason}
                             yield {"type": "done", "result": {"agent": self.name, "content": content or _platform_reason}}

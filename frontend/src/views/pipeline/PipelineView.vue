@@ -1327,7 +1327,7 @@ async function handleDebugSend() {
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
             msg.executingMsg = ''
-            msg.content += `\n\n🔧 **${t('pipeline.platformIssueDesc')}**\n\n${data.message || ''}\n`
+            msg.content += `\n\n🔧 **${t('pipeline.platformIssueDesc')}**\n\n${data.reason || data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'done') {

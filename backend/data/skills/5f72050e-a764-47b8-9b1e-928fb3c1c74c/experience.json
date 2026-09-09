@@ -89,6 +89,16 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": ""
+    },
+    {
+      "timestamp": "2026-09-08T10:32:26.248341",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp0n0h99_j.py\", line 314, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp0n0h99_j.py\", line 270, in main\n    df = _load_data(datasource_name, table_name)\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": ""
     }
   ],
   "positive": [],

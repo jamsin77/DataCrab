@@ -608,28 +608,13 @@ class LLMManager:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """与大模型对话。"""
-        if not self._initialized:
-            await self.initialize()
-
-        errors = []
-        for cfg in self._model_configs():
-            actual_model = self._resolve_model_for_cfg(cfg, model)
-            try:
-                logger.info(f"LLM chat调用: provider={cfg['provider']}, model={actual_model}")
-                response = await self._acreate_with_retry(
-                    cfg,
-                    model=actual_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return response.choices[0].message.content or ""
-            except Exception as e:
-                errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
-                logger.warning(f"LLM chat失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
-                continue
-        raise self._format_chain_error(errors, "LLM 调用")
+        """与大模型对话（委托给 chat_with_messages）。"""
+        return await self.chat_with_messages(
+            [{"role": "user", "content": prompt}],
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     async def chat_with_messages(
         self,
@@ -638,7 +623,11 @@ class LLMManager:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """多轮对话，支持 system/user/assistant 消息列表。"""
+        """多轮对话，支持 system/user/assistant 消息列表。
+
+        推理型模型（如 DeepSeek-V4-Pro）输出可能全在 reasoning_content，
+        content 为空——此时用 reasoning_content 兜底返回。
+        """
         if not self._initialized:
             await self.initialize()
 
@@ -654,7 +643,15 @@ class LLMManager:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                return response.choices[0].message.content or ""
+                _msg = response.choices[0].message
+                _content = _msg.content or ""
+                _reasoning = getattr(_msg, "reasoning_content", None) or ""
+                _finish = response.choices[0].finish_reason
+                _total_input = sum(len(m.get("content","")) for m in messages)
+                logger.info(f"[llm_generate] chat response: content_len={len(_content)}, reasoning_len={len(_reasoning)}, finish_reason={_finish}, input_len={_total_input}, max_tokens={max_tokens}")
+                logger.info(f"[llm_generate] content preview: {repr(_content[:300])}")
+                logger.info(f"[llm_generate] reasoning preview: {repr(_reasoning[:300])}")
+                return _content
             except Exception as e:
                 errors.append(f"[{cfg['provider']}/{actual_model}] {e}")
                 logger.warning(f"LLM chat_with_messages失败 [{cfg['provider']}/{actual_model}]: {e}，尝试下一个模型")
@@ -913,9 +910,9 @@ class LLMManager:
                 client = self._client_for(cfg)
                 if not emb_model:
                     raise RuntimeError(f"Provider {cfg.get('provider','')} 不支持嵌入模型，无法处理向量化任务")
-                response = await client.embeddings.create(
-                    model=emb_model,
-                    input=text,
+                response = await asyncio.wait_for(
+                    client.embeddings.create(model=emb_model, input=text),
+                    timeout=30.0,
                 )
                 return response.data[0].embedding
             except Exception as e:

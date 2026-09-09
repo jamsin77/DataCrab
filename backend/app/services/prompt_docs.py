@@ -33,7 +33,7 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 图片 OCR: `call_tool("llm_vision", image_path="...", prompt="...")` → {"result": "分析文本"}
 - 表格图片提取: `call_tool("extract_image_table", image_path="...")` → {"is_table": true, "headers": [...], "rows": [[...]], "row_count": N}
 - 分块读取: `call_tool("iter_table_data", datasource_id=..., table_name=..., page=1, page_size=10000)` → {"columns", "rows", "page", "total", "has_next"}
-- 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}
+- 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}（支持 txt/json/csv/excel/parquet/pdf/docx，在主进程解析不受沙箱限制）
 - 写文件: `call_tool("write_file", path="...", data=..., format="csv")` → {"success", "path", "size"}
 - 视频信息: `call_tool("extract_video_info", video_path="...")` → {duration, width, height, fps, ...}
 - 抽关键帧: `call_tool("extract_keyframes", video_path="...", max_frames=8)` → {"frames": [...]}

@@ -668,6 +668,7 @@ async def _compress_history(history_messages: list, session_id: str) -> list:
                     {"role": "system", "content": "你是对话摘要助手。把多轮对话压缩成简洁中文要点摘要，保留关键数据、结论和上下文，不要寒暄，限300字以内。" + id_hint},
                     {"role": "user", "content": older_text[:8000]},
                 ],
+                model=llm_manager._flash,
                 temperature=0.2,
                 max_tokens=400,
             )
@@ -1660,7 +1661,7 @@ async def stream_response(
                                 f"## 用户消息\n{request.content}\n\n"
                                 f"请根据以上信息，生成一条符合技能使用示例格式的调用指令。"
                             )},
-                        ], temperature=0.2, max_tokens=500)
+                        ], model=llm_manager._flash, temperature=0.2, max_tokens=500)
                         _instruction = _instruction.strip()
                         if _instruction.startswith("```"):
                             _lines = _instruction.split("\n")

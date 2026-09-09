@@ -246,6 +246,7 @@ async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str)
             {"role": "system", "content": "你是数据元数据分析专家。根据数据集的技术信息和样本数据，推断业务元数据。只输出JSON，不要任何解释。"},
             {"role": "user", "content": prompt},
         ],
+        model=llm_manager._flash,
         temperature=0.3,
         max_tokens=2000,
     )

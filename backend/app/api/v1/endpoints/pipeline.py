@@ -353,6 +353,7 @@ async def create_pipeline_from_skill_stream(
 
                 response = await llm_manager.chat_with_messages(
                     messages=[{"role": "user", "content": prompt}],
+                    model=llm_manager._default,
                     temperature=0.3,
                     max_tokens=300,
                 )

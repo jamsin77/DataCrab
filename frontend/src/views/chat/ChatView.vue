@@ -397,7 +397,7 @@ function renderMarkdown(content: string): string {
     try {
       data = JSON.parse(jsonStr.trim())
     } catch (e) {
-      return `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${(e as Error).message}</div>`
+      return `@@CHART_ERROR@@${(e as Error).message}@@`
     }
 
     // 构造 ECharts option
@@ -405,9 +405,23 @@ function renderMarkdown(content: string): string {
     const id = `echart-${_chartBlockSeq++}`
     charts.push({ id, spec })
     _pendingChartBlocks.value[id] = spec
-    return `<div class="echart-block" id="${id}"></div>`
+    // 用占位符标记，md.render() 后再替换为真实 HTML（html:false 会转义原始 HTML 标签）
+    return `@@CHART_PLACEHOLDER_${id}@@`
   })
-  return md.render(cleaned)
+  let html = md.render(cleaned)
+  // md.render() 后替换占位符为真实 HTML div
+  // 占位符可能被 <p> 包裹，需同时处理包裹和裸文本两种情况
+  for (const { id } of charts) {
+    const token = `@@CHART_PLACEHOLDER_${id}@@`
+    const div = `<div class="echart-block" id="${id}"></div>`
+    html = html.replace(`<p>${token}</p>`, div)
+    html = html.replace(token, div)
+  }
+  html = html.replace(/<p>@@CHART_ERROR@@(.+?)@@<\/p>/g, (_, msg) =>
+    `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${msg}</div>`)
+  html = html.replace(/@@CHART_ERROR@@(.+?)@@/g, (_, msg) =>
+    `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${msg}</div>`)
+  return html
 }
 
 function buildEchartsOption(type: string, title: string, xLabel: string, yLabel: string, data: any): any {

@@ -1212,6 +1212,9 @@ class HadoopHDFSConnector(BaseConnector):
 class ChromaConnector(BaseConnector):
     """ChromaDB 向量库连接器"""
 
+    # 中文表名→英文名缓存（进程级，所有 ChromaConnector 实例共享）
+    _name_cache: Dict[str, str] = {}
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self._client = None
@@ -1222,6 +1225,54 @@ class ChromaConnector(BaseConnector):
             import chromadb
             self._client = chromadb.PersistentClient(path=self._persist_dir)
         return self._client
+
+    def _normalize_table_name(self, table: str) -> str:
+        """ChromaDB collection name 只允许 [a-zA-Z0-9._-]，中文等非 ASCII 字符需转换。
+
+        用 LLM flash 模型翻译，结果缓存（进程级）。
+        已是合法名称的直接返回。
+        """
+        import re
+        if re.match(r'^[a-zA-Z0-9._-]+$', table):
+            return table
+        if table in self._name_cache:
+            return self._name_cache[table]
+        raise RuntimeError(
+            f"表名 '{table}' 含非 ASCII 字符，需要异步翻译。"
+            f"请调用 _normalize_table_name_async 而非 _normalize_table_name。"
+        )
+
+    async def _normalize_table_name_async(self, table: str) -> str:
+        """异步翻译中文表名→英文（用 flash 模型），结果缓存。"""
+        import re
+        if re.match(r'^[a-zA-Z0-9._-]+$', table):
+            return table
+        if table in self._name_cache:
+            return self._name_cache[table]
+        try:
+            from app.services.llm import llm_manager
+            await llm_manager.initialize()
+            prompt = (
+                f"把以下中文表名翻译成英文短横线命名（snake-kebab case），"
+                f"只输出翻译后的英文名，不要任何解释：\n{table}"
+            )
+            en_name = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=200)
+            logger.info(f"[ChromaDB] LLM翻译原始返回: {repr(en_name)}")
+            en_name = en_name.strip().strip("`'\"").strip()
+            # 确保合法
+            if not en_name or not re.match(r'^[a-zA-Z0-9._-]+$', en_name):
+                logger.warning(f"[ChromaDB] LLM翻译结果不合法: '{en_name}'，用 hash")
+                import hashlib
+                en_name = "dc_" + hashlib.md5(table.encode("utf-8")).hexdigest()[:16]
+            self._name_cache[table] = en_name
+            logger.info(f"[ChromaDB] 表名翻译: '{table}' -> '{en_name}'")
+            return en_name
+        except Exception as e:
+            import hashlib
+            en_name = "dc_" + hashlib.md5(table.encode("utf-8")).hexdigest()[:16]
+            self._name_cache[table] = en_name
+            logger.warning(f"[ChromaDB] 表名翻译异常，用 hash: '{table}' -> '{en_name}' ({e})")
+            return en_name
 
     async def connect(self) -> bool:
         try:
@@ -1255,6 +1306,7 @@ class ChromaConnector(BaseConnector):
     ) -> pd.DataFrame:
         import pandas as pd
         client = self._get_client()
+        table = await self._normalize_table_name_async(table)
         collection = await asyncio.to_thread(client.get_collection, table)
         offset = (page - 1) * page_size
         result = await asyncio.to_thread(
@@ -1281,6 +1333,7 @@ class ChromaConnector(BaseConnector):
         collection_name = p.get("collection")
         if not collection_name:
             return pd.DataFrame()
+        collection_name = await self._normalize_table_name_async(collection_name)
         collection = await asyncio.to_thread(client.get_collection, collection_name)
         query_texts = p.get("query_texts")
         query_embeddings = p.get("query_embeddings")
@@ -1316,6 +1369,7 @@ class ChromaConnector(BaseConnector):
 
     async def get_table_stats(self, table: str) -> Dict[str, Any]:
         client = self._get_client()
+        table = await self._normalize_table_name_async(table)
         try:
             collection = await asyncio.to_thread(client.get_collection, table)
             return {"row_count": collection.count(), "name": collection.name}
@@ -1343,6 +1397,7 @@ class ChromaConnector(BaseConnector):
             return {"success": True, "rows_written": 0}
 
         client = self._get_client()
+        table = await self._normalize_table_name_async(table)
 
         # 检查集合是否存在（list_collections 返回 Collection 对象列表，取 .name）
         _collections = await asyncio.to_thread(client.list_collections)

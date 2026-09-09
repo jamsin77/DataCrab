@@ -413,6 +413,7 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
                 {"role": "system", "content": SKILL_CREATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
+            model=llm_manager._default,
             temperature=0.3,
             max_tokens=8000,
         )

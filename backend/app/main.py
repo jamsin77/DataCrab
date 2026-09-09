@@ -25,7 +25,7 @@ from app.core.version import get_version
 # 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
 settings.APP_VERSION = get_version()
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", "") or "[run_debug]" in r.get("message", "") or "[non_script_check]" in r.get("message", ""), rotation="1 MB")
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[platform_issue" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", "") or "[run_debug]" in r.get("message", "") or "[non_script_check]" in r.get("message", "") or "[run]" in r.get("message", "") or "[llm_generate]" in r.get("message", "") or "[ChromaDB]" in r.get("message", ""), rotation="1 MB")
 
 
 @asynccontextmanager
@@ -43,7 +43,6 @@ async def lifespan(app: FastAPI):
     await _seed_skills_and_pipelines()
     await _load_custom_extensions()
     await _backfill_related_skill_ids()
-    await _rebuild_match_index()
     await start_scheduler()
     yield
     await stop_scheduler()
@@ -301,6 +300,14 @@ async def _backfill_related_skill_ids():
             logger.info(f"回填 related_skill_ids: {changed} 条流程")
 
 
+async def _rebuild_match_index_safe():
+    """后台安全重建向量索引，不阻塞应用启动"""
+    try:
+        await _rebuild_match_index()
+    except Exception as e:
+        logger.warning(f"向量索引重建失败（非致命，匹配功能可能不可用）: {e}")
+
+
 async def _rebuild_match_index():
     """启动时重建向量索引。从 UserLLMConfig 取用户配置，遍历主+fallback 试 embed。"""
     try:
@@ -353,7 +360,7 @@ async def _rebuild_match_index():
                             "fallback_models": [],
                         })
 
-        # 逐个试 embed，找到能用的配置
+        # 逐个试 embed，找到能用的配置（带超时，防止启动卡死）
         sys_cfg = None
         for cfg in configs:
             try:
@@ -361,7 +368,8 @@ async def _rebuild_match_index():
                 await llm_manager.embed("__health_check__")
                 sys_cfg = cfg
                 break
-            except Exception:
+            except Exception as e:
+                logger.warning(f"向量配置试调失败 [{cfg.get('provider','')}]: {e}")
                 continue
 
         if sys_cfg:

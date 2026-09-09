@@ -160,9 +160,9 @@ def main(**params):
 | **返回值必须含 `success` 字段** | `{"success": True, ...}` 或 `{"success": False, "error": "..."}` |
 | **有类型注解和 docstring** | 函数参数标注类型，函数有文档字符串 |
 | **处理边界情况** | 空表、列不存在、数据源不可达等 |
-| **不得吞掉平台错误** | `call_tool("llm_generate")`/`call_tool("llm_vision")` 等工具调用的异常**不得用 try-except 吞掉后返回 `success=True`**。LLM 不可用、API key 未配置、连接失败等属于平台错误，应让异常传播（脚本崩溃），而非降级为空值继续执行 |
+| **不得吞掉平台错误** | `call_tool` 调用的异常**不得用 try-except 吞掉后返回 `success=True`**。LLM 不可用、API key 未配置、连接失败、缺库等属于平台错误，应让异常传播（脚本崩溃），让系统判断是否可修复。**禁止**用 `except Exception: pass` 或 `except Exception: return {"success": True}` 隐藏错误 |
 | **工具返回值必须检查 success** | `call_tool("query_table_data")`/`call_tool("write_table_data")`/`call_tool("execute_sql")` 等返回 `{success: bool, ...}`，调用后必须检查 `success` 字段，失败时 `raise`，不得静默继续 |
-| **只有核心操作完成才能 success=True** | 如果脚本的核心操作（如 OCR、翻译、分类）全部失败，即使脚本没崩溃也必须返回 `success=False`，不得用空值/默认值冒充结果 |
+| **核心操作失败必须返回 success=False** | 如果脚本的核心操作（如 PDF 解析、OCR、翻译、分类、文件读取）失败或返回空结果，**必须返回 `success=False`**，不得用空值/默认值冒充成功。例如：PDF 解析返回空文本 → `success=False`（不是"提取到 0 条规则"的 `success=True`） |
 
 ### 3.3 返回值格式
 

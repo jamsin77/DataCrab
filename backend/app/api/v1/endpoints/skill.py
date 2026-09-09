@@ -849,7 +849,7 @@ async def infer_skill_instruction(
             },
         ]
 
-        instruction = await llm_manager.chat_with_messages(messages, temperature=0.2, max_tokens=500)
+        instruction = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, max_tokens=500)
         instruction = instruction.strip()
         if instruction.startswith("```"):
             lines = instruction.split("\n")
@@ -956,7 +956,7 @@ async def _run_skill_nl(
     ]
 
     try:
-        nl_result = await llm_manager.chat_with_messages(messages, temperature=0.2, max_tokens=500)
+        nl_result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, max_tokens=500)
     except Exception as e:
         logger.error(f"自然语言参数推断失败: {e}")
         return {"success": False, "error": t('param_infer_failed', e=str(e))}
@@ -1229,7 +1229,7 @@ async def summarize_skill_errors(
 
     try:
         lessons_text = await llm_manager.chat_with_messages(
-            prompt_messages, temperature=0.3, max_tokens=1500
+            prompt_messages, model=llm_manager._flash, temperature=0.3, max_tokens=1500
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=t('llm_summarize_failed', e=str(e)))

@@ -416,7 +416,7 @@ def _register_data_tools():
         "function": {
             "name": "read_file",
             "description": (
-                "读取文件内容（自动检测格式：txt/json/csv/excel/parquet）。"
+                "读取文件内容（自动检测格式：txt/json/csv/excel/parquet/pdf/docx）。"
                 "限制：路径必须在文件链接授权目录内；不支持图片（用 llm_vision）和视频（用 extract_video_info）。"
             ),
             "parameters": {
@@ -1244,6 +1244,11 @@ async def _llm_generate_handler(args, db, user_id, context):
         temperature = args.get("temperature", 0.7)
         max_tokens = int(args.get("max_tokens", 8000))
 
+        _has_system = bool(system_prompt)
+        _prompt_len = len(prompt)
+        _system_len = len(system_prompt) if system_prompt else 0
+        logger.info(f"[llm_generate] system_prompt={_has_system}({len(system_prompt) if system_prompt else 0} chars), prompt={_prompt_len} chars, max_tokens={max_tokens}, temperature={temperature}")
+
         if user_id:
             await init_user_llm_context(user_id)
         await llm_manager.initialize()
@@ -1252,9 +1257,15 @@ async def _llm_generate_handler(args, db, user_id, context):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ]
-            result = await llm_manager.chat_with_messages(messages, temperature=temperature, max_tokens=max_tokens)
+            result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens)
         else:
-            result = await llm_manager.chat(prompt, temperature=temperature, max_tokens=max_tokens)
+            result = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens)
+
+        if not result:
+            logger.warning(f"[llm_generate] 返回空 content! system_prompt={_has_system}({_system_len} chars), prompt={_prompt_len} chars, max_tokens={max_tokens}")
+        else:
+            logger.info(f"[llm_generate] 返回 content 长度={len(result)}")
+
         return json.dumps({"content": result}, ensure_ascii=False)
     except Exception as e:
         logger.error(f"llm_generate 失败: {e}")
@@ -1296,10 +1307,67 @@ async def _read_file_handler(args, db, user_id, context):
             import pandas as _pd
             df = _pd.read_parquet(p)
             return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+        elif ext == ".pdf":
+            text = _extract_pdf_text(str(p))
+            return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
+        elif ext == ".docx":
+            text = _extract_docx_text(str(p))
+            return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
+        elif ext == ".doc":
+            return json.dumps({"error": "read_file 不支持旧版 .doc 文件，请转换为 .docx 或 .txt"}, ensure_ascii=False)
         else:
             return json.dumps({"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _extract_pdf_text(file_path: str) -> str:
+    """在主进程解析 PDF 文本（不受沙箱 import 限制）。"""
+    errors = []
+    try:
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            pages = []
+            for i, page in enumerate(pdf.pages, 1):
+                pages.append(page.extract_text() or "")
+                if i % 10 == 0:
+                    logger.info(f"PDF 解析进度: {i}/{len(pdf.pages)} 页")
+            return "\n".join(pages)
+    except ImportError:
+        errors.append("pdfplumber 未安装")
+    except Exception as e:
+        errors.append(f"pdfplumber: {e}")
+    try:
+        import fitz
+        doc = fitz.open(file_path)
+        try:
+            pages = []
+            for i, page in enumerate(doc, 1):
+                pages.append(page.get_text() or "")
+                if i % 10 == 0:
+                    logger.info(f"PDF 解析进度: {i}/{len(doc)} 页")
+            return "\n".join(pages)
+        finally:
+            doc.close()
+    except ImportError:
+        errors.append("PyMuPDF(fitz) 未安装")
+    except Exception as e:
+        errors.append(f"fitz: {e}")
+    raise RuntimeError(f"PDF 解析失败（主进程缺少 pdfplumber/fitz）: {'; '.join(errors)}")
+
+
+def _extract_docx_text(file_path: str) -> str:
+    """在主进程解析 Word .docx 文本（不受沙箱 import 限制）。"""
+    try:
+        import docx
+    except ImportError:
+        raise RuntimeError("Word 解析失败：主进程未安装 python-docx")
+    document = docx.Document(file_path)
+    parts = [p.text for p in document.paragraphs if p.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            parts.append(" | ".join(cell.text.strip() for cell in row.cells))
+    return "\n".join(parts)
 
 
 async def _write_file_handler(args, db, user_id, context):

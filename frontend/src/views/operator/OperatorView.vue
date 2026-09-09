@@ -1576,7 +1576,7 @@ async function handleOpSend() {
             msg.content += warnText
           } else if (data.type === 'platform_issue') {
             msg.executingMsg = ''
-            msg.content += `\n\n🔧 **${t('operator.platformIssueDesc')}**\n\n${data.message || ''}\n`
+            msg.content += `\n\n🔧 **${t('operator.platformIssueDesc')}**\n\n${data.reason || data.message || ''}\n`
             msg.thinkingOpen = false
             thinkingDone = true
           } else if (data.type === 'done') {
