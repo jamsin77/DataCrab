@@ -325,7 +325,9 @@ def main(**params):
     return filter_by_dynasty(**params)
 ===SCRIPT_END===
 
-（可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀，与全局规则区分：
+（可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀，与全局规则区分。
+
+**重要：数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。** 脚本只负责数据处理（提取/清洗/转换/写入），检查由 DataInspector 通过 rules.md 执行。如果用户要求加检查规则，输出或修改 rules.md，不要改脚本。
 
 ===RULES_MD===
 ### SKILL-STD-001 文物编号格式
@@ -425,10 +427,17 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 
 
 def _parse_creator_response(raw: str) -> Dict[str, Any]:
-    """解析 Skill Creator 的原始输出"""
+    """解析 Skill Creator 的原始输出
+
+    支持两种脚本格式：
+    - 完整脚本：===SCRIPT:main.py=== ... ===SCRIPT_END===
+    - 脚本补丁：===SCRIPT_PATCH:main.py=== <<<OLD ... >>>NEW ... ===PATCH_END===
+      补丁格式输出到 result["script_patches"][filename] = [{old_string, new_string}, ...]
+    """
     result = {
         "skill_md": "",
         "scripts": {},
+        "script_patches": {},
         "front_matter": {},
         "rules_md": "",
     }
@@ -445,6 +454,7 @@ def _parse_creator_response(raw: str) -> Dict[str, Any]:
     if len(rules_sections) > 1:
         result["rules_md"] = rules_sections[1].split("===RULES_MD_END===")[0].strip()
 
+    # 解析完整脚本（===SCRIPT:xxx=== ... ===SCRIPT_END===）
     lines = raw.split("\n")
     current_script = None
     script_content = []
@@ -465,6 +475,36 @@ def _parse_creator_response(raw: str) -> Dict[str, Any]:
 
     if current_script and script_content:
         result["scripts"][current_script] = "\n".join(script_content).strip()
+
+    # 解析脚本补丁（===SCRIPT_PATCH:xxx=== <<<OLD ... >>>NEW ... ===PATCH_END===）
+    patch_sections = raw.split("===SCRIPT_PATCH:")
+    for i in range(1, len(patch_sections)):
+        section = patch_sections[i]
+        name_end = section.find("===")
+        if name_end == -1:
+            continue
+        filename = section[:name_end].strip()
+        body = section[name_end + 3:]
+        # 截到 ===PATCH_END===
+        patch_end = body.find("===PATCH_END===")
+        if patch_end != -1:
+            body = body[:patch_end]
+
+        # 一个文件可能有多个 <<<OLD/>>>NEW 补丁
+        patches = []
+        old_parts = body.split("<<<OLD")
+        for old_part in old_parts[1:]:
+            new_split = old_part.split(">>>NEW")
+            if len(new_split) != 2:
+                continue
+            old_str = new_split[0].strip("\n")
+            new_str = new_split[1].strip("\n")
+            # 去掉可能的尾部空白
+            if old_str and new_str is not None:
+                patches.append({"old_string": old_str, "new_string": new_str})
+
+        if patches:
+            result["script_patches"][filename] = patches
 
     return result
 
@@ -638,30 +678,94 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
     yield {"type": "done", "data": parsed}
 
 
-async def modify_skill_md_stream(current_md: str, instruction: str) -> AsyncGenerator[Dict[str, Any], None]:
-    """流式修改 SKILL.md，复用 SKILL_CREATOR_SYSTEM_PROMPT（规范/沙箱/陷阱/安全/工具指引全注入）。
+async def modify_skill_stream(
+    current_md: str,
+    instruction: str,
+    existing_scripts: Dict[str, str] = None,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """流式修改 Skill 包（SKILL.md + scripts），复用 generate_skill_stream 的输出格式。
 
     与 generate_skill_stream 共用 system prompt（命中 prefix cache）；区别在 user prompt：
-    生成是「创建新 Skill 包（SKILL.md + scripts）」，修改是「只改用户要求的部分，输出完整 SKILL.md」。
-
-    落盘逻辑（解析 front matter / 写 DB）由端点负责，本方法只负责调 LLM 流式产出新 SKILL.md 文本。
+    生成是「从零创建」，修改是「基于现有内容改用户要求的部分」。
+    LLM 输出完整 Skill 包（===SKILL_MD=== + ===SCRIPT:xxx===），端点负责落盘。
     """
+    logger.info("[modify_skill] ====== 进入了 skill_creator.modify_skill_stream ======")
     await llm_manager.initialize()
 
-    user_prompt = (
-        f"以下是现有的 SKILL.md 内容：\n\n```markdown\n{current_md}\n```\n\n"
-        f"请根据以下要求修改这个 SKILL.md：\n{instruction}\n\n"
-        f"请输出修改后的完整 SKILL.md 内容（仅 SKILL.md，不要输出脚本）。\n"
-        f"要求：\n"
-        f"1. 保持 YAML front matter 格式，只修改用户要求的部分，不要改动未提及的字段\n"
-        f"2. 输出完整的 SKILL.md 内容，不要用代码块包裹\n"
-        f"3. 如果用户要求修改 description，按 description 写作规范覆盖用户常见问法\n"
-    )
+    scripts_section = ""
+    if existing_scripts:
+        script_parts = []
+        for name, content in existing_scripts.items():
+            script_parts.append(f"### {name}\n```python\n{content}\n```")
+        scripts_section = "\n\n## 现有脚本\n\n" + "\n\n".join(script_parts)
 
+    user_prompt = f"""以下是现有的 Skill 内容：
+
+## 现有 SKILL.md
+
+```markdown
+{current_md}
+```
+{scripts_section}
+
+请根据以下要求修改这个 Skill：
+{instruction}
+
+## 输出格式
+
+### SKILL.md（必须输出完整内容）
+
+===SKILL_MD===
+（修改后的 SKILL.md 完整内容）
+===SKILL_MD_END===
+
+### 脚本修改（禁止输出完整脚本！必须用补丁格式！）
+
+脚本修改必须使用补丁格式，只输出修改的部分，禁止输出完整脚本内容：
+
+===SCRIPT_PATCH:main.py===
+<<<OLD
+（要替换的原始代码片段，从现有脚本中逐字复制，至少 3 行上下文使其唯一）
+>>>NEW
+（替换后的新代码片段）
+===PATCH_END===
+
+如果有多个修改点，输出多个补丁块：
+
+===SCRIPT_PATCH:main.py===
+<<<OLD
+（第二处修改的原始代码片段）
+>>>NEW
+（第二处修改后的新代码片段）
+===PATCH_END===
+
+### 重要规则
+1. 脚本无需修改时不输出任何脚本部分
+2. 脚本需要修改时必须用补丁格式（<<<OLD / >>>NEW），禁止输出 ===SCRIPT:main.py=== 完整脚本
+3. old_string 必须从现有脚本中逐字复制（包括缩进和空格），不能凭记忆重写
+4. 如果只修改文档说明，不输出脚本部分
+5. 数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。如果用户要求加检查规则，输出 ===RULES_MD=== / ===RULES_MD_END=== 段落，不要改脚本
+
+===RULES_MD===
+### SKILL-STD-001 规则名称
+- 适用字段: field_name
+- 格式正则: ^正则表达式$
+- 严重等级: error
+===RULES_MD_END===
+"""
+
+    from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC
+    _modify_system = "你是 DataCrab Skill 修改助手。你修改现有 Skill 包，不创建新技能。\n\n脚本修改必须用补丁格式（===SCRIPT_PATCH:文件名.py=== + <<<OLD / >>>NEW + ===PATCH_END===），只输出修改的部分，禁止输出完整脚本。old_string 必须从现有脚本中逐字复制。\n\nSKILL.md 可以输出完整内容（用 ===SKILL_MD=== / ===SKILL_MD_END=== 包裹）。\n\n" + PLATFORM_CONVENTIONS_DOC
+    logger.info(f"[modify_skill] service进入, instruction={instruction[:100]}")
+    logger.info(f"[modify_skill] system_prompt={_modify_system}")
+    logger.info(f"[modify_skill] user_prompt_len={len(user_prompt)} SCRIPT_PATCH_in_prompt={'SCRIPT_PATCH' in user_prompt}")
+    logger.info(f"[modify_skill] user_prompt前500字符={user_prompt[:500]}")
+    full_response = ""
+    _progress_sent = set()
     try:
         async for chunk in llm_manager.chat_stream_with_thinking(
             messages=[
-                {"role": "system", "content": SKILL_CREATOR_SYSTEM_PROMPT},
+                {"role": "system", "content": _modify_system},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
@@ -672,10 +776,45 @@ async def modify_skill_md_stream(current_md: str, instruction: str) -> AsyncGene
             elif t == "thinking":
                 yield {"type": "thinking", "content": chunk["content"]}
             elif t == "content":
+                full_response += chunk["content"]
                 yield {"type": "content", "content": chunk["content"]}
+
+                if "===SKILL_MD===" in full_response and "===SKILL_MD_END===" not in full_response:
+                    if "skill_md" not in _progress_sent:
+                        _progress_sent.add("skill_md")
+                        yield {"type": "progress", "message": "正在修改 SKILL.md..."}
+
+                for marker in ["===SCRIPT:", "===SCRIPT_PATCH:"]:
+                    if marker in full_response:
+                        last_script_start = full_response.rfind(marker)
+                        remaining = full_response[last_script_start:]
+                        end_marker = "===SCRIPT_END===" if marker == "===SCRIPT:" else "===PATCH_END==="
+                        if end_marker not in remaining:
+                            script_name_match = remaining[len(marker):].split("===")
+                            if script_name_match:
+                                skey = f"script_{script_name_match[0]}"
+                                if skey not in _progress_sent:
+                                    _progress_sent.add(skey)
+                                    yield {"type": "progress", "message": f"正在修改脚本 {script_name_match[0]}..."}
+
     except Exception as e:
         logger.error(f"Skill Creator 流式修改失败: {e}")
         yield {"type": "error", "content": str(e)}
         return
 
-    yield {"type": "done"}
+    parsed = _parse_creator_response(full_response)
+
+    if not parsed.get("skill_md"):
+        yield {"type": "error", "content": "LLM 未生成有效的 SKILL.md，请重试"}
+        return
+
+    # 脚本语法验证
+    import ast as _ast
+    for _sname, _scontent in parsed.get("scripts", {}).items():
+        try:
+            _ast.parse(_scontent)
+        except SyntaxError as _se:
+            yield {"type": "error", "content": f"脚本 {_sname} 语法错误（第{_se.lineno}行）: {_se.msg}"}
+            return
+
+    yield {"type": "done", "data": parsed}

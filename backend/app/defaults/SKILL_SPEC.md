@@ -50,6 +50,8 @@ skill-name/
 
 **适用范围**：仅数据处理类技能（`skill_type: processing`）触发 Inspector，需放 `rules.md`；分析类技能只读不触发 Inspector，无需规则。
 
+**重要**：数据检查规则应写到 `rules.md`（自然语言规则），**不要在脚本代码里写检查逻辑**。脚本只负责数据处理（提取/清洗/转换/写入），检查规则由 DataInspector 通过 `rules.md` 执行。创建和修改技能时，如果用户要求加检查规则，应创建或修改 `rules.md`，不要改 `scripts/main.py`。
+
 ## 2. SKILL.md 格式
 
 ```yaml
