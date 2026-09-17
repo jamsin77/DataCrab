@@ -1,4 +1,4 @@
-"""工具注册中心——所有工具的 schema + handler 集中管理。
+﻿"""工具注册中心——所有工具的 schema + handler 集中管理。
 
 各 Agent 通过 tool_names 声明自己要用哪些工具（不定义实现），
 统一通过 execute_tool() 分发调用。
@@ -313,7 +313,8 @@ def _register_data_tools():
             "description": (
                 "用视觉大模型分析图片内容（OCR、图表识别、画面描述）。"
                 "适用于：识别图片中的文字/描述图片内容/提取关键信息。"
-                "限制：图片必须在文件链接授权目录内；单次调用可能耗时 10-30 秒；大表格输出可能截断，表格数据提取建议用 extract_image_table。"
+                "识别表格时：合并单元格的值应在每一行重复填写，不要留空；有多少列保持多少列，有多少序号保持多少行。"
+                "限制：图片必须在文件链接授权目录内；单次调用可能耗时 10-30 秒；大表格输出可能截断。"
             ),
             "parameters": {
                 "type": "object",
@@ -325,27 +326,6 @@ def _register_data_tools():
             },
         },
     }, _llm_vision_handler, cacheable=False)
-
-    register_tool("extract_image_table", {
-        "type": "function",
-        "function": {
-            "name": "extract_image_table",
-            "description": (
-                "从图片中分页提取表格数据，返回结构化 JSON（headers + rows）。"
-                "适用：数据表/报价单/报表等表格图片的完整数据提取。"
-                "限制：合并单元格可能不准；非表格图片返回 is_table=false；单次调用可能耗时 30-120 秒（多页识别）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "image_path": {"type": "string", "description": "图片文件路径（从附件信息中获取 file_path）"},
-                    "page_size": {"type": "integer", "description": "每页提取行数，默认 8", "default": 8},
-                    "max_retries": {"type": "integer", "description": "每页识别失败重试次数，默认 2", "default": 2},
-                },
-                "required": ["image_path"],
-            },
-        },
-    }, _extract_image_table_handler, cacheable=False)
 
     register_tool("write_table_data", {
         "type": "function",
@@ -478,6 +458,9 @@ def _register_data_tools():
             },
         },
     }, _extract_keyframes_handler, cacheable=False)
+
+    # render_pdf_pages 工具已删除——文本提取走 read_file（fitz + 旋转页转正），
+    # 图片渲染走 read_file 的 pdf_page_images 参数
 
 async def _query_table_data_handler(args, db, user_id, context):
     try:
@@ -849,14 +832,14 @@ async def _llm_vision_handler(args, db, user_id, context):
             import io as _io
             from PIL import Image as _PILImage
             img = _PILImage.open(_io.BytesIO(raw_bytes))
-            if img.width > 1024 or img.height > 1024:
-                ratio = min(1024 / img.width, 1024 / img.height)
+            if img.width > 2048 or img.height > 2048:
+                ratio = min(2048 / img.width, 2048 / img.height)
                 new_size = (int(img.width * ratio), int(img.height * ratio))
                 img = img.resize(new_size, _PILImage.LANCZOS)
             buf = _io.BytesIO()
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
-            img.save(buf, format="JPEG", quality=85)
+            img.save(buf, format="JPEG", quality=90)
             image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
             mime = "image/jpeg"
         except Exception:
@@ -883,252 +866,6 @@ async def _llm_vision_handler(args, db, user_id, context):
     except Exception as e:
         logger.error(f"llm_vision handler 异常: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-async def _extract_image_table_handler(args, db, user_id, context):
-    """从图片中分页提取表格数据，返回结构化 JSON。
-    复用 image-table-to-excel 技能的分页策略：先识别表头→分页提取行→竖线分隔格式+末行锚点定位。
-    """
-    import base64, io as _io, re, json as _json
-    from pathlib import Path
-    from app.api.v1.endpoints.datasource import _collect_allowed_dirs, _validate_file_path
-    from app.services.llm import llm_manager, init_user_llm_context, get_user_llm_config
-
-    image_path = args.get("image_path", "").strip()
-    if not image_path:
-        return json.dumps({"error": "缺少 image_path"}, ensure_ascii=False)
-    page_size = int(args.get("page_size", 8))
-    max_retries = int(args.get("max_retries", 2))
-
-    try:
-        allowed_dirs = await _collect_allowed_dirs(db, user_id)
-        validated = _validate_file_path(image_path, allowed_dirs)
-        p = Path(validated)
-        if not p.exists():
-            return json.dumps({"error": "图片文件不存在"}, ensure_ascii=False)
-        ext = p.suffix.lower()
-        if ext not in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tiff", ".tif"):
-            return json.dumps({"error": f"不支持的图片格式: {ext}"}, ensure_ascii=False)
-
-        # 压缩图片
-        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
-        mime = mime_map.get(ext, "image/jpeg")
-        raw_bytes = p.read_bytes()
-        try:
-            from PIL import Image as _PILImage
-            img = _PILImage.open(_io.BytesIO(raw_bytes))
-            if img.width > 1024 or img.height > 1024:
-                ratio = min(1024 / img.width, 1024 / img.height)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, _PILImage.LANCZOS)
-            buf = _io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(buf, format="JPEG", quality=85)
-            image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            mime = "image/jpeg"
-        except Exception:
-            image_b64 = base64.b64encode(raw_bytes).decode("utf-8")
-
-        if user_id:
-            await init_user_llm_context(user_id)
-        await llm_manager.initialize()
-        _user_cfg = get_user_llm_config()
-        if not _user_cfg:
-            return json.dumps({"error": "未配置 LLM Provider，请在配置页面设置"}, ensure_ascii=False)
-
-        # ---- 内部辅助函数（复用 image-table-to-excel 技能的分页策略）----
-
-        async def _vision_json(prompt: str, max_tokens: int = 8000) -> dict:
-            """调 vision 并解析 JSON"""
-            last_err = None
-            for attempt in range(1, max_retries + 1):
-                try:
-                    text = await llm_manager.vision(image_b64, mime, prompt, max_tokens=max_tokens)
-                    if not text or not text.strip():
-                        raise ValueError("视觉模型返回为空")
-                    t = text.strip()
-                    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", t, re.DOTALL | re.IGNORECASE)
-                    if fenced:
-                        t = fenced.group(1).strip()
-                    try:
-                        return _json.loads(t)
-                    except _json.JSONDecodeError:
-                        match = re.search(r"\{.*\}", t, re.DOTALL)
-                        if match:
-                            try:
-                                return _json.loads(match.group(0))
-                            except _json.JSONDecodeError:
-                                pass
-                        raise ValueError(f"无法解析 JSON，回复前200字符: {t[:200]}")
-                except Exception as e:
-                    last_err = e
-                    if attempt < max_retries:
-                        logger.info(f"extract_image_table 识别/解析失败，重试 ({attempt}/{max_retries}): {e}")
-                    else:
-                        raise RuntimeError(f"视觉识别失败，已重试 {max_retries} 次: {last_err}") from last_err
-
-        async def _vision_text(prompt: str, max_tokens: int = 8000) -> str:
-            """调 vision 返回原始文本"""
-            last_err = None
-            for attempt in range(1, max_retries + 1):
-                try:
-                    text = await llm_manager.vision(image_b64, mime, prompt, max_tokens=max_tokens)
-                    if not text or not text.strip():
-                        raise ValueError("视觉模型返回为空")
-                    return text
-                except Exception as e:
-                    last_err = e
-                    if attempt < max_retries:
-                        logger.info(f"extract_image_table 识别失败，重试 ({attempt}/{max_retries}): {e}")
-                    else:
-                        raise RuntimeError(f"视觉识别失败，已重试 {max_retries} 次: {last_err}") from last_err
-
-        def _build_header_prompt() -> str:
-            return ('请观察这张表格图片。请识别表头行的所有列名（从左到右顺序），'
-                    '并估算表格中数据行的总数（不含表头行）。严格按以下 JSON 返回，不要输出任何其他文字：\n'
-                    '{"headers": ["列1", "列2", ...], "total_rows": 50}')
-
-        def _build_rows_prompt(headers, start, end, last_key="") -> str:
-            header_line = "、".join(str(h) for h in headers)
-            ncols = len(headers)
-            if last_key:
-                locate = (f"第 1 到第 {start - 1} 行此前已经提取完成，"
-                          f"最后一条记录的第一列值是「{last_key}」。"
-                          f"请从「{last_key}」所在行的下一行开始，向下提取 {end - start + 1} 行数据。")
-            else:
-                locate = f"请从表格第一行数据（第一条记录）开始，向下提取 {end - start + 1} 行数据。"
-            return (f"这张图片是一个数据表格。表头列从左到右依次为：{header_line}（共 {ncols} 列）。\n{locate}\n"
-                    "每一行输出该行全部单元格的值，单元格之间用竖线 | 分隔，一行写一条记录，空单元格输出为空字符串。\n"
-                    "不要输出表头、不要输出行号、不要输出任何解释文字，只输出数据行。\n格式示例：\n值1|值2|值3|值4\n值1|值2|值3|值4")
-
-        def _parse_rows_text(text: str) -> list:
-            if not text or not text.strip():
-                return []
-            t = text.strip()
-            fenced = re.search(r"```(?:text|txt|plain)?\s*(.*?)\s*```", t, re.DOTALL | re.IGNORECASE)
-            if fenced:
-                t = fenced.group(1).strip()
-            rows = []
-            for line in t.splitlines():
-                line = line.strip()
-                if not line or "|" not in line:
-                    continue
-                rows.append([c.strip() for c in line.split("|")])
-            return rows
-
-        def _row_key(row, n=2):
-            parts = [str(c).strip() for c in (row or [])[:n] if c is not None and str(c).strip() != ""]
-            if not parts:
-                parts = [str(c).strip() for c in (row or []) if c is not None]
-            return "|".join(parts)
-
-        def _snake_case_columns(headers):
-            result = []
-            for h in headers:
-                h = str(h).strip() if h is not None else ""
-                if not h:
-                    h = f"col_{len(result) + 1}"
-                elif re.match(r"^\d", h):
-                    m = re.match(r"^(\d{4})\s*年?", h)
-                    if m:
-                        h = f"year_{m.group(1)}"
-                    else:
-                        h = "col_" + re.sub(r"\s+", "_", h)
-                result.append(h)
-            return result
-
-        # ---- 主流程 ----
-
-        # 1. 识别表头 + 估算总行数
-        header_data = await _vision_json(_build_header_prompt())
-        headers = (header_data or {}).get("headers")
-        if not isinstance(headers, list) or len(headers) == 0:
-            result = {"is_table": False, "error": "未能识别表格表头，图片可能不是表格"}
-            return json.dumps(result, ensure_ascii=False)
-        headers = [str(h).strip() for h in headers]
-        total_rows_est = int((header_data or {}).get("total_rows", 0) or 0)
-        logger.info(f"extract_image_table: 表头 {len(headers)} 列, 估算 {total_rows_est} 行")
-
-        # 2. 分页提取数据行
-        ncols = len(headers)
-        upper_bound = max(total_rows_est, 1) + 60
-        all_rows = []
-        seen_keys = set()
-        hdr_norm = [str(h).strip() for h in headers]
-        TRUNC_THRESHOLD = 1900
-        last_key = ""
-        page_idx = 0
-        cur_page_size = page_size
-
-        while page_idx < 80:
-            start = page_idx * cur_page_size + 1
-            end = start + cur_page_size - 1
-            raw = await _vision_text(_build_rows_prompt(headers, start, end, last_key=last_key))
-            rows = _parse_rows_text(raw)
-
-            valid_rows = []
-            for row in rows:
-                if len([c for c in row if c]) < 2:
-                    continue
-                norm = ["".join(c.split()) for c in row]
-                if norm == hdr_norm or norm[:ncols] == hdr_norm:
-                    continue
-                valid_rows.append(row)
-
-            added = 0
-            last_seen_key = last_key
-            for row in valid_rows:
-                key = _row_key(row, n=1)
-                if key and key not in seen_keys:
-                    seen_keys.add(key)
-                    all_rows.append(row)
-                    last_seen_key = key
-                    added += 1
-
-            logger.info(f"extract_image_table: 批次 {page_idx + 1} 解析 {len(rows)} 行, 有效 {len(valid_rows)} 行, 新增 {added} 行, 累计 {len(all_rows)} 行")
-
-            # 截断判断
-            truncated = len(raw) >= TRUNC_THRESHOLD and len(valid_rows) < cur_page_size
-            if truncated and cur_page_size > 2:
-                cur_page_size = max(2, cur_page_size // 2)
-                logger.info(f"extract_image_table: 疑似截断，缩页为 {cur_page_size} 行重试")
-                continue
-
-            if len(valid_rows) < cur_page_size:
-                break
-            if added == 0:
-                break
-            last_key = last_seen_key
-            page_idx += 1
-
-        if not all_rows:
-            result = {"is_table": False, "error": "表格数据为空"}
-            return json.dumps(result, ensure_ascii=False)
-
-        # 3. 规范化列名 + 列数对齐
-        norm_headers = _snake_case_columns(headers)
-        norm_rows = []
-        for row in all_rows:
-            if len(row) < len(norm_headers):
-                row = row + [None] * (len(norm_headers) - len(row))
-            elif len(row) > len(norm_headers):
-                row = row[:len(norm_headers)]
-            norm_rows.append(row)
-
-        result = {
-            "is_table": True,
-            "headers": norm_headers,
-            "rows": norm_rows,
-            "row_count": len(norm_rows),
-        }
-        logger.info(f"extract_image_table: 完成, 共 {len(norm_rows)} 行 {len(norm_headers)} 列")
-        return json.dumps(result, ensure_ascii=False)
-
-    except Exception as e:
-        logger.error(f"extract_image_table handler 异常: {e}")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
 
 async def _write_table_data_handler(args, db, user_id, context):
     try:
@@ -1258,9 +995,9 @@ async def _llm_generate_handler(args, db, user_id, context):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ]
-            result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens)
+            result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens, enable_thinking=False)
         else:
-            result = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens)
+            result = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=temperature, max_tokens=max_tokens, enable_thinking=False)
 
         if not result:
             logger.warning(f"[llm_generate] 返回空 content! system_prompt={_has_system}({_system_len} chars), prompt={_prompt_len} chars, max_tokens={max_tokens}")
@@ -1309,8 +1046,13 @@ async def _read_file_handler(args, db, user_id, context):
             df = _pd.read_parquet(p)
             return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
         elif ext == ".pdf":
-            text = _extract_pdf_text(str(p))
-            return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
+            # pdf_page_images 参数：渲染指定页为图片（供 llm_vision 识别）
+            page_images = args.get("pdf_page_images")
+            if page_images:
+                result = _render_pdf_pages(str(p), page_images, int(args.get("dpi", 200)))
+                return json.dumps({"format": "images", **result}, ensure_ascii=False)
+            text, total_pages = _extract_pdf_text(str(p))
+            return json.dumps({"format": "text", "content": text, "total_pages": total_pages}, ensure_ascii=False)
         elif ext == ".docx":
             text = _extract_docx_text(str(p))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
@@ -1322,18 +1064,32 @@ async def _read_file_handler(args, db, user_id, context):
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def _extract_pdf_text(file_path: str) -> str:
-    """在主进程解析 PDF 文本（不受沙箱 import 限制）。"""
+def _extract_pdf_text(file_path: str) -> tuple:
+    """在主进程解析 PDF 文本（不受沙箱 import 限制）。
+
+    旋转页自动转正后提取：pdfplumber page.rotation 检测旋转角度，
+    用 page.rotate(-rotation) 转正后再 extract_text()，避免旋转页文本乱序。
+
+    返回 (text, total_pages)。
+    """
     errors = []
     try:
         import pdfplumber
         with pdfplumber.open(file_path) as pdf:
+            total_pages = len(pdf.pages)
             pages = []
+            rotated = []
             for i, page in enumerate(pdf.pages, 1):
+                rotation = getattr(page, "rotation", 0) or 0
+                if rotation != 0:
+                    rotated.append(i)
+                    page = page.rotate(-rotation)
                 pages.append(page.extract_text() or "")
                 if i % 10 == 0:
-                    logger.info(f"PDF 解析进度: {i}/{len(pdf.pages)} 页")
-            return "\n".join(pages)
+                    logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
+            if rotated:
+                logger.info(f"检测到旋转页 {len(rotated)} 页: {rotated[:10]}")
+            return "\n".join(pages), total_pages
     except ImportError:
         errors.append("pdfplumber 未安装")
     except Exception as e:
@@ -1342,12 +1098,13 @@ def _extract_pdf_text(file_path: str) -> str:
         import fitz
         doc = fitz.open(file_path)
         try:
+            total_pages = len(doc)
             pages = []
             for i, page in enumerate(doc, 1):
                 pages.append(page.get_text() or "")
                 if i % 10 == 0:
-                    logger.info(f"PDF 解析进度: {i}/{len(doc)} 页")
-            return "\n".join(pages)
+                    logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
+            return "\n".join(pages), total_pages
         finally:
             doc.close()
     except ImportError:
@@ -1355,6 +1112,46 @@ def _extract_pdf_text(file_path: str) -> str:
     except Exception as e:
         errors.append(f"fitz: {e}")
     raise RuntimeError(f"PDF 解析失败（主进程缺少 pdfplumber/fitz）: {'; '.join(errors)}")
+
+
+def _render_pdf_pages(file_path: str, page_indices: list, dpi: int = 200) -> dict:
+    """渲染 PDF 指定页为图片（主进程 fitz，不受沙箱限制）。
+
+    内部辅助函数，不是独立工具——通过 read_file(path=..., pdf_page_images=[...]) 调用。
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    try:
+        import fitz
+    except ImportError:
+        return {"error": "PyMuPDF(fitz) 未安装"}
+
+    doc = fitz.open(file_path)
+    try:
+        total_pages = len(doc)
+        valid = [i for i in page_indices if isinstance(i, int) and 1 <= i <= total_pages]
+        if not valid:
+            return {"error": "无有效页码"}
+        if len(valid) > 20:
+            valid = valid[:20]
+
+        out_dir = _Path(tempfile.mkdtemp(prefix="dc_pdf_render_"))
+        image_paths = []
+        for i in valid:
+            pix = doc[i - 1].get_pixmap(dpi=dpi)
+            img_path = out_dir / f"page_{i}.png"
+            pix.save(str(img_path))
+            image_paths.append(str(img_path))
+
+        return {
+            "success": True,
+            "image_paths": image_paths,
+            "page_count": len(image_paths),
+            "total_pages": total_pages,
+        }
+    finally:
+        doc.close()
 
 
 def _extract_docx_text(file_path: str) -> str:
@@ -1459,7 +1256,7 @@ async def _extract_keyframes_handler(args, db, user_id, context):
         return json.dumps({"success": True, "frames": frames, "count": len(frames)}, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-
+ 
 
 # ==================== 调试工具（原 data_processor_agent.py）====================
 
@@ -1484,7 +1281,7 @@ def _register_debug_tools():
         "type": "function",
         "function": {
             "name": "edit_script",
-            "description": "精确字符串替换，修改脚本。提供 old_string 和 new_string，系统精确定位并替换。\n\n用法：\n- 修改前必须先调 read_script 查看逐字内容，获取精确的 old_string\n- old_string 必须逐字匹配（包括缩进、空格、注释），不能凭记忆编写\n- old_string 在脚本中必须唯一；不唯一时多带几行上下文使其唯一\n- old_string 未找到或多次匹配时会报错——多带上下文行使其唯一\n- 保持 new_string 的缩进与周围代码一致",
+            "description": "精确字符串替换，修改脚本。提供 old_string 和 new_string，系统精确定位并替换。\n\n用法：\n- 修改前必须先调 read_script 查看逐字内容，获取精确的 old_string\n- old_string 必须逐字匹配（包括缩进、空格、注释），不能凭记忆编写\n- old_string 在脚本中必须唯一；不唯一时多带几行上下文使其唯一\n- old_string 未找到或多次匹配时会报错——多带上下文行使其唯一\n- 保持 new_string 的缩进与周围代码一致\n- 沙箱禁止 import 的模块：os/sys/subprocess/shutil/sqlite3/socket/http/urllib/sqlalchemy 等，路径操作用 pathlib，文件读写用 call_tool，数据操作用 call_tool",
             "parameters": {
                 "type": "object",
                 "properties": {

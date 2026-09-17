@@ -90,7 +90,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 npm run dev
 
 # 后端单独（用 .venv Python 3.12，不用系统 Python）
-cd backend && .venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+cd backend && .venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000
 
 # 前端单独
 cd frontend && npm install && npm run dev

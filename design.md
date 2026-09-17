@@ -1674,8 +1674,8 @@ Pipeline ──1:1──▶ Schedule
 DataCrab 从单智能体架构演进为**多智能体协作框架**。每个智能体是独立的职责单元，拥有专属的 LLM 指令、工具集和知识上下文，通过消息总线进行协作。
 
 **核心设计原则**：
-- **职责单一**：每个智能体只负责一个领域（数据处理、质量检查、安全审计……），指令精准不模糊
-- **Handoff 交接**：智能体通过结构化消息交接工作，交接时携带完整上下文（数据、问题、溯源信息）
+- **职责单一**：每个智能体只负责一个领域（数据处理、质量检查、只读分析、闲聊咨询），指令精准不模糊
+- **Handoff 由 RunTime 决策**：Agent 不感知 handoff 存在，RunTime 拦截 `done` 事件调用 `_decide_handoff()` 决定是否交接；调试模式自动交接（Processor→Inspector→Processor 自愈循环），主对话靠人判断
 - **可插拔扩展**：新增智能体只需实现 Agent 接口、注册到 AgentRegistry，无需修改已有智能体
 - **人机协同**：关键决策点（如数据修复方案）可暂停等待人工确认
 
@@ -1803,10 +1803,10 @@ class BaseAgent(ABC):
         Yields:
             {"type": "thinking", "content": "..."}    # 推理过程
             {"type": "content", "content": "..."}     # 回复内容
-            {"type": "tool_call", ...}                # 工具调用
-            {"type": "tool_result", ...}              # 工具结果
-            {"type": "handoff", "to": "...", "reason": "...", "payload": {...}}  # 交接
-            {"type": "done", "result": {...}}         # 完成
+            {"type": "tool_action", "actions": [...]} # 工具调用卡片
+            {"type": "tool_summary", "summaries": [...]} # 工具结果摘要
+            {"type": "done", "result": {...}}         # 完成（RunTime 拦截此事件决定是否 handoff）
+            {"type": "give_up", "reason": "..."}      # 放弃修复
         """
         pass
 
@@ -1954,9 +1954,11 @@ MAIN_TOOLS = [
 ]
 ```
 
-**交接触发**：
-- 数据处理完成后，自动或用户触发交接给 `DataInspector`
-- 收到 `fix_required` 交接时，根据检查结果定位问题、修改脚本、重新执行
+**交接触发**（由 RunTime 自动决策，Agent 不感知 handoff）：
+- `run_script` 执行成功后，RunTime 拦截 `done` 事件，自动交接给 `DataInspector`（调试模式）
+- Inspector 发现 error/critical 问题 → RunTime 回交 `DataProcessor` 修复 → 修复后再检查（自愈循环）
+- 主对话模式靠人判断（fatal/warning 不自动交接）
+- 修改尝试正法：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复）；调查（read/grep）不算次数
 
 #### 2.7.8 DataInspector 数据检查智能体
 
@@ -3143,7 +3145,8 @@ CREATE TABLE data_sources (
     created_by UUID REFERENCES users(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
+    is_active BOOLEAN DEFAULT TRUE,
+    is_virtual BOOLEAN DEFAULT FALSE  -- 虚拟数据源（聊天上传），受保护不可修改/删除/导出
 );
 
 -- 表元数据CREATE TABLE table_metadata (
@@ -3163,7 +3166,8 @@ CREATE TABLE data_sources (
     security_level VARCHAR(20),
     lineage JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    data_updated_at TIMESTAMP  -- 数据源端真实更新时间（区别于元数据记录的 updated_at）
 );
 ```
 
@@ -3201,7 +3205,7 @@ CREATE TABLE skills (
     name VARCHAR(100) UNIQUE NOT NULL,
     display_name VARCHAR(200),
     description TEXT NOT NULL,
-    skill_type VARCHAR(50), -- operator, function, pipeline
+    skill_type VARCHAR(50) DEFAULT 'processing', -- analysis=分析类 / processing=处理类（默认），从 SKILL.md front matter 解析
     inputs JSONB,
     """
     {
@@ -3304,6 +3308,7 @@ CREATE TABLE pipelines (
     visibility VARCHAR(20) DEFAULT 'private',
 
     is_active BOOLEAN DEFAULT TRUE,
+    is_builtin BOOLEAN DEFAULT FALSE,  -- 内置流程（seed），用户删除后不复活
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -3371,6 +3376,62 @@ CREATE TABLE task_executions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+#### 自定义连接器与 LLM 配置表
+```sql
+-- 自定义数据源连接器（AI 生成代码，沙箱加载）
+CREATE TABLE custom_connectors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) UNIQUE NOT NULL,
+    display_name VARCHAR(200),
+    description TEXT,
+    code TEXT NOT NULL,          -- Python 连接器代码
+    connector_type VARCHAR(50),  -- csv, excel, api, ...
+    is_seed BOOLEAN DEFAULT FALSE,  -- seed=预置的，所有用户可见
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- LLM Provider 适配器（AI 生成代码，沙箱加载）
+CREATE TABLE llm_providers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) UNIQUE NOT NULL,
+    display_name VARCHAR(200),
+    description TEXT,
+    code TEXT,                  -- Provider 适配器代码（可为空，直接用 OpenAI SDK）
+    api_base VARCHAR(500),     -- 默认 API 地址
+    default_model VARCHAR(100),      -- 推荐深度模型名
+    default_flash_model VARCHAR(100),  -- 推荐快速模型名
+    default_vision_model VARCHAR(100),  -- 推荐视觉模型名
+    default_embedding_model VARCHAR(100),  -- 推荐嵌入模型名
+    is_seed BOOLEAN DEFAULT FALSE,  -- seed=预置的，所有用户可见
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 用户 LLM 配置（去全局化：每用户独立配置，存 DB 不存 .env）
+CREATE TABLE user_llm_configs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    provider VARCHAR(100) NOT NULL,
+    api_key VARCHAR(500),       -- 加密存储
+    api_base VARCHAR(500),
+    model VARCHAR(100),         -- 深度模型（_default）
+    flash_model VARCHAR(100),   -- 快速模型（_flash）
+    vision_model VARCHAR(100), -- 视觉模型
+    embedding_model VARCHAR(100),  -- 嵌入模型
+    fallback_models JSONB,      -- 降级链模型列表
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+> **设计要点**：
+> - **is_seed 统一语义**：seed = 预置的 = 所有用户可见（替代旧的 `is_public`）
+> - **LLM 配置去全局化**：无全局 provider/api_key/model，强制基于用户配置（contextvar）；`.env` 无需配置 LLM，全在前端管理
+> - **虚拟数据源保护**：`data_sources.is_virtual=True` 的数据源不可修改/删除/测试/同步/导出
 
 #### 数据源管理API
 ```
@@ -3621,6 +3682,250 @@ data: {"step_index": 3, "success": true, "output_preview": {...}}
 event: pipeline_complete
 data: {"outputs": {...}, "duration": 2.5}
 ```
+
+## 4. API 设计
+
+### 4.1 API 架构概览
+
+DataCrab 后端采用 **RESTful + SSE 流式** 混合 API 架构：
+
+- **RESTful 端点**：标准 CRUD 操作（数据源/技能/算子/流程/调度/权限等），请求-响应模式
+- **SSE 流式端点**：对话/调试/生成/执行等需要实时反馈的场景，Server-Sent Events 单向流
+- **统一前缀**：所有 API 路由前缀为 `/api/v1/`，在 `api/v1/router.py` 集中注册
+- **认证**：JWT Bearer Token（Access + Refresh），除 `/internal/execute-tool` 外所有端点需认证
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        客户端（浏览器）                           │
+├──────────────────────────────────────────────────────────────────┤
+│  Axios (REST)          EventSource (SSE)                         │
+└───────┬───────────────────────┬──────────────────────────────────┘
+        │                       │
+        ▼                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                    /api/v1/ 统一路由前缀                          │
+├──────────────────────────────────────────────────────────────────┤
+│  17 个端点文件 · 140 个 OpenAPI paths                             │
+│                                                                   │
+│  ┌─────────┐ ┌──────┐ ┌───────────┐ ┌──────────┐ ┌───────────┐  │
+│  │ /auth   │ │/chat │ │/datasources│ │ /skills  │ │/operators │  │
+│  │ 认证    │ │ 对话 │ │ 数据源    │ │ 技能     │ │ 算子      │  │
+│  └─────────┘ └──────┘ └───────────┘ └──────────┘ └───────────┘  │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+│  │/pipelines│ │/schedules│ │ /config  │ │/metadata │  ...       │  │
+│  │ 流程     │ │ 调度     │ │ 配置     │ │ 元数据   │            │  │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  /datasources/internal/execute-tool（无认证，沙箱专用）       │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+        │                       │
+        ▼                       ▼
+┌──────────────────┐   ┌──────────────────────────────────────────┐
+│  业务服务层       │   │  Agent Runtime / Skill Runner             │
+│  (Services)      │   │  (yield SSE events)                       │
+└──────────────────┘   └──────────────────────────────────────────┘
+```
+
+### 4.2 端点组织
+
+17 个端点文件，前缀在 `api/v1/router.py` 集中注册：
+
+| 端点文件 | 路由前缀 | 功能 | paths 数 |
+|----------|----------|------|----------|
+| `auth.py` | `/auth` | 登录/注册/令牌刷新/修改密码/当前用户 | 6 |
+| `chat.py` | `/chat` | 会话管理 + 流式消息 + 附件上传 + 停止生成 | 9 |
+| `datasource.py` | `/datasources` | 数据源 CRUD + Schema/Stats + `/internal/execute-tool`（无认证） | 8 |
+| `skill.py` | `/skills` | 技能全生命周期 + AI 生成/调试/推断指令/导出 | 23 |
+| `operator.py` | `/operators` | 算子 CRUD + AI 生成/修改/调试/执行/克隆 | 14 |
+| `pipeline.py` | `/pipelines` | 流程 CRUD + 从 Skill 转换/调试/执行/导出 | 11 |
+| `schedule.py` | `/schedules` | 调度 CRUD + 暂停/恢复/触发/统计 | 9 |
+| `config.py` | `/config` | LLM 配置 + 规则库 + 版本号 | 11 |
+| `metadata.py` | `/metadata` | 元数据同步/AI 补充 | 6 |
+| `filelink.py` | `/filelinks` | 文件链接 CRUD | 6 |
+| `filesystem.py` | `/filesystem` | 文件系统浏览 | 1 |
+| `llm.py` | `/llm` | LLM Provider 列表 | 1 |
+| `permission.py` | `/permissions` | RBAC 权限管理 | 16 |
+| `agents.py` | `/agents` | 智能体列表/事件流/血缘 | 5 |
+| `knowledge.py` | `/knowledge` | 文档知识库 RAG | 5 |
+| `custom_extension.py` | *(无前缀)* | 自定义连接器 + LLM 适配器 | 2+2 |
+| `assets.py` | `/assets` | 资产导出/导入 | 4 |
+
+### 4.3 SSE 事件协议
+
+DataCrab 的流式端点统一使用 `yield {"type": "...", ...}` 生成事件，前端通过 EventSource 接收。事件类型按来源分层：
+
+#### 4.3.1 LLM 流式原语（`llm.py`）
+
+由 `chat_stream_with_thinking` / `chat_stream_with_tools_and_thinking` 产生，所有 Agent 和端点透传：
+
+| 事件类型 | 说明 |
+|----------|------|
+| `model` | 当前使用的模型名（`content` = 模型名） |
+| `thinking` | 推理过程 token（`content` = reasoning_content 增量） |
+| `content` | 正文输出 token（`content` = delta.content） |
+| `tool_calls` | 工具调用列表（`tool_calls` = 累积列表） |
+| `finish` | 流结束（`finish_reason` = stop/length/tool_calls） |
+
+#### 4.3.2 Agent Runtime 事件（`multi_agent.py`）
+
+由 `AgentRuntime.run()` 和 `stream_agent_events_sse()` 产生：
+
+| 事件类型 | 说明 |
+|----------|------|
+| `agent_switch` | 智能体切换（`agent`/`display_name`/`reason`） |
+| `inspecting` | 进入检查阶段（`message`） |
+| `retry` | 检查→修复循环（`round`/`message`） |
+| `done` | 完成（`result` dict） |
+| `ping` | 保活（20s 无事件时发送） |
+| `error` | 异常（`content` = 错误信息） |
+| `cancelled` | 用户停止生成 |
+
+#### 4.3.3 DataProcessor 事件
+
+| 事件类型 | 说明 |
+|----------|------|
+| `round` | 修改尝试计数（`round` = 第 N 次修改） |
+| `tool_action` | 工具调用卡片（`actions` 数组：工具名/图标/diff/详情） |
+| `tool_summary` | 工具结果摘要（`summaries` 数组） |
+| `executing` | 执行状态（"正在执行 main.py..."） |
+| `progress` | 脚本 stdout 实时输出 |
+| `run_result` | 脚本执行结果（`result` dict：success/error/stdout） |
+| `give_up` | 放弃修复（`reason`） |
+| `script_updated` | 脚本已修改 |
+| `skill_md_updated` | SKILL.md 已修改 |
+
+#### 4.3.4 DataInspector 事件
+
+| 事件类型 | 说明 |
+|----------|------|
+| `inspecting` | 检查开始（"正在检查 N 张表的数据质量..."） |
+| `inspection_report` | 格式化检查报告（`report` = Markdown 表格） |
+
+#### 4.3.5 Chat 匹配事件（`chat.py`）
+
+对话路由匹配阶段产生，每路独立返回结果：
+
+| 事件类型 | 说明 |
+|----------|------|
+| `data_suggestion` | 源表匹配结果（`matches` 数组） |
+| `source_datasource_no_match` | 源数据源未识别 |
+| `source_table_no_match` | 源表未匹配到 |
+| `target_suggestion` | 目标表匹配结果 |
+| `target_datasource_no_match` | 目标数据源未识别 |
+| `target_table_no_match` | 目标表未匹配到 |
+| `skill_suggestion` | 技能/流程匹配结果 |
+| `skill_no_match` | 技能/流程未匹配到 |
+
+#### 4.3.6 其他端点事件
+
+| 事件类型 | 来源 | 说明 |
+|----------|------|------|
+| `status` | pipeline_executor / skill_creator | 状态消息 |
+| `phase` | operator.py | 生成阶段（generating/parsing/fixing/validating） |
+| `created` | skill.py | 资源已创建（`skill` payload） |
+| `existing` | pipeline.py | 已存在同名资源 |
+| `warning` | skill_creator | 验证警告 |
+
+### 4.4 统一工具入口（call_tool）
+
+DataCrab 的工具系统是**一套 handler、两个入口**：
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                     tool_registry.py（29 个工具）                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │
+│  │query_table│ │write_table│ │edit_script│ │run_script│ │llm_gen  │ │
+│  │_data     │ │_data     │ │          │ │          │ │erate    │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └─────────┘ │
+│  ... read_file / write_file / extract_video_info / extract_keyframes│
+└───────────┬──────────────────────────────┬────────────────────────┘
+            │                              │
+     ┌──────▼──────┐               ┌──────▼──────┐
+     │ execute_tool │               │  call_tool  │
+     │ (进程内调用)  │               │ (HTTP 调用) │
+     └──────┬──────┘               └──────┬──────┘
+            │                              │
+     ┌──────▼──────┐               ┌──────▼──────┐
+     │ Agent Func  │               │  沙箱脚本    │
+     │ Calling     │               │  (子进程)    │
+     │ (主进程)    │               │             │
+     └─────────────┘               └─────────────┘
+```
+
+**Agent 入口**（`execute_tool`）：Agent function calling 时主进程内直接调 handler，经 LRU 缓存（只读工具）+ 结果截断。
+
+**沙箱入口**（`call_tool`）：子进程沙箱脚本通过 HTTP POST 调 `/datasources/internal/execute-tool`（无认证，localhost 专用），直接调 handler 不经缓存不截断（脚本需要完整数据）。
+
+**设计要点**：
+- **一套 handler**：Agent 和脚本调用同一套 `tool_registry.py` 中的 handler 实现，无重复代码
+- **29 个工具**：数据查询（query_table_data/execute_sql/iter_table_data/get_table_schema）+ 数据写入（write_table_data）+ 调试（edit_script/run_script/read_script/grep_script）+ LLM（llm_generate/llm_vision）+ 文件（read_file/write_file）+ 视频（extract_video_info/extract_keyframes）+ 列表/知识库等
+- **返回格式统一**：`records` 格式（`{"data": [...], "success": true, "columns": [...], "row_count": N}`），Agent 和脚本一致
+
+### 4.5 认证与授权
+
+#### 4.5.1 JWT 认证
+
+```
+客户端                                      服务端
+  │                                          │
+  │  POST /api/v1/auth/login                 │
+  │  {username, password}                    │
+  │ ──────────────────────────────────────► │
+  │                                          │  bcrypt.checkpw 验证密码
+  │  200 {access_token, refresh_token}       │
+  │ ◄────────────────────────────────────── │
+  │                                          │
+  │  GET /api/v1/...                         │
+  │  Authorization: Bearer <access_token>    │
+  │ ──────────────────────────────────────► │
+  │                                          │  jwt.decode + 查 User 表
+  │  200 {data}                              │
+  │ ◄────────────────────────────────────── │
+```
+
+- **密码哈希**：`bcrypt.hashpw` / `bcrypt.checkpw` 直用（passlib 已移除，与 bcrypt 4.x 不兼容）
+- **Access Token**：HS256 签名，默认 2 小时过期
+- **Refresh Token**：默认 7 天过期，用于刷新 Access Token
+- **依赖注入**：`get_current_user` 作为 FastAPI Depends，解码 JWT → 查 User 表 → 校验 `is_active`
+
+#### 4.5.2 RBAC 权限控制
+
+- **三级权限**：`view`（查看）/ `use`（使用）/ `manage`（管理）
+- **资源级控制**：通过 `assert_resource_access(db, user, resource_type, resource, level)` 校验
+- **覆盖资源**：技能/算子/流程/数据源/调度/文件链接等
+- **seed 资源**：`is_seed=True` 的连接器/Provider 对所有用户可见（预置资源）
+
+### 4.6 流式端点设计
+
+DataCrab 的 SSE 流式端点遵循统一模式：
+
+```
+┌─────────────┐     SSE Stream      ┌──────────────────┐
+│  客户端      │ ◄────────────────── │  服务端 Generator │
+│  EventSource│     data: {json}    │  (async generator)│
+└─────────────┘                     └──────────────────┘
+                                           │
+                                    yield {"type": "...", ...}
+```
+
+**关键端点**：
+
+| 端点 | 方法 | 流式内容 |
+|------|------|----------|
+| `/chat/sessions/{id}/messages/stream` | POST | 对话流（匹配→Agent→检查→结论） |
+| `/skills/{id}/debug-chat` | POST | 技能调试流（Agent 修改→执行→检查→自愈） |
+| `/operators/{id}/debug-chat` | POST | 算子调试流 |
+| `/pipelines/{id}/debug-chat` | POST | 流程调试流 |
+| `/skills/generate-stream` | POST | AI 生成技能流 |
+| `/operators/generate-stream` | POST | AI 生成算子流 |
+| `/pipelines/from-skill-stream` | POST | Skill→流程转换流 |
+| `/skills/{id}/run-nl-stream` | POST | 自然语言执行技能流 |
+| `/pipelines/{id}/execute-stream` | POST | 流程执行流 |
+| `/agents/{id}/events/stream` | GET | 智能体事件流 |
+
+**SSE 保活机制**：20 秒无事件时自动发送 `ping`，防止代理/防火墙断开长连接。
 
 ## 5. 部署架构
 
@@ -4405,7 +4710,32 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 
 **与前轮关系**：第十~十一轮建立的行级补丁原语（edit_script/apply_partial_code）在本轮成为唯一修改入口。第二十三轮 Inspector `check_results` 写入 context 供 RunTime `_extract_issues` 在本轮配合 `inspection_report` 独立事件让前端格式化展示。第二十四轮 llmContent 分离在本轮扩展到 OperatorView/PipelineView。
 
-### 11.37 第二十六轮：错误分级机制彻底删除——死代码清理 + 文档校正
+### 11.37 第二十六轮：DataAnalystAgent 集成——只读分析智能体落地
+
+**核心洞察**：DataProcessor 同时承担「修改数据」与「只读分析」两类请求，导致分析类问题也走复杂信息链（handoff + 修改计数 + 压缩 + 自愈），既浪费 token 又让 LLM 困惑。按 Orchestrator-Worker 原则拆分职责：只读分析（查询/统计/分布/洞察）由独立 DataAnalystAgent 承担，简单线性信息链、无 handoff、无修改计数；修改类请求仍走 DataProcessor + DataInspector 自愈闭环。三者并列为完整多智能体架构。
+
+| 智能体 | 职责 | 触发场景 |
+|---|---|---|
+| **DataProcessor** | 修改数据/脚本：清洗、转换、分类、ETL | 修改类请求（默认兜底） |
+| **DataInspector** | 对加工后数据做标准/质量/安全检查 | DataProcessor 执行成功后 RunTime 自动 handoff |
+| **DataAnalyst** | 只读分析：查询、统计、分布、洞察（不修改数据） | 只读分析类问题，chat_router 语义判断路由 |
+
+**边界规则**：是否修改数据/脚本。只查不改 → DataAnalyst；要修改 → DataProcessor。
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **DataAnalystAgent 类** | data_analyst_agent.py（新增） | `run()` 流式方法 + 简单线性信息链（system + user + tool + 结论，无跨 handoff 持久化、无修改计数、无 StuckDetector 修改检测，保留空转检测 + 总轮次上限）；上下文压缩保留；独立截断阈值 `ANALYSIS_MAX_TOOL_RESULT_CHARS=30000`；system prompt 进程级 memoize（Prefix Cache） |
+| **只读工具子集** | shared_tools.py | 定义 `ANALYSIS_TOOLS`（5 个只读工具）；不暴露 write_table_data / 调试工具 |
+| **注册 + 不参与 handoff** | multi_agent.py | `ensure_agent_runtime()` 注册 DataAnalystAgent；`_decide_handoff` 对 data_analyst 返回 None—— DataAnalyst 不参与 handoff |
+| **路由判断** | chat.py + chat_router.py | classify_message 语义判断 + 技能 skill_type 路由 → 选 Agent |
+| **skill_type 字段** | skill_parser.py | 解析 SKILL.md front matter 的 `skill_type`（analysis=分析类 / processing=处理类，默认 processing） |
+| **前端调试按钮** | SkillView.vue / ChatView.vue | 分析类技能不显示调试按钮（只读无需调试） |
+
+**流式输出**：`thinking` / `content` / `tool_action` / `tool_summary` / `done`（无 handoff）；**不发** `round`/`inspecting`/`retry`/`give_up`/`platform_issue`。
+
+**与前轮关系**：本轮是职责拆分类改动（Orchestrator-Worker），不改 DataProcessor/DataInspector/multi_agent runtime handoff/ConvergenceGuard/experience/compact_messages。DataAnalyst 不修改数据故无正反例经验采集。
+
+### 11.38 第二十七轮：错误分级机制彻底删除——死代码清理 + 文档校正
 
 **核心洞察**：第十四轮引入"错误分级退出"（`_classify_execution_error` L4/L5/L6 → 环境问题/平台限制/数据问题），第十七轮引入 `_llm_classify_error`（LLM 重分类 4 类）。这两套分级机制在第二十一轮"模型选择简化"时已删 skill_runner 侧函数定义，但 data_processor_agent 侧的消费者代码（死代码分支 + 末尾 LLM 分类兜底）+ DEBUG_INSTRUCTIONS 的"错误判断"指令段 + design.md/AGENTS.md 多处记录均未同步删除。死代码分支 `any(kw in _err_type for kw in ("环境问题","平台限制","数据问题"))` 永不命中（`_extract_exception_type` 只提取英文异常类名如 `RuntimeError`，不含中文词），末尾 LLM 分类兜底分类后都走 give_up 无分支差异（死逻辑）。
 
@@ -4425,3 +4755,212 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 **验证**：`app.main` 完整加载 182 路由；`DEBUG_INSTRUCTIONS`/`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings` 导入正常；`_llm_classify_error`/`_classify_execution_error` 函数定义已不存在（grep 全空）。
 
 **与前轮关系**：第十四轮"错误分级退出" + 第十七轮"错误分类 LLM 推断"在本轮彻底删除（代码 + 文档）。当前错误退出靠平台信号词匹配 + 执行错误计数 + 修改次数上限三层兜底，LLM 自主判断修复可行性（不靠分类标签）。`_PLATFORM_FAILURE_SIGNALS` 信号词与 skill_runner 实际 print 措辞不匹配的问题（中文信号词 vs 英文 `failed`）已知，后续可补信号词对齐。
+
+### 11.39 第二十八轮：资产管理导入导出 + LLM 配置去全局化 + 跨平台安装 + 对齐 OpenCode 调试 + 资产去全局化
+
+**核心洞察**：第二十七轮清理了错误分级死代码，但此后积累了多项重大特性却未更新文档。本轮汇总——新增**资产导入导出**（7 类资产一键 ZIP 迁移）、**LLM 配置去全局化**（删全局 provider/api_key/model，强制用户配置）、**对齐 OpenCode 调试模式**（删平台信号词匹配 + 删 Docker/nginx 回归开发模式）。
+
+**资产管理导入导出**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **资产导出/导入服务** | asset_io.py（新增） | 7 类资产（skills/operators/pipelines/llm_config/custom_extensions/datasources/schedules）ZIP 打包迁移；API Key/密码不导出；按 name 去重 + 按类型独立覆盖；skill_calls 用 skill_name 跨机器引用；虚拟数据源不导出 |
+| **资产端点** | assets.py（新增） | `GET /assets/counts` + `POST /assets/export` + `POST /assets/import/preview` + `POST /assets/import` |
+| **is_virtual 列** | models/datasource.py + main.py | `data_sources` 加 `is_virtual` 列（DB 列替代 property）；虚拟数据源受保护：不可修改/删除/测试/同步/导出 |
+| **统一 author→created_by** | skill.py + operator.py + 各模型 | skill/operator 的 `author` 统一为 `created_by`（FK users.id） |
+| **seed 资产加载删除** | main.py | 删除从 `data/seed/operators.json`/`pipelines.json` 加载逻辑；仅保留技能磁盘扫描同步 + 内置流程/调度 seed |
+
+**LLM 配置去全局化**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删全局属性** | llm.py | 删 `llm_manager` 的 `provider`/`api_key`/`api_base`/`model`/`embedding_model`/`fallback_models` 全局属性；新增 `_require_user_cfg()` 强制基于用户配置（contextvar） |
+| **vision_model 字段** | models/custom_extension.py + llm.py + config.py | LLMProvider + UserLLMConfig 加 `vision_model` 列；视觉/嵌入模型按 provider 自动选择 |
+| **.env 清理 LLM 硬编码** | .env.example | 删除 `LLM_PROVIDER`/`OPENAI_API_KEY` 等硬编码；LLM 配置全在前端管理（存 DB） |
+| **create_new 写入策略** | connectors.py | PG/MySQL/SQLite/CSV/Excel 5 种连接器支持表已存在时自动找新表名 |
+
+**对齐 OpenCode 调试模式**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **删平台信号词匹配** | data_processor_agent.py | 删 `_PLATFORM_FAILURE_SIGNALS` + `is_platform_issue`；靠 LLM 看 traceback 自主判断 |
+| **_has_fix 只算 run_script** | data_processor_agent.py | `edit_script` 不算修改尝试（对齐用户设计：3 次执行错误 + 7 次检查循环） |
+| **Docker/nginx 删除** | docker-compose.yml + Dockerfile×2 + nginx.conf | 回归开发模式 |
+
+**跨平台后端依赖安装**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **install-backend.js** | scripts/install-backend.js（新增） | 检测 Python 3.11+ 与 sqlite3 模块后再装依赖；依次尝试 py -3 / python3 / python |
+| **SQLite 路径锚定** | config.py | SQLite 相对路径锚定到 backend/ 目录 |
+
+**其他改进**：DataAnalyst 调试模式（`run_debug()` 3 次执行错误上限，无 Inspector handoff）；Inspector severity 校正（规则库读取）；skill_type 全链路（skill_parser + skill_creator + SKILL_SPEC）；单 Agent 服务 `agent.py` 删除（284 行）。
+
+**验证**：`app.main` 完整加载 187 路由（+5 资产端点）；`_PLATFORM_FAILURE_SIGNALS`/`is_platform_issue` grep 全空；`docker-compose.yml`/`Dockerfile`/`nginx.conf` 均不存在；`.env.example` 无 LLM 硬编码。
+
+**与前轮关系**：第二十五轮添加的 Docker 部署在本轮被删除（回归开发模式）。第二十七轮记录的"平台信号词匹配"在本轮被彻底删除。第十五轮的 seed 算子/流程加载逻辑在本轮删除（改用资产导入导出替代 seed 文件）。
+
+### 11.40 第二十九轮：Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化
+
+**核心洞察**：用户测试技能匹配跳转时发现指令全是"请指定"占位符——根因是 `ChatSession.context` 的 SQLAlchemy JSON 字段原地修改不触发 dirty 标记，commit 不写入 DB，数据源/表名永远丢失。本轮修复数据上下文全链路持久化 + 会话隔离 + 路由判断合并。
+
+**数据上下文持久化**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **dict() 触发 dirty** | chat.py | `_session_obj.context = dict(_session_ctx)` 创建新 dict 对象触发 SQLAlchemy dirty 标记，修复 JSON 字段原地修改不触发 UPDATE 的 bug |
+| **ChatSessionResponse 加 context** | schemas/chat.py + api/chat.ts | 前端能拿到会话上下文 |
+| **switchSession 恢复 selectedData** | stores/chat.ts | 切会话时从 `session.context` 恢复 `selectedData`，刷新/重开不丢 |
+| **infer-instruction 读 context** | skill.py | 从 `ChatSession.context` 读取数据上下文，修复指令全是"请指定"占位符 |
+
+**会话隔离**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **delete_session 级联删消息** | chat.py | 显式 `delete(ChatMessage).where(session_id=...)` + 清缓存 |
+| **输入历史按会话隔离** | ChatView.vue + chat.ts | `localStorage` key 从 `dc_chat_history` → `dc_chat_history_<session_id>` |
+
+**路由判断合并**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **classify_message 合并 keep/change** | chat_router.py | 一次 LLM 调用判断类型 + keep/change；返回 `(msg_type, keep_data, events)` |
+| **keep_data 控制 tables 跳过** | chat.py | `_keep_data=True` → 跳过数据表匹配；`False` → 清除旧数据走匹配 |
+
+**技能/流程匹配优化**：粗筛+精排带 msg_type（analysis 类加"只分析不修改"提示）；9 个技能全部加 `skill_type` 字段 + 口语化 description。
+
+**与前轮关系**：第二十六轮 DataAnalystAgent 的 skill_type 路由在本轮扩展到全部技能；第二十三轮的 `_compress_history` 用 `_session_ctx` 但未发现 dirty 问题在本轮修复。
+
+### 11.41 第三十轮：匹配流程重构——classify 4 keep + 并行匹配 + category 字段删除
+
+**核心洞察**：第二十九轮的 classify 只返回单段 `keep_data`，无法独立控制「换源表但保留目标表」等组合。本轮把 keep 拆为 4 段（keep_source/keep_target/keep_skill），各自独立控制匹配跳过；串行匹配改为并行匹配；`category` 字段语义混乱（与 skill_type 重叠）彻底删除。
+
+**classify 4 段 keep**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **classify 返回 4 keep** | chat_router.py | 一次 LLM 调用输出 4 个词（类型 + 源表/目标表/技能 keep/change）；返回 `(msg_type, keep_source, keep_target, keep_skill, events)` |
+| **4 keep 各自独立控制** | chat.py | `keep_source=False` → 清源 context 走源表匹配；`keep_target=False` → 清目标 context 走目标表匹配；已选 + keep → 跳过对应匹配 |
+
+**并行匹配 + chat 直连**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **chat 类型直接 LLM 对话** | chat.py | `msg_type == "chat"` → 不走匹配，直接 LLM 对话 |
+| **并行匹配三路独立** | chat.py | source/target/skill 三路各自独立匹配，一次性 yield 所有 suggestion |
+| **已选跳过** | chat.py | keep=True 且已选 → 跳过该路匹配 |
+
+**match_service 重构**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **合并 llm_match_tables** | match_service.py | `llm_match_tables` + `llm_match_target_tables` 合并为一个（`exclude_datasource_id` 参数区分源/目标） |
+| **check_similar_resources 通用** | match_service.py | 通用相似资源检测（向量检索 + 阈值过滤 + 权限判断），复用于技能/流程/算子 |
+| **_mlog 独立日志** | match_service.py | 独立写 `match_detail.log`，不依赖 main.py 日志过滤器 |
+
+**category 字段删除**：skill `category`→`skill_type`；pipeline `category`→`pipeline_type`；operator 删 `category`；match_service 删 category 拼接；DB 迁移（skills 加 skill_type 列从 tags 迁移，pipelines 加 pipeline_type 列）。
+
+**skip_steps 机制删除**：schema `ChatMessageCreate.skip_steps` + 后端 ~120 行条件分支 + 前端全清；改用 4 段 keep + 已选跳过判断。
+
+**前端多 suggestion 展示**：`data_suggestion`/`target_suggestion`/`skill_suggestion` 事件存入 `msg.suggestions` 数组；目标表写入策略选择（覆盖/追加/直接使用）。
+
+**验证**：`app.main` 完整加载 188 路由；`classify_message` 返回 5 元组；`llm_match_target_tables`/`skip_steps`/`category` grep 全空。
+
+**与前轮关系**：第二十九轮的单段 `keep_data` + 串行匹配被本轮 4 段 keep + 并行匹配取代。第二十六轮的关键词路由在本轮彻底改为 classify LLM 语义判断。
+
+### 11.42 第三十一轮：Chat 匹配流程完善 + 使用技能走调试模式 + 多智能体自愈闭环
+
+**核心洞察**：第三十轮建立了 4 段 keep + 并行匹配框架，但前端卡片渲染、技能调用、参数上下文传递、directExecute 用户体验等多处未完善。本轮系统补齐。
+
+**classify 传上下文修复**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **classify prompt 注入已选数据** | chat_router.py | 把 `session_ctx` 里的源/目标/技能名注入 prompt，LLM 能对比"当前选的"和"用户想要的"判断 keep/change |
+| **classify 日志加文件 sink** | main.py | `debug_sse.log` filter 加 `[classify]`/`[direct_execute]`/`[route]` |
+
+**每路独立返回结果**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **8 种事件类型** | chat.py | `data_suggestion`/`source_datasource_no_match`/`source_table_no_match`/`target_suggestion`/`target_datasource_no_match`/`target_table_no_match`/`skill_suggestion`/`skill_no_match`——每路独立返回 |
+| **keep_skill 有技能也展示卡片** | chat.py | `keep_skill=True` 且有 `last_skill_id` 时，把已选技能作为卡片加到结果里 |
+
+**前端卡片渲染**：v-if/v-for 拆开（Vue 3 优先级问题）；卡片始终显示可重复选择；参数提示实时更新（`updateParamsHint`）；suggestions 数组响应式修复。
+
+**使用技能走调试模式**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **使用技能走 run_debug** | chat.py | `use_skill=true` 时走 `build_debug_context` + `runtime.run()`，Agent 用 `run_script` 执行技能；RunTime 自动 Inspector handoff 自愈闭环 |
+| **use_skill 标记区分** | schemas/chat.py + chat.ts | 使用技能 `directExecute=true, useSkill=true`；直接处理 `directExecute=true, useSkill=false` |
+| **技能信息 + 数据参数展示** | chat.py | yield 技能名/描述/已确定参数/拼好的执行需求给用户 |
+
+**directExecute 用户体验修复**：directExecute 不存用户消息到 DB（避免刷新重复弹出）；复用最后一条 assistant 消息接收新流式数据；跳过 _syncFromDB。
+
+**参数上下文全链路**：目标表/技能写入 `session_ctx`；前端 `selectedData` 传 target/skill；`switchSession` 恢复目标表；`sendMessage` 后不清空 `selectedData`。
+
+**匹配提示丰富化**：匹配池规模提示（"正在从「文物库」匹配数据表（3 张表中）..."）；已选数据提示；匹配结果汇总。
+
+**验证**：`app.main` 完整加载 188 路由；130 测试全通过；classify 传上下文后 keep/change 判断正确；使用技能走调试模式 Agent 用 run_script 执行；directExecute 不弹重复用户消息。
+
+**与前轮关系**：第三十轮的 4 段 keep + 并行匹配框架在本轮完善。第二十三轮的 `build_debug_context`/`build_debug_message` 在本轮被 chat.py 复用。第二十九轮的 `selectedData` 只传源表在本轮扩展到目标表+技能全链路。
+
+### 11.43 第三十二轮：工具统一 + 沙箱安全加固 + is_seed + GenericFileConnector + 沙箱函数概念消除
+
+**核心洞察**：DataCrab 有两套工具实现——Agent 工具（tool_registry.py，主进程 function calling）和沙箱工具（skill_runner.py 模板，子进程 HTTP）。同一能力两套实现是历史演进。本轮彻底统一成一套 handler，一个 `call_tool` 入口。同时补齐沙箱安全隔离，统一 Connector/Provider 的 seed 概念，消除"沙箱函数"独立概念。
+
+**工具统一（tool_registry + call_tool）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **tool_registry 新增 8 个工具** | tool_registry.py | write_table_data/iter_table_data/llm_generate/read_file/write_file/extract_video_info/extract_keyframes 注册 + handler；list_user_datasources 扩展参数 |
+| **/internal/execute-tool 统一端点** | datasource.py | 新增 POST /internal/execute-tool，直接调 handler（不经 execute_tool），跳过 LRU 缓存和截断 |
+| **删 13 个旧 /internal/* 端点** | datasource.py | 旧分散端点全部删除，只保留 /internal/execute-tool |
+| **_llm_vision_handler 去 double-hop** | tool_registry.py | 从 HTTP 调旧端点 → 直接调 llm_manager.vision() |
+
+**沙箱函数概念消除**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **handler 返回格式统一 records** | tool_registry.py | query_table_data/execute_sql 从 split(`rows`+`format`) → records(`data`+`success`+`columns`+`row_count`)，脚本和 Agent 统一 |
+| **模板删 17 个适配函数** | skill_runner.py | SKILL_RUNNER_TEMPLATE 从 14506→6925 字符；只留 `call_tool` + `_logged_call_tool` + 安全 hooks |
+| **删 TOOL_FUNCTIONS_DOC** | prompt_docs.py | LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可 |
+| **9 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | `query_table_data`→`call_tool("query_table_data",...)`；`llm_chat`→`call_tool("llm_generate")["content"]` |
+| **skill_creator + SKILL_SPEC 全改** | skill_creator.py / SKILL_SPEC.md | _COMMON_PITFALLS + Section 4 全改 call_tool |
+
+**沙箱安全加固（P0-P2）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **环境变量白名单** | skill_runner.py | 只传 PATH/HOME/TEMP/DATACRAB_API_BASE 等，不传 JWT_SECRET_KEY/ENCRYPT_KEY 等密钥 |
+| **删 PYTHONPATH** | skill_runner.py | 脚本不能 `import app.*` 读平台源码 |
+| **__import__ hook** | skill_runner.py 模板 | 拦截 os/sys/sqlite3/socket/subprocess/sqlalchemy 等危险模块 |
+| **open() 沙箱化** | skill_runner.py 模板 | 只允许临时目录 + SANDBOX_ALLOWED_DIRS，禁止读平台文件 |
+| **cwd 改临时目录** | skill_runner.py | 子进程 cwd 在 dc_sandbox_* 临时目录 |
+| **stdout 累积上限** | skill_runner.py | 5000 行 / 5MB 截断 |
+| **并发数限制** | skill_runner.py | asyncio.Semaphore(3) |
+| **POSIX 资源限制** | skill_runner.py | 内存 2GB / CPU 600s / 文件 500MB 上限（Windows 跳过） |
+
+**is_public → is_seed 统一**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **is_public → is_seed** | models/custom_extension.py | CustomConnector + LLMProvider 的 `is_public` 列改 `is_seed`；语义统一：seed=预置的=所有用户可见 |
+| **_BUILTIN_CONNECTORS → _SEED_CONNECTORS** | connectors.py | 命名统一为 seed 语义 |
+| **DB 迁移** | main.py | ALTER TABLE ... RENAME COLUMN is_public TO is_seed |
+
+**GenericFileConnector + 聊天上传**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **GenericFileConnector 内建** | connectors.py | 注册到 _SEED_CONNECTORS；支持 mode=files 多文件模式 |
+| **聊天上传去扩展名过滤** | chat.py + ChatView.vue | 接受任意文件（不再只 Excel+图片）；虚拟数据源 type 从 "excel" → "generic_file" |
+
+**工具分配**：DataProcessor 13→20 工具（新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes）；DataAnalyst 11→14 工具（新增 iter_table_data/read_file/llm_generate）。
+
+**written_tables 死代码清理**：删 `_WRITTEN_TABLES` 追踪 + data_processor_agent 3 处消费；handoff 靠脚本返回值 output_table。
+
+**验证**：`app.main` 加载 139 OpenAPI paths（删 14 个旧端点）；131 测试全通过；10 个技能脚本语法全通过；零残留（SANDBOX_TOOLS_DOC/TOOL_FUNCTIONS_DOC/call_operator/sandbox_ns/is_public grep 全空）。
+
+**与前轮关系**：第三十一轮的 Agent 工具 + 沙箱函数两套实现在本轮彻底统一为一个 `call_tool` 入口 + 一套 tool_registry handler。第十~十六轮建立的沙箱适配函数层（split→records 转换、_wrap_tool_log、_resolve_ds 等）在本轮全部删除。第十四~二十八轮的 13 个旧 /internal/* 端点在本轮删除。

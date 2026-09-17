@@ -360,3 +360,30 @@ ds_id = ds["id"] if ds else None
 if not ds_id:
     raise ValueError(f"找不到数据源: 文物列表")
 ```
+
+### 8.5 提示词避免硬编码
+
+脚本中的 LLM 提示词（OCR 识别、表格归并、数据提取等）**不要硬编码业务词**（如"断路器""状态量""检修类别"等特定领域术语）。应从数据动态提取特征注入提示词：
+
+```python
+# 错误：硬编码业务词
+prompt = "本表是断路器状态量劣化检修内容明细表，固定6列：序号/分类/状态量名称/劣化程度/劣化情况/检修内容"
+
+# 正确：从表头动态提取注入
+def _extract_header_hint(headers):
+    hints = []
+    for h in headers:
+        if any(kw in h for kw in ("分类", "类别")):
+            hints.append(f"列「{h}」应填短词，不应填长描述")
+        elif any(kw in h for kw in ("名称", "描述")):
+            hints.append(f"列「{h}」应填具体名称，不应与分类列重复")
+    return "\n".join(hints) if hints else ""
+
+prompt = f"请归并表格。{_extract_header_hint(headers)}"
+```
+
+通用规则（应写入提示词，不是硬编码业务词）：
+- 合并单元格回填：仅在原文明确显示同一值跨多行时才回填，不要自行推断合并
+- HTML 标签清洗：解析时机械清除 `<sub>`、`<sup>`、`<br>` 等标签
+- 多行子项合并到同一单元格（用分号连接），确保每行单元格数与表头列数一致
+- 各列内容不得互换或重复填
