@@ -74,7 +74,6 @@ MAIN_TOOLS = [
     "web_fetch", "kb_search", "list_user_datasources",
     "query_table_data", "get_table_schema", "execute_sql",
     "list_user_file_links", "save_file_to_link", "llm_vision",
-    "extract_image_table",
     "write_table_data", "iter_table_data", "read_file", "write_file",
     "llm_generate", "extract_video_info", "extract_keyframes",
     "edit_script", "run_script", "read_script", "grep_script",
@@ -97,7 +96,7 @@ VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否�
 
 ## 平台规范
 - 脚本中所有数据操作通过 call_tool("工具名", **参数) 调用（如 call_tool("query_table_data", datasource_id=..., table_name=...)），返回 dict 含 success/data/columns 等字段
-- 沙箱禁止 import os/sys/subprocess/socket 等，脚本中如有这些 import 必须删除（数据操作改用 call_tool，路径操作改用 pathlib）
+- 沙箱禁止 import os/sys/subprocess/shutil/sqlite3/socket/http/urllib/sqlalchemy 等，路径操作用 pathlib，文件读写用 call_tool，数据操作用 call_tool
 - 不要在脚本中安装数据库扩展、不要直接调用外部 API
 - 不要吞掉异常：except 块必须 re-raise 或返回 success=False（不能静默返回 success=True 隐藏错误）
 - 下方「平台约定」文档列出了 call_tool 可用工具和返回格式，修改脚本前先看
@@ -173,7 +172,7 @@ def classify_execution_result(rdata: dict) -> dict:
 
 def _build_give_up_reason(count: int, err_msg: str) -> str:
     """构造执行错误上限的退出原因 — 两个 Agent 共用"""
-    return f"连续 {count} 次执行失败：{err_msg[:300]}"
+    return f"连续 {count} 次执行失败：{err_msg}"
 
 
 def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
@@ -200,7 +199,7 @@ def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
             script_name=script_name,
         )
         if content or tool_name:
-            _kwargs["context_summary"] = f"工具: {tool_name}\nAI输出: {content[:200]}"
+            _kwargs["context_summary"] = f"工具: {tool_name}\nAI输出: {content}"
         _exp.append_negative(folder, **_kwargs)
     except Exception as e:
         logger.warning(f"记录反例失败(非致命): {e}")
@@ -221,63 +220,13 @@ def _record_give_up(folder: str, reason: str, content: str, script_name: str) ->
             folder,
             source="debug-chat",
             error_type="llm_give_up",
-            error_message=reason[:500],
+            error_message=reason,
             script_name=script_name,
-            context_summary=f"LLM归因: {content[:800]}",
+            context_summary=f"LLM归因: {content}",
         )
         logger.info(f"[give_up] 已记录 LLM 归因到经验库: {reason[:100]}")
     except Exception as e:
         logger.warning(f"记录 give_up 归因失败(非致命): {e}")
-
-
-async def _check_platform_issue(error_msg: str, stdout: str, user_id) -> bool:
-    """用 LLM 判断执行错误是否可以通过修改脚本解决。
-
-    对齐 OpenCode：给 LLM 完整 error + stdout，让它自己推理，
-    不给具体标准例子（不教 LLM 模式匹配）。
-    返回 True = 非脚本问题（应终止，不让 LLM 修）。
-    """
-    from app.services.llm import llm_manager, init_user_llm_context
-    if not error_msg or "无错误输出" in error_msg:
-        return True
-    try:
-        if user_id:
-            await init_user_llm_context(user_id)
-        await llm_manager.initialize()
-        # traceback 异常类型在末尾，截断时保留末尾（开头行号信息次要）
-        # traceback 首尾保留：开头有调用链，末尾有异常类型，中间过长则省略
-        if len(error_msg) > 2000:
-            _head = error_msg[:1000]
-            _tail = error_msg[-1000:]
-            _err_for_prompt = f"{_head}\n\n... (已省略 {len(error_msg) - 2000} 字符) ...\n\n{_tail}"
-        else:
-            _err_for_prompt = error_msg
-        # stdout 同样首尾保留
-        _stdout_for_prompt = ""
-        if stdout:
-            _stdout_for_prompt = f"{stdout[:500]}\n\n... (已省略) ...\n\n{stdout[-500:]}" if len(stdout) > 1000 else stdout
-        prompt = f"""看下面的脚本执行错误，判断这个错误能否通过修改脚本代码来解决。
-
-核心判断：这个错误的根因是什么？
-- 脚本代码本身有 bug（逻辑错误、参数错误、数据处理格式不对等），修改脚本的逻辑或参数就能修复 → 能
-- 运行环境缺少能力（如缺少某个库/模块、平台工具不支持某功能、环境未配置），修改脚本无法真正解决 → 不能
-  注意：从头手写一个缺失库的功能（如用纯 Python 实现某个第三方库）不算修复脚本，是绕过平台限制，应判断为"不能"
-
-脚本错误信息：
-{_err_for_prompt}
-
-脚本 stdout（如果有）：
-{_stdout_for_prompt}
-
-只输出一个词：能 或 不能"""
-        result = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=500)
-        result = result.strip()
-        _is_platform = "不能" in result
-        logger.info(f"[non_script_check] LLM判断: {repr(result)} -> platform_issue={_is_platform}")
-        return _is_platform
-    except Exception as e:
-        logger.warning(f"平台问题判断失败(非致命): {e}")
-        return False
 
 
 def _slim_run_script_result(content: str) -> str:
@@ -440,7 +389,7 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "done", "result": {"error": "空消息"}}
                 return
 
-        stuck_detector = StuckDetector(max_total_rounds=50 if _is_debug else 30)
+        stuck_detector = StuckDetector(max_total_rounds=100 if _is_debug else 30)
         saturation_detector = SearchSaturationDetector()
 
         # 动态轮次预算（Q）
@@ -448,7 +397,7 @@ class DataProcessorAgent(BaseAgent):
         complexity = estimate_complexity(user_msg)
         max_iterations = get_turn_budget(complexity)
         if _is_debug:
-            max_iterations = 50  # 调试模式需要更多轮次
+            max_iterations = 100  # 调试模式需要更多轮次
         logger.info(f"DataProcessor: complexity={complexity}, budget={max_iterations} turns, debug={_is_debug}")
 
         had_any_tool_calls = False
@@ -712,11 +661,18 @@ class DataProcessorAgent(BaseAgent):
                         _tool_calls_log = rdata.get("tool_calls") or []
                         logger.info(f"[handoff检查] rdata keys={list(rdata.keys())}, tool_calls_log={len(_tool_calls_log)} entries")
                         _output_tables = []  # 收集所有写入的表 [{datasource_id, table_name}]
+                        _seen_output = set()  # 去重（同一数据源+表名只记一次）
                         for _tc in _tool_calls_log:
                             if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
+                                _ds_id = _tc.get("datasource_id", "")
+                                _tbl = _tc.get("table_name", "")
+                                _key = f"{_ds_id}|{_tbl}"
+                                if _key in _seen_output:
+                                    continue
+                                _seen_output.add(_key)
                                 _output_tables.append({
-                                    "datasource_id": _tc.get("datasource_id", ""),
-                                    "table_name": _tc.get("table_name", ""),
+                                    "datasource_id": _ds_id,
+                                    "table_name": _tbl,
                                 })
                         if _output_tables:
                             context["debug_output_tables"] = _output_tables
@@ -783,19 +739,12 @@ class DataProcessorAgent(BaseAgent):
                         _err_msg = _cls["err_msg"]
                         _stdout = rdata.get("stdout", "")
                         logger.info(f"[run] run_script失败: err_msg={_err_msg[:200]}")
-                        _is_platform = await _check_platform_issue(_err_msg, _stdout, user_id)
-                        if _is_platform:
-                            _platform_reason = f"非脚本问题（修改脚本无法解决）：{_err_msg}"
-                            logger.info(f"[platform_issue] reason_len={len(_platform_reason)}")
-                            _record_give_up(context.get("debug_folder", ""), _platform_reason, content, script_name)
-                            yield {"type": "platform_issue", "reason": _platform_reason}
-                            yield {"type": "done", "result": {"agent": self.name, "content": content or _platform_reason}}
-                            return
                         if not _execution_succeeded:
                             _exec_failures_before_success += 1
                             context["debug_exec_failures"] = _exec_failures_before_success
                             if _exec_failures_before_success >= _MAX_EXEC_FAILURES:
                                 _reason = _build_give_up_reason(_exec_failures_before_success, _err_msg)
+                                yield {"type": "run_result", "result": {"success": False, "error": _err_msg, "stdout": _stdout}}
                                 yield {"type": "give_up", "reason": _reason}
                                 yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
                                 return

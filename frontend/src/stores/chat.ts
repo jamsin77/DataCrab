@@ -82,6 +82,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function clearSelectedData() {
+    selectedData.value = null
+    if (!currentSessionId.value) return
+    try {
+      await chatApi.updateSessionContext(currentSessionId.value, {
+        source_datasource_id: null,
+        source_datasource_name: null,
+        source_data_name: null,
+        source_filename: null,
+        source_table_name: null,
+      })
+      const _sess = sessions.value.find((s) => s.id === currentSessionId.value)
+      if (_sess?.context) {
+        const _ctx = { ..._sess.context }
+        _ctx.source_datasource_id = null
+        _ctx.source_datasource_name = null
+        _ctx.source_data_name = null
+        _ctx.source_filename = null
+        _ctx.source_table_name = null
+        _sess.context = _ctx
+      }
+    } catch (e) {
+      console.error('[chat] clearSelectedData failed:', e)
+    }
+  }
+
   async function deleteSession(sessionId: string) {
     await chatApi.deleteSession(sessionId)
     sessions.value = sessions.value.filter((s) => s.id !== sessionId)
@@ -339,6 +365,7 @@ export const useChatStore = defineStore('chat', () => {
             pushExecMsg(msg, _m)
           } else if (event.type === 'inspection_report') {
             msg.inspectionReport = event.report || ''
+            msg.inspectionExpanded = []
           }
         },
         directExecute,
@@ -429,5 +456,6 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     sendDirectly,
     stopGeneration,
+    clearSelectedData,
   }
 })

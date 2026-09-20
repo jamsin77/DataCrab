@@ -746,6 +746,34 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 5057, 'classified_column': 'address', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2617, 'categories_found': ['北京市', '运城市', '郑州市', '长治市', '晋城市'"
+    },
+    {
+      "timestamp": "2026-09-20T08:37:19.169171",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4908, 'classified_column': '地址', 'target_column': '地级市', 'mode': 'add', 'unique_values_classified': 2560, 'categories_found': ['北京市', '运城市', '郑州市', '长治市', '晋城市', '晋中市',"
+    },
+    {
+      "timestamp": "2026-09-20T08:48:18.343039",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4908, 'classified_column': '地址', 'target_column': '地级市', 'mode': 'add', 'unique_values_classified': 2560, 'categories_found': ['北京市', '运城市', '郑州市', '长治市', '晋城市', '晋中市',"
+    },
+    {
+      "timestamp": "2026-09-20T08:58:33.975746",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4908, 'classified_column': '地址', 'target_column': '地级市', 'mode': 'add', 'unique_values_classified': 2560, 'categories_found': ['北京市', '运城市', '郑州市', '长治市', '晋城市', '晋中市',"
+    },
+    {
+      "timestamp": "2026-09-20T09:05:18.810511",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4908, 'classified_column': '地址', 'target_column': '地级市', 'mode': 'update', 'unique_values_classified': 2560, 'categories_found': ['北京市', '运城市', '郑州市', '长治市', '晋城市', '晋中"
     }
   ],
   "lessons": ""

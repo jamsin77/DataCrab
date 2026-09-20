@@ -18,6 +18,7 @@ class BaseConnector(ABC):
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
+        self._connection = None
 
     def _normalize_table_name(self, table: str) -> str:
         """规范化表名/集合名。默认不处理，有命名限制的连接器（如 ChromaDB）可 override。
@@ -25,7 +26,6 @@ class BaseConnector(ABC):
         返回的名称必须符合底层存储的命名规则。
         """
         return table
-        self._connection = None
 
     @abstractmethod
     async def connect(self) -> bool:

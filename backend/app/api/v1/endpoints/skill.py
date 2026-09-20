@@ -1492,6 +1492,13 @@ async def modify_skill_stream(
     if not current_md:
         raise HTTPException(status_code=400, detail=t('skill_md_empty'))
 
+    # 读取现有脚本内容，传给 LLM 参考修改
+    existing_scripts = {}
+    scripts_dir = folder / "scripts"
+    if scripts_dir.is_dir():
+        for f in sorted(scripts_dir.glob("*.py")):
+            existing_scripts[f.name] = f.read_text(encoding="utf-8")
+
     from app.services.llm import llm_manager, init_user_llm_context
     await init_user_llm_context(current_user.id)
     await llm_manager.initialize()
@@ -1503,23 +1510,28 @@ async def modify_skill_stream(
 
     async def generate():
         full_content = ""
+        parsed_data = None
+        logger.info(f"[modify_skill] 端点进入，skill_id={skill_id}, instruction={request.instruction[:100]}")
         try:
-            async for chunk in skill_creator.modify_skill_md_stream(current_md, request.instruction):
+            async for chunk in skill_creator.modify_skill_stream(current_md, request.instruction, existing_scripts):
                 yield f"data: {json_mod.dumps(chunk, ensure_ascii=False)}\n\n"
                 if chunk.get("type") == "content":
                     full_content += chunk.get("content", "")
+                elif chunk.get("type") == "done":
+                    parsed_data = chunk.get("data")
                 elif chunk.get("type") == "error":
                     return
 
-            new_md = full_content.strip()
-            if new_md.startswith("```"):
-                lines = new_md.split("\n")
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                new_md = "\n".join(lines).strip()
+            if not parsed_data:
+                yield f"data: {json_mod.dumps({'type': 'error', 'content': 'LLM 未生成有效内容'}, ensure_ascii=False)}\n\n"
+                return
 
+            new_md = parsed_data.get("skill_md", "").strip()
+            new_scripts = parsed_data.get("scripts", {})
+            new_patches = parsed_data.get("script_patches", {})
+            new_rules_md = parsed_data.get("rules_md", "")
+
+            # front matter 补全
             new_parsed = parse_skill_md(new_md)
             if not new_parsed.get("name") and current_md:
                 orig_parsed = parse_skill_md(current_md)
@@ -1529,8 +1541,41 @@ async def modify_skill_stream(
                     new_md = f"---\n{fm_str}\n---\n\n{new_md}"
                     logger.warning("LLM 输出丢失了 YAML front matter，已从原文件自动补回")
 
+            # 写 SKILL.md
             write_skill_md(folder, new_md)
 
+            # 合并脚本补丁：读取原始脚本 → apply_patch 合并 → 写入
+            if new_patches:
+                from app.services.operator_parser import apply_patch
+                for filename, patches in new_patches.items():
+                    original = existing_scripts.get(filename, "")
+                    merged = original
+                    for p in patches:
+                        r = apply_patch(merged, p["old_string"], p["new_string"])
+                        if r["success"]:
+                            merged = r["code"]
+                        else:
+                            logger.warning(f"补丁合并失败（{filename}）: {r['message']}")
+                    # 合并后语法验证（补丁片段不是完整 Python，必须在合并后检查）
+                    import ast as _ast
+                    try:
+                        _ast.parse(merged)
+                    except SyntaxError as _se:
+                        yield f"data: {json_mod.dumps({'type': 'error', 'content': f'合并后脚本 {filename} 语法错误（第{_se.lineno}行）: {_se.msg}'}, ensure_ascii=False)}\n\n"
+                        return
+                    write_skill_script(folder, filename, merged)
+                    logger.info(f"脚本 {filename} 通过补丁合并更新（{len(patches)} 个补丁）")
+
+            # 写完整脚本（LLM 可能仍输出完整脚本，向后兼容）
+            if new_scripts:
+                for filename, content in new_scripts.items():
+                    write_skill_script(folder, filename, content)
+
+            # 写 rules.md（如果有）
+            if new_rules_md and new_rules_md.strip():
+                (folder / "rules.md").write_text(new_rules_md, encoding="utf-8")
+
+            # 更新 DB
             parsed = parse_skill_md(new_md)
             if parsed.get("name"):
                 skill.display_name = parsed["name"]
@@ -1539,7 +1584,7 @@ async def modify_skill_stream(
 
             await db.flush()
             await db.refresh(skill)
-            logger.info(f"技能已通过AI流式修改: {skill.name} ({skill.id})")
+            logger.info(f"技能已通过AI流式修改（含脚本）: {skill.name} ({skill.id})")
 
             detail = _build_detail(skill)
             yield f"data: {json_mod.dumps({'type': 'done', 'skill': detail}, ensure_ascii=False, default=str)}\n\n"

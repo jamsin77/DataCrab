@@ -37,7 +37,7 @@ from app.schemas.operator import (
 from app.services.operator_parser import parse_python_script, extract_script_name
 from app.services.llm import llm_manager, init_user_llm_context
 from app.services import experience
-from app.services.prompt_docs import SAFETY_RULES_DOC
+from app.services.prompt_docs import SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC
 from app.api.deps import get_current_user
 
 
@@ -535,7 +535,7 @@ if __name__ == "__main__":
     result = filter_expensive_products(min_price=100.0)
     print(f"结果: {result}")
 
-""" + SAFETY_RULES_DOC
+""" + PLATFORM_CONVENTIONS_DOC + "\n\n" + SAFETY_RULES_DOC
 
 
 @router.post("/check-similar", response_model=SimilarOperatorCheckResponse)

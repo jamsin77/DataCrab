@@ -79,6 +79,106 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "LLM归因: 我直接调用 run_script 执行固化好的入口流程，检查运行结果。"
+    },
+    {
+      "timestamp": "2026-09-10T16:16:49.213876",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "llm_give_up",
+      "error_message": "非脚本问题（修改脚本无法解决）：Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp97ud0lie.py\", line 775, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp97ud0lie.py\", line 761, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_tabl",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "LLM归因: 现在验证：修复吞错后，真实错误应暴露出来。\n\n"
+    },
+    {
+      "timestamp": "2026-09-11T16:00:22.537216",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "llm_give_up",
+      "error_message": "非脚本问题（修改脚本无法解决）：Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps2wp46i7.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps2wp46i7.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps2wp46i7.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "LLM归因: "
+    },
+    {
+      "timestamp": "2026-09-14T16:00:15.815782",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe9v_fl9w.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe9v_fl9w.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe9v_fl9w.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 直接执行流程并检查结果。"
+    },
+    {
+      "timestamp": "2026-09-14T16:11:58.942884",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc1v7bnd6.py\", line 690, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc1v7bnd6.py\", line 676, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc1v7bnd6.py\", line 538, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpc1v7bnd6.py\", line 273, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 从 traceback 看，报错来自执行脚本中的 `_probe_ocr_functions()`（含 `import builtins`），但当前 `debug_script_content` 里完全没有这个函数和 `import builtins`。说明第一次执行时用的脚本内容与现在读到的不是同一份，可能已被平台更新过。我重新执行一次，确认当前脚本的实际状态。\n\n"
+    },
+    {
+      "timestamp": "2026-09-15T16:00:03.923453",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpadi7f2vn.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpadi7f2vn.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpadi7f2vn.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 我先直接运行脚本，查看当前执行情况和结果。"
+    },
+    {
+      "timestamp": "2026-09-15T16:15:02.232688",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyb4cdghg.py\", line 784, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyb4cdghg.py\", line 770, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyb4cdghg.py\", line 632, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyb4cdghg.py\", line 557, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpyb4cdghg.py\", line 287, in _write_records\n    raise RuntimeError(f\"write_table_data 返回失败 (批次 {batch_num}): {err_msg}\")\nRuntimeError: write_table_data 返回失败 (批次 1): AttributeError: 'PostgreSQLConnector' object has no attribute '_connection'",
+      "parameters": {},
+      "stdout_preview": "[INFO] 获取源数据源 ID: 凭证库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 获取目标数据源 ID: 凭证检索库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 读取源表数据: 所有的图片\n[SkillRunner] call_tool: iter_table_data\n  已读取 4 条...\n源数据读取成功: 4 条, 列: ['file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir']\n[INFO] 从文件名提取凭证类型...\n  凭证类型: 已知 3 种, 未知 1 种\n[INFO] 使用 LLM 翻译 1 个未知拼音前缀...\n[SkillRunner] call_tool: llm_generate\n  LLM 翻译完成: 成功 1 个\n[INFO] 开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信",
+      "context_summary": "工具: run_script\nAI输出: 我通过 read_script 已经触发了脚本内容的刷新（read_script 会把磁盘/上下文中的最新脚本内容同步到 context）。刚才报错的 `_probe_ocr_functions` 不在我读到的 770 行脚本里，说明 run_script 当时执行的是旧版内容。现在重新执行验证当前状态。"
+    },
+    {
+      "timestamp": "2026-09-16T16:00:05.839490",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps4n6ywi6.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps4n6ywi6.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmps4n6ywi6.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 我来直接执行脚本验证结果。"
+    },
+    {
+      "timestamp": "2026-09-18T16:00:18.815997",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp61yaub7h.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp61yaub7h.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp61yaub7h.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 我来直接执行脚本验证流程结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-18T16:11:50.882616",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpi72ebabm.py\", line 782, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpi72ebabm.py\", line 768, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpi72ebabm.py\", line 630, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpi72ebabm.py\", line 555, in extract_image_info\n    _write_records(\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpi72ebabm.py\", line 285, in _write_records\n    raise RuntimeError(f\"write_table_data 返回失败 (批次 {batch_num}): {err_msg}\")\nRuntimeError: write_table_data 返回失败 (批次 1): AttributeError: 'PostgreSQLConnector' object has no attribute '_connection'",
+      "parameters": {},
+      "stdout_preview": "[INFO] 获取源数据源 ID: 凭证库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 获取目标数据源 ID: 凭证检索库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 读取源表数据: 所有的图片\n[SkillRunner] call_tool: iter_table_data\n  已读取 4 条...\n源数据读取成功: 4 条, 列: ['file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir']\n[INFO] 从文件名提取凭证类型...\n  凭证类型: 已知 3 种, 未知 1 种\n[INFO] 使用 LLM 翻译 1 个未知拼音前缀...\n[SkillRunner] call_tool: llm_generate\n  LLM 翻译完成: 成功 1 个\n[INFO] 开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信",
+      "context_summary": "工具: run_script\nAI输出: 报错里的 `_probe_ocr_functions` 不在 main.py 里，说明第一次 `run_script` 执行的 `debug_script_content` 是一份探针脚本。而我刚才 `read_script` 已把上下文里的脚本内容刷新为正确的 main.py（770 行，含 `_pipeline_entry`）。直接再执行一次验证。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T07:29:49.697434",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp3hu6lw5f.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp3hu6lw5f.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp3hu6lw5f.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 我直接执行脚本验证结果。\n\n"
     }
   ],
   "positive": [
@@ -242,6 +342,20 @@
       "script_name": "_pipeline_entry",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260907_161054', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-10T16:01:19.367724",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260910_160011', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-14T16:15:51.795043",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260914_161451', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": ""

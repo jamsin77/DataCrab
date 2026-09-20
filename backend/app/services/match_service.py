@@ -221,11 +221,12 @@ async def index_operator(operator, raise_on_error=False):
 
 
 async def index_table(table_meta, ds_name: str = "", raise_on_error=False):
+    import asyncio
     text = _build_table_text(table_meta, ds_name)
     if not text.strip():
         return
     try:
-        emb = await llm_manager.embed(text)
+        emb = await asyncio.wait_for(llm_manager.embed(text), timeout=15.0)
         col = _get_table_collection()
         col.upsert(
             ids=[str(table_meta.id)],
@@ -236,6 +237,10 @@ async def index_table(table_meta, ds_name: str = "", raise_on_error=False):
                 "table_name": table_meta.table_name or "",
             }],
         )
+    except asyncio.TimeoutError:
+        logger.warning(f"索引数据表 {getattr(table_meta, 'table_name', '?')} 超时（15s），跳过")
+        if raise_on_error:
+            raise
     except Exception as e:
         logger.warning(f"索引数据表 {getattr(table_meta, 'table_name', '?')} 失败: {e}")
         if raise_on_error:
@@ -430,7 +435,56 @@ async def llm_match_tables(
         if ds.name and ds.name in user_message:
             mentioned_ds_ids.add(str(ds.id))
             mentioned_ds_names.append(ds.name)
-            _mlog(f"# 匹配到数据源: {ds.name} -> {ds.id}")
+            _mlog(f"# 精确匹配到数据源: {ds.name} -> {ds.id}")
+
+    # 模糊匹配数据源名（仅在精确匹配不到时才启用，避免"电网规则"误匹配"电网数据"等）
+    if not mentioned_ds_ids:
+        import difflib
+        _msg_lower = user_message.lower()
+        for ds in ds_rows:
+            if not ds.name:
+                continue
+            _ds_name = ds.name
+            _ds_lower = _ds_name.lower()
+            # 数据源名整体包含在用户消息中
+            if _ds_lower in _msg_lower:
+                mentioned_ds_ids.add(str(ds.id))
+                mentioned_ds_names.append(_ds_name)
+                _mlog(f"# 模糊匹配到数据源(整体包含): {ds.name} -> {ds.id}")
+                continue
+            # 数据源名的子串在用户消息中（2字滑动窗口）
+            import re
+            _chars = re.findall(r'[\u4e00-\u9fff]', _ds_name)
+            _words = [_ds_name]  # 先试整体
+            _words += [''.join(_chars[i:i+2]) for i in range(len(_chars)-1)]  # 2字滑窗
+            _words += [_ds_name[i:i+3] for i in range(len(_ds_name)-2)]  # 3字滑窗
+            _hit_words = [w for w in _words if len(w) >= 2 and w.lower() in _msg_lower]
+            if _hit_words:
+                mentioned_ds_ids.add(str(ds.id))
+                mentioned_ds_names.append(_ds_name)
+                _mlog(f"# 模糊匹配到数据源(子串): {ds.name} -> {ds.id}, hit={_hit_words}")
+                continue
+            # 相似度高
+            _ratio = difflib.SequenceMatcher(None, _ds_lower, _msg_lower).ratio()
+            if _ratio >= 0.3:
+                mentioned_ds_ids.add(str(ds.id))
+                mentioned_ds_names.append(_ds_name)
+                _mlog(f"# 模糊匹配到数据源(相似度): {ds.name} -> {ds.id}, ratio={_ratio:.2f}")
+
+    # 仍匹配不到时，用 LLM 从数据源名中语义匹配
+    if not mentioned_ds_ids and ds_rows:
+        _mlog(f"# 精确+模糊均未匹配到数据源，用 LLM 语义匹配数据源")
+        ds_items = [
+            {"id": str(ds.id), "name": ds.name or "", "desc": f"{ds.name or ''} 类型: {ds.type or ''}"}
+            for ds in ds_rows if ds.name
+        ]
+        llm_ds_matches, _ = await _llm_match_items(user_message, ds_items, match_type="datasource")
+        for did, _score in llm_ds_matches:
+            ds_name = ds_map.get(did, "")
+            if ds_name:
+                mentioned_ds_ids.add(did)
+                mentioned_ds_names.append(ds_name)
+                _mlog(f"# LLM 语义匹配到数据源: {ds_name} -> {did}")
 
     if not mentioned_ds_ids:
         _mlog(f"# 未匹配到数据源名，返回空")

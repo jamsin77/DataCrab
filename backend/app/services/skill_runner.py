@@ -254,14 +254,33 @@ def _logged_call_tool(tool_name, **args):
             "elapsed_ms": round((_time.time() - _start) * 1000, 2),
         }}
         # 记录 write_table_data 的目标表信息（供 RunTime handoff Inspector 用）
+        # 同一张表多次分批写入只记一条（合并行数），避免 Inspector 收到 10 条重复表
         if tool_name == "write_table_data" and _success:
-            _log_entry["datasource_id"] = args.get("datasource_id", "")
-            # 优先用 connector 返回的实际表名（可能被 hash/create_new 改名），回退入参
-            _log_entry["table_name"] = ""
+            _ds_id = args.get("datasource_id", "")
+            _tbl_name = ""
             if isinstance(_result, dict):
-                _log_entry["table_name"] = _result.get("table_name", "") or args.get("table_name", "")
+                _tbl_name = _result.get("table_name", "") or args.get("table_name", "")
             else:
-                _log_entry["table_name"] = args.get("table_name", "")
+                _tbl_name = args.get("table_name", "")
+            _batch_written = 0
+            if isinstance(_result, dict):
+                _batch_written = _result.get("rows_written", 0) or 0
+            # 查找已存在的同表记录（合并）
+            _merged = False
+            for _existing in _TOOL_CALL_LOG:
+                if (_existing.get("tool") == "write_table_data"
+                        and _existing.get("datasource_id") == _ds_id
+                        and _existing.get("table_name") == _tbl_name):
+                    _existing["elapsed_ms"] = round(_existing["elapsed_ms"] + (_time.time() - _start) * 1000, 2)
+                    _existing["rows_written"] = _existing.get("rows_written", 0) + _batch_written
+                    _existing["batches"] = _existing.get("batches", 1) + 1
+                    _merged = True
+                    break
+            if not _merged:
+                _log_entry["datasource_id"] = _ds_id
+                _log_entry["table_name"] = _tbl_name
+                _log_entry["rows_written"] = _batch_written
+                _log_entry["batches"] = 1
         _TOOL_CALL_LOG.append(_log_entry)
         return _result
     except Exception as _e:
@@ -557,10 +576,13 @@ def _stream_execute(proc, timeout: int, temp_path: str, sandbox_cwd: str = None)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         if _timed_out:
+            _stdout_so_far = "\n".join(stdout_lines).strip()
             if _timeout_reason == "idle":
                 error_msg = f"脚本执行超时（无输出 {_idle_timeout}秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时"
             else:
                 error_msg = f"脚本执行超时（总时长超过 {_hard_cap}秒 上限）"
+            if _stdout_so_far:
+                error_msg += f"\n\n--- 已收集的 stdout（最后 2000 字符）---\n{_stdout_so_far[-2000:]}"
             error_type = "超时"
         else:
             error_type = None

@@ -1,5 +1,6 @@
 """元数据管理API端点"""
 
+import asyncio
 import hashlib
 import json
 import math
@@ -8,16 +9,18 @@ from uuid import UUID
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from loguru import logger
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session
 from app.core.i18n import t
 from app.models.datasource import DataSource, TableMetadata
 from app.models.user import User
 from app.api.deps import get_current_user
 from app.services.connectors import get_connector
+from app.services.match_service import index_table
 
 router = APIRouter()
 
@@ -107,11 +110,25 @@ async def list_metadata(
         ds_names = {row[0]: row[1] for row in ds_result.fetchall()}
 
     # tag 过滤（JSON 不好做 SQL 过滤，在 Python 侧做）
-    items = [_serialize_meta(m, ds_names.get(m.data_source_id)) for m in metas]
     if tag:
-        items = [i for i in items if tag in (i.get("business_tags") or [])]
+        metas = [m for m in metas if tag in (getattr(m, "business_tags", None) or [])]
 
-    return {"items": items, "total": len(items)}
+    # 真实总数（不受 skip/limit 影响）
+    count_q = select(func.count()).select_from(TableMetadata).where(TableMetadata.data_source_id.isnot(None))
+    if data_source_id:
+        count_q = count_q.where(TableMetadata.data_source_id == data_source_id)
+    if data_domain:
+        count_q = count_q.where(TableMetadata.data_domain == data_domain)
+    if q:
+        count_q = count_q.where(or_(
+            TableMetadata.table_name.ilike(pattern),
+            TableMetadata.business_name.ilike(pattern),
+            TableMetadata.business_description.ilike(pattern),
+        ))
+    total = (await db.execute(count_q)).scalar() or 0
+
+    items = [_serialize_meta(m, ds_names.get(m.data_source_id)) for m in metas]
+    return {"items": items, "total": total}
 
 
 @router.get("/stats")
@@ -204,17 +221,27 @@ async def update_metadata(
     return _serialize_meta(meta, ds_name)
 
 
-async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str) -> None:
-    """AI增强核心逻辑（不查 DataSource，不重复 initialize，不 flush）"""
+async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str):
+    """AI增强核心逻辑（async generator，逐步 yield 日志行）
+
+    yield: {"step": "log|done|error", "message": "[HH:MM:SS] xxx"}
+    """
+    def _ts():
+        return datetime.now().strftime("%H:%M:%S")
+
+    yield {"step": "log", "message": f"[{_ts()}] 开始增强: {meta.table_name}"}
     from app.services.llm import llm_manager, init_user_llm_context
     await init_user_llm_context(user_id)
     if not llm_manager._initialized:
         await llm_manager.initialize()
+    yield {"step": "log", "message": f"[{_ts()}] LLM 上下文已初始化"}
 
     schema_str = json.dumps(meta.table_schema or [], ensure_ascii=False, default=str)
     stats_str = json.dumps(meta.column_stats or {}, ensure_ascii=False, default=str)
     sample_str = json.dumps(meta.sample_data or [], ensure_ascii=False, default=str)
+    yield {"step": "log", "message": f"[{_ts()}] 数据样本准备完成: {meta.row_count} 行, {len(meta.table_schema or [])} 列"}
 
+    yield {"step": "log", "message": f"[{_ts()}] AI 正在分析数据集并推断业务元数据..."}
     prompt = f"""请分析以下数据集的技术信息和样本数据，推断业务元数据。
 
 ## 技术信息
@@ -241,15 +268,23 @@ async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str)
 
 只输出 JSON，不要任何解释。"""
 
-    llm_result = await llm_manager.chat_with_messages(
-        [
-            {"role": "system", "content": "你是数据元数据分析专家。根据数据集的技术信息和样本数据，推断业务元数据。只输出JSON，不要任何解释。"},
-            {"role": "user", "content": prompt},
-        ],
-        model=llm_manager._flash,
-        temperature=0.3,
-        max_tokens=2000,
-    )
+    try:
+        llm_result = await asyncio.wait_for(
+            llm_manager.chat_with_messages(
+                [
+                    {"role": "system", "content": "你是数据元数据分析专家。根据数据集的技术信息和样本数据，推断业务元数据。只输出JSON，不要任何解释。"},
+                    {"role": "user", "content": prompt},
+                ],
+                model=llm_manager._flash,
+                temperature=0.3,
+                max_tokens=1000,
+                enable_thinking=False,
+            ),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError("AI 分析超时（45秒），请稍后重试或减少并发数量")
+    yield {"step": "log", "message": f"[{_ts()}] AI 分析完成"}
 
     if not llm_result or not llm_result.strip():
         raise ValueError(t("ai_empty_response"))
@@ -264,6 +299,7 @@ async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str)
         llm_result = "\n".join(lines).strip()
 
     parsed = json.loads(llm_result)
+    yield {"step": "log", "message": f"[{_ts()}] 结果解析完成: {parsed.get('business_name', '')}"}
 
     for key in ["business_name", "business_description", "business_tags", "business_purpose",
                  "source_system", "data_domain", "security_level"]:
@@ -272,6 +308,23 @@ async def _do_ai_enrich(meta: TableMetadata, ds, db: AsyncSession, user_id: str)
 
     meta.ai_enriched = True
     meta.ai_enriched_at = datetime.utcnow()
+    await db.flush()
+    await db.commit()
+    await db.refresh(meta)
+    yield {"step": "log", "message": f"[{_ts()}] 已保存到数据库"}
+
+    yield {"step": "log", "message": f"[{_ts()}] 正在更新向量索引..."}
+    try:
+        await index_table(meta, ds.name if ds else "")
+        yield {"step": "done", "message": f"[{_ts()}] 增强完成，索引已更新"}
+    except Exception as _e:
+        logger.warning(f"index_table 失败 [{meta.table_name}]: {_e}")
+        yield {"step": "done", "message": f"[{_ts()}] 增强完成（索引更新失败，不影响数据）"}
+
+async def _do_ai_enrich_silent(meta: TableMetadata, ds, db: AsyncSession, user_id: str) -> None:
+    """非流式包装（消耗进度事件，供 pipeline_executor 并发调用）"""
+    async for _ in _do_ai_enrich(meta, ds, db, user_id):
+        pass
 
 
 @router.post("/{table_metadata_id}/ai-enrich")
@@ -294,17 +347,131 @@ async def ai_enrich_business_metadata(
     ds = ds_result.scalar_one_or_none()
 
     try:
-        await _do_ai_enrich(meta, ds, db, str(current_user.id))
+        async for _ in _do_ai_enrich(meta, ds, db, str(current_user.id)):
+            pass
         logger.info(f"AI enrich done: {meta.table_name}")
     except Exception as e:
         logger.error(f"AI enrich failed [{meta.table_name}]: {e}")
         raise HTTPException(status_code=500, detail=t("ai_enrich_failed", error=str(e)))
 
-    await db.flush()
-    await db.refresh(meta)
-    from app.services.match_service import index_table
-    await index_table(meta, ds.name if ds else "")
     return _serialize_meta(meta, ds.name if ds else None)
+
+
+@router.post("/{table_metadata_id}/ai-enrich-stream")
+async def ai_enrich_business_metadata_stream(
+    table_metadata_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI增强业务元数据（流式进度 SSE）"""
+    result = await db.execute(
+        select(TableMetadata).where(TableMetadata.id == table_metadata_id)
+    )
+    meta = result.scalar_one_or_none()
+    if not meta:
+        raise HTTPException(status_code=404, detail=t("metadata_not_found"))
+
+    ds_result = await db.execute(
+        select(DataSource).where(DataSource.id == meta.data_source_id)
+    )
+    ds = ds_result.scalar_one_or_none()
+
+    async def generate():
+        try:
+            async for event in _do_ai_enrich(meta, ds, db, str(current_user.id)):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            final = _serialize_meta(meta, ds.name if ds else None)
+            yield f"data: {json.dumps({'step': 'saved', 'message': '已保存到数据库并更新索引', 'result': final}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error(f"AI enrich stream failed [{meta.table_name}]: {e}")
+            yield f"data: {json.dumps({'step': 'error', 'message': t('ai_enrich_failed', error=str(e))}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/batch-ai-enrich-stream")
+async def batch_ai_enrich_stream(
+    request: dict,
+    current_user: User = Depends(get_current_user),
+):
+    """批量AI增强（并发处理，每表独立 DB session，流式 SSE）"""
+    ids: list = request.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+
+    user_id = str(current_user.id)
+    max_concurrency = 5
+    logger.info(f"[batch-enrich] start, ids={ids}")
+
+    async def generate():
+        queue: asyncio.Queue = asyncio.Queue()
+        remaining = len(ids)
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def enrich_one(meta_id: str):
+            nonlocal remaining
+            table_name = meta_id
+            logger.info(f"[batch-enrich] enrich_one start: {meta_id}")
+            async with semaphore:
+                try:
+                    _uuid = UUID(meta_id) if isinstance(meta_id, str) else meta_id
+                    async with async_session() as db:
+                        result = await db.execute(
+                            select(TableMetadata).where(TableMetadata.id == _uuid)
+                        )
+                        meta = result.scalar_one_or_none()
+                        if not meta:
+                            await queue.put({"table_id": meta_id, "step": "error", "message": "元数据不存在"})
+                            return
+                        ds_result = await db.execute(
+                            select(DataSource).where(DataSource.id == meta.data_source_id)
+                        )
+                        ds = ds_result.scalar_one_or_none()
+                        table_name = meta.business_name or meta.table_name or meta_id
+
+                        await queue.put({"table_id": meta_id, "table_name": table_name, "step": "start",
+                                         "message": f"开始增强: {table_name}"})
+
+                        async for event in _do_ai_enrich(meta, ds, db, user_id):
+                            event["table_id"] = meta_id
+                            event["table_name"] = table_name
+                            await queue.put(event)
+
+                        final = _serialize_meta(meta, ds.name if ds else None)
+                        await queue.put({"table_id": meta_id, "table_name": table_name,
+                                         "step": "saved", "result": final})
+                except Exception as e:
+                    logger.error(f"[batch-enrich] [{meta_id}] failed: {e}", exc_info=True)
+                    await queue.put({"table_id": meta_id, "table_name": table_name,
+                                     "step": "error", "message": str(e)})
+
+        tasks = [asyncio.ensure_future(enrich_one(mid)) for mid in ids]
+
+        while remaining > 0:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                step = event.get("step", "")
+                if step in ("saved", "error"):
+                    remaining -= 1
+            except asyncio.TimeoutError:
+                if all(t.done() for t in tasks):
+                    break
+                yield f"data: {json.dumps({'step': 'ping'}, ensure_ascii=False)}\n\n"
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(f"[batch-enrich] all_done, remaining={remaining}")
+        yield f"data: {json.dumps({'step': 'all_done'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 # ========== 数据源元数据同步 ==========

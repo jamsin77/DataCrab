@@ -258,6 +258,7 @@ class AgentRuntime:
                 "output_tables": _output_tables,
                 "operation_description": f"第 {_round} 轮修复后复查" if _round > 0 else "技能调试执行成功，自动交接质量检查",
                 "result_summary": f"检查表: {_tables_desc}",
+                "user_message": context.get("debug_user_message", ""),
             }
             # 传递技能路径，供 Inspector 加载技能专属规则
             if context.get("debug_skill_path"):
@@ -278,7 +279,14 @@ class AgentRuntime:
             has_fatal = any(i.get("severity") == "fatal" for i in issues)
             has_auto_fix = any(i.get("severity") in ("error", "critical") for i in issues)
             if has_fatal or not has_auto_fix:
+                logger.info(f"[handoff] Inspector 无需修复: issues={len(issues)}, has_fatal={has_fatal}, has_auto_fix={has_auto_fix}")
                 return None
+            # 记录触发放修复的具体问题（供前端展示）
+            _fix_issues = [i for i in issues if i.get("severity") in ("error", "critical")]
+            logger.info(f"[handoff] Inspector 触发修复: {len(_fix_issues)} 个 error/critical 问题")
+            for _fi in _fix_issues:
+                logger.info(f"  - [{_fi.get('severity')}] {_fi.get('rule_id','')}: {_fi.get('description','')[:120]}")
+            context["debug_fix_issues"] = _fix_issues
             _round = context.get("debug_inspection_round", 0)
             if _round >= context.get("debug_max_inspections", 7):
                 return None
@@ -302,30 +310,45 @@ class AgentRuntime:
 
     @staticmethod
     def _extract_issues(check_results: Dict) -> List[Dict]:
-        """从 inspector_tools.run_all_checks 结果提取 error/critical/fatal issue 列表"""
+        """从 inspector_tools.run_all_checks 结果提取 error/critical/fatal issue 列表
+
+        支持两种结构：
+        - 单表：{profile:..., standards:..., quality:..., security:...}
+        - 多表：{table_name: {profile:..., standards:..., quality:..., security:...}, ...}
+        """
         issues = []
         if not isinstance(check_results, dict):
             return issues
-        # 数据加载失败等顶层错误（集合不存在、数据源不可达等）→ 直接作为 error 级 issue
-        if check_results.get("error"):
-            issues.append({
-                "severity": "error",
-                "rule_id": "LOAD-FAIL",
-                "description": check_results["error"],
-            })
-            return issues
-        for dim in ("standards", "quality", "security"):
-            dim_result = check_results.get(dim) or {}
-            # 维度级别错误（如该维度检查抛异常）
-            if isinstance(dim_result, dict) and dim_result.get("error"):
-                issues.append({
-                    "severity": "error",
-                    "rule_id": f"{dim.upper()}-ERR",
-                    "description": dim_result["error"],
-                })
-            for issue in dim_result.get("issues", []):
-                if isinstance(issue, dict) and issue.get("severity") in ("error", "critical", "fatal"):
-                    issues.append(issue)
+
+        # 判断是单表还是多表：多表的 key 是表名，值含 standards/quality 等维度 key
+        _is_multi = any(isinstance(v, dict) and ("standards" in v or "quality" in v or "security" in v) for v in check_results.values())
+
+        def _extract_from_single(cr: Dict):
+            # 顶层错误（数据加载失败等）
+            if cr.get("error"):
+                issues.append({"severity": "error", "rule_id": "LOAD-FAIL", "description": cr["error"]})
+                return
+            for dim in ("standards", "quality", "security"):
+                dim_result = cr.get(dim) or {}
+                if isinstance(dim_result, dict) and dim_result.get("error"):
+                    issues.append({"severity": "error", "rule_id": f"{dim.upper()}-ERR", "description": dim_result["error"]})
+                for issue in dim_result.get("issues", []):
+                    if isinstance(issue, dict) and issue.get("severity") in ("error", "critical", "fatal"):
+                        issues.append(issue)
+
+        if _is_multi:
+            for tbl, cr in check_results.items():
+                if isinstance(cr, dict):
+                    _extract_from_single(cr)
+        else:
+            _extract_from_single(check_results)
+
+        # 提取技能专属规则 issue（LLM 主观判断的结构化结果）
+        _skill_issues = check_results.get("skill_rule_issues", []) if isinstance(check_results, dict) else []
+        for iss in _skill_issues:
+            if isinstance(iss, dict) and iss.get("severity") in ("error", "critical", "fatal"):
+                issues.append(iss)
+
         return issues
 
 
@@ -414,6 +437,7 @@ def build_debug_context(
 
 def build_debug_message(user_message: str, context: Dict[str, Any]) -> "AgentMessage":
     """构建 DataProcessor 调试入口消息（所有调试/自修复路径共享）。"""
+    context["debug_user_message"] = user_message
     return AgentMessage(
         from_agent="user",
         to_agent="data_processor",
@@ -473,7 +497,15 @@ async def stream_agent_events_sse(
                     evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                 elif agent == "data_processor" and _reason == HandoffReason.FIX_REQUIRED.value:
                     _retry_round = context.get("debug_inspection_round", 0) + 1
-                    evt = {"type": "retry", "round": _retry_round, "message": f"DataInspector 发现问题，开始第 {_retry_round} 次修复..."}
+                    _fix_issues = context.get("debug_fix_issues", [])
+                    _issue_lines = []
+                    for _fi in _fix_issues[:5]:
+                        _issue_lines.append(f"  • [{_fi.get('severity','')}] {_fi.get('rule_id','')}: {_fi.get('description','')[:80]}")
+                    _issue_text = "\n".join(_issue_lines) if _issue_lines else ""
+                    _msg = f"DataInspector 发现问题，开始第 {_retry_round} 次修复..."
+                    if _issue_text:
+                        _msg += f"\n发现问题：\n{_issue_text}"
+                    evt = {"type": "retry", "round": _retry_round, "message": _msg}
                 else:
                     evt = None
                 if evt:

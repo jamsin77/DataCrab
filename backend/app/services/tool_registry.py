@@ -1020,6 +1020,32 @@ async def _read_file_handler(args, db, user_id, context):
             return json.dumps({"error": "缺少 path"}, ensure_ascii=False)
 
         allowed_dirs = await _collect_allowed_dirs(db, user_id)
+        # 调试模式：把源/目标数据源的文件路径也加入授权
+        if context:
+            from app.models.datasource import DataSource as _DS
+            from sqlalchemy import select as _sel
+            for _ds_id_key in ("debug_source_datasource_id", "debug_target_datasource_id", "current_datasource_id"):
+                _ds_id_val = context.get(_ds_id_key, "")
+                if not _ds_id_val:
+                    continue
+                try:
+                    import uuid as _uuid
+                    _uuid.UUID(str(_ds_id_val))
+                except (ValueError, AttributeError):
+                    continue
+                try:
+                    _r = await db.execute(_sel(_DS).where(_DS.id == _uuid.UUID(str(_ds_id_val))))
+                    _ds_obj = _r.scalar_one_or_none()
+                    if _ds_obj and _ds_obj.connection_config:
+                        for _cfg_key in ("path", "folder_path", "file_path", "directory", "file_paths"):
+                            _cfg_p = _ds_obj.connection_config.get(_cfg_key)
+                            if _cfg_p:
+                                if isinstance(_cfg_p, list):
+                                    allowed_dirs.extend(str(Path(fp).parent) for fp in _cfg_p if fp)
+                                else:
+                                    allowed_dirs.append(str(Path(_cfg_p).parent if Path(_cfg_p).suffix else _cfg_p))
+                except Exception:
+                    pass
         validated = _validate_file_path(file_path, allowed_dirs)
         p = Path(validated)
         if not p.exists():

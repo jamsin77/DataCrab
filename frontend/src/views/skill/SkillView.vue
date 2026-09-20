@@ -323,12 +323,19 @@
                   <div v-if="msg.thinking" class="debug-msg-thinking">
                     <div class="thinking-header" @click="msg.thinkingOpen = !msg.thinkingOpen">
                       <el-icon class="thinking-toggle" :class="{ open: msg.thinkingOpen }"><CaretRight /></el-icon>
-                      <span>{{ t('chat.thinking') }}</span>
+                      <span>{{ t('chat.thinking') }}<span v-if="msg.model" class="thinking-model">{{ msg.model }}</span></span>
                     </div>
                     <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
                   </div>
+                  <div v-if="msg.executingMsgs && msg.executingMsgs.length" class="debug-msg-executing">
+                    <div v-for="(m, i) in msg.executingMsgs" :key="i" class="executing-line">
+                      <el-icon v-if="i === msg.executingMsgs.length - 1" class="thinking-spin"><Loading /></el-icon>
+                      <el-icon v-else class="executing-dot"><CircleCheck /></el-icon>
+                      <span>{{ m }}</span>
+                    </div>
+                  </div>
                   <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
-                  <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
+                  <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking && !(msg.executingMsgs && msg.executingMsgs.length)" class="typing-indicator"><span></span><span></span><span></span></div>
                 </div>
               </div>
             </div>
@@ -705,7 +712,7 @@
                     </div>
                   </div>
                   <div v-if="msg.inspectionReport" class="debug-msg-inspection-report">
-                    <el-collapse model-value="report">
+                    <el-collapse v-model="msg.inspectionExpanded">
                       <el-collapse-item name="report">
                         <template #title>
                           <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
@@ -762,15 +769,15 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="680px">
+    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="680px" @opened="scrollExperienceToBottom">
       <div v-loading="expLoading">
-        <el-tabs>
+        <el-tabs @tab-change="scrollExperienceToBottom">
           <el-tab-pane :label="t('skill.inductReasons')">
             <div v-if="experienceData.lessons" class="markdown-body" v-html="renderMarkdown(experienceData.lessons)"></div>
             <el-empty v-else :description="t('skill.noInductedExperience')" :image-size="80" />
           </el-tab-pane>
           <el-tab-pane :label="t('skill.historyErrors') + ' (' + (experienceData.negative || []).length + ')'">
-            <div v-if="(experienceData.negative || []).length" style="max-height:400px;overflow-y:auto">
+            <div v-if="(experienceData.negative || []).length" ref="expNegativeRef" style="max-height:400px;overflow-y:auto">
               <div v-for="(err, i) in experienceData.negative" :key="i" class="exp-error-item">
                 <div class="exp-error-time">{{ formatTime(err.timestamp) }}</div>
                 <div class="exp-error-msg"><pre>{{ err.error_message }}</pre></div>
@@ -780,7 +787,7 @@
             <el-empty v-else :description="t('skill.noErrorRecords')" :image-size="80" />
           </el-tab-pane>
           <el-tab-pane :label="t('skill.successRecords') + ' (' + (experienceData.positive || []).length + ')'">
-            <div v-if="(experienceData.positive || []).length" style="max-height:400px;overflow-y:auto">
+            <div v-if="(experienceData.positive || []).length" ref="expPositiveRef" style="max-height:400px;overflow-y:auto">
               <div v-for="(pos, i) in experienceData.positive" :key="i" class="exp-positive-item">
                 <div class="exp-error-time">{{ formatTime(pos.timestamp) }}</div>
                 <div class="exp-error-msg">{{ pos.result_summary }}</div>
@@ -995,6 +1002,17 @@ const pipelineRenameValue = ref('')
 const showExperience = ref(false)
 const expLoading = ref(false)
 const experienceData = ref<any>({ lessons: '', negative: [], positive: [] })
+const expNegativeRef = ref<HTMLElement>()
+const expPositiveRef = ref<HTMLElement>()
+
+function scrollExperienceToBottom() {
+  nextTick(() => {
+    const refs = [expNegativeRef.value, expPositiveRef.value]
+    for (const el of refs) {
+      if (el && el.scrollHeight > el.clientHeight) el.scrollTop = el.scrollHeight
+    }
+  })
+}
 
 async function openExperience() {
   if (!debugSkill.value) return
@@ -1002,6 +1020,7 @@ async function openExperience() {
   expLoading.value = true
   try {
     experienceData.value = await api.get(`/skills/${debugSkill.value.id}/experience`)
+    scrollExperienceToBottom()
   } catch (e: any) {
     ElMessage.error(t('skill.loadExperienceFailed'))
   } finally {
@@ -1123,7 +1142,7 @@ async function streamConvert(mode: string, newName: string | null) {
   } finally {
     convertingPipeline.value = false
     await nextTick()
-    scrollSkillDebugToBottom()
+    scrollSkillDebugToBottom(true)
   }
 }
 
@@ -1397,6 +1416,9 @@ function openDetail(skill: any) {
     scriptContents[s.name] = ''
   }
 
+  // 加载修改历史（按 skill ID 隔离）
+  reloadSkillHistories(skill.id)
+
   // 加载技能专属规则
   loadSkillRules(skill.id)
 
@@ -1408,8 +1430,8 @@ async function loadSkillRules(skillId: string) {
   rulesParsed.value = { std: [], dq: [], sec: [] }
   try {
     const res = await api.get(`/skills/${skillId}/rules`)
-    rulesContent.value = res.data.content || ''
-    rulesParsed.value = res.data.parsed || { std: [], dq: [], sec: [] }
+    rulesContent.value = res.content || ''
+    rulesParsed.value = res.parsed || { std: [], dq: [], sec: [] }
   } catch (e) {
     // 静默失败（旧技能无 rules.md）
   }
@@ -1474,7 +1496,7 @@ async function handleModifySkill() {
   modifyError.value = ''
   const userText = modifyInstruction.value.trim()
   pushHistory(modifyHistory, modifyHistoryIdx, userText, 'modify')
-  modifyMessages.value.push({ role: 'user', content: userText, created_at: new Date().toISOString() })
+  modifyInstruction.value = ''
   modifyMessages.value.push({ role: 'assistant', content: '', thinking: '', thinkingOpen: false, model: '', created_at: new Date().toISOString() })
 
   const ctrl = new AbortController()
@@ -1522,11 +1544,18 @@ async function handleModifySkill() {
         } else if (data.type === 'content') {
           if (!thinkingDone && msg.thinking) { thinkingDone = true; msg.thinkingOpen = false }
           msg.content += data.content
+        } else if (data.type === 'progress' || data.type === 'status') {
+          if (!msg.executingMsgs) msg.executingMsgs = []
+          const text = data.message || ''
+          const last = msg.executingMsgs[msg.executingMsgs.length - 1]
+          if (last !== text) msg.executingMsgs.push(text)
         } else if (data.type === 'done') {
           doneSkill = data.skill || null
           if (msg.thinking && !thinkingDone) msg.thinkingOpen = false
+          msg.executingMsgs = []
         } else if (data.type === 'error') {
           errMsg = data.content || t('skill.modifyFailed')
+          msg.executingMsgs = []
         } else if (data.type === 'cancelled') {
           cancelled = true
         }
@@ -1716,9 +1745,19 @@ const DEBUG_MSG_MAX = 50
 
 function loadSkillDebugMsgs(skillId: string | number): DebugMessage[] {
   try {
-    const raw = localStorage.getItem(`dc_skill_debug_msgs_${skillId}`)
-    if (!raw) return []
-    return JSON.parse(raw).map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined, executingMsgs: undefined }))
+    const newKey = `dc_skill_debug_msgs_${skillId}`
+    const raw = localStorage.getItem(newKey)
+    if (raw) return JSON.parse(raw).map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined, executingMsgs: undefined }))
+    // 迁移：旧全局 key → 当前 skill（复制不删除，其他技能也能迁）
+    const legacy = localStorage.getItem('dc_skill_debug_msgs')
+    if (legacy) {
+      try {
+        const parsed = JSON.parse(legacy).map((m: any) => ({ ...m, thinkingOpen: false, executingMsg: undefined, executingMsgs: undefined }))
+        localStorage.setItem(newKey, JSON.stringify(parsed.map(m => ({ role: m.role, content: m.content, llmContent: m.llmContent, scriptUpdated: m.scriptUpdated, model: m.model, created_at: m.created_at }))))
+        return parsed
+      } catch { /* legacy corrupt, ignore */ }
+    }
+    return []
   } catch { return [] }
 }
 
@@ -1753,6 +1792,12 @@ function flushSkillDebugSave() {
 }
 
 watch(debugMessages, scheduleSaveSkillDebug, { deep: true })
+
+// 响应式滚动：content/thinking 变化时自动滚到底部（补 SSE 事件手动 nextTick 的遗漏）
+watch(
+  () => debugMessages.value.map(m => (m.content || '') + (m.thinking || '') + (m.executingMsgs ? m.executingMsgs.length : 0)).join('|'),
+  () => { nextTick(() => scrollSkillDebugToBottom(true)) }
+)
 let debugAbortController: AbortController | null = null
 const skillPinnedToBottom = ref(true)
 
@@ -1834,7 +1879,7 @@ function finalizeExecMessage(idx: number, result: any) {
     msg.runResult = result
     if (!msg.content) msg.content = result?.success ? t('skill.execComplete') : t('skill.execFailed')
   }
-  nextTick(() => scrollSkillDebugToBottom())
+  nextTick(() => scrollSkillDebugToBottom(true))
 }
 
 /** 公共 debug SSE 事件处理（三处 handler 共享）。
@@ -1928,6 +1973,7 @@ function processDebugSSEEvent(
       break
     case 'inspection_report':
       msg.inspectionReport = data.report
+      msg.inspectionExpanded = []
       nextTick(() => scrollSkillDebugToBottom())
       break
     case 'retry':
@@ -1959,7 +2005,7 @@ function processDebugSSEEvent(
         const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
         msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
         if (failed) {
-          const errMsg = String(r.error || inner.error || t('skill.unknownError')).substring(0, 300)
+          const errMsg = String(r.error || inner.error || t('skill.unknownError'))
           msg.content += `\n` + t('skill.execFailedMsg', { error: errMsg }) + `\n`
         } else if (!msg.content) {
           msg.content = t('skill.skillExecComplete')
@@ -1977,13 +2023,6 @@ function processDebugSSEEvent(
       msg.content += `\n\n` + t('skill.fixFailedContent', { reason: data.reason ? '\n' + data.reason : t('skill.fixFailedDefault') })
       state.result = { success: false, error: data.reason || t('skill.fixFailed') }
       return 'break'
-    case 'platform_issue':
-      archiveExecutingMsg(msg)
-      msg.content += `\n\n` + t('skill.platformIssueContent', { message: data.reason || data.message || '' })
-      msg.thinkingOpen = false
-      state.thinkingDone = true
-      nextTick(() => scrollSkillDebugToBottom())
-      break
     case 'fatal': {
       const issues = data.issues || []
       let fatalText = `\n\n` + t('skill.fatalIssueContent', { summary: data.summary || '' }) + `\n`
@@ -2019,6 +2058,7 @@ function processDebugSSEEvent(
       }
       msg.thinkingOpen = false
       archiveExecutingMsg(msg)
+      nextTick(() => scrollSkillDebugToBottom(true))
       return 'break'
     case 'error':
       msg.content += `\n\n` + t('skill.errorMsg', { msg: data.content || t('skill.unknownError') })
@@ -2089,12 +2129,11 @@ function loadHistory(key: string): string[] {
   try {
     const raw = localStorage.getItem(newKey)
     if (raw) return JSON.parse(raw)
-    // 迁移：旧全局历史被首个打开的技能领走
+    // 迁移：旧全局历史复制到当前 skill（不删除，其他技能也能迁）
     const legacy = localStorage.getItem(oldKey)
     if (legacy) {
       const parsed = JSON.parse(legacy)
       localStorage.setItem(newKey, JSON.stringify(parsed))
-      localStorage.removeItem(oldKey)
       return parsed
     }
     return []
@@ -2186,9 +2225,19 @@ const cmdDraft = ref('')
 const chatDraft = ref('')
 
 function onGenHistoryKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleGenerate()
+    return
+  }
   onHistoryKey(e, genHistory, genHistoryIdx, generatePrompt, genDraft)
 }
 function onModifyHistoryKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleModifySkill()
+    return
+  }
   onHistoryKey(e, modifyHistory, modifyHistoryIdx, modifyInstruction, modifyDraft)
 }
 
@@ -2903,7 +2952,7 @@ async function handleDebugSend() {
     debugStreaming.value = false
     debugAbortController = null
     await nextTick()
-    scrollSkillDebugToBottom()
+    scrollSkillDebugToBottom(true)
   }
 
   // 脚本被 AI 更新后，自动重新执行一次技能，便于直接查看运行结果

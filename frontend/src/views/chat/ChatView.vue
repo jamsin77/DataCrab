@@ -217,7 +217,7 @@
               </div>
               <!-- 数据检查报告 -->
               <div v-if="msg.role === 'assistant' && msg.inspectionReport" class="inspection-report-section">
-                <el-collapse model-value="report">
+                <el-collapse v-model="msg.inspectionExpanded">
                   <el-collapse-item name="report">
                     <template #title>
                       <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
@@ -268,7 +268,7 @@
               closable
               type="success"
               size="default"
-              @close="chatStore.selectedData = null"
+              @close="chatStore.clearSelectedData()"
             >
               <el-icon style="vertical-align: middle; margin-right: 2px;"><Coin /></el-icon>
               {{ chatStore.selectedData.datasource_name }} → {{ chatStore.selectedData.table_name }}
@@ -794,7 +794,7 @@ function selectData(msg: any, m: any) {
 }
 
 function abandonDataSuggestion(msg: any, sug: any, sugIdx: number) {
-  chatStore.selectedData = null
+  chatStore.clearSelectedData()
   updateParamsHint(msg)
   msg.content = (msg.content ? msg.content + '\n\n' : '') + t('chat.noDesiredData')
   chatStore.messages = [...chatStore.messages]

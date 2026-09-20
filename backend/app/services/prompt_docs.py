@@ -31,7 +31,6 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - 按名查数据源: `call_tool("list_user_datasources", by_name="数据源名")` → {"id": "uuid", "name": ..., "type": ...}
 - LLM 调用: `call_tool("llm_generate", prompt="...", system_prompt="...")` → {"content": "回复文本"}
 - 图片 OCR: `call_tool("llm_vision", image_path="...", prompt="...")` → {"result": "分析文本"}
-- 表格图片提取: `call_tool("extract_image_table", image_path="...")` → {"is_table": true, "headers": [...], "rows": [[...]], "row_count": N}
 - 分块读取: `call_tool("iter_table_data", datasource_id=..., table_name=..., page=1, page_size=10000)` → {"columns", "rows", "page", "total", "has_next"}
 - 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}（支持 txt/json/csv/excel/parquet/pdf/docx，在主进程解析不受沙箱限制）
 - 写文件: `call_tool("write_file", path="...", data=..., format="csv")` → {"success", "path", "size"}
@@ -44,7 +43,8 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 
 ### 图片 OCR 场景
 - 图片文字提取/识别用 `call_tool("llm_vision", image_path=..., prompt=...)`
-- 表格图片完整数据提取用 `call_tool("extract_image_table", image_path=...)`（分页提取不截断，返回结构化 JSON）
+- 表格图片提取：先用 `call_tool("render_pdf_pages", path=..., page_indices=[...])` 渲染 PDF 页面为图片，再用 `call_tool("llm_vision", image_path=..., prompt="提取表格...")` 整页识别
+- 一页多表格：整页渲染交给 llm_vision 理解表格结构，prompt 要求每个表前加标题行、续表表头完整输出，代码按标题行拆分多表
 
 ### 视频处理场景
 - 视频信息提取用 `call_tool("extract_video_info", video_path=...)`
@@ -92,4 +92,14 @@ with ThreadPoolExecutor(max_workers=4) as executor:
     results = {}
     for fut in as_completed(futures):
         results[futures[fut]] = fut.result()
-```"""
+```
+
+### 沙箱禁止 import 的模块（脚本中 import 这些模块会被拦截报错）
+os, sys, subprocess, shutil, ctypes, sqlite3, psycopg2, pymysql, asyncpg, sqlalchemy, socket, http, http.client, urllib, multiprocessing, signal, gc, importlib, builtins, app
+
+替代方案：
+- 路径操作：用 `from pathlib import Path` 替代 `os.path`
+- 文件读写：用 `call_tool("read_file", path=...)` / `call_tool("write_file", path=..., data=...)` 替代 `open()`
+- 数据查询：用 `call_tool("query_table_data", ...)` / `call_tool("execute_sql", ...)` 替代直接连数据库
+- 环境变量：不可用（沙箱不传敏感环境变量），需要的配置通过参数传入
+- 时间戳：用 `from datetime import datetime` 替代 `os.path.getmtime`"""

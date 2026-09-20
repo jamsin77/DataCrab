@@ -126,7 +126,7 @@ class DataAnalystAgent(BaseAgent):
     tools = get_tool_schemas([
         "web_fetch", "kb_search", "list_user_datasources",
         "query_table_data", "get_table_schema", "execute_sql", "llm_vision",
-        "extract_image_table", "iter_table_data", "read_file", "llm_generate",
+        "iter_table_data", "read_file", "llm_generate",
         "edit_script", "run_script", "read_script", "grep_script",
     ])
     capabilities = ["data_query", "data_analysis"]
@@ -225,7 +225,7 @@ class DataAnalystAgent(BaseAgent):
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=self.tools,
                 temperature=0.1 if _is_debug else 0.3,
-                model=llm_manager._default, tool_choice="auto",
+                model=llm_manager._flash, tool_choice="auto",
             ):
                 t = event["type"]
                 if t == "model":

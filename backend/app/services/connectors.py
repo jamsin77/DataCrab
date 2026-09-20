@@ -773,10 +773,15 @@ class ExcelConnector(BaseConnector):
             df_new = pd.DataFrame(records)
             xl = pd.ExcelFile(file_path)
             sheets_data = {}
-            target_sheet = actual_sheet if strategy == "create_new" else (
-                sheet_name if isinstance(sheet_name, str) and sheet_name in xl.sheet_names
-                else xl.sheet_names[sheet_name if isinstance(sheet_name, int) else 0]
-            )
+            if strategy == "create_new":
+                target_sheet = actual_sheet
+            elif isinstance(sheet_name, str) and sheet_name in xl.sheet_names:
+                target_sheet = sheet_name
+                actual_sheet = sheet_name
+            else:
+                idx = sheet_name if isinstance(sheet_name, int) else 0
+                target_sheet = xl.sheet_names[idx]
+                actual_sheet = target_sheet
 
             # 如果 target_sheet 不在已有 sheet 中（create_new 场景），保留所有已有 sheet 并追加新 sheet
             if strategy == "create_new" and actual_sheet not in xl.sheet_names:

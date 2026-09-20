@@ -115,8 +115,11 @@ def read_skill_script(skill_path: Path, script_name: str) -> Optional[str]:
     return None
 
 
-def write_skill_script(skill_path: Path, script_name: str, content: str):
-    """写入脚本内容，自动剥离AI可能多包的代码围栏"""
+def write_skill_script(skill_path: Path, script_name: str, content: str, check_syntax: bool = True):
+    """写入脚本内容，自动剥离AI可能多包的代码围栏。
+
+    check_syntax=True 时写入前用 AST 检查语法，语法错误抛 SyntaxError 不覆盖磁盘上的好脚本。
+    """
     scripts_dir = skill_path / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     content = content.strip()

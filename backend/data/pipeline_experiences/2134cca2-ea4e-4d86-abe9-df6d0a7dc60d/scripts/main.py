@@ -1,89 +1,92 @@
 import re
 import json
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Iterator
 
 
 # ============================================================
-# 沙箱工具调用辅助函数（沙箱仅注入 call_tool，其余工具需经 call_tool 调用）
+# 平台工具封装（脚本内通过 call_tool 调用平台能力）
 # ============================================================
 def log(level: str, msg: str) -> None:
-    """简易日志，统一 print 输出。"""
-    print(f"[{level.upper()}] {msg}")
+    """统一日志输出。"""
+    print(f"[{level.upper()}] {msg}", flush=True)
 
 
-def get_datasource_id_by_name(name: str) -> str:
-    """按数据源名称查找 UUID，找不到返回空串。"""
-    resp = call_tool("list_user_datasources", by_name=name)
-    if not isinstance(resp, dict):
-        return ""
-    if resp.get("id"):
-        return str(resp["id"])
-    return ""
+def get_datasource_id_by_name(name: str) -> Optional[str]:
+    """按名称查找数据源，返回其 UUID。"""
+    try:
+        res = call_tool("list_user_datasources", by_name=name)
+    except Exception as e:
+        log("warn", f"list_user_datasources 调用异常: {e}")
+        return None
+    if isinstance(res, dict):
+        ds_id = res.get("id") or res.get("uuid")
+        if ds_id:
+            return str(ds_id)
+        data = res.get("data")
+        if isinstance(data, dict):
+            ds_id = data.get("id") or data.get("uuid")
+            if ds_id:
+                return str(ds_id)
+    return None
 
 
-def llm_chat(prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> str:
-    """调用平台 LLM 生成文本，返回 content 字符串。"""
-    resp = call_tool("llm_generate", prompt=prompt, temperature=temperature, max_tokens=max_tokens)
-    if not isinstance(resp, dict):
-        raise RuntimeError(f"llm_generate 返回异常: {resp}")
-    if "error" in resp:
-        raise RuntimeError(f"llm_generate 调用失败: {resp['error']}")
-    return str(resp.get("content", ""))
+def llm_chat(prompt: str, temperature: float = 0.7, max_tokens: int = 2000,
+             system_prompt: Optional[str] = None) -> str:
+    """调用平台 LLM，返回文本内容。"""
+    args: Dict[str, Any] = {"prompt": prompt, "temperature": temperature, "max_tokens": max_tokens}
+    if system_prompt:
+        args["system_prompt"] = system_prompt
+    res = call_tool("llm_generate", **args)
+    if isinstance(res, dict):
+        return str(res.get("content") or res.get("result") or "")
+    return str(res or "")
 
 
-def llm_vision(image_path: str, prompt: str, max_tokens: int = 1000) -> str:
-    """调用视觉模型识别图片，返回 result 字符串。"""
-    resp = call_tool("llm_vision", image_path=image_path, prompt=prompt, max_tokens=max_tokens)
-    if not isinstance(resp, dict):
-        raise RuntimeError(f"llm_vision 返回异常: {resp}")
-    if "error" in resp:
-        raise RuntimeError(f"llm_vision 调用失败: {resp['error']}")
-    return str(resp.get("result", ""))
+def llm_vision(image_path: str, prompt: str, max_tokens: Optional[int] = None, **kwargs) -> str:
+    """调用视觉 LLM 识别图片，返回文本内容。"""
+    res = call_tool("llm_vision", image_path=image_path, prompt=prompt)
+    if isinstance(res, dict):
+        return str(res.get("result") or res.get("content") or "")
+    return str(res or "")
 
 
-def iter_table_data(datasource_id: str, table_name: str, chunk_size: int = 2000, **kwargs):
-    """分页读取大表，逐页 yield dict（columns/rows/page/total/has_next）。"""
+def write_table_data(datasource_id: str, table_name: str, **kwargs) -> Dict[str, Any]:
+    """写入数据到数据源的表。"""
+    args: Dict[str, Any] = {"datasource_id": datasource_id, "table_name": table_name}
+    args.update(kwargs)
+    return call_tool("write_table_data", **args)
+
+
+def query_table_data(datasource_id: str, table_name: str, **kwargs) -> Dict[str, Any]:
+    """查询数据源表数据。"""
+    args: Dict[str, Any] = {"datasource_id": datasource_id, "table_name": table_name}
+    args.update(kwargs)
+    return call_tool("query_table_data", **args)
+
+
+def get_table_schema(datasource_id: str, table_name: str) -> Dict[str, Any]:
+    """获取表结构。"""
+    return call_tool("get_table_schema", datasource_id=datasource_id, table_name=table_name)
+
+
+def iter_table_data(datasource_id: str, table_name: str, chunk_size: int = 2000, **kwargs) -> Iterator[Dict[str, Any]]:
+    """分页迭代读取表数据，每次 yield 一页 {columns, rows}。"""
     page = 1
     while True:
-        resp = call_tool("iter_table_data", datasource_id=datasource_id, table_name=table_name,
-                         page=page, page_size=chunk_size)
-        if not isinstance(resp, dict):
-            raise RuntimeError(f"iter_table_data 返回异常: {resp}")
-        if "error" in resp:
-            raise RuntimeError(f"iter_table_data 调用失败: {resp['error']}")
-        yield resp
-        if not resp.get("has_next", False):
+        res = call_tool("iter_table_data", datasource_id=datasource_id, table_name=table_name,
+                        page=page, page_size=chunk_size)
+        if not isinstance(res, dict):
+            raise RuntimeError(f"iter_table_data 返回异常: {res}")
+        if res.get("success") is False:
+            raise RuntimeError(f"iter_table_data 失败: {res}")
+        rows = res.get("rows", [])
+        columns = res.get("columns", [])
+        yield {"rows": rows, "columns": columns}
+        if not res.get("has_next", False):
             break
         page += 1
 
-
-def query_table_data(datasource_id: str, table_name: str, limit: int = 100, **kwargs):
-    """查询表数据，透传 call_tool query_table_data 结果。"""
-    resp = call_tool("query_table_data", datasource_id=datasource_id, table_name=table_name,
-                     limit=limit, **kwargs)
-    if not isinstance(resp, dict):
-        return {"success": False, "error": str(resp)}
-    return resp
-
-
-def write_table_data(datasource_id: str, table_name: str, records=None, if_table_exists="append",
-                     table_remark: str = "", column_remarks=None, **kwargs):
-    """写入表数据，透传 call_tool write_table_data 结果。"""
-    resp = call_tool("write_table_data", datasource_id=datasource_id, table_name=table_name,
-                     records=records, if_table_exists=if_table_exists,
-                     table_remark=table_remark, column_remarks=column_remarks, **kwargs)
-    if not isinstance(resp, dict):
-        return {"success": False, "error": str(resp)}
-    return resp
-
-
-def get_table_schema(datasource_id: str, table_name: str):
-    """查看表结构，返回 call_tool get_table_schema 结果。"""
-    resp = call_tool("get_table_schema", datasource_id=datasource_id, table_name=table_name)
-    if not isinstance(resp, dict):
-        return {}
-    return resp
 
 # ============================================================
 # 常见凭证拼音→中文映射表
@@ -253,8 +256,16 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         except Exception as we:
             raise RuntimeError(f"write_table_data 异常 (批次 {batch_num}): {we}")
 
-        if isinstance(write_result, dict) and not write_result.get("success", True):
-            err_msg = write_result.get("error", write_result.get("message", str(write_result)))
+        _write_ok = (
+            isinstance(write_result, dict)
+            and write_result.get("success") is not False
+            and not ("error" in write_result and "success" not in write_result)
+        )
+        if not _write_ok:
+            if isinstance(write_result, dict):
+                err_msg = write_result.get("error", write_result.get("message", str(write_result)))
+            else:
+                err_msg = str(write_result)
             # 如果 fail 策略因表已存在失败，自动重试 truncate
             err_str = str(err_msg)
             if current_strategy == "fail" and any(kw in err_str for kw in ["已存在", "already exists", "exists", "表已存在", "table"]):

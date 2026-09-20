@@ -1322,26 +1322,44 @@ async def stream_response(
                         elif _msg_type == "processing":
                             _skill_pool = [s for s in _skill_pool if s.skill_type != "analysis"]
                         _pipe_pool = (await db.execute(select(Pipeline).where(Pipeline.is_active == True, Pipeline.is_builtin == False))).scalars().all()
-                        # 数据表匹配池：只统计用户消息中提到的数据源的表数（按名称去重）
+                        # 数据表匹配池：只统计用户消息中提到的数据源的表数（精确匹配优先，模糊仅作补充）
                         _mentioned_ds = []
                         _seen_ds_names = set()
+                        _msg_lower = request.content.lower()
+                        # 第一遍：精确匹配（数据源名完整出现在用户消息中）
                         for ds in _all_ds:
-                            if ds.name and ds.name in request.content and ds.name not in _seen_ds_names:
+                            if not ds.name or ds.name in _seen_ds_names:
+                                continue
+                            if ds.name.lower() in _msg_lower:
                                 _mentioned_ds.append(ds)
                                 _seen_ds_names.add(ds.name)
+                        # 第二遍：精确没匹配到任何数据源时，才用模糊匹配
+                        if not _mentioned_ds:
+                            import re as _re
+                            for ds in _all_ds:
+                                if not ds.name or ds.name in _seen_ds_names:
+                                    continue
+                                _chars = _re.findall(r'[\u4e00-\u9fff]', ds.name)
+                                _words = [ds.name]
+                                _words += [''.join(_chars[i:i+2]) for i in range(len(_chars)-1)]
+                                _words += [ds.name[i:i+3] for i in range(len(ds.name)-2)]
+                                if any(w.lower() in _msg_lower for w in _words if len(w) >= 2):
+                                    _mentioned_ds.append(ds)
+                                    _seen_ds_names.add(ds.name)
                         _mentioned_tbl_cnt = 0
                         if _mentioned_ds:
                             _mentioned_tbl_cnt = (await db.execute(
                                 select(_func.count()).select_from(_TM).where(_TM.data_source_id.in_([ds.id for ds in _mentioned_ds]))
+                            )).scalar() or 0
+                        else:
+                            _mentioned_tbl_cnt = (await db.execute(
+                                select(_func.count()).select_from(_TM).where(_TM.data_source_id.in_([ds.id for ds in _all_ds if ds.name]))
                             )).scalar() or 0
 
                         async def _match_source():
                             """源表匹配"""
                             if not _need_source:
                                 return None
-                            _ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
-                            if not _ds_names:
-                                return {"type": "missing_source"}
                             table_matches, _, _events = await llm_match_tables(request.content, db)
                             _results = []
                             for tid, score, meta in table_matches:
@@ -1379,9 +1397,6 @@ async def stream_response(
                             """目标表匹配（仅 processing）"""
                             if not _need_target:
                                 return None
-                            _tgt_ds_names = [ds.name for ds in _all_ds if ds.name in request.content]
-                            if not _tgt_ds_names:
-                                return {"type": "missing_target"}
                             target_matches, _, _events = await llm_match_tables(request.content, db)
                             _results = []
                             for tid, score, meta in target_matches:
@@ -1480,7 +1495,7 @@ async def stream_response(
                                 _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
                                 yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_source_table', ds_names=_ds_names_str, count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                             else:
-                                yield f"data: {json.dumps({'type': 'executing', 'message': t('ds_name_not_recognized')}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_source_table_all', count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                         elif _session_ctx.get("source_datasource_name") and _session_ctx.get("source_data_name"):
                             _src_ds = _session_ctx["source_datasource_name"]
                             _src_tbl = _session_ctx["source_data_name"]
@@ -1490,7 +1505,7 @@ async def stream_response(
                                 _ds_names_str = '、'.join(ds.name for ds in _mentioned_ds)
                                 yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_target_table', ds_names=_ds_names_str, count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                             else:
-                                yield f"data: {json.dumps({'type': 'executing', 'message': t('target_ds_name_not_recognized')}, ensure_ascii=False)}\n\n"
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('matching_target_table_all', count=_mentioned_tbl_cnt)}, ensure_ascii=False)}\n\n"
                         elif _msg_type == "processing" and _session_ctx.get("target_datasource_name"):
                             _tgt_ds = _session_ctx["target_datasource_name"]
                             _tgt_tbl = _session_ctx["target_data_name"]

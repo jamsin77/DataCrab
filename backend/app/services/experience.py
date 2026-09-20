@@ -72,9 +72,9 @@ def append_negative(
         "source": source,  # run / debug / nl
         "script_name": script_name,
         "error_type": error_type,
-        "error_message": (error_message or "")[:500],
+        "error_message": (error_message or "")[:2000],
         "parameters": parameters or {},
-        "stdout_preview": (stdout or "")[:200],
+        "stdout_preview": (stdout or "")[:500],
         "context_summary": (context_summary or "")[:800],
     }
     data["negative"].append(entry)

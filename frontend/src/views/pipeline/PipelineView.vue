@@ -297,7 +297,7 @@
                     </div>
                   </div>
                   <div v-if="msg.inspectionReport" class="debug-msg-inspection-report">
-                    <el-collapse model-value="report">
+                    <el-collapse v-model="msg.inspectionExpanded">
                       <el-collapse-item name="report">
                         <template #title>
                           <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
@@ -1270,7 +1270,7 @@ async function handleDebugSend() {
             const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
             msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
             if (failed) {
-              const errMsg = String(r.error || inner.error || t('pipeline.unknownError')).substring(0, 300)
+              const errMsg = String(r.error || inner.error || t('pipeline.unknownError'))
               msg.content += `\n❌ ${t('pipeline.execFailedPrefix', { error: errMsg })}\n`
             } else if (!msg.content) {
               msg.content = t('pipeline.executionComplete')
@@ -1286,6 +1286,7 @@ async function handleDebugSend() {
             msg.content += `\n\n${t('pipeline.errorHistory', { error: (data.content || t('pipeline.unknownError')) }).trimStart()}`
           } else if (data.type === 'inspection_report') {
             msg.inspectionReport = data.report
+            msg.inspectionExpanded = []
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || t('pipeline.inspectingData')}\n`
@@ -1325,11 +1326,6 @@ async function handleDebugSend() {
             }
             warnText += `\n\n> ${t('pipeline.fixWarningReply')}`
             msg.content += warnText
-          } else if (data.type === 'platform_issue') {
-            msg.executingMsg = ''
-            msg.content += `\n\n🔧 **${t('pipeline.platformIssueDesc')}**\n\n${data.reason || data.message || ''}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
           } else if (data.type === 'done') {
             msg.executingMsg = ''
             if (!msg.content || msg.content.trim() === '') {

@@ -44,7 +44,7 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
         _ctx_block = "\n".join(_ctx_lines) if _ctx_lines else "（无已选数据）"
 
         prompt = (
-            "判断用户消息，输出四个词用 | 分隔，不要解释：\n"
+            "判断用户消息，输出四个词用 | 分隔，不要解释，不要推理：\n"
             "1. 类型：analysis / processing / chat\n"
             "   - analysis：只读分析（查看/统计/查找/浏览数据，不修改）\n"
             "   - processing：数据处理（清洗/转换/加工/导入/导出/迁移/修改/合并等数据操作）\n"
@@ -53,19 +53,16 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
             "3. 目标数据表：keep 或 change（当前目标表不适合当前需求时 change）\n"
             "4. 技能：keep 或 change（当前技能不适合当前需求时 change）\n"
             f"\n当前已选数据：\n{_ctx_block}\n"
-            f"\n用户消息：{user_message}"
+            f"\n用户消息：{user_message}\n"
+            "只输出四个词用 | 分隔，例如：analysis|change|keep|keep"
         )
 
         events = []
-        resp_text = ""
-        async for event in llm_manager.chat_stream_with_thinking(
+        resp = await llm_manager.chat_with_messages(
             messages=[{"role": "user", "content": prompt}],
-            model=llm_manager._flash, temperature=0.0,
-        ):
-            events.append(event)
-            if event.get("type") == "content":
-                resp_text += event["content"]
-        resp = resp_text.strip().lower()
+            model=llm_manager._flash, temperature=0.0, enable_thinking=False,
+        )
+        resp = resp.strip().lower()
         logger.info(f"[classify] msg={user_message[:80]!r}")
         logger.info(f"[classify] ctx_block={_ctx_block!r}")
         logger.info(f"[classify] LLM raw resp={resp!r}")

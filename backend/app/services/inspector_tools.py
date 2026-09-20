@@ -1234,8 +1234,13 @@ class DataInspectorTools:
             "security": security,
         }
 
-    def format_report(self, results: dict) -> str:
-        """格式化检查结果为完整报告（含表格、每条规则详情、样本数据）"""
+    def format_report(self, results: dict, skill_rules: dict = None) -> str:
+        """格式化检查结果为完整报告（含表格、每条规则详情、样本数据）
+
+        Args:
+            results: run_all_checks 返回的检查结果
+            skill_rules: 技能专属规则，无 regex/legal_values 的纯自然语言规则追加为「需主观判断」
+        """
         lines = []
 
         if results.get("error"):

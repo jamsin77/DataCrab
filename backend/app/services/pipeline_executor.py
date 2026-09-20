@@ -109,7 +109,7 @@ async def _builtin_metadata_sync_enrich(
                 select(TableMetadata).where(TableMetadata.data_source_id == ds.id)
             )
             tables = tables_result.scalars().all()
-            from app.api.v1.endpoints.metadata import _do_ai_enrich
+            from app.api.v1.endpoints.metadata import _do_ai_enrich_silent as _do_ai_enrich
 
             # 筛选需要增强的表
             to_enrich = []

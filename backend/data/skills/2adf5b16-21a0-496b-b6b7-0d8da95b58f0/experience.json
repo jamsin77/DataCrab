@@ -273,6 +273,13 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'rows': 47, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020', 'year_2019'], 'target_ta"
+    },
+    {
+      "timestamp": "2026-09-17T11:08:23.561420",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'rows': 47, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020', 'year_2019'], 'target_ta"
     }
   ],
   "lessons": ""

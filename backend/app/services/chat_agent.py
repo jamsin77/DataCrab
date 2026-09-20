@@ -87,6 +87,7 @@ class ChatAgent(BaseAgent):
         "web_fetch",
         "get_llm_config", "save_llm_adapter", "delete_llm_adapter",
         "save_connector", "delete_connector",
+        "list_user_datasources",
     ])
     capabilities = ["chat", "platform_config", "web_fetch"]
 

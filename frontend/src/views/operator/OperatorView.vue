@@ -252,7 +252,7 @@
                     </div>
                   </div>
                   <div v-if="msg.inspectionReport" class="debug-msg-inspection-report">
-                    <el-collapse model-value="report">
+                    <el-collapse v-model="msg.inspectionExpanded">
                       <el-collapse-item name="report">
                         <template #title>
                           <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
@@ -1078,6 +1078,7 @@ function stopGenerate() {
 function openModifyDialog(op: any) {
   modifyTarget.value = op
   modifyInstruction.value = ''
+  reloadOpHistories(op.id)
   showModifyDialog.value = true
 }
 
@@ -1334,10 +1335,20 @@ function reloadOpHistories(opId: number | string) {
 }
 
 function onGenerateHistoryKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleGenerate()
+    return
+  }
   onHistoryKeyGeneric(e, generateHistory, generateHistoryIdx, generatePrompt, generateDraft)
 }
 
 function onModifyHistoryKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    handleModify()
+    return
+  }
   onHistoryKeyGeneric(e, modifyHistory, modifyHistoryIdx, modifyInstruction, modifyDraft)
 }
 
@@ -1530,7 +1541,7 @@ async function handleOpSend() {
             const failed = !r.success || inner.success === false || (r.error && String(r.error).trim()) || (inner.error && String(inner.error).trim())
             msg.runResult = { ...r, success: !failed, error: r.error || inner.error || '' }
             if (failed) {
-              const errMsg = String(r.error || inner.error || t('operator.unknownError')).substring(0, 300)
+              const errMsg = String(r.error || inner.error || t('operator.unknownError'))
               msg.content += `\n❌ ${t('operator.execFailedPrefix', { error: errMsg })}\n`
             } else if (!msg.content) {
               msg.content = t('operator.executionComplete')
@@ -1539,6 +1550,7 @@ async function handleOpSend() {
             msg.content += `\n\n${t('operator.errorHistory', { error: (data.content || t('operator.unknownError')) }).trimStart()}`
           } else if (data.type === 'inspection_report') {
             msg.inspectionReport = data.report
+            msg.inspectionExpanded = []
           } else if (data.type === 'inspecting') {
             msg.executingMsg = ''
             msg.content += `\n\n🔍 ${data.message || t('operator.inspectingData')}\n`
@@ -1574,11 +1586,6 @@ async function handleOpSend() {
             }
             warnText += `\n\n> ${t('operator.fixWarningReply')}`
             msg.content += warnText
-          } else if (data.type === 'platform_issue') {
-            msg.executingMsg = ''
-            msg.content += `\n\n🔧 **${t('operator.platformIssueDesc')}**\n\n${data.reason || data.message || ''}\n`
-            msg.thinkingOpen = false
-            thinkingDone = true
           } else if (data.type === 'done') {
             msg.executingMsg = ''
             if (!msg.content || msg.content.trim() === '') {

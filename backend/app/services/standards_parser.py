@@ -187,16 +187,19 @@ def parse_security_rules() -> List[Dict]:
 
 def match_columns(columns: List[str], std_fields: List[str]) -> List[str]:
     """根据标准的适用字段名匹配实际列名。
-    规则：精确匹配（忽略大小写）；或字段名（长度≥4）作为列名子串，避免短名误报。
+
+    规则：精确匹配（忽略大小写）；或字段名作为列名中的完整词（按 _ 分词）匹配。
+    例：'date' 能匹配 'create_date'（分词含 'date'）但不匹配 'updated_at'（分词不含 'date'）。
     """
     matched = []
     for col in columns:
         col_low = col.lower()
+        col_tokens = set(col_low.split("_"))
         for f in std_fields:
             if not f:
                 continue
             fl = f.lower()
-            if col_low == fl or (len(fl) >= 4 and fl in col_low):
+            if col_low == fl or fl in col_tokens:
                 matched.append(col)
                 break
     return matched

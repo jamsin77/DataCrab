@@ -607,6 +607,7 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        enable_thinking: bool = True,
     ) -> str:
         """与大模型对话（委托给 chat_with_messages）。"""
         return await self.chat_with_messages(
@@ -614,6 +615,7 @@ class LLMManager:
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
         )
 
     async def chat_with_messages(
@@ -622,11 +624,14 @@ class LLMManager:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        enable_thinking: bool = True,
     ) -> str:
         """多轮对话，支持 system/user/assistant 消息列表。
 
         推理型模型（如 DeepSeek-V4-Pro）输出可能全在 reasoning_content，
         content 为空——此时用 reasoning_content 兜底返回。
+
+        enable_thinking=False 时通过 extra_body 禁用推理（适用于 llm_generate 批量生成场景）。
         """
         if not self._initialized:
             await self.initialize()
@@ -635,13 +640,17 @@ class LLMManager:
         for cfg in self._model_configs():
             actual_model = self._resolve_model_for_cfg(cfg, model)
             try:
-                logger.info(f"LLM chat_with_messages: provider={cfg['provider']}, model={actual_model}, messages={len(messages)}")
+                logger.info(f"LLM chat_with_messages: provider={cfg['provider']}, model={actual_model}, messages={len(messages)}, thinking={enable_thinking}")
+                extra_kwargs = {}
+                if not enable_thinking:
+                    extra_kwargs["extra_body"] = {"enable_thinking": False}
                 response = await self._acreate_with_retry(
                     cfg,
                     model=actual_model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    **extra_kwargs,
                 )
                 _msg = response.choices[0].message
                 _content = _msg.content or ""
@@ -651,6 +660,38 @@ class LLMManager:
                 logger.info(f"[llm_generate] chat response: content_len={len(_content)}, reasoning_len={len(_reasoning)}, finish_reason={_finish}, input_len={_total_input}, max_tokens={max_tokens}")
                 logger.info(f"[llm_generate] content preview: {repr(_content[:300])}")
                 logger.info(f"[llm_generate] reasoning preview: {repr(_reasoning[:300])}")
+
+                # content 为空但 reasoning 有内容：推理型模型 reasoning 耗光 max_tokens
+                # → 加大 max_tokens 重试一次，让推理 + 输出都能放下
+                if not _content and _reasoning and _finish == "length":
+                    _retry_max = max((max_tokens or 8000) * 3, 24000)
+                    logger.warning(f"[llm_generate] content 空 + reasoning 耗光 max_tokens，加大到 {_retry_max} 重试...")
+                    try:
+                        _retry_resp = await self._acreate_with_retry(
+                            cfg,
+                            model=actual_model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=_retry_max,
+                            **({"extra_body": {"enable_thinking": False}} if not enable_thinking else {}),
+                        )
+                        _retry_msg = _retry_resp.choices[0].message
+                        _retry_content = _retry_msg.content or ""
+                        _retry_reasoning = getattr(_retry_msg, "reasoning_content", None) or ""
+                        _retry_finish = _retry_resp.choices[0].finish_reason
+                        logger.info(f"[llm_generate] 重试结果: content_len={len(_retry_content)}, reasoning_len={len(_retry_reasoning)}, finish_reason={_retry_finish}, max_tokens={_retry_max}")
+                        if _retry_content:
+                            return _retry_content
+                        if _retry_reasoning:
+                            return _retry_reasoning
+                    except Exception as _retry_e:
+                        logger.warning(f"[llm_generate] 加大 max_tokens 重试失败: {_retry_e}")
+
+                # reasoning_content 兜底
+                if not _content and _reasoning:
+                    logger.warning(f"[llm_generate] content 为空，用 reasoning_content 兜底（{len(_reasoning)} 字符）")
+                    return _reasoning
+
                 return _content
             except Exception as e:
                 errors.append(f"[{cfg['provider']}/{actual_model}] {e}")

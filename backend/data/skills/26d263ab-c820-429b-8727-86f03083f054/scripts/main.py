@@ -331,10 +331,28 @@ def _rule_extract_city(address: str) -> Optional[str]:
     if not addr:
         return None
 
+    # 跨省/多省地址（如"四川省、云南省、贵州省"）→ 跨省
+    province_mentions = re.findall(r'[\u4e00-\u9fa5]{2,4}(?:省|自治区|特别行政区)', addr)
+    if len(province_mentions) >= 2:
+        return "跨省"
+
+    # 平潭（平潭综合实验区/平潭县，省直辖但地理属福州）→ 福州市
+    if "平潭" in addr:
+        return "福州市"
+
     # 直辖市
     for short, full in [("北京", "北京市"), ("上海", "上海市"), ("天津", "天津市"), ("重庆", "重庆市")]:
         if short in addr:
             return full
+
+    # 海南省：海口/三亚/三沙/儋州为地级市，其余县市由省直辖（无地级市）
+    if addr.startswith("海南省"):
+        for gc, full in [("海口", "海口市"), ("三亚", "三亚市"), ("三沙", "三沙市"), ("儋州", "儋州市")]:
+            if gc in addr:
+                return full
+        if re.search(r'自治?县', addr) or re.search(r'海南省([\u4e00-\u9fa5]{2,4}市)', addr):
+            return "海南省直辖县级行政区"
+        return None
 
     # 特别行政区
     if "香港" in addr:
@@ -448,9 +466,17 @@ def _rule_extract_city(address: str) -> Optional[str]:
 
 def _post_process_city(city: str) -> str:
     """后处理：清理地级市名称，修正县级市、历史名称、前缀、乱码、多城市合并等问题"""
-    if not city or city in ("未知", "未分类", "分类失败", ""):
-        return city
+    if not city:
+        return "解析失败"
     city = str(city).strip()
+    if not city:
+        return "解析失败"
+
+    # 0.0 失败标记统一归一：无法识别 → "解析失败"；跨省/多省 → "跨省"
+    if city in ("未知", "未分类", "分类失败"):
+        return "解析失败"
+    if city in ("跨省", "多省", "多市", "跨多省"):
+        return "跨省"
 
     # 0. 多城市合并处理（如"葫芦岛市、秦皇岛市"→"葫芦岛市"，取第一个）
     for sep in ["、", ",", "，", "/"]:
@@ -592,7 +618,7 @@ def _post_process_city(city: str) -> str:
         "福安市": "宁德市", "福鼎市": "宁德市",
         "共青城市": "九江市", "庐山市": "九江市",
         "二连浩特市": "锡林郭勒盟", "锡林浩特市": "锡林郭勒盟",
-        "仙桃市": "湖北省直辖", "天门市": "湖北省直辖", "潜江市": "湖北省直辖",
+        "仙桃市": "湖北省直辖县级行政区", "天门市": "湖北省直辖县级行政区", "潜江市": "湖北省直辖县级行政区",
         "长垣市": "新乡市", "普宁市": "揭阳市",
     }
     if city in _COUNTY_MAP:
