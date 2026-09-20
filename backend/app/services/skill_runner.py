@@ -194,7 +194,7 @@ _BLOCKED_MODULES = frozenset({{
     "sqlite3", "psycopg2", "pymysql", "asyncpg", "sqlalchemy",
     "socket", "http", "http.client", "urllib",
     "multiprocessing", "signal", "gc",
-    "importlib", "builtins",
+    "importlib",
     "app",
 }})
 
