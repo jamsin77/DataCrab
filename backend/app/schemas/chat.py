@@ -35,6 +35,8 @@ class ChatMessageCreate(BaseModel):
     direct_execute: bool = False
     # 用户点「使用技能」时为 True，走技能调试模式调用技能
     use_skill: bool = False
+    # 演进模式：开启后才走数据/技能/流程匹配，否则直接路由 Agent 处理
+    evolution_mode: bool = False
     # 用户从 data_suggestion 中选择的数据（点"选择此数据"后发送消息时带上，跳过名称匹配和表匹配）
     selected_datasource_id: Optional[str] = None
     selected_table_name: Optional[str] = None

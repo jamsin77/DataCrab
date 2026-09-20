@@ -1018,6 +1018,11 @@ class DataProcessorAgent(BaseAgent):
             _ds_list = "\n".join(f"  - {d['name']} (UUID: {d['id']}, 类型: {d['type']})" for d in _all_ds)
             parts.append(f"用户所有可用数据源：\n{_ds_list}\n\n用户指令中提到的数据源名称，请从上述列表中找到对应UUID，再调用工具。")
 
+        # 注入技能经验总结（lessons）—— 之前 debug_lessons 是死字段，存了从不读取
+        _lessons = context.get("debug_lessons") or ""
+        if _lessons.strip():
+            parts.append(f"技能经验总结（从历史调试中归纳，请参考避免重复犯错）：\n{_lessons[:800]}")
+
         return "\n\n".join(parts) if parts else ""
 
     async def _execute_tools_with_progress(self, tool_calls: list, db, user_id, context: Dict):

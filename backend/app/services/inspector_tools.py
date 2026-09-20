@@ -478,14 +478,15 @@ class DataInspectorTools:
                             "suggestion": "去重或修正主键生成逻辑",
                         })
 
-                # DQ-UNI-003: 整行重复检查
+                # DQ-UNI-003: 整行重复检查（重复率>30% 升级为 error，触发修复回交）
                 dupe_count = total - len(df.drop_duplicates())
                 dupe_rate = dupe_count / total if total else 0
                 if dupe_count > 0 and dupe_rate > dupe_thr:
+                    _sev = "error" if dupe_rate > 0.3 else _dq_severity("DQ-UNI-003", "warning")
                     issues.append({
                         "dimension": "uniqueness",
                         "rule_id": "DQ-UNI-003",
-                        "severity": _dq_severity("DQ-UNI-003", "warning"),
+                        "severity": _sev,
                         "description": f"存在 {dupe_count} 条完全重复的行（{dupe_rate:.1%}，阈值 {dupe_thr:.0%}）",
                         "suggestion": "建议执行去重操作",
                     })
@@ -885,11 +886,12 @@ class DataInspectorTools:
             logger.error(f"_check_standards_from_df 失败: {e}")
             return {"dimension": "standards", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    def _check_quality_from_df(self, df, quality_dimensions=None, skill_rules=None) -> dict:
+    def _check_quality_from_df(self, df, quality_dimensions=None, skill_rules=None, table_name="") -> dict:
         """从 DataFrame 执行质量检查（同步，不加载 DB）
 
         Args:
             skill_rules: 技能专属规则，合并执行 skill_rules["dq"] 中带 regex 的规则
+            table_name: 表名（用于行数异常检测，附录明细表表名含「表A.x」时触发 SKILL-DQ-004）
         """
         import pandas as pd
         try:
@@ -898,6 +900,26 @@ class DataInspectorTools:
             dq_rules = _load_quality_rules()
             null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value") or 0.9)
             dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value") or 0.01
+
+            # SKILL-DQ-004: 附录明细表行数异常检测（确定性检查，不依赖 LLM）
+            # 附录明细表（表名含「表A.x」格式）正常行数 5-60 行，超 60 行判定为 LLM 幻觉
+            if table_name and re.search(r'表\s*[A-Z]\.\d+', table_name):
+                _max_rows = 60
+                for rule in (skill_rules or {}).get("dq", []) if skill_rules else []:
+                    if rule.get("id") == "SKILL-DQ-004" and rule.get("threshold"):
+                        try:
+                            _max_rows = int(rule["threshold"])
+                        except (ValueError, TypeError):
+                            pass
+                        break
+                if total > _max_rows:
+                    issues.append({
+                        "dimension": "validity",
+                        "rule_id": "SKILL-DQ-004",
+                        "severity": "error",
+                        "description": f"附录明细表 '{table_name}' 行数 {total} 超过上限 {_max_rows}，疑似 LLM 提取产生重复/幽灵行",
+                        "suggestion": "检查提取脚本的 OCR/文本归并逻辑，剔除重复行和幽灵行",
+                    })
 
             # 完整性
             if not quality_dimensions or "completeness" in quality_dimensions:
@@ -1224,7 +1246,7 @@ class DataInspectorTools:
         # 同步检查（纯 pandas，共享同一 DataFrame）
         profile = self._profile_from_df(df)
         standards = self._check_standards_from_df(df, skill_rules=skill_rules)
-        quality = self._check_quality_from_df(df, skill_rules=skill_rules)
+        quality = self._check_quality_from_df(df, skill_rules=skill_rules, table_name=table_name)
         security = self._check_security_from_df(df, skill_rules=skill_rules)
 
         return {

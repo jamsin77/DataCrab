@@ -24,6 +24,14 @@ export const useChatStore = defineStore('chat', () => {
   const selectedData = ref<{ datasource_id: string; datasource_name: string; table_name: string; target_datasource_id?: string; target_datasource_name?: string; target_table_name?: string; target_write_mode?: string; skill_id?: string; skill_name?: string; skill_type?: string } | null>(null)
   let abortController: AbortController | null = null
 
+  function _getEvolutionMode(): boolean {
+    return localStorage.getItem('dc_evolution_mode') === 'true'
+  }
+
+  function _setEvolutionMode(on: boolean) {
+    localStorage.setItem('dc_evolution_mode', String(on))
+  }
+
   function _restoreMetadata(msgs: ChatMessage[]) {
     for (const msg of msgs) {
       if (!msg.meta) continue
@@ -378,6 +386,7 @@ export const useChatStore = defineStore('chat', () => {
         _skillName,
         _skillType,
         useSkill,
+        _getEvolutionMode(),
       )
       if (!directExecute) {
         await _syncFromDB()
@@ -457,5 +466,7 @@ export const useChatStore = defineStore('chat', () => {
     sendDirectly,
     stopGeneration,
     clearSelectedData,
+    _getEvolutionMode,
+    _setEvolutionMode,
   }
 })

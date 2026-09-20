@@ -1794,9 +1794,10 @@ function flushSkillDebugSave() {
 watch(debugMessages, scheduleSaveSkillDebug, { deep: true })
 
 // 响应式滚动：content/thinking 变化时自动滚到底部（补 SSE 事件手动 nextTick 的遗漏）
+// force=false：受 skillPinnedToBottom 约束，用户往上翻时不抢滚动
 watch(
   () => debugMessages.value.map(m => (m.content || '') + (m.thinking || '') + (m.executingMsgs ? m.executingMsgs.length : 0)).join('|'),
-  () => { nextTick(() => scrollSkillDebugToBottom(true)) }
+  () => { nextTick(() => scrollSkillDebugToBottom()) }
 )
 let debugAbortController: AbortController | null = null
 const skillPinnedToBottom = ref(true)
@@ -1839,7 +1840,7 @@ function scrollThinkingBodyToBottom(msgIdx: number) {
 function onSkillListScroll() {
   const el = debugMsgListRef.value
   if (!el) return
-  skillPinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  skillPinnedToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 8
 }
 
 // 执行流式：在消息列表中开一条 live 助手消息，返回其索引
@@ -1879,7 +1880,7 @@ function finalizeExecMessage(idx: number, result: any) {
     msg.runResult = result
     if (!msg.content) msg.content = result?.success ? t('skill.execComplete') : t('skill.execFailed')
   }
-  nextTick(() => scrollSkillDebugToBottom(true))
+  nextTick(() => scrollSkillDebugToBottom())
 }
 
 /** 公共 debug SSE 事件处理（三处 handler 共享）。
@@ -2058,7 +2059,7 @@ function processDebugSSEEvent(
       }
       msg.thinkingOpen = false
       archiveExecutingMsg(msg)
-      nextTick(() => scrollSkillDebugToBottom(true))
+      nextTick(() => scrollSkillDebugToBottom())
       return 'break'
     case 'error':
       msg.content += `\n\n` + t('skill.errorMsg', { msg: data.content || t('skill.unknownError') })
@@ -2879,7 +2880,7 @@ async function handleDebugSend() {
   const assistantIdx = debugMessages.value.length
   debugMessages.value.push({ role: 'assistant', content: '', llmContent: '', thinking: '', thinkingOpen: false, created_at: new Date().toISOString() })
   skillPinnedToBottom.value = true
-  nextTick(() => scrollSkillDebugToBottom(true))
+  nextTick(() => scrollSkillDebugToBottom())
 
   let scriptChanged = false
   let streamOk = false
@@ -2952,7 +2953,7 @@ async function handleDebugSend() {
     debugStreaming.value = false
     debugAbortController = null
     await nextTick()
-    scrollSkillDebugToBottom(true)
+    scrollSkillDebugToBottom()
   }
 
   // 脚本被 AI 更新后，自动重新执行一次技能，便于直接查看运行结果

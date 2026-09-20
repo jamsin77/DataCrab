@@ -114,6 +114,7 @@ export const chatApi = {
     selectedSkillName?: string,
     selectedSkillType?: string,
     useSkill?: boolean,
+    evolutionMode?: boolean,
   ): Promise<void> {
     const token = localStorage.getItem('access_token')
 
@@ -128,6 +129,7 @@ export const chatApi = {
         content,
         direct_execute: directExecute || false,
         use_skill: useSkill || false,
+        evolution_mode: evolutionMode || false,
         selected_datasource_id: selectedDatasourceId || null,
         selected_table_name: selectedTableName || null,
         target_datasource_id: targetDatasourceId || null,

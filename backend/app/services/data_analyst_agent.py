@@ -512,4 +512,7 @@ class DataAnalystAgent(BaseAgent):
         if _all_ds:
             _ds_list = "\n".join(f"  - {d['name']} (UUID: {d['id']}, 类型: {d['type']})" for d in _all_ds)
             parts.append(f"用户所有可用数据源：\n{_ds_list}")
+        _lessons = context.get("debug_lessons") or ""
+        if _lessons.strip():
+            parts.append(f"技能经验总结（从历史调试中归纳，请参考避免重复犯错）：\n{_lessons[:800]}")
         return "\n\n".join(parts) if parts else ""

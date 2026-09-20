@@ -5,6 +5,7 @@
 
 handler 签名统一：async def handler(args, db, user_id, context) -> str
 """
+import asyncio
 import json
 import os
 from collections import OrderedDict
@@ -827,20 +828,22 @@ async def _llm_vision_handler(args, db, user_id, context):
                     ".bmp": "image/bmp", ".webp": "image/webp", ".gif": "image/gif", ".tiff": "image/tiff"}
         mime = mime_map.get(ext, "image/jpeg")
 
-        raw_bytes = p.read_bytes()
+        raw_bytes = await asyncio.to_thread(p.read_bytes)
         try:
             import io as _io
             from PIL import Image as _PILImage
-            img = _PILImage.open(_io.BytesIO(raw_bytes))
-            if img.width > 2048 or img.height > 2048:
-                ratio = min(2048 / img.width, 2048 / img.height)
-                new_size = (int(img.width * ratio), int(img.height * ratio))
-                img = img.resize(new_size, _PILImage.LANCZOS)
-            buf = _io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(buf, format="JPEG", quality=90)
-            image_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+            def _compress_img():
+                img = _PILImage.open(_io.BytesIO(raw_bytes))
+                if img.width > 2048 or img.height > 2048:
+                    ratio = min(2048 / img.width, 2048 / img.height)
+                    new_size = (int(img.width * ratio), int(img.height * ratio))
+                    img = img.resize(new_size, _PILImage.LANCZOS)
+                buf = _io.BytesIO()
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.save(buf, format="JPEG", quality=90)
+                return base64.b64encode(buf.getvalue()).decode("utf-8")
+            image_data = await asyncio.to_thread(_compress_img)
             mime = "image/jpeg"
         except Exception:
             image_data = base64.b64encode(raw_bytes).decode("utf-8")
@@ -1058,34 +1061,45 @@ async def _read_file_handler(args, db, user_id, context):
             return json.dumps({"error": f"read_file 不支持读取视频文件({ext})。请用 extract_video_info / extract_keyframes。"}, ensure_ascii=False)
 
         if ext == ".json":
-            return json.dumps({"format": "json", "content": json.loads(p.read_text(encoding="utf-8"))}, ensure_ascii=False, default=str)
+            content = await asyncio.to_thread(lambda: json.loads(p.read_text(encoding="utf-8")))
+            return json.dumps({"format": "json", "content": content}, ensure_ascii=False, default=str)
         elif ext == ".csv":
             import pandas as _pd
-            df = _pd.read_csv(p)
-            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+            def _read_csv_sync():
+                df = _pd.read_csv(p)
+                return {"columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+            _r = await asyncio.to_thread(_read_csv_sync)
+            return json.dumps({"format": "csv", **_r}, ensure_ascii=False, default=str)
         elif ext in (".xlsx", ".xls"):
             import pandas as _pd
-            df = _pd.read_excel(p)
-            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+            def _read_excel_sync():
+                df = _pd.read_excel(p)
+                return {"columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+            _r = await asyncio.to_thread(_read_excel_sync)
+            return json.dumps({"format": "csv", **_r}, ensure_ascii=False, default=str)
         elif ext == ".parquet":
             import pandas as _pd
-            df = _pd.read_parquet(p)
-            return json.dumps({"format": "csv", "columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}, ensure_ascii=False, default=str)
+            def _read_parquet_sync():
+                df = _pd.read_parquet(p)
+                return {"columns": list(df.columns), "rows": df.fillna("").to_dict(orient="records")}
+            _r = await asyncio.to_thread(_read_parquet_sync)
+            return json.dumps({"format": "csv", **_r}, ensure_ascii=False, default=str)
         elif ext == ".pdf":
             # pdf_page_images 参数：渲染指定页为图片（供 llm_vision 识别）
             page_images = args.get("pdf_page_images")
             if page_images:
-                result = _render_pdf_pages(str(p), page_images, int(args.get("dpi", 200)))
+                result = await asyncio.to_thread(_render_pdf_pages, str(p), page_images, int(args.get("dpi", 200)))
                 return json.dumps({"format": "images", **result}, ensure_ascii=False)
-            text, total_pages = _extract_pdf_text(str(p))
+            text, total_pages = await asyncio.to_thread(_extract_pdf_text, str(p))
             return json.dumps({"format": "text", "content": text, "total_pages": total_pages}, ensure_ascii=False)
         elif ext == ".docx":
-            text = _extract_docx_text(str(p))
+            text = await asyncio.to_thread(_extract_docx_text, str(p))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
         elif ext == ".doc":
             return json.dumps({"error": "read_file 不支持旧版 .doc 文件，请转换为 .docx 或 .txt"}, ensure_ascii=False)
         else:
-            return json.dumps({"format": "text", "content": p.read_text(encoding="utf-8", errors="replace")}, ensure_ascii=False)
+            text = await asyncio.to_thread(lambda: p.read_text(encoding="utf-8", errors="replace"))
+            return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -1247,7 +1261,7 @@ async def _extract_video_info_handler(args, db, user_id, context):
         if not is_video_file(str(p)):
             return json.dumps({"error": f"不支持的视频格式: {p.suffix}"}, ensure_ascii=False)
 
-        result = probe_video(str(p))
+        result = await asyncio.to_thread(probe_video, str(p))
         result["video_path"] = str(p)
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as e:
@@ -1278,7 +1292,7 @@ async def _extract_keyframes_handler(args, db, user_id, context):
         if output_dir:
             _validate_file_path(output_dir, allowed_dirs)
 
-        frames = _extract(str(p), max_frames=max_frames, output_dir=output_dir, method=method)
+        frames = await asyncio.to_thread(_extract, str(p), max_frames=max_frames, output_dir=output_dir, method=method)
         return json.dumps({"success": True, "frames": frames, "count": len(frames)}, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

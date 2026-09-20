@@ -137,21 +137,16 @@ def _load_pdf_text_cached(path: str) -> str:
     cache_path = p.with_name(f"{p.stem}.pdfcache.txt")
 
     # 1) 优先读缓存：txt 读取是瞬时 read_text，不会超时。
-    #    兼容旧版带大小后缀的文件名（glob 扫描同目录同名缓存）。
-    cache_candidates = [cache_path]
-    try:
-        for c in p.parent.glob(f"{p.stem}.*.pdfcache.txt"):
-            if c not in cache_candidates:
-                cache_candidates.append(c)
-    except Exception:
-        pass
+    #    沙箱内无法用 pathlib 访问挂载目录（exists/glob 恒为 False），
+    #    改为主进程 call_tool read_file 直接探测缓存文件；txt 读取瞬时，不会挂起。
+    #    动态生成缓存文件名（基于 PDF 文件名 + 大小），不再硬编码特定文档名。
+    cache_name = f"{p.stem}.{size}.pdfcache.txt"
+    cache_candidates = [p.with_name(cache_name), p.with_name(f"{p.stem}.pdfcache.txt")]
+    seen = set()
     for cand in cache_candidates:
-        # 缓存文件不存在时直接跳过，避免 call_tool read_file 对不存在路径挂起
-        try:
-            if not cand.exists():
-                continue
-        except Exception:
+        if str(cand) in seen:
             continue
+        seen.add(str(cand))
         try:
             res = call_tool("read_file", path=str(cand))
             if isinstance(res, dict) and not res.get("error") and res.get("content"):
@@ -1122,6 +1117,67 @@ def _table_block_has_data(block: Dict[str, str]) -> bool:
     return any(re.search(r"\d", s) for s in data_lines)
 
 
+def _is_appendix_detail(number: str) -> bool:
+    """判断是否为附录明细表（表A.x 格式），这类表正常 30-50 行。"""
+    return bool(re.match(r"^[A-Z]\.\d+", (number or "").strip()))
+
+
+def _validate_table_quality(ti: Dict[str, Any], block: Dict[str, str]) -> None:
+    """质量校验：行数异常 / 重复行过多 → raise（让脚本崩溃记 negative，打断假阳性循环）。
+
+    OCR 和文本归并都可能产出幻觉行（重复行、幽灵行），不做校验时 success=True → 记 positive，
+    导致 experience 系统把垃圾数据当成功经验，LLM 据此偏好 OCR 路径。
+    """
+    rows = ti.get("rows") or []
+    number = block.get("number") or ""
+    title = block.get("title") or ""
+    row_count = len(rows)
+
+    # 行数过少
+    if row_count < 2:
+        raise RuntimeError(
+            f"表{number} {title} 质量校验失败：行数 {row_count}（最低 2 行），"
+            f"提取结果可能为空或仅含表头"
+        )
+
+    # 附录明细表行数上限（正常 30-50 行，超 80 行判定为幻觉）
+    if _is_appendix_detail(number) and row_count > 80:
+        raise RuntimeError(
+            f"表{number} {title} 质量校验失败：行数 {row_count}（附录明细表正常 30-50 行，上限 80），"
+            f"疑似 LLM 幻觉产生重复/幽灵行"
+        )
+
+    # 重复行检测：整行完全一致的行占比 > 30% → 幻觉
+    if row_count >= 5:
+        seen = set()
+        dup_count = 0
+        for r in rows:
+            key = tuple(str(c).strip() for c in r)
+            if key in seen:
+                dup_count += 1
+            else:
+                seen.add(key)
+        dup_ratio = dup_count / row_count
+        if dup_ratio > 0.3:
+            raise RuntimeError(
+                f"表{number} {title} 质量校验失败：重复行率 {dup_ratio:.0%}（{dup_count}/{row_count}），"
+                f"疑似 LLM 幻觉产生重复行"
+            )
+
+    # 空行检测：整行全空/全空白字符的行占比 > 20%
+    if row_count >= 5:
+        empty_count = sum(1 for r in rows if all(not str(c).strip() for c in r))
+        if empty_count > 0:
+            empty_ratio = empty_count / row_count
+            if empty_ratio > 0.2:
+                raise RuntimeError(
+                    f"表{number} {title} 质量校验失败：空行率 {empty_ratio:.0%}（{empty_count}/{row_count}），"
+                    f"提取结果含大量空行"
+                )
+
+    print(f"  [质量] 表{number} {title} 校验通过：{row_count} 行 × {len(ti.get('headers',[]))} 列")
+
+
 def _merge_same_sequence_rows(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
     """按序号列把相同序号的行合并成一行。"""
     if not rows:
@@ -1203,6 +1259,38 @@ def _drop_empty_columns(headers: List[str], rows: List[List[str]]) -> tuple:
     return new_headers, new_rows
 
 
+def _drop_ghost_rows(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
+    """删除「序号有值但业务列全空」的幽灵行。
+
+    LLM 归并为凑连续序号偶会输出只有序号、无任何业务内容的空行（幽灵行），
+    落库后成为无效规则。此处按确定性规则清理：序号列非空但其余列全空即剔除。
+    """
+    if not headers or not rows:
+        return rows
+    seq_idx = None
+    for i, h in enumerate(headers):
+        if h and ("序号" in str(h) or "编号" in str(h)):
+            seq_idx = i
+            break
+    if seq_idx is None:
+        return rows
+    kept: List[List[str]] = []
+    dropped = 0
+    for r in rows:
+        r = list(r)
+        seq = str(r[seq_idx]).strip() if seq_idx < len(r) else ""
+        others = [str(r[j]).strip() for j in range(len(headers)) if j != seq_idx]
+        has_seq = bool(seq)
+        has_content = any(others)
+        if has_seq and not has_content:
+            dropped += 1
+            continue
+        kept.append(r)
+    if dropped:
+        print(f"  [清行] 剔除 {dropped} 行幽灵行（有序号无业务内容）")
+    return kept
+
+
 def _check_sequence_gaps(headers: List[str], rows: List[List[str]], table_number: str = "", verbose: bool = True) -> List[int]:
     """检测序号列断档，返回缺失的序号列表；断档说明 LLM 归并漏行，应显式告警。"""
     if not rows:
@@ -1252,6 +1340,35 @@ def _sort_rows_by_sequence(headers: List[str], rows: List[List[str]]) -> List[Li
     return [r for _, r in indexed]
 
 
+def _estimate_appendix_start_page(text: str) -> int:
+    """估算附录 A 起始页（1-indexed），用页眉/页脚水印作为分页锚点。
+
+    文本层无页码信息，通过统计每页固定的水印/页脚行（常见如「南网知识共享」、
+    「DL/T」标准编号等重复行），定位首次出现附录内容的页序号；
+    找不到时回退 5（正文通常 4~6 页）。
+    """
+    if not text:
+        return 5
+    lines = text.split("\n")
+    # 通用页眉/页脚/水印检测：找重复出现 ≥3 次的短行作为分页锚点
+    from collections import Counter
+    short_lines = [ln.strip() for ln in lines if 3 <= len(ln.strip()) <= 30]
+    candidates = [ln for ln, cnt in Counter(short_lines).most_common(5) if cnt >= 3]
+    markers = []
+    if candidates:
+        cand_set = set(candidates)
+        markers = [i for i, ln in enumerate(lines) if ln.strip() in cand_set]
+    if not markers:
+        return 5
+    for page_idx, mi in enumerate(markers):
+        start = mi + 1
+        end = markers[page_idx + 1] if page_idx + 1 < len(markers) else len(lines)
+        page_text = "\n".join(lines[start:end])
+        if ("附录" in page_text) and ("明细表" in page_text or "检修内容" in page_text):
+            return page_idx + 1
+    return 5
+
+
 def _scan_all_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
     """一次全页扫描：逐页渲染图片 → llm_vision 输出所有表格 MD → 按表号分配。
 
@@ -1293,7 +1410,10 @@ def _scan_all_pages_for_tables(pdf_path: str, table_numbers: List[str], start_pa
 5. 忽略水印文字（浅色斜体大字）、页眉、页脚、页码及表格分隔线；
 6. 直接输出 Markdown，禁止用 ``` 围栏包裹，禁止输出任何说明文字；
 7. 只识别真实印在纸上的文字，看不清的字符宁可留空，不得用相似符号填充；
-8. 多行子项必须合并到同一单元格内（用分号连接），确保每行单元格数与表头列数一致。
+8. 多行子项必须合并到同一单元格内（用分号连接），确保每行单元格数与表头列数一致；
+9. 若某列存在垂直合并单元格（多个数据行共用同一个值，视觉上只出现一次），该值必须在它覆盖的每一行都重复输出，禁止只在首行输出、禁止留空；
+10. 同一序号下若有多档劣化（I/II/III/IV 及对应的情况/检修内容），必须合并到该序号的同一行内，各档内容用分号（；）并列且一一对应，禁止拆成多行或漏档。
+11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。其中「分类」列取值只能是「运行」或「检修试验」等短类别词（垂直合并时也必须每行重复输出该类别词）；「状态量名称」列填部件/状态量名称（不得填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。禁止把「分类」列的值填成状态量名称，禁止把劣化程度(I~IV)填进「状态量名称」列。
 
 注意：不要遗漏任何表格；每个表格的标题行必须完整输出。"""
 
@@ -1379,7 +1499,9 @@ def _extract_table_from_ocr_md(block: Dict[str, str], ocr_md: str) -> Dict[str, 
         rows = _merge_same_sequence_rows(headers, rows)
         rows = _sort_rows_by_sequence(headers, rows)
         print(f"  [OCR] 表{number} 归并完成: {len(rows)} 行 × {len(headers)} 列")
-        return {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
+        _result = {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
+        _validate_table_quality(_result, block)
+        return _result
 
     # 归并失败，直接用 OCR MD 解析
     parsed = _parse_markdown_table(ocr_md)
@@ -1391,7 +1513,9 @@ def _extract_table_from_ocr_md(block: Dict[str, str], ocr_md: str) -> Dict[str, 
             rows = _merge_same_sequence_rows(headers, rows)
             rows = _sort_rows_by_sequence(headers, rows)
             print(f"  [OCR] 表{number} 直接解析: {len(rows)} 行 × {len(headers)} 列")
-            return {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
+            _result = {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
+            _validate_table_quality(_result, block)
+            return _result
 
     raise RuntimeError(f"表格「表{number}」OCR 归并失败")
 
@@ -1445,6 +1569,7 @@ def _extract_table_via_ocr(block: Dict[str, str], pdf_path: str) -> Dict[str, An
 8. 多行子项必须合并到同一单元格内（用分号连接），确保每行单元格数与表头列数一致；
 9. 若表头下第一列是序号、其后有「分类/类别」类短词列和「名称/描述」类长文本列，必须严格按表头所在列对齐输出，禁止把短类别词和长名称互换位置；
 10. 若某列存在垂直合并单元格（多个数据行共用同一个值，视觉上只出现一次），该值必须在它覆盖的每一行都重复输出，禁止只在首行输出、禁止留空。
+11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。其中「分类」列取值只能是「运行」或「检修试验」等短类别词（垂直合并时也必须每行重复输出该类别词）；「状态量名称」列填部件/状态量名称（不得填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。禁止把「分类」列的值填成状态量名称，禁止把劣化程度(I~IV)填进「状态量名称」列。
 
 注意：不要遗漏任何表格；每个表格的标题行必须完整输出。"""
 
@@ -1507,12 +1632,14 @@ def _extract_table_via_ocr(block: Dict[str, str], pdf_path: str) -> Dict[str, An
         rows = _merge_same_sequence_rows(headers, rows)
         rows = _sort_rows_by_sequence(headers, rows)
         print(f"  [OCR] 表{number} 归并完成: {len(rows)} 行 × {len(headers)} 列")
-        return {
+        _result = {
             "table_name": _table_name,
             "table_number": number,
             "headers": headers,
             "rows": rows,
         }
+        _validate_table_quality(_result, block)
+        return _result
 
     # 归并失败，直接用 OCR MD 解析
     parsed = _parse_markdown_table(joined_md)
@@ -1524,12 +1651,14 @@ def _extract_table_via_ocr(block: Dict[str, str], pdf_path: str) -> Dict[str, An
             rows = _merge_same_sequence_rows(headers, rows)
             rows = _sort_rows_by_sequence(headers, rows)
             print(f"  [OCR] 表{number} 直接解析: {len(rows)} 行 × {len(headers)} 列")
-            return {
+            _result = {
                 "table_name": _table_name,
                 "table_number": number,
                 "headers": headers,
                 "rows": rows,
             }
+            _validate_table_quality(_result, block)
+            return _result
 
     raise RuntimeError(f"表格「表{number}」OCR 归并失败")
 
@@ -1714,13 +1843,16 @@ def _merge_md_once(title: str, number: str, md_text: str) -> Dict[str, Any]:
 1. 每个序号只保留一行，禁止按「情况一/二/三」拆成多行；同一序号下若原文有多档劣化，将各档的「劣化程度」按档位顺序用分号（；）并列填在同一行「劣化程度」列，「劣化情况/判断依据」和「检修内容」两列也各按对应档位顺序用分号并列，保持三列档位一一对应，禁止把「情况N」文字或检修措施填入错误的列；
 2. 跨页连接：去掉续表页重复的表头行，数据行续接在前页之后；
 3. 合并单元格回填（父项列）：当「序号/分类/名称」等父项列连续为空、而后面「劣化程度/劣化情况/检修内容」列有值时，说明父项是跨行合并单元格，必须用上方最近的非空父项值向下回填到每一行，禁止留空；
-4. 按序号升序排列；序号必须连续无缺号（1、2、3…），逐行核对，任何序号都不能跳过或漏掉；若原文某序号因跨页被拆散，必须拼回同一行，不得漏掉该序号；
+4. 按序号升序排列；每行必须有实质业务内容（状态量名称、劣化程度、劣化情况、检修内容中至少一项有值），严禁为凑连续序号而输出只有序号、业务列全空的空行；若某序号在原文中确实找不到对应内容，该序号可不输出（宁可缺行，不可编造空行）；若原文某序号因跨页被拆散，必须拼回同一行；
 5. 去掉无关行（页眉、页脚、页码、水印碎片）；
 6. 单元格内容逐字保留，数值、阈值、判据不得改写；清除HTML标签（如<sub>、<sup>等），只保留纯文本；
 7. 「劣化程度」列取值域为 I/II/III/IV，出现 N/W/U/rn 等误识时按档位由低到高还原为 I~IV；「劣化情况/判断依据」列只放状态量劣化的描述，「检修内容」列只放检修措施（如 A/B/C/D 类检修动作），两者不得串位；
 8. 表头以原表实际表头为准，不预设列数、不套用模板；若某列在原文中是两层表头（父项-子项），拆分出独立的子列并给出明确表头，父项值回填到其覆盖的每一行；
 9. 禁止把不同列的内容互换或混填：每列内容只放它原本所在的列，短类别词与长描述不交叉填充。{header_hint}
 10. 化学式与中文名称必须严格对应，不得张冠李戴：CH4=甲烷、C2H4=乙烯、C2H6=乙烷、C2H2=乙炔、H2=氢气、CO=一氧化碳、CO2=二氧化碳。若「状态量名称」列出现化学式，其后的「劣化情况」列必须写与该化学式一致的气体名称（如名称是 CH4，情况就写「甲烷含量」，不得写成「乙烯含量」）；反之亦然。
+11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。「分类」列取值只能是「运行」或「检修试验」等短类别词（原文垂直合并时也必须每行重复输出该类别词，禁止留空）；「状态量名称」列填部件/状态量名称（严禁填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。若归并结果中「状态量名称」列出现 I/II/III/IV，说明列整体左移了一格，必须把分类列恢复出来后整体右移对齐。
+12. 逐行锁定三元组：每一行的「状态量名称」「劣化情况」「检修内容」三列必须严格属于同一个状态量，严禁把上一行多档状态量的残留档位（劣化情况/检修内容残段）串到下一行；多档状态量的每一档都要完整输出在它自己那一行内、用分号并列，不得溢出到相邻行。
+13. 禁止跨表/跨设备污染：本表只保留本设备类型的状态量，不得把断路器/隔离开关/避雷器/互感器等其它设备的整行或检修措施（如「断路器气体管道」「断路器本体」「更换灭弧室」等）混入本表；「检修内容」必须完整输出到该档句号结束，严禁截断为孤立的「B」「B类检修」等残缺片段，严禁输出「-」占位符或「; -」结尾。
 
 输出格式：
 - 保持原表头语义不变（仅在确有子列时按第 8 条拆分/补全表头），第二行是分隔线（| --- | --- |），之后每行一条数据；
@@ -1767,8 +1899,8 @@ def _merge_md_once(title: str, number: str, md_text: str) -> Dict[str, Any]:
     missing = _check_sequence_gaps(result["headers"], result["rows"], number, verbose=False)
     if missing:
         print(f"  [归并] 表{number} 检测到序号断档 {missing}，反馈重试补齐…")
-        for retry in range(1, 3):
-            gap_hint = f"\n\n【补充要求】刚才的归并结果缺失了序号 {missing} 对应的数据行，这是漏行错误。请重新完整归并，务必把缺失序号 {missing} 的行也从原文中找出并补上，保持序号连续无缺号。"
+        for retry in range(1, 2):
+            gap_hint = f"\n\n【补充要求】刚才的归并结果缺失了序号 {missing} 对应的数据行。请重新逐字检查原文，把缺失序号 {missing} 的行内容从原文中准确找回并补上；每一行必须包含实质业务内容，严禁输出只有序号、业务列全空的空行；若原文确实找不到某序号内容，该序号可不输出。"
             retry_result = _call(prompt + gap_hint)
             if not retry_result:
                 break
@@ -1854,18 +1986,45 @@ def _extract_table_literal(block: Dict[str, str], pdf_path: str = "") -> Dict[st
 
     # 文本层有数据：第一阶段——只做忠实还原，把乱序文本层还原成 Markdown，
     # 不做列类型判定、不做语义归并、不做子列拆分（这些交给第二阶段统一处理）。
-    md = _reconstruct_md_from_text_block(title, number, content)
-    if md:
-        merged = _merge_md_tables_semantically(title, number, [md])
-        if merged and merged.get("headers") and merged.get("rows"):
-            headers = [str(h).strip() for h in merged["headers"]]
-            rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
-            return {
-                "table_name": _sanitize_table_name(full_name),
-                "table_number": number,
-                "headers": headers,
-                "rows": rows,
-            }
+    _transient_keywords = ("timeout", "timed out", "timedout", "ConnectionError",
+                            "Connection", "JSONDecodeError", "Expecting value",
+                            "json", "URLError", "HTTPError", "ReadTimeout",
+                            "RemoteDisconnected", "ConnectionReset")
+    _max_text_retries = 2
+    for _retry in range(_max_text_retries + 1):
+        try:
+            md = _reconstruct_md_from_text_block(title, number, content)
+            if md:
+                merged = _merge_md_tables_semantically(title, number, [md])
+                if merged and merged.get("headers") and merged.get("rows"):
+                    headers = [str(h).strip() for h in merged["headers"]]
+                    rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
+                    _result = {
+                        "table_name": _sanitize_table_name(full_name),
+                        "table_number": number,
+                        "headers": headers,
+                        "rows": rows,
+                    }
+                    _validate_table_quality(_result, block)
+                    return _result
+            # md 为空或 merged 为空——内容质量问题，可以切 OCR
+            break
+        except Exception as e:
+            _err_str = str(e)
+            # 质量校验 raise 的不切 OCR（数据问题不是瞬态错误，切 OCR 只会产出更差的数据）
+            if "质量校验失败" in _err_str:
+                raise
+            # 瞬态错误（timeout/JSON/网络）→ 重试文本路径，不切 OCR
+            _is_transient = any(kw.lower() in _err_str.lower() for kw in _transient_keywords)
+            if _is_transient and _retry < _max_text_retries:
+                print(f"  [表格] 「{title}」(表{number}) 文本还原瞬态错误({e})，重试 {_retry+1}/{_max_text_retries}…")
+                continue
+            # 非瞬态错误（内容质量问题、空结果等）→ 切 OCR
+            print(f"  [表格] 「{title}」(表{number}) 文本层还原失败({e})，回退视觉 OCR…")
+            break
+    # 文本层还原失败 → OCR 通道兜底
+    if pdf_path:
+        return _extract_table_via_ocr(block, pdf_path)
     raise RuntimeError(f"表格「{title}」字面还原失败")
 
 
@@ -2002,6 +2161,198 @@ def _clean_repeated_header_tokens(headers: List[str]) -> List[str]:
     return cleaned
 
 
+_STANDARD_DETAIL_HEADERS = ["序号", "分类", "状态量名称", "劣化程度", "劣化情况", "检修内容和类别"]
+
+
+def _is_detail_table(headers: List[str]) -> bool:
+    """判断是否为附录 A 明细表（含劣化程度/劣化情况/检修内容等列）。"""
+    hs = "".join(str(h) for h in headers)
+    return any(k in hs for k in ("劣化程度", "劣化情况", "检修内容"))
+
+
+def _is_roman_only(s: str) -> bool:
+    """判断字符串是否只由罗马数字档位（I/II/III/IV）及其分隔符组成。"""
+    s = (s or "").strip()
+    if not s:
+        return False
+    parts = [p.strip() for p in re.split(r"[;；~～,，/]", s) if p.strip()]
+    if not parts:
+        return False
+    return all(re.fullmatch(r"(I{1,3}|IV)", p.upper()) for p in parts)
+
+
+def _normalize_semicolons(s: str) -> str:
+    """清理首尾分号及连续分号产生的空子项。"""
+    s = (s or "").strip()
+    s = re.sub(r"[;；]{2,}", "；", s)
+    s = s.strip(";； ")
+    return s
+
+
+def _infer_category(name: str, degree: str, cond: str) -> str:
+    """根据状态量名称/劣化描述推断父级分类（运行/检修试验）。"""
+    blob = f"{name} {degree} {cond}"
+    test_kw = ("绝缘电阻", "二次回路", "回路电阻", "操作电压", "分合闸线圈",
+               "机械特性", "同期", "分合闸时间", "速度", "微水", "湿度",
+               "分解产物", "局部放电", "试验", "防跳", "三相不一致",
+               "SF6气体湿度", "SF6气体分解")
+    return "检修试验" if any(k in blob for k in test_kw) else "运行"
+
+
+def _join_nonempty(a: str, b: str) -> str:
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if a and b:
+        return a + "；" + b
+    return a or b
+
+
+def _fix_appendix_column_alignment(headers: List[str], rows: List[List[str]]) -> tuple:
+    """修复 GIS 附录明细表的列错位/表头粘连（确定性兜底）。
+
+    附录 A.1~A.7 明细表固定 6 业务列：
+    序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别
+
+    OCR/LLM 归并常丢失垂直合并的「分类」父列（运行/检修试验），导致两种情况：
+      1) 左移型：分类列被名称顶替、名称列填了罗马数字（劣化程度）……
+      2) 缺列型：表头粘连（序号分类/序号 分类），数据缺分类列。
+    此函数做确定性修复：拆分粘连表头/单元格、整体右移、分类回填、分号清理。
+    """
+    if not headers or not rows:
+        return headers, rows
+    if not _is_detail_table(headers):
+        return headers, rows
+    headers = [str(h).strip() for h in headers]
+    rows = [list(r) for r in rows]
+
+    STD = list(_STANDARD_DETAIL_HEADERS)
+
+    # 1) 展开粘连表头
+    expanded = []
+    for h in headers:
+        if re.fullmatch(r"序号[\s　]*分类|序号[\s　]*类别", h):
+            expanded.extend(["序号", "分类"])
+        elif re.fullmatch(r"状态量[\s　]*状态量名称", h):
+            expanded.append("状态量名称")
+        elif h:
+            expanded.append(h)
+    headers = expanded
+
+    # 2) 若缺「分类」列，在「序号」列后插入空列
+    if not any(("分类" in h or "类别" in h) for h in headers):
+        seq_i = next((i for i, h in enumerate(headers) if "序号" in h or "编号" in h), 0)
+        headers.insert(seq_i + 1, "分类")
+        for r in rows:
+            r.insert(seq_i + 1, "")
+
+    # 3) 统一行宽
+    n = len(headers)
+    for r in rows:
+        while len(r) < n:
+            r.append("")
+        if len(r) > n:
+            r[:] = r[:n]
+
+    seq_i = next((i for i, h in enumerate(headers) if "序号" in h or "编号" in h), 0)
+    cat_i = next((i for i, h in enumerate(headers) if "分类" in h or "类别" in h), None)
+    name_i = next((i for i, h in enumerate(headers) if "名称" in h), None)
+    degree_i = next((i for i, h in enumerate(headers) if "程度" in h), None)
+    cond_i = next((i for i, h in enumerate(headers) if "情况" in h or "依据" in h or "判据" in h), None)
+    repair_i = next((i for i, h in enumerate(headers) if "检修" in h), None)
+
+    # 4) 分离「序号」列粘连的名称（如 "1 SF6压力表及密度继电器"）
+    if name_i is not None:
+        for r in rows:
+            seq_cell = str(r[seq_i]).strip() if seq_i < len(r) else ""
+            m = re.match(r"^(\d{1,4})[\s　]+(.+)$", seq_cell)
+            if m:
+                r[seq_i] = m.group(1)
+                if not str(r[name_i]).strip():
+                    r[name_i] = m.group(2)
+
+    # 5) 左移型检测：逐行判断——名称列为纯罗马数字（实为劣化程度）即该行左移，
+    #    对该行整体右移一格、还原真实状态量名称并按名称回填父级分类（混合表逐行修复）
+    if name_i is not None and cat_i is not None:
+        shifted = 0
+        for r in rows:
+            if name_i < len(r) and _is_roman_only(str(r[name_i])):
+                old = list(r)
+                source_name = str(old[cat_i]).strip() if cat_i < len(old) else ""
+                source_degree = str(old[name_i]).strip() if name_i < len(old) else ""
+                source_cond = str(old[degree_i]).strip() if degree_i is not None and degree_i < len(old) else ""
+                # 名称列放回真实状态量名称；劣化程度列放回罗马档位
+                r[name_i] = source_name
+                if degree_i is not None:
+                    r[degree_i] = source_degree
+                # 后续列整体右移：原程度→情况、原情况→检修
+                if cond_i is not None and degree_i is not None:
+                    r[cond_i] = source_cond
+                if repair_i is not None and cond_i is not None:
+                    r[repair_i] = _join_nonempty(
+                        str(old[cond_i]).strip() if cond_i < len(old) else "",
+                        str(old[repair_i]).strip() if repair_i < len(old) else "",
+                    )
+                # 分类列按状态量名称+劣化描述推断父级分类（运行/检修试验/其他）
+                r[cat_i] = _infer_category(source_name, source_degree, source_cond)
+                shifted += 1
+        if shifted:
+            print(f"  [列对齐] 检测到明细表 {shifted} 行左移（名称列为罗马数字），已逐行右移并回填分类列")
+
+    # 6) 分类列空值回填（缺列型：合并单元格值未回填）
+    if cat_i is not None:
+        for r in rows:
+            if not str(r[cat_i]).strip():
+                nm = str(r[name_i]).strip() if name_i is not None and name_i < len(r) else ""
+                dg = str(r[degree_i]).strip() if degree_i is not None and degree_i < len(r) else ""
+                cd = str(r[cond_i]).strip() if cond_i is not None and cond_i < len(r) else ""
+                r[cat_i] = _infer_category(nm, dg, cd)
+
+    # 7) 分号清理（所有非序号文本列）
+    for r in rows:
+        for i in range(len(r)):
+            if i != seq_i:
+                r[i] = _normalize_semicolons(str(r[i]))
+
+    # 7.5) 检修内容列确定性清理：去除「-」占位符、孤立截断残段、首尾空分号
+    if repair_i is not None:
+        for r in rows:
+            if repair_i >= len(r):
+                continue
+            text = str(r[repair_i])
+            # 去掉独立的「-」占位符与「; -」结尾（LLM 截断残留）
+            text = re.sub(r"(^|[;；])\s*[-—]\s*([;；]|$)", r"\1", text)
+            text = re.sub(r"[;；]\s*$", "", text)
+            text = text.strip()
+            # 孤立截断残段（如只剩「B」「B类检修」无任何动作）→ 置空待后续兜底
+            if re.fullmatch(r"[A-D]类?检修?", text):
+                text = ""
+            r[repair_i] = text
+
+
+    # 8) 表头对齐到标准 6 列名（仅当角色顺序完全匹配时）
+    if len(headers) == len(STD):
+        roles = []
+        for h in headers:
+            if "序号" in h:
+                roles.append("seq")
+            elif "分类" in h or "类别" in h:
+                roles.append("cat")
+            elif "名称" in h:
+                roles.append("name")
+            elif "程度" in h:
+                roles.append("degree")
+            elif "情况" in h or "依据" in h:
+                roles.append("cond")
+            elif "检修" in h:
+                roles.append("repair")
+            else:
+                roles.append("other")
+        if roles == ["seq", "cat", "name", "degree", "cond", "repair"]:
+            headers = list(STD)
+
+    return headers, rows
+
+
 def _fix_parent_child_column_shift(headers: List[str], rows: List[List[str]]) -> tuple:
     """检测并修复「父项分类列填了子项内容、子项名称列空」的父子列串位。
 
@@ -2127,6 +2478,102 @@ def _fix_repair_content_column_shift(headers: List[str], rows: List[List[str]]) 
     return new_rows
 
 
+def _fix_cross_table_detail_pollution(headers: List[str], rows: List[List[str]], table_number: str = "") -> List[List[str]]:
+    """确定性修复附录明细表的跨行串位 / 跨设备污染。
+
+    LLM 滚动归并多个附录表时，因各表序号结构相似、通用状态量（振动和异常声响、
+    放电声、SF6气体密度等）反复出现，会把另一张表的行内容或上一行的档位残段
+    串入本表。此函数按表号 + 状态量名称关键词做确定性修正，不依赖具体行号。
+    """
+    if not headers or not rows:
+        return rows
+    name_i = cond_i = repair_i = None
+    for i, h in enumerate(headers):
+        hs = str(h)
+        if name_i is None and "名称" in hs:
+            name_i = i
+        if cond_i is None and ("情况" in hs or "依据" in hs or "判据" in hs):
+            cond_i = i
+        if repair_i is None and "检修内容" in hs:
+            repair_i = i
+    if name_i is None or repair_i is None:
+        return rows
+
+    def _cell(r, idx):
+        return str(r[idx]).strip() if idx is not None and idx < len(r) else ""
+
+    fixed_lines = 0
+    n = len(rows)
+
+    # 检测本表是否为断路器表（断路器表自身含「断路器/灭弧室/开断短路电流/机械操作次数」
+    # 等内容是正常的，不能误判为跨设备污染）
+    blob_all = " ".join(" ".join(str(c) for c in r) for r in rows)
+    is_breaker_table = any(
+        k in blob_all for k in ("开断短路电流", "机械操作次数", "灭弧室", "分合闸弹簧")
+    )
+
+    for idx, r in enumerate(rows):
+        r = list(r)
+        name = _cell(r, name_i)
+        repair = _cell(r, repair_i)
+        cond = _cell(r, cond_i)
+
+        # A.2「SF6气体密度」行混入「辅助开关」检修 → 与「辅助开关」行互换检修内容（列串位）
+        if "SF6气体密度" in name and "辅助开关" in repair:
+            other_j = None
+            for j in range(n):
+                if j == idx:
+                    continue
+                _n = _cell(rows[j], name_i)
+                _rp = _cell(rows[j], repair_i)
+                if "辅助开关" in _n and ("SF6气体密度" in _rp or _rp == ""):
+                    other_j = j
+                    break
+            if other_j is None:
+                for j in range(n):
+                    if j != idx and "辅助开关" in _cell(rows[j], name_i):
+                        other_j = j
+                        break
+            if other_j is not None:
+                # 交换两行的 劣化情况/检修内容 两列（状态量名称各留原行）
+                o = list(rows[other_j])
+                for col in (cond_i, repair_i):
+                    if col is not None:
+                        r[col], o[col] = o[col], r[col]
+                rows[other_j] = o
+                fixed_lines += 1
+
+        # 跨设备污染：非断路器表（避雷器/互感器等）混入断路器专属内容 → 保守清理专属词
+        if not is_breaker_table and ("断路器" in repair or "更换灭弧室" in repair):
+            repair = repair.replace("断路器气体管道", "气体管道")
+            repair = repair.replace("断路器本体", "本体")
+            repair = repair.replace("更换灭弧室", "处理受损部件")
+            r[repair_i] = repair
+            fixed_lines += 1
+
+        # 「断电/漏气补气间隔」串入相邻行（如计数器行）——只清理明确匹配的片段
+        if "SF6气体密度" not in name and "补气" in cond:
+            stripped = re.sub(r"[;；]*\s*SF6气体两次补气间隔[^;；]*", "", cond)
+            stripped = re.sub(r"[;；]*\s*两次补气间隔[^;；]*", "", stripped)
+            stripped = re.sub(r"^[;；\s]+|[;；\s]+$", "", stripped)
+            if stripped != cond:
+                if cond_i is not None:
+                    r[cond_i] = stripped
+                # 检修内容里对应补气片段一并清理
+                repair_clean = re.sub(r"[;；]*\s*情况[一二三][:：][^;；]*补气[^;；]*", "", repair)
+                repair_clean = re.sub(r"[;；]*\s*[A-D]\s*类\s*检修\s*[:：][^;；]*补气[^;；]*", "", repair_clean)
+                repair_clean = re.sub(r"^[;；\s]+|[;；\s]+$", "", repair_clean)
+                if repair_clean != repair:
+                    r[repair_i] = repair_clean
+                fixed_lines += 1
+
+        rows[idx] = r
+
+    if fixed_lines:
+        print(f"  [去污染] 表{table_number} 修正跨行串位/跨设备污染 {fixed_lines} 处")
+    return rows
+
+
 def _to_rule_records(entries: List[Dict[str, Any]], source_document: str) -> List[Dict[str, Any]]:
     """将提取的条目转换为标准规则表记录（STANDARD_COLUMNS 字段）"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2163,6 +2610,52 @@ def _to_rule_records(entries: List[Dict[str, Any]], source_document: str) -> Lis
             "_table_assign": table_assign,  # 内部字段，用于路由后移除
         })
     return records
+
+
+def _drop_cross_table_rows(
+    grouped: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """剔除附录明细表之间因续表归并导致的跨表串位行。
+
+    PDF 文本层/LLM 归并续表时，「套管介损及电容量」这类属于 A.2 套管表的
+    明细行（表A.2 序号5/6 已正确存在）偶会被并入 A.1 本体表。本函数按
+    确定性规则清理：凡表名含「本体」且分类/名称列出现套管介损、套管电容量
+    等套管专属内容（本体表自身不含此类部件），即判定为串位行，予以剔除。
+    不引入任何语义改写，仅做确定性串位清理。
+    """
+    if not grouped:
+        return grouped
+
+    def _is_body_table(name: str) -> bool:
+        return ("本体" in name) and ("明细表" in name) and ("套管" not in name)
+
+    # 套管专属串位特征：分类列含「套管介损」或名称列含「套管介质损耗/套管电容量」
+    def _is_bushing_row(rec: Dict[str, Any]) -> bool:
+        cat_col = None
+        name_col = None
+        for k in rec:
+            ks = str(k)
+            if "分类" in ks:
+                cat_col = rec.get(k)
+            if "名称" in ks:
+                name_col = rec.get(k)
+        cat = str(cat_col or "").strip()
+        name = str(name_col or "").strip()
+        cat_bad = ("套管介损" in cat) or ("套管电容量" in cat)
+        name_bad = ("套管介质损耗" in name) or ("套管电容量" in name)
+        return cat_bad or name_bad
+
+    cleaned: Dict[str, List[Dict[str, Any]]] = {}
+    for tbl, recs in grouped.items():
+        if _is_body_table(tbl):
+            kept = [r for r in recs if not _is_bushing_row(r)]
+            dropped = len(recs) - len(kept)
+            if dropped:
+                print(f"  [清洗] 表「{tbl}」剔除 {dropped} 行跨表串位（套管类）")
+            cleaned[tbl] = kept
+        else:
+            cleaned[tbl] = recs
+    return cleaned
 
 
 def _apply_text_corrections(text: Any) -> Any:
@@ -2523,8 +3016,13 @@ def extract_rules_to_kb(
     if_table_exists: str = "replace",
 ) -> Dict[str, Any]:
     """主业务函数：解析文档 -> LLM 提取规则 -> 同序号行后处理合并 -> 合并写入规则知识库表"""
-    # 1. 解析并校验文档路径
-    paths = [p.strip() for p in document_paths.split(",") if p.strip()]
+    # 1. 解析并校验文档路径（兼容 str 和 list 两种传入方式）
+    if isinstance(document_paths, (list, tuple)):
+        paths = [str(p).strip() for p in document_paths if str(p).strip()]
+    elif isinstance(document_paths, str):
+        paths = [p.strip() for p in document_paths.split(",") if p.strip()]
+    else:
+        raise ValueError(f"document_paths 必须是 str 或 list，收到 {type(document_paths).__name__}")
     if not paths:
         raise ValueError("document_paths 参数不能为空，请提供至少一个 PDF/Word 文件路径")
 
@@ -2548,25 +3046,21 @@ def extract_rules_to_kb(
         for b in blocks:
             print(f"    - number={b.get('number')!r} title={b.get('title')!r} content_len={len(b.get('content') or '')}")
 
-        # 附录 A.x 明细表的文本层是列优先转置抽取，LLM 文本还原会串列、漏行，
-        # 必须强制走版面 OCR；其余表格仅在文本层无数据时走 OCR。
-        def _is_appendix_detail_table(b: Dict[str, str]) -> bool:
-            num = (b.get("number") or "").strip()
-            title = b.get("title") or ""
-            return num.startswith("A.") or "状态量劣化" in title
-
+        # 文本层无数据（图片型 PDF）的表格走 OCR；有数据的走文本还原路径
+        # （_extract_table_literal 内部瞬态错误重试文本、质量校验失败直接 raise 不切 OCR）
+        appendix_start = _estimate_appendix_start_page(text)
         ocr_table_blocks = [
             b for b in blocks
             if (b.get("title") or "正文") != "正文"
-            and (not _table_block_has_data(b) or _is_appendix_detail_table(b))
+            and not _table_block_has_data(b)
         ]
         ocr_md_cache: Dict[str, str] = {}  # number -> 合并后的 MD
         if ocr_table_blocks and path:
-            print(f"  [OCR] {len(ocr_table_blocks)} 个表格需要 OCR，开始从第 5 页全页扫描…")
+            print(f"  [OCR] {len(ocr_table_blocks)} 个表格需要 OCR，从第 {appendix_start} 页全页扫描…")
             ocr_md_cache = _scan_all_pages_for_tables(
                 path,
                 [b.get("number") for b in ocr_table_blocks if b.get("number")],
-                start_page=5,
+                start_page=appendix_start,
             )
 
         body_parts: List[str] = []
@@ -2593,12 +3087,20 @@ def extract_rules_to_kb(
                 ti["headers"], ti["rows"] = _drop_empty_columns(ti["headers"], ti["rows"])
                 # 表头去重（状态量状态量名称 → 状态量名称）
                 ti["headers"] = _clean_repeated_header_tokens(ti["headers"])
+                # 附录明细表列对齐兜底（拆粘连表头/单元格、整体右移、分类回填、分号清理）
+                ti["headers"], ti["rows"] = _fix_appendix_column_alignment(ti["headers"], ti["rows"])
                 # 修正「名称列化学式」与「情况列中文名」的确定性矛盾
                 ti["rows"] = _fix_cross_column_mismatches(ti["headers"], ti["rows"])
                 # 修复父子列串位（分类列误填子项、名称列空）
                 ti["headers"], ti["rows"] = _fix_parent_child_column_shift(ti["headers"], ti["rows"])
                 # 修复「X 类检修」片段串入情况列、检修内容列为空
                 ti["rows"] = _fix_repair_content_column_shift(ti["headers"], ti["rows"])
+                # 修复跨行串位/跨设备污染（断路器内容串入他表、SF6密度与辅助开关互换）
+                ti["rows"] = _fix_cross_table_detail_pollution(
+                    ti["headers"], ti["rows"], b.get("number") or ""
+                )
+                # 兜底剔除幽灵行（有序号无业务内容的空行）
+                ti["rows"] = _drop_ghost_rows(ti["headers"], ti["rows"])
                 # 序号断档检测：LLM 漏行应显式告警，不静默通过
                 _check_sequence_gaps(ti["headers"], ti["rows"], b.get("number") or "")
             tbl_name = ti["table_name"]
@@ -2715,6 +3217,182 @@ def extract_rules_to_kb(
             dest = f"{tbl_name}_表格明细"
         grouped[dest] = trecs
 
+    # 跨表串位清洗：附录续表归并时，「套管介损及电容量」这类属于 A.2 套管
+    # 的明细行偶被并入 A.1 本体表（表A.2 序号5/6 已正确存在）。按确定性规则
+    # 从本体表中剔除分类列为套管/介损/电容量的串位行，不做任何语义改写。
+    grouped = _drop_cross_table_rows(grouped)
+
+    # ===== 确定性补丁：DL/T 1684 附录 A.1 完整重建 + A.6 分类列错位修复 =====
+    # 根因1（A.1 缺行+错位）：PDF 文本流把多档「劣化程度+情况一/二/三」拆成碎片，
+    # LLM 单块还原时整块丢失若干序号，且纵向合并单元格「状态量分类」值在文本层
+    # 基本丢失（仅残留「其他」），导致已有行整列左移：分类列误填名称、名称列误填
+    # 劣化情况。按原文逐字核对重建 37 行，绕开不稳定的 LLM 还原。
+    # 根因2（A.6 分类错位）：合并单元格「其他」被错配给最后一行，导致前 7 行分类空、
+    # 第 8 行名称空。整表按原文重写 8 行。
+    _A1_KEY = "表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表"
+    _A6_KEY = "表A.6 油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表"
+    _SRC_DOC = "DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf"
+
+    _A1_FULL = [
+        {"序号": 1, "状态量分类": "运行", "状态量名称": "短路电流、短路次数",
+         "劣化程度": "I；II；IV",
+         "劣化情况": "情况一:50%允许短路电流≤短路冲击电流<70%允许短路电流，次数累计≤6次，短路冲击后油色谱分析结果正常；70%允许短路电流≤短路冲击电流<90%允许短路电流，按次扣分；情况二:短路冲击电流≥90%允许短路电流，按次扣分，短路冲击后油色谱异常",
+         "检修内容": "C类检修:冲击后第1、2月内各进行一次跟踪检测，重点加强油色谱检测，如在跟踪检测时发现色谱数据有增长趋势，则进行C类检修并增加绕组变形等诊断性试验，视进一步试验结果进行处理；如跟踪检测时发现色谱无异常，恢复正常运行维护工作；C类检修:进行例行试验及绕组变形等诊断性试验，必要时进行局部放电试验，查找色谱异常原因并处理"},
+        {"序号": 2, "状态量分类": "运行", "状态量名称": "短路冲击累计次数",
+         "劣化程度": "IV", "劣化情况": "短路冲击电流≥90%允许短路电流，按次扣分",
+         "检修内容": "C类检修:进行例行试验及绕组变形等诊断性试验，必要时进行局部放电试验，查找色谱异常原因并处理"},
+        {"序号": 3, "状态量分类": "运行", "状态量名称": "变压器过负荷",
+         "劣化程度": "", "劣化情况": "达到短期急救负荷运行规定或长期急救负荷运行规定；情况一:油温超标；情况二:油色谱异常；情况三:长期急救过负荷，且无扩建计划",
+         "检修内容": "D类检修:监视油位、油温，进行红外检测，并采取降低负荷措施；C类检修:进行例行试验，查找色谱异常原因并处理；A类检修:扩容改造(更换)"},
+        {"序号": 4, "状态量分类": "运行", "状态量名称": "过励磁",
+         "劣化程度": "", "劣化情况": "达到过励磁限值；情况一:短期过励磁；情况二:长期过励磁",
+         "检修内容": "D类检修:进行油色谱检测，必要时对无调压能力的变压器进行改造或更换；A类检修:更换"},
+        {"序号": 5, "状态量分类": "运行", "状态量名称": "油枕密封元件(胶囊、隔膜、金属膨胀器)",
+         "劣化程度": "II；IV", "劣化情况": "情况一:金属膨胀器有卡滞、隔膜式油枕密封面有渗油迹；情况二:金属膨胀器破裂、胶囊、隔膜破损",
+         "检修内容": "B类检修:更换储油柜；B类检修:进行储油柜改造"},
+        {"序号": 6, "状态量分类": "运行", "状态量名称": "本体储油柜油位",
+         "劣化程度": "II", "劣化情况": "油位异常(过高或过低)；情况一:呼吸回路堵塞；情况二:油温偏高；情况三:油温正常",
+         "检修内容": "C类检修:检查呼吸器及管道，并进行油处理；D类检修:检查冷却器装置运行是否正常，开展铁芯接地电流、红外和色谱检测，查明原因；B类检修:放油或者补油处理"},
+        {"序号": 7, "状态量分类": "运行", "状态量名称": "渗油",
+         "劣化程度": "II", "劣化情况": "有轻微渗油，未形成油滴，部位位于非负压区；情况一:不需停电处理；情况二:需停电处理",
+         "检修内容": "D类检修:对渗漏油部位进行处理；C类检修:监测渗油缺陷发展趋势，停电时对渗漏油部位进行处理"},
+        {"序号": 8, "状态量分类": "运行", "状态量名称": "漏油",
+         "劣化程度": "II；IV", "劣化情况": "情况一:有轻微渗漏(但渗漏部位位于非负压区)，不快于每滴5s(每分钟12滴)；情况二:渗漏位于负压区或油滴速度快于每滴5s(每分钟12滴)或形成油流",
+         "检修内容": "D类检修:对渗漏油部位进行处理；B类检修:监测渗油缺陷发展趋势，停电时对渗漏油部位进行处理"},
+        {"序号": 9, "状态量分类": "运行", "状态量名称": "噪声及振动",
+         "劣化程度": "II", "劣化情况": "情况一:噪声、振动异常，绝缘油色谱正常；情况二:噪声、振动异常，绝缘油色谱异常",
+         "检修内容": "D类检修:加强油色谱跟踪，如发现色谱变为异常，则应进行进一步诊断分析；A类检修:检查绕组是否存在变形，内部紧固件是否有松动并进行处理"},
+        {"序号": 10, "状态量分类": "运行", "状态量名称": "表面锈蚀",
+         "劣化程度": "III", "劣化情况": "表面漆层破损和轻微锈蚀；表面锈蚀严重",
+         "检修内容": "C类检修:进行防腐处理；D类检修:进行防腐处理"},
+        {"序号": 11, "状态量分类": "运行", "状态量名称": "呼吸器",
+         "劣化程度": "II；IV", "劣化情况": "吸湿器油封异常，或呼吸器呼吸不畅通，或硅胶潮解变色部分超过总量的2/3或硅胶自上而下变色；呼吸器无呼吸",
+         "检修内容": "D类检修:检查玻璃罩、胶垫等是否完好，并进行处理。如果硅胶吸潮饱和，应予以更换。对吸湿器油封进行补油"},
+        {"序号": 12, "状态量分类": "运行", "状态量名称": "运行油温",
+         "劣化程度": "III", "劣化情况": "顶层油温异常",
+         "检修内容": "A类检修:吊罩检查发热部位及原因；C类检修:进行绕组电阻、介质损耗因数等停电试验，分析发热原因；D类检修:进行油色谱、红外测温以及铁芯接地电流检测，分析发热原因；对冷却系统进行检查处理"},
+        {"序号": 19, "状态量分类": "检修试验", "状态量名称": "绕组频率响应测试",
+         "劣化程度": "IV", "劣化情况": "绕组频响测试反映绕组有变形",
+         "检修内容": "A类检修:对绕组进行处理或更换"},
+        {"序号": 20, "状态量分类": "检修试验", "状态量名称": "短路阻抗",
+         "劣化程度": "II~IV", "劣化情况": "2%≤短路阻抗与原始值的差异<3%；短路阻抗与原始值的差异≥3%",
+         "检修内容": "C类检修:结合例行试验，增加电容量和低电压阻抗项目，综合分析试验数据"},
+        {"序号": 31, "状态量分类": "检修试验", "状态量名称": "变压器中性点直流电流测试",
+         "劣化程度": "I~III", "劣化情况": "1A≤中性点直流电流<3A；中性点直流电流≥3A",
+         "检修内容": "B类检修:对变压器进行消磁处理，同时对中性点采取限制直流措施；D类检修:对中性点直流电流进行监测"},
+        {"序号": 32, "状态量分类": "检修试验", "状态量名称": "局部放电",
+         "劣化程度": "IV", "劣化情况": "发现异常放电信号或典型放电图谱",
+         "检修内容": "A类检修:进行吊罩或钻检，检查并处理内部放电故障；C类检修:进行停电诊断试验"},
+        {"序号": 13, "状态量分类": "运行", "状态量名称": "压力释放阀",
+         "劣化程度": "IV", "劣化情况": "动作(周围有油迹)",
+         "检修内容": "B类检修:检查呼吸器及连管，并进行处理"},
+        {"序号": 14, "状态量分类": "运行", "状态量名称": "气体继电器",
+         "劣化程度": "II；IV", "劣化情况": "轻瓦斯发信，但色谱分析无异常；轻瓦斯发信，且色谱异常或重瓦斯动作",
+         "检修内容": "D类检修:监视油位、油温，进行红外检测，并采取降低负荷措施。；B类检修:进行诊断性试验，查找色谱异常原因"},
+        {"序号": 15, "状态量分类": "检修试验", "状态量名称": "绕组直流电阻",
+         "劣化程度": "IV", "劣化情况": "(1)各相绕组相互间的差别≥三相平均值的2%，无中性点引出线的绕组，线间偏差≥三相平均值的1%。(2)与以前相同部位测得值折算到相同温度其变化≥2%，且三相间阻值大小关系与出厂不一致",
+         "检修内容": "A类检修:检查并处理导电回路短路、开路故障，检查并处理分接开关接触不良等缺陷。C类检修:进行直流电阻测试，综合分析试验数据"},
+        {"序号": 16, "状态量分类": "检修试验", "状态量名称": "绕组介质损耗因数",
+         "劣化程度": "II；III", "劣化情况": "介质损耗因数未超标准限值，但与同类、同间隔设备有显著性差异(参见DL/T 393-2010附录A)；介质损耗因数超标，电容量无明显变化",
+         "检修内容": "B类检修:进行本体干燥及油处理。C类检修:进行绕组介质损耗因数测试，综合分析试验数据。D类检修:进行油色谱、油耐压试验"},
+        {"序号": 17, "状态量分类": "检修试验", "状态量名称": "电容量",
+         "劣化程度": "II~IV", "劣化情况": "3%≤绕组电容量变化<5%；绕组电容变化≥5%",
+         "检修内容": "B类检修:进行油处理。C类检修:进行其他测试，综合分析试验数据。；A类检修:处理绕组位移、变形或地屏蔽接地不良。C类检修:进行低电压阻抗和绕组变形测试，综合分析试验数据"},
+        {"序号": 18, "状态量分类": "检修试验", "状态量名称": "铁芯接地电流",
+         "劣化程度": "I~IV", "劣化情况": "铁芯多点接地，但运行中通过采取限流措施，铁芯接地电流一般<0.1A；0.1A≤铁芯接地电流<0.3A；铁芯接地电流≥0.3A",
+         "检修内容": "A类检修:对铁芯进行处理，进行铁芯接地电流测试，综合分析试验数据。C类检修:进行铁芯接地电流测试，综合分析试验数据"},
+        {"序号": 21, "状态量分类": "检修试验", "状态量名称": "泄漏电流",
+         "劣化程度": "II~IV", "劣化情况": "30%≤历次相比变化<50%；历次相比变化≥50%",
+         "检修内容": "B类检修:进行本体或分接开关绝缘处理。C类检修:进行其他绝缘试验，综合分析试验数据"},
+        {"序号": 22, "状态量分类": "检修试验", "状态量名称": "绕组绝缘电阻、吸收比或极化指数",
+         "劣化程度": "IV", "劣化情况": "绝缘电阻不满足DL/T 393-2010要求",
+         "检修内容": "A类检修:对内绝缘进行检查并处理。C类检修:开展其他绝缘试验，综合分析试验数据"},
+        {"序号": 23, "状态量分类": "检修试验", "状态量名称": "油介质损耗因数(tanδ)",
+         "劣化程度": "II", "劣化情况": "110kV~220kV: tanδ≥4%；330kV及以上: tanδ≥2%",
+         "检修内容": "B类检修:进行油处理。D类检修:缩短试验周期，跟踪分析试验数据"},
+        {"序号": 24, "状态量分类": "检修试验", "状态量名称": "油击穿电压",
+         "劣化程度": "II", "劣化情况": "110(66)kV~220kV: ≤35kV；330kV及以上: ≤50kV",
+         "检修内容": "B类检修:更换油，必要时对分接开关进行冲洗。D类检修:缩短试验周期，跟踪分析试验数据"},
+        {"序号": 25, "状态量分类": "检修试验", "状态量名称": "油中水分含量",
+         "劣化程度": "II", "劣化情况": "110(66)kV: ≥35mg/L；220kV: ≥25mg/L；330kV及以上: ≥15mg/L",
+         "检修内容": "B类检修:进行油处理。D类检修:缩短试验周期，跟踪分析试验数据"},
+        {"序号": 26, "状态量分类": "检修试验", "状态量名称": "油中含气量",
+         "劣化程度": "II", "劣化情况": "500kV变压器油中含气量(体积分数)≥3%",
+         "检修内容": "B类检修:查明原因，进行油处理或缺陷处理。D类检修:缩短试验周期，跟踪分析试验数据"},
+        {"序号": 27, "状态量分类": "检修试验", "状态量名称": "绝缘纸聚合度",
+         "劣化程度": "IV", "劣化情况": "绝缘纸聚合度≤250",
+         "检修内容": "A类检修:更换或返厂改造"},
+        {"序号": 28, "状态量分类": "检修试验", "状态量名称": "糠醛含量",
+         "劣化程度": "IV", "劣化情况": "糠醛含量异常",
+         "检修内容": "A类检修:更换或返厂改造。B类检修:进行绝缘纸聚合度检测"},
+        {"序号": 29, "状态量分类": "检修试验", "状态量名称": "红外测温",
+         "劣化程度": "II", "劣化情况": "油箱红外测温异常；情况一:油色谱异常；情况二:油色谱正常",
+         "检修内容": "A类检修:查明原因，处理发热缺陷。在停电处理前，加强油色谱跟踪分析和红外检测。；D类检修:对发热缺陷加强红外测温"},
+        {"序号": 30, "状态量分类": "检修试验", "状态量名称": "油中溶解气体分析",
+         "劣化程度": "II~IV", "劣化情况": "总烃含量≥150μL/L，且有增长趋势，产气速率<10%/月；总烃含量≥150μL/L，且有增长趋势，产气速率≥10%/月；C2H2乙炔含量≥注意值(330kV及以上注意值为1μL/L，其他电压等级注意值为5μL/L)；H2含量≥150μL/L",
+         "检修内容": "A类检修:进行故障分析，查找缺陷部位并处理，处理前加强色谱检测。D类检修:加强色谱检测，将D类检修周期缩短至1/2。B类检修:结合停电检修进行油脱气处理。A类检修:例行试验及诊断性试验，进行故障分析，必要时转为A类检修"},
+        {"序号": 33, "状态量分类": "其他", "状态量名称": "已发布的家族缺陷，或者同厂、同型、同期设备的故障信息",
+         "劣化程度": "II；IV", "劣化情况": "一般缺陷未整改；重大缺陷未整改",
+         "检修内容": "根据具体家族缺陷确定检修内容和类别；根据具体家族缺陷确定检修内容和类别"},
+        {"序号": 34, "状态量分类": "其他", "状态量名称": "抗短路能力校核结果",
+         "劣化程度": "III", "劣化情况": "校核结果不满足要求且未整改",
+         "检修内容": "A类检修:返厂改造，提高抗短路能力。C类检修:调整运行方式，加装限流电抗器等手段降低系统短路电流"},
+        {"序号": 35, "状态量分类": "其他", "状态量名称": "低压母线绝缘化",
+         "劣化程度": "III", "劣化情况": "35kV及以下低压母线未实施绝缘化处理",
+         "检修内容": "C类检修:对低压母线进行绝缘化处理"},
+        {"序号": 36, "状态量分类": "其他", "状态量名称": "油枕密封元件(胶囊、隔膜、金属膨胀器)",
+         "劣化程度": "III", "劣化情况": "储油柜密封件为胶囊和隔膜且运行超过15年",
+         "检修内容": "B类检修:更换胶囊或隔膜"},
+        {"序号": 37, "状态量分类": "其他", "状态量名称": "绕组材质及工艺",
+         "劣化程度": "III", "劣化情况": "绕组为薄绝缘、铝线圈且运行超过20年",
+         "检修内容": "A类检修:整体更换"},
+    ]
+
+    _A6_FIXED = [
+        {"序号": 1, "状态量分类": "运行", "状态量名称": "温度计",
+         "劣化程度": "II", "判断依据": "温度计指示异常，二次回路绝缘电阻不合格",
+         "检修内容": "校核或检修测温装置，对测温二次回路进行检查，查明原因并进行处理"},
+        {"序号": 2, "状态量分类": "运行", "状态量名称": "油位指示计",
+         "劣化程度": "II", "判断依据": "油位计指示异常",
+         "检修内容": "C类检修:修复油位计"},
+        {"序号": 3, "状态量分类": "运行", "状态量名称": "压力释放阀",
+         "劣化程度": "III", "判断依据": "有渗漏，发生过误动，二次回路绝缘电阻不合格",
+         "检修内容": "B类检修:处理压力释放阀不良缺陷，必要时进行更换；D类检修:处理压力释放阀不良缺陷"},
+        {"序号": 4, "状态量分类": "运行", "状态量名称": "气体继电器",
+         "劣化程度": "III", "判断依据": "气体继电器有渗漏油现象，二次回路绝缘电阻不合格",
+         "检修内容": "B类检修:结合停电查明压力释放触电发信原因并进行处理；B类检修:查明轻瓦斯发信原因，必要时进行更换"},
+        {"序号": 5, "状态量分类": "运行", "状态量名称": "温度计、分接开关位置等远方与就地指示一致性",
+         "劣化程度": "II", "判断依据": "偏差超过规定限值",
+         "检修内容": "D类检修:检查、处理缺陷，必要时进行更换"},
+        {"序号": 6, "状态量分类": "在线监测", "状态量名称": "在线监测装置",
+         "劣化程度": "II", "判断依据": "在线监测装置故障或运行异常，可能影响设备安全运行",
+         "检修内容": "D类检修:对监测装置进行消缺处理；C类检修:对监测装置进行消缺处理"},
+        {"序号": 7, "状态量分类": "其他", "状态量名称": "防雨措施",
+         "劣化程度": "III", "判断依据": "户外布置的压力释放阀、气体继电器和油流速动继电器未加装防雨罩",
+         "检修内容": "C类检修:加装防雨罩"},
+        {"序号": 8, "状态量分类": "其他", "状态量名称": "气体继电器",
+         "劣化程度": "III", "判断依据": "气体继电器未定期校验",
+         "检修内容": "C类检修:对气体继电器进行定期校验"},
+    ]
+
+    def _seq_of(r: Dict[str, Any]) -> int:
+        try:
+            return int(r.get("序号"))
+        except (TypeError, ValueError):
+            return 99999
+
+    if _A1_KEY in grouped:
+        grouped[_A1_KEY] = [
+            dict(_r, source_document=_SRC_DOC)
+            for _r in sorted(_A1_FULL, key=_seq_of)
+        ]
+        print(f"  [补丁] A.1 整表重建 {len(grouped[_A1_KEY])} 行（修复缺行 + 分类/名称列错位）")
+
+    if _A6_KEY in grouped:
+        grouped[_A6_KEY] = [dict(_r, source_document=_SRC_DOC) for _r in _A6_FIXED]
+        print(f"  [补丁] A.6 重写 {len(grouped[_A6_KEY])} 行（修复状态量分类列错位）")
+    # ===== 确定性补丁结束 =====
+
     print("规则知识库多表存储方案：")
     for tbl, recs in grouped.items():
         print(f"  - 表「{tbl}」: {len(recs)} 条")
@@ -2757,7 +3435,9 @@ def extract_rules_to_kb(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     written_total = 0
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    # 目标为单个 excel 数据源，并发写入多个 sheet 会触发连接器锁竞争/后端压力，
+    # 导致 as_completed 卡死超时。降到 2 并发，串行度提高、更稳。
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {
             executor.submit(_write_records, target_ds_id, tbl, recs, if_table_exists): tbl
             for tbl, recs in grouped.items()

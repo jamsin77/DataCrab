@@ -274,6 +274,15 @@
               {{ chatStore.selectedData.datasource_name }} → {{ chatStore.selectedData.table_name }}
             </el-tag>
           </div>
+          <div class="evolution-mode-bar">
+            <el-switch
+              v-model="evolutionMode"
+              :active-text="t('chat.evolutionMode')"
+              size="small"
+              @change="onEvolutionModeChange"
+            />
+            <span class="evolution-mode-hint">{{ evolutionMode ? t('chat.evolutionOnHint') : t('chat.evolutionOffHint') }}</span>
+          </div>
           <div class="input-area">
             <el-input
               v-model="inputText"
@@ -352,6 +361,12 @@ const uploading = ref(false)
 const inputHistory = ref<string[]>([])
 const historyIdx = ref(-1)
 const savedDraft = ref('')
+
+// 演进模式开关：开启后走数据/技能/流程匹配，关闭则直接路由 Agent 处理
+const evolutionMode = ref(localStorage.getItem('dc_evolution_mode') === 'true')
+function onEvolutionModeChange(val: any) {
+  localStorage.setItem('dc_evolution_mode', String(!!val))
+}
 
 function loadInputHistory(sessionId: string | null) {
   if (!sessionId) { inputHistory.value = []; return }
@@ -1715,6 +1730,17 @@ async function handleExportCurrent() {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.evolution-mode-bar {
+  padding: 4px 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  .evolution-mode-hint {
+    font-size: 12px;
+    color: #909399;
+  }
 }
 
 .input-area {

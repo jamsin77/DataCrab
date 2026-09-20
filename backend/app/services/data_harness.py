@@ -87,13 +87,53 @@ def collect_experience(
         except Exception as e:
             logger.warning(f"采集反例失败: {e}")
     else:
+        # 质量检查：行数波动过大 → 不记 positive（防止假阳性污染经验库）
+        # 同一脚本同一份输入，产出行数应稳定；波动 >3x 说明数据质量不可靠
+        _should_skip_positive = False
+        _result_str = str(exec_result.get("result", ""))[:500]
+        _row_count = _extract_row_count(_result_str)
+        if _row_count is not None:
+            try:
+                _prev_positives = experience.read_positive(base)
+                if _prev_positives:
+                    _prev_counts = [
+                        _extract_row_count(p.get("result_summary", ""))
+                        for p in _prev_positives[-5:]
+                    ]
+                    _prev_valid = [c for c in _prev_counts if c is not None]
+                    if _prev_valid:
+                        _median = sorted(_prev_valid)[len(_prev_valid) // 2]
+                        if _median > 0 and _row_count > _median * 3:
+                            logger.info(
+                                f"[experience] 行数波动过大：本次 {_row_count} vs 历史 {_median}，跳过记 positive"
+                            )
+                            _should_skip_positive = True
+            except Exception as _qe:
+                logger.warning(f"经验质量检查失败(非致命): {_qe}")
+
+        if not _should_skip_positive:
+            try:
+                experience.append_positive(
+                    base,
+                    source=source,
+                    parameters=params,
+                    result_summary=str(exec_result.get("result", ""))[:200],
+                    script_name=script_name,
+                )
+            except Exception as e:
+                logger.warning(f"采集正例失败: {e}")
+
+
+def _extract_row_count(result_str: str) -> int | None:
+    """从 result_summary 字符串中提取 total_rules_written / row_count / migrated_rows 等行数指标。"""
+    import re
+    if not result_str:
+        return None
+    # 匹配 total_rules_written: 91 / row_count: 91 / migrated_rows: 91 等
+    m = re.search(r'(?:total_rules_written|row_count|migrated_rows|total_rows)["\']?\s*[:=]\s*(\d+)', result_str)
+    if m:
         try:
-            experience.append_positive(
-                base,
-                source=source,
-                parameters=params,
-                result_summary=str(exec_result.get("result", ""))[:200],
-                script_name=script_name,
-            )
-        except Exception as e:
-            logger.warning(f"采集正例失败: {e}")
+            return int(m.group(1))
+        except (ValueError, IndexError):
+            pass
+    return None

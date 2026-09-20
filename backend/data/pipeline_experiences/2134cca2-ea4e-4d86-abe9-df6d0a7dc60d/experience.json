@@ -179,6 +179,16 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "工具: run_script\nAI输出: 我直接执行脚本验证结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T16:00:31.173553",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpt8xt1ols.py\", line 566, in <module>\n    _probe_ocr_functions()\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpt8xt1ols.py\", line 543, in _probe_ocr_functions\n    import builtins\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpt8xt1ols.py\", line 112, in _sandbox_import\n    raise ImportError(f\"沙箱禁止导入: {name}（如需数据操作请使用 call_tool）\")\nImportError: 沙箱禁止导入: builtins（如需数据操作请使用 call_tool）",
+      "parameters": {},
+      "stdout_preview": "",
+      "context_summary": "工具: run_script\nAI输出: 直接执行脚本验证结果。\n\n"
     }
   ],
   "positive": [

@@ -261,20 +261,41 @@ class DataInspectorAgent(BaseAgent):
                 _tbl_list = "\n".join(f"  - 数据源ID: {t.get('datasource_id','')}, 表名: {t.get('table_name','')}" for t in _output_tables)
                 inspect_prompt += f"输出表清单（可用 query_table_data 查询数据）:\n{_tbl_list}\n"
             inspect_prompt += _format_skill_rules_for_llm(skill_rules)
-            inspect_prompt += "\n\n你可以使用 read_file 读取源文档、query_table_data 查看提取后的实际数据，来对照判断技能专属规则。"
-            inspect_prompt += "\n\n**必须逐条检查以下技能专属规则：**"
-            inspect_prompt += "\n1. SKILL-DQ-001：用 read_file 读源文档，对比提取后的表行数/列数是否一致"
-            inspect_prompt += "\n2. SKILL-DQ-002：用 query_table_data 查看各表数据，检查是否有孤立空值（合并单元格未回填）"
-            inspect_prompt += "\n3. SKILL-DQ-003：用 query_table_data 查看多级表头表，检查子列父项值是否完整回填"
-            inspect_prompt += "\n\n检查完成后，在分析结论的末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
-            inspect_prompt += "\n```json"
-            inspect_prompt += "\n{\"skill_rule_issues\": ["
-            inspect_prompt += "\n  {\"rule_id\": \"SKILL-DQ-001\", \"severity\": \"error\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"},"
-            inspect_prompt += "\n  {\"rule_id\": \"SKILL-DQ-002\", \"severity\": \"pass\", \"table\": \"\", \"column\": \"\", \"description\": \"\", \"suggestion\": \"\"}"
-            inspect_prompt += "\n]}"
-            inspect_prompt += "\n```"
-            inspect_prompt += "\nseverity 必须是 error/warning/pass 之一（SKILL-DQ 规则默认 error）。pass 表示该条规则检查通过。"
-            inspect_prompt += "\n\n其他确定性检查结果也请分析，发现问题同样列出（含严重等级、修复建议）。"
+            # 仅当技能有专属规则时才注入逐条检查指令；无 rules.md 的技能不注入假规则
+            if skill_rules:
+                # 区分：带 regex/legal_values 的规则已被 run_all_checks 确定性执行，只有纯自然语言规则需要 LLM 判断
+                _subjective_rules = []
+                for cat_key in ("std", "dq", "sec"):
+                    for r in skill_rules.get(cat_key, []):
+                        if not r.get("regex") and not r.get("legal_values"):
+                            _subjective_rules.append(r)
+                if _subjective_rules:
+                    inspect_prompt += "\n\n**以下技能专属规则需要你基于报告内容主观判断（确定性规则已自动执行）：**"
+                    _rule_idx = 0
+                    for r in _subjective_rules:
+                        _rule_idx += 1
+                        _rid = r.get("rule_id", f"SKILL-SUB-{_rule_idx}")
+                        _desc = r.get("description", r.get("name", ""))
+                        inspect_prompt += f"\n{_rule_idx}. {_rid}：{_desc}"
+                else:
+                    inspect_prompt += "\n\n技能专属规则已全部通过确定性检查自动执行。"
+                inspect_prompt += "\n\n请基于以上确定性检查报告总结分析结论。"
+                inspect_prompt += "\n如发现需要修复的问题，在分析结论末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
+                inspect_prompt += "\n```json"
+                inspect_prompt += "\n{\"skill_rule_issues\": ["
+                inspect_prompt += "\n  {\"rule_id\": \"规则ID\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
+                inspect_prompt += "\n]}"
+                inspect_prompt += "\n```"
+                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。pass 表示该条规则检查通过。无问题则不需要输出 JSON。"
+            else:
+                inspect_prompt += "\n\n以上确定性检查结果已完整，请直接基于报告内容总结分析结论。"
+                inspect_prompt += "\n如发现需要修复的问题，在分析结论末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
+                inspect_prompt += "\n```json"
+                inspect_prompt += "\n{\"skill_rule_issues\": ["
+                inspect_prompt += "\n  {\"rule_id\": \"规则ID或自定义\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
+                inspect_prompt += "\n]}"
+                inspect_prompt += "\n```"
+                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。无问题则不需要输出 JSON。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] INSPECT_RESULT report_len={len(report)} report_head={report[:200]} report_tail={report[-400:]}")
@@ -315,14 +336,17 @@ class DataInspectorAgent(BaseAgent):
             if _user_msg:
                 inspect_prompt += f"用户原始请求: {_user_msg[:500]}\n"
             inspect_prompt += _format_skill_rules_for_llm(skill_rules)
-            inspect_prompt += "\n\n你可以使用 read_file 读取源文档、query_table_data 查看提取后的实际数据，来对照判断技能专属规则。"
-            inspect_prompt += "\n\n检查完成后，在分析结论的末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
-            inspect_prompt += "\n```json"
-            inspect_prompt += "\n{\"skill_rule_issues\": ["
-            inspect_prompt += "\n  {\"rule_id\": \"SKILL-DQ-001\", \"severity\": \"error\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
-            inspect_prompt += "\n]}"
-            inspect_prompt += "\n```"
-            inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。pass 表示该条规则检查通过。"
+            if skill_rules:
+                inspect_prompt += "\n\n你可以使用 read_file 读取源文档、query_table_data 查看提取后的实际数据，来对照判断技能专属规则。"
+                inspect_prompt += "\n\n检查完成后，在分析结论的末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
+                inspect_prompt += "\n```json"
+                inspect_prompt += "\n{\"skill_rule_issues\": ["
+                inspect_prompt += "\n  {\"rule_id\": \"规则ID\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
+                inspect_prompt += "\n]}"
+                inspect_prompt += "\n```"
+                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。pass 表示该条规则检查通过。"
+            else:
+                inspect_prompt += "\n\n以上确定性检查结果已完整，请直接基于报告内容确认之前的问题是否已修复，并检查是否引入新问题。"
             inspect_prompt += "\n请确认之前的问题是否已修复，并检查是否引入新问题。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})

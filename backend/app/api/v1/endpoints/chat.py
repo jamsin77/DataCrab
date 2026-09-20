@@ -1020,6 +1020,7 @@ async def stream_response(
             from app.core.database import async_session as _new_session
 
             # ===== direct_execute: 用户点「直接处理」，跳过匹配直接走 Agent =====
+            _skill_instruction_generated = False
             if request.direct_execute:
                 _msg_type = _session_ctx.get("last_msg_type", "processing")
                 # 展示已确定的参数
@@ -1165,7 +1166,9 @@ async def stream_response(
             else:
                 # ===== classify: 一次 LLM 判断意图 + keep =====
                 yield f"data: {json.dumps({'type': 'executing', 'message': t('understanding_request')}, ensure_ascii=False)}\n\n"
-                _msg_type, _keep_source, _keep_target, _keep_skill, _classify_events = await classify_message(request.content, _session_ctx)
+                # evolution_mode 关闭时不传 session_ctx（不做匹配，不需要 keep 判断，省 token）
+                _classify_ctx = _session_ctx if request.evolution_mode else None
+                _msg_type, _keep_source, _keep_target, _keep_skill, _classify_events = await classify_message(request.content, _classify_ctx)
                 for _ev in _classify_events:
                     if _ev.get("type") == "error":
                         yield f"data: {json.dumps({'type': 'content', 'content': _ev['content']}, ensure_ascii=False)}\n\n"
@@ -1288,8 +1291,8 @@ async def stream_response(
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 return
 
-            # ===== 非 chat 且非 direct_execute：并行匹配 =====
-            if not request.direct_execute and _msg_type != "chat":
+            # ===== 非 chat 且非 direct_execute 且演进模式开启：并行匹配 =====
+            if not request.direct_execute and _msg_type != "chat" and request.evolution_mode:
                 from app.services.match_service import (
                     llm_match_tables, llm_match_skills, llm_match_pipelines,
                 )
@@ -1854,6 +1857,7 @@ async def stream_response(
                 save_session.add(ai_message)
                 await save_session.commit()
             yield f"data: {json.dumps({'type': 'error', 'content': err_detail}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
         finally:
             _active_stream_events.pop(session_id, None)
 

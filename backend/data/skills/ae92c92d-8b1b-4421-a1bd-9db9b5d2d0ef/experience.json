@@ -919,632 +919,168 @@
       "parameters": {},
       "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
       "context_summary": "工具: run_script\nAI输出: 修改完成，重新执行验证：\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T14:59:56.670453",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp6g7oza00.py\", line 2823, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp6g7oza00.py\", line 2805, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp6g7oza00.py\", line 2618, in extract_rules_to_kb\n    for fut in as_completed(future_to_idx):\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 33, in as_completed\n    waiter.event.wait(wait_timeout)\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 445, in wait\n    signaled = self._cond.wait(timeout)\n               ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 145, in wait\n    waiter.acquire()\nKeyboardInterrupt",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
+      "context_summary": "工具: run_script\nAI输出: 参数与路径已确认。直接运行脚本。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T15:07:57.863466",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时\n\n--- 已收集的 stdout（最后 2000 字符）---\n正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "context_summary": "工具: run_script\nAI输出: "
+    },
+    {
+      "timestamp": "2026-09-20T15:50:32.263476",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时\n\n--- 已收集的 stdout（最后 2000 字符）---\ncontent_len=1306\n    - number='A.5' title='油浸式变压器(电抗器)无励磁分接开关状态量劣化的检修内容明细表' content_len=469\n    - number='A.6' title='油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表' content_len=665\n  [表格] 并发还原 8 张表 (max_workers=8)…\n  [表格] 「油浸式变压器(电抗器)停电检修时间」(表1) 为固定映射表，按原文确定性重建 4 行\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool: llm_generate\n  [表格] 完成 1/8: 「表1 油浸式变压器(电抗器)停电检修时间」4 行\n  [文字还原] 表A.5 油浸式变压器(电抗器)无励磁分接开关状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [文字还原] 表A.6 油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [归并] 表A.5 油浸式变压器(电抗器)无励磁分接开关状态量劣化的检修内容明细表 完成: 2 行 × 6 列\n  [表格] 完成 2/8: 「表A.5 油浸式变压器(电抗器)无励磁分接开关状态量劣化的检修内容明细表」2 行\n  [文字还原] 表A.2 油浸式变压器(电抗器)套管状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [文字还原] 表A.3 油浸式变压器(电抗器)冷却(散热)器系统状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [文字还原] 表A.4 油浸式变压器(电抗器)有载分接开关状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [归并] 表A.6 油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表 完成: 8 行 × 6 列\n  [表格] 完成 3/8: 「表A.6 油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表」8 行\n  [文字还原] 表2 油浸式变压器(电抗器)检修类别与检修内容对应表 分段 1/1 完成\n[SkillRunner] call_tool: llm_generate\n  [归并] 表A.2 油浸式变压器(电抗器)套管状态量劣化的检修内容明细表 完成: 9 行 × 6 列\n  [表格] 完成 4/8: 「表A.2 油浸式变压器(电抗器)套管状态量劣化的检修内容明细表」9 行\n  [归并] 表2 油浸式变压器(电抗器)检修类别与检修内容对应表 完成: 41 行 × 3 列\n  [表格] 完成 5/8: 「表2 油浸式变压器(电抗器)检修类别与检修内容对应表」41 行\n  [归并] 表A.4 油浸式变压器(电抗器)有载分接开关状态量劣化的检修内容明细表 完成: 14 行 × 6 列\n  [表格] 完成 6/8: 「表A.4 油浸式变压器(电抗器)有载分接开关状态量劣化的检修内容明细表」14 行\n  [归并] 表A.3 油浸式变压器(电抗器)冷却(散热)器系统状态量劣化的检修内容明细表 完成: 10 行 × 6 列\n  [表格] 完成 7/8: 「表A.3 油浸式变压器(电抗器)冷却(散热)器系统状态量劣化的检修内容明细表」10 行\n  [文字还原] 表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表 分段 1/1 完成\n[SkillRunner] call_tool: llm_genera",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
+      "context_summary": "工具: run_script\nAI输出: 修改完成。现在重新执行脚本验证。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T15:59:01.395775",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时\n\n--- 已收集的 stdout（最后 2000 字符）---\n正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "context_summary": "工具: run_script\nAI输出: 修改完成，重新执行验证。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T16:07:49.345694",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时\n\n--- 已收集的 stdout（最后 2000 字符）---\n正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "context_summary": "工具: run_script\nAI输出: 缓存文件确实存在（`.1257799.pdfcache.txt`），且 read_file 手动读是秒回的。脚本卡在首个 read_file 调用属于平台偶发超时（历史已记录过 read_file/LLM 连接异常）。先重试一次执行确认是否是偶发。"
+    },
+    {
+      "timestamp": "2026-09-20T16:15:30.578513",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（无输出 300秒），脚本可能存在死循环或处理数据量过大导致执行缓慢。如脚本正在处理大数据，可在脚本中周期性 print/log 进度以避免 idle 超时\n\n--- 已收集的 stdout（最后 2000 字符）---\n正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file",
+      "context_summary": "工具: run_script\nAI输出: 我已确认是平台 `read_file` 调用偶发卡死（连续两次都卡在首个 `read_file`，但手动调用同一缓存文件秒回；第一次 run_script 也能成功读缓存跑完整流程）。这是环境偶发，不是脚本逻辑问题。我的三处核心修复（串位清洗、并发8→2、重试2→1）尚未被实际跑通验证。再重试一次。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T16:42:52.894512",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpa1mrqqw2.py\", line 2874, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpa1mrqqw2.py\", line 2856, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpa1mrqqw2.py\", line 2599, in extract_rules_to_kb\n    appendix_start = _estimate_appendix_start_page(text)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nNameError: name '_estimate_appendix_start_page' is not defined",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
+      "context_summary": "工具: run_script\nAI输出: 修改已全部通过语法检查。关键修复已生效：表A.1 强制走视觉 OCR、归并 prompt 禁止编造空行、落库前兜底剔除幽灵行。现在重新执行验证。"
+    },
+    {
+      "timestamp": "2026-09-20T17:48:22.837832",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2o4pm4xn.py\", line 3032, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2o4pm4xn.py\", line 3014, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2o4pm4xn.py\", line 2977, in extract_rules_to_kb\n    n = fut.result()  # 传播异常，不吞\n        ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 239, in result\n    return self.__get_result()\n           ^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 191, in __get_result\n    raise self._exception\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp2o4pm4xn.py\", line 2698, in _write_records\n    raise RuntimeError(f\"写入数据失败(表 {table_name}): {result.get('message') or result.get('error') or result}\")\nRuntimeError: 写入数据失败(表 表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表): [Errno 13] Permission denied: 'D:\\\\Data\\\\电网\\\\表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表.xlsx'",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
+      "context_summary": "工具: run_script\nAI输出: 参数已确认。直接运行当前脚本。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T17:51:40.103470",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeou7nv2u.py\", line 3032, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeou7nv2u.py\", line 3014, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeou7nv2u.py\", line 2977, in extract_rules_to_kb\n    n = fut.result()  # 传播异常，不吞\n        ^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 239, in result\n    return self.__get_result()\n           ^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 191, in __get_result\n    raise self._exception\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\thread.py\", line 59, in run\n    result = self.fn(*self.args, **self.kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpeou7nv2u.py\", line 2698, in _write_records\n    raise RuntimeError(f\"写入数据失败(表 {table_name}): {result.get('message') or result.get('error') or result}\")\nRuntimeError: 写入数据失败(表 表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表): [Errno 13] Permission denied: 'D:\\\\Data\\\\电网\\\\表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表.xlsx'",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [切分诊断] 共识别 9 个块：\n    - number='' titl",
+      "context_summary": "工具: run_script\nAI输出: 运行失败：表A.1 写入时报 `Permission denied`（目标 Excel 物理文件被占用/锁定），其余 8 张表已成功写入。这是文件锁问题，重跑一次确认是否为瞬时锁。\n\n"
+    },
+    {
+      "timestamp": "2026-09-20T18:08:00.408208",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7eyid8tu.py\", line 3046, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7eyid8tu.py\", line 3028, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7eyid8tu.py\", line 2761, in extract_rules_to_kb\n    raise RuntimeError(\"DEBUG STOP: 附录原文已分段打印，人工核对后删除此调试分支\")\nRuntimeError: DEBUG STOP: 附录原文已分段打印，人工核对后删除此调试分支",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [DEBUG] 附录起始 1531，附录段长 13633 字符\n  [DE",
+      "context_summary": "工具: run_script\nAI输出: "
+    },
+    {
+      "timestamp": "2026-09-20T18:11:59.963650",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgs5b90fp.py\", line 3051, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgs5b90fp.py\", line 3033, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpgs5b90fp.py\", line 2766, in extract_rules_to_kb\n    raise RuntimeError(\"DEBUG STOP: 附录原文已分段写入 _debug_appendix_*.txt，人工核对后删除此调试分支\")\nRuntimeError: DEBUG STOP: 附录原文已分段写入 _debug_appendix_*.txt，人工核对后删除此调试分支",
+      "parameters": {},
+      "stdout_preview": "正在查找数据源: 电网规则\n数据源已找到(内置映射): 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n正在检测数据源类型: 电网规则\n  [类型检测] 内置映射 type=excel，图数据库=False\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] 使用已缓存的 PDF 文本: DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.1257799.pdfcache.txt\n文本提取完成，长度 15164 字符\n  文档文本总长 15164 字符\n  [DEBUG] 附录起始 1531，附录段长 13633 字符\n[Skil",
+      "context_summary": "工具: run_script\nAI输出: "
     }
   ],
   "positive": [
     {
-      "timestamp": "2026-09-08T15:02:05.204659",
+      "timestamp": "2026-09-20T17:59:04.303521",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 0, 'target_table': '电网知识', 'target_datasource': '培训知识库', 'message': '未提取到知识/规则，目标集合未修改'}"
+      "result_summary": "{'success': True, 'extracted_rules': 15, 'total_rules_written': 94, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_设备状态定义与分类': 9, 'rules_"
     },
     {
-      "timestamp": "2026-09-08T15:05:25.453437",
+      "timestamp": "2026-09-20T18:34:44.891232",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 0, 'target_table': '电网知识', 'target_datasource': '培训知识库', 'message': '未提取到知识/规则，目标集合未修改'}"
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 171, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
     },
     {
-      "timestamp": "2026-09-09T09:18:49.783974",
+      "timestamp": "2026-09-20T18:56:31.937814",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 26, 'total_rules_written': 26, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 138, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修规则正文': 6, '表1 油"
     },
     {
-      "timestamp": "2026-09-09T10:10:39.379320",
+      "timestamp": "2026-09-20T18:57:37.578876",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 86, 'total_rules_written': 86, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 165, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修总则与基础规范': 16, "
     },
     {
-      "timestamp": "2026-09-09T11:54:02.210494",
+      "timestamp": "2026-09-20T19:16:15.336222",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 72, 'total_rules_written': 72, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 168, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修规则正文': 16, 'ru"
     },
     {
-      "timestamp": "2026-09-09T14:19:23.326856",
+      "timestamp": "2026-09-20T19:37:38.398017",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 55, 'total_rules_written': 55, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
+      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 154, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 6, 'rule"
     },
     {
-      "timestamp": "2026-09-09T15:49:48.548015",
+      "timestamp": "2026-09-20T19:38:38.864051",
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 100, 'total_rules_written': 100, 'target_table': '电网知识', 'target_datasource': '培训知识库'}"
-    },
-    {
-      "timestamp": "2026-09-09T16:56:46.325304",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 159, 'total_rules_written': 159, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'电网知识': 5, '电网知识_状态量': 20, '电网知识_检修策略': 132, '电网知识_试验要求':"
-    },
-    {
-      "timestamp": "2026-09-09T17:27:51.137228",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 167, 'total_rules_written': 167, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'电网知识': 2, '电网知识_检修类别表': 58, '电网知识_状态评价标准表': 5, '电网知识_检修策"
-    },
-    {
-      "timestamp": "2026-09-10T11:32:37.877482",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 140, 'total_rules_written': 140, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 35, '电网知识_停电检修时间参考表': 4, '电网知识_检修类"
-    },
-    {
-      "timestamp": "2026-09-10T11:49:00.425223",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 149, 'total_rules_written': 149, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'grid_knowledge_oil_immersed_transformer_condition_based_"
-    },
-    {
-      "timestamp": "2026-09-10T14:57:42.804936",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 127, 'total_rules_written': 127, 'target_table': '电网知识', 'target_datasource': '通用知识库', 'tables_written': {'grid_knowledge_ontology_and_component_state_degradation_"
-    },
-    {
-      "timestamp": "2026-09-10T15:12:35.184828",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 145, 'total_rules_written': 145, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'grid_knowledge_oil_immersed_transformer_condition_based_m"
-    },
-    {
-      "timestamp": "2026-09-10T16:04:35.742745",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 128, 'total_rules_written': 128, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_本体及附件状态量劣化检修明细表': 73, '电网知识_检修类别与内容对照表': 45, '电网知识_套"
-    },
-    {
-      "timestamp": "2026-09-10T19:51:53.125671",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 136, 'total_rules_written': 136, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 5, '电网知识_停电检修时间参考表': 4, '电网知识_检修类别与"
-    },
-    {
-      "timestamp": "2026-09-11T10:16:01.212464",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 121, 'total_rules_written': 121, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_本体及附件状态量劣化检修明细表': 49, '电网知识_检修类别与内容对照表': 37, '电网知识_套"
-    },
-    {
-      "timestamp": "2026-09-11T11:28:50.834121",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 119, 'total_rules_written': 119, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 20, '电网知识_停电检修时间表': 4, '电网知识_检修类别与内"
-    },
-    {
-      "timestamp": "2026-09-11T15:07:44.427804",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 102, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 6, '油浸式变压器(电抗器)停电检修时间': 4, '油浸式变压器(电抗"
-    },
-    {
-      "timestamp": "2026-09-11T15:12:24.931190",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 107, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 17, '油浸式变压器(电抗器)停电检修时间': 4, '油浸式变压器("
-    },
-    {
-      "timestamp": "2026-09-11T15:41:51.379262",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 119, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 17, '电网知识_停电检修时间参考表': 1, '表1 油浸式变压器("
-    },
-    {
-      "timestamp": "2026-09-11T16:22:48.081981",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 5, 'total_rules_written': 144, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_油浸式变压器状态检修导则正文': 5, '表1 油浸式变压器(电抗器)停电检修时间': 4, '表2 油浸式"
-    },
-    {
-      "timestamp": "2026-09-11T16:28:13.983828",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 17, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 16, '电网知识_GIS设备停电检修时间决策表': 1, '表1 GIS设备停"
-    },
-    {
-      "timestamp": "2026-09-11T17:01:06.897915",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 10, 'total_rules_written': 10, 'target_table': '电网知识_GIS状态检修导则正文', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修导则正文_GIS状态检修规则正文': 9, '电网知识_GIS状态检修"
-    },
-    {
-      "timestamp": "2026-09-14T09:57:02.290996",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 17, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 16, '电网知识_GIS设备停电检修时间决策表': 1}, 'failed_i"
-    },
-    {
-      "timestamp": "2026-09-14T10:37:57.634146",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 20, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 16, '表1 GIS设备停电检修时间决策表': 4}, 'failed_ima"
-    },
-    {
-      "timestamp": "2026-09-14T10:48:38.578800",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 232, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 16, '电网知识_GIS设备停电检修时间决策表': 1, '表1 GIS设备"
-    },
-    {
-      "timestamp": "2026-09-14T11:17:23.031849",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 367, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 6, '电网知识_GIS设备停电检修时间决策表': 1, '表A.5 电压互感器"
-    },
-    {
-      "timestamp": "2026-09-14T11:33:21.034405",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 85, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 6, '电网知识_GIS设备停电检修时间决策表': 1, '表A.5 电压互感器状"
-    },
-    {
-      "timestamp": "2026-09-14T12:45:55.203493",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 95, 'target_table': '电网知识_GIS状态检修规则', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修规则_GIS状态检修通用规则': 16, '电网知识_GIS状态检修规则_"
-    },
-    {
-      "timestamp": "2026-09-14T14:06:38.408265",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 5, 'total_rules_written': 71, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 5, '表A.7 母线状态量劣化检修内容明细表': 13, '表A.1 断路器状态"
-    },
-    {
-      "timestamp": "2026-09-14T15:00:46.632101",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 320, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修规则正文': 16, '电网知识_GIS设备停电检修时间决策表': 1, '表1 GIS设备"
-    },
-    {
-      "timestamp": "2026-09-14T15:28:28.579914",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 1092, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 16, '电网知识_GIS设备停电检修时间决策表': 1, '表2 GIS检"
-    },
-    {
-      "timestamp": "2026-09-14T15:46:07.364951",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 172, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 6, '表A.1 断路器状态量劣化检修内容明细表': 32, '表2 GIS检修"
-    },
-    {
-      "timestamp": "2026-09-14T16:04:27.692247",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 188, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修正文规则': 6, '表2 GIS检修类别及对应的检修内容': 4, '表A.2 隔离开关与接"
-    },
-    {
-      "timestamp": "2026-09-14T17:21:27.322958",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 22, 'target_table': '电网知识_GIS状态检修', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修_GIS状态检修通用规则': 16, '电网知识_GIS状态检修_GIS设备停"
-    },
-    {
-      "timestamp": "2026-09-14T17:38:25.250917",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 198, 'target_table': '电网知识_GIS状态检修规则', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修规则_GIS状态检修通用规则': 16, '电网知识_GIS状态检修规则"
-    },
-    {
-      "timestamp": "2026-09-14T18:14:26.377824",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 143, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-14T20:54:01.222124",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 5, 'total_rules_written': 5, 'target_table': '电网知识', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修通用规则': 5}, 'write_errors': {}, 'failed_image_tabl"
-    },
-    {
-      "timestamp": "2026-09-15T09:07:17.614716",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 388, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修规则正文': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T09:33:16.669607",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 5, 'total_rules_written': 165, 'target_table': '电网知识_GIS状态检修规则正文', 'target_datasource': '电网规则', 'tables_written': {'电网知识_GIS状态检修规则正文_GIS状态检修通用规则': 5, '表1 GIS设备停电检修"
-    },
-    {
-      "timestamp": "2026-09-15T11:21:27.531579",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 194, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T11:39:42.996790",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 445, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T12:03:36.758935",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 311, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修规则正文': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T14:37:20.708476",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 665, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T14:53:01.162020",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 361, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T15:05:37.011935",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 460, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修正文规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T15:36:00.953045",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 464, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T15:55:03.937486",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 462, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T16:13:18.495012",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 423, 'target_table': 'rules_knowledge_base_GIS状态检修通用规则', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用"
-    },
-    {
-      "timestamp": "2026-09-15T16:41:30.663474",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 411, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T17:04:22.114838",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 434, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修规则正文': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T17:48:51.005935",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 443, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T18:13:22.731671",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 329, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-15T19:30:05.137898",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 409, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 6, 'rule"
-    },
-    {
-      "timestamp": "2026-09-15T19:52:52.506637",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 416, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-16T09:30:09.116074",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 168, 'total_rules_written': 168, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_表1 GIS设备停电检修时间决策表': "
-    },
-    {
-      "timestamp": "2026-09-16T09:41:57.879349",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 60, 'total_rules_written': 60, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_表1 油浸式变压器(电抗器)停电检修时间':"
-    },
-    {
-      "timestamp": "2026-09-16T10:03:15.653461",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 27, 'total_rules_written': 87, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_表1 油浸式变压器(电抗器)停电检修时间':"
-    },
-    {
-      "timestamp": "2026-09-16T10:15:54.030565",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 89, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_油浸式变压器状态检修导则正文': 16, '"
-    },
-    {
-      "timestamp": "2026-09-16T10:41:30.244177",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 93, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_油浸式变压器状态检修导则正文': 17, '"
-    },
-    {
-      "timestamp": "2026-09-16T11:01:01.081196",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 98, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_油浸式变压器状态检修导则正文': 17, '"
-    },
-    {
-      "timestamp": "2026-09-16T11:36:38.530655",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 116, 'target_table': '油浸式变压器状态检修导则正文', 'target_datasource': '电网规则', 'tables_written': {'油浸式变压器状态检修导则正文': 14, '油浸式变压器状态检修导则正文_停电检修时间参考表':"
-    },
-    {
-      "timestamp": "2026-09-16T14:23:47.267607",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 125, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'油浸式变压器状态检修导则正文': 10, '油浸式变压器状态检修导则正文_停电检修时"
-    },
-    {
-      "timestamp": "2026-09-16T14:29:17.267208",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 91, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'油浸式变压器状态检修导则正文': 14, '油浸式变压器状态检修导则正文_停电检修时间"
-    },
-    {
-      "timestamp": "2026-09-16T14:39:34.218969",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 8, 'total_rules_written': 59, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'变压器状态检修通用规则': 6, '变压器状态检修通用规则_设备状态与推荐检修时间对照表"
-    },
-    {
-      "timestamp": "2026-09-16T16:22:34.905305",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 149, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'变压器状态检修规则正文': 14, '变压器状态检修规则正文_设备状态与推荐检修时间"
-    },
-    {
-      "timestamp": "2026-09-16T16:37:22.909245",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 122, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'正文规则': 14, '正文规则_设备状态推荐检修时间表': 3, '表2 表2':"
-    },
-    {
-      "timestamp": "2026-09-16T19:39:52.645888",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 131, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修规则正文': 6, 'rule"
-    },
-    {
-      "timestamp": "2026-09-16T20:28:00.766756",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 92, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修通用规则': 6, 'rules"
-    },
-    {
-      "timestamp": "2026-09-17T11:35:34.007612",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 89, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修通用规则': 6, '表1 油浸"
-    },
-    {
-      "timestamp": "2026-09-17T16:40:54.200853",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 100, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修规则正文': 16, '表1"
-    },
-    {
-      "timestamp": "2026-09-17T17:58:22.256704",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 15, 'total_rules_written': 91, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_检修类别定义表': 5, 'rules_kn"
-    },
-    {
-      "timestamp": "2026-09-17T18:56:59.707856",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 87, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修规则正文': 16, '表1 "
-    },
-    {
-      "timestamp": "2026-09-17T19:31:43.312115",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 97, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_检修类别定义表': 5, 'rules_kn"
-    },
-    {
-      "timestamp": "2026-09-17T19:50:58.165834",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 103, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修通用规则': 16, 'ru"
-    },
-    {
-      "timestamp": "2026-09-17T20:04:12.478569",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 89, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 16, '表1 油浸式变压器("
-    },
-    {
-      "timestamp": "2026-09-17T20:26:42.040894",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 89, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修通用规则': 6, 'rules"
-    },
-    {
-      "timestamp": "2026-09-17T20:29:47.210628",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 87, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修正文规则': 6, '表1 油浸"
-    },
-    {
-      "timestamp": "2026-09-18T10:42:10.548762",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 20, 'total_rules_written': 145, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_范围': 1, 'rules_knowle"
-    },
-    {
-      "timestamp": "2026-09-18T10:54:18.040157",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 144, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_实施原则': 1, 'rules_knowl"
-    },
-    {
-      "timestamp": "2026-09-18T11:14:37.181669",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 203, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_实施原则': 1, 'rules_knowl"
-    },
-    {
-      "timestamp": "2026-09-18T11:24:50.716737",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 7, 'total_rules_written': 210, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_实施原则': 1, 'rules_knowl"
-    },
-    {
-      "timestamp": "2026-09-18T14:33:08.356921",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 129, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 6, '表1 油浸式变压器(电"
-    },
-    {
-      "timestamp": "2026-09-18T15:55:09.859343",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 127, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 6, '表1 油浸式变压器(电"
-    },
-    {
-      "timestamp": "2026-09-18T16:08:20.015815",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 126, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 6, '表1 油浸式变压器(电"
-    },
-    {
-      "timestamp": "2026-09-18T16:33:33.560525",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 132, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 6, '表1 油浸式变压器(电"
-    },
-    {
-      "timestamp": "2026-09-18T17:02:08.736119",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 6, 'total_rules_written': 130, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_正文规则': 6, '表1 油浸式变压器(电"
-    },
-    {
-      "timestamp": "2026-09-20T08:42:32.381328",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 16, 'total_rules_written': 111, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_变压器状态检修规则正文': 16, '表1"
-    },
-    {
-      "timestamp": "2026-09-20T08:49:13.143983",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'extracted_rules': 15, 'total_rules_written': 133, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_设备状态与检修类别定义': 9, 'rul"
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 168, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
     }
   ],
-  "lessons": ""
+  "lessons": "### 常见错误\n\n#### 1. read_file 调用超时（最频繁，~40次）\n- 根因: PDF 文本提取（read_file）在主进程耗时过长，沙箱子进程等待期间无 stdout 输出，触发 300 秒 idle 超时\n- 修复: 使用 PDF 文本缓存（_load_pdf_text_cached），首次解析后写入 .pdfcache.txt，后续直接读缓存\n- 避免: 不要在 call_tool(read_file) 调用期间不做任何 print，必须先 print 进度\n\n#### 2. 沙箱禁止 import os/sys/fitz 等\n- 根因: 沙箱 __import__ hook 拦截危险模块，fitz 依赖链中 import glob 被拦截\n- 修复: 用 pathlib.Path 替代 os.path，用 call_tool 替代直接文件操作\n- 避免: 不要在脚本中 import fitz/PyMuPDF，用平台 read_file/render_pdf_pages\n\n#### 3. document_paths 被传为 list 而非 str\n- 根因: 前端有时传 list 类型，脚本用 .split(\",\") 报 AttributeError\n- 修复: 入口处统一转换 paths = [p.strip() for p in (document_paths if isinstance(document_paths, str) else \",\".join(document_paths)).split(\",\") if p.strip()]\n\n#### 4. Excel 写入 Permission denied\n- 根因: 目标 Excel 文件被其他进程占用（可能上次执行未释放）\n- 修复: 写入前检查文件是否被占用，或使用 overwrite 策略\n\n#### 5. LLM 返回空 content / JSON 解析失败\n- 根因: 推理模型 reasoning 过长导致 content 被截断，或返回空字符串\n- 修复: 空 content 时重试（最多3次），最终失败显式报错不吞异常\n\n### 成功模式\n\n#### 1. PDF 文本缓存是必须的\n- 首次解析 PDF 用 read_file，成功后立即写 .pdfcache.txt 缓存\n- 后续运行直接读缓存，避免重复慢解析超时\n\n#### 2. 文本路径优先，OCR 仅在文本层无数据时使用\n- OCR（llm_vision）比文本路径慢 5-10 倍，且容易产生重复行（幻觉）\n- 文本层有数据的表格优先走文本还原路径\n- 仅在 _table_block_has_data 返回 False（图片型 PDF）时才走 OCR\n- 瞬态错误（timeout/JSON/网络）重试文本路径，不切 OCR\n\n#### 3. 数据质量校验必须在写入前执行\n- _validate_table_quality 检查重复行率/行数异常/空行率\n- 质量校验失败直接 raise（不吞异常），让脚本崩溃记 negative\n- 附录明细表正常 30-50 行，超 80 行判定为幻觉\n"
 }
