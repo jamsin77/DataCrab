@@ -45,6 +45,7 @@ npm install
 >   python -m pip install -e ./backend[all]
 >   ```
 > - 视频处理（关键帧场景检测）：安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入 PATH。未安装时自动回退 opencv 等间隔抽帧。
+> - PDF 解析：`pdfplumber`（已含在 requirements.txt，自动安装）。系统自带 sqlite3 版本若低于 3.35.0 会自动用 `pysqlite3-binary` 替换（ChromaDB 兼容）。
 
 ## 3. 配置环境变量
 

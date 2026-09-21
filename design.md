@@ -101,7 +101,7 @@ Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中�
 - **Web框架**: FastAPI
 - **ORM**: SQLAlchemy 2.0
 - **异步支持**: asyncio + uvicorn
-- **大模型集成**: 智谱GLM / 阿里百炼 / 硅基流动（均兼容 OpenAI API）
+- **大模型集成**: 智谱GLM / 阿里百炼 / 硅基流动 / 火山AI网关 / 火山方舟 / Azure / 自定义 OpenAI 兼容（均兼容 OpenAI API）
 
 #### 数据存储
 - **关系数据库**: SQLite（开发）/ PostgreSQL 14+（生产）
@@ -3080,12 +3080,20 @@ class PermissionChecker:
 | 数据质量库 | DQ-xxx | DAMA 六维度(完整性/唯一性/有效性/一致性/准确性/及时性) + ETL 过程质量(数据量不增减/对数:记录数·金额·分组汇总/检索不超总量/空值率/主键唯一) + 业务规则 |
 | 数据安全规则库 | SEC-xxx | PII 识别/凭证泄露(密码·API Key·私钥·连接串)/敏感业务数据(薪资·医疗·未成年)/数据分级/脱敏规则/合规留存 |
 
+**技能专属规则（rules.md）**：
+- 技能包内可选 `rules.md` 文件，定义该技能**额外**的数据检查规则（编号前缀 `SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*`）
+- `standards_parser.parse_skill_rules(skill_path)` 解析技能包内 rules.md，返回按类别分组的规则列表
+- DataInspector 执行全局规则之外合并执行技能规则；有规则才注入逐条检查指令，无规则不注入假规则
+- `skill_creator` 引导 AI 创建/修改技能时，数据检查规则写到 rules.md，不写脚本代码（脚本只负责数据处理，检查由 DataInspector 通过 rules.md 执行）
+- 仅数据处理类技能（`skill_type: processing`）触发 Inspector 需放 rules.md；分析类技能只读不触发 Inspector，无需规则
+
 **API**：`GET/PUT /api/v1/config/data-standards|data-quality|data-security`，`POST .../reset`
 
 **解析与执行**（`app/services/standards_parser.py`）：
 - `parse_standards()` / `parse_quality_rules()` / `parse_security_rules()` 将 MD 解析为结构化规则
-- DataInspector `build_system_prompt` 注入三份库全文
-- `inspector_tools` 确定性执行：标准格式用正则(`match_columns` 匹配列名)、安全用正则扫描、质量用聚合；每条问题标注 `standard_id`(STD)/`rule_id`(DQ/SEC) + 严重等级 + 修复建议
+- `parse_skill_rules(skill_path)` 解析技能包内 rules.md
+- DataInspector `build_system_prompt` 注入三份库全文 + 技能专属规则（如有）
+- `inspector_tools` 确定性执行：标准格式用正则(`match_columns` 匹配列名)、安全用正则扫描、质量用聚合；每条问题标注 `standard_id`(STD)/`rule_id`(DQ/SEC)/`skill_rule_id`(SKILL-*) + 严重等级 + 修复建议
 - 语义类检查（业务逻辑、跨表一致性）由 LLM 判断
 
 ## 3. 数据库设计
@@ -3860,7 +3868,7 @@ DataCrab 的工具系统是**一套 handler、两个入口**：
 
 **设计要点**：
 - **一套 handler**：Agent 和脚本调用同一套 `tool_registry.py` 中的 handler 实现，无重复代码
-- **29 个工具**：数据查询（query_table_data/execute_sql/iter_table_data/get_table_schema）+ 数据写入（write_table_data）+ 调试（edit_script/run_script/read_script/grep_script）+ LLM（llm_generate/llm_vision）+ 文件（read_file/write_file）+ 视频（extract_video_info/extract_keyframes）+ 列表/知识库等
+- **29 个工具**：数据查询（query_table_data/execute_sql/iter_table_data/get_table_schema）+ 数据写入（write_table_data）+ 调试（edit_script/run_script/read_script/grep_script）+ LLM（llm_generate/llm_vision）+ 文件（read_file/write_file，read_file 支持 PDF/Word/PDF 页面渲染）+ 视频（extract_video_info/extract_keyframes）+ 列表/知识库/检查等
 - **返回格式统一**：`records` 格式（`{"data": [...], "success": true, "columns": [...], "row_count": N}`），Agent 和脚本一致
 
 ### 4.5 认证与授权
@@ -4964,3 +4972,82 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 **验证**：`app.main` 加载 139 OpenAPI paths（删 14 个旧端点）；131 测试全通过；10 个技能脚本语法全通过；零残留（SANDBOX_TOOLS_DOC/TOOL_FUNCTIONS_DOC/call_operator/sandbox_ns/is_public grep 全空）。
 
 **与前轮关系**：第三十一轮的 Agent 工具 + 沙箱函数两套实现在本轮彻底统一为一个 `call_tool` 入口 + 一套 tool_registry handler。第十~十六轮建立的沙箱适配函数层（split→records 转换、_wrap_tool_log、_resolve_ds 等）在本轮全部删除。第十四~二十八轮的 13 个旧 /internal/* 端点在本轮删除。
+
+### 11.44 第三十三轮：中英文双语 + 火山AI网关 + PDF/Word解析 + rules.md技能规则 + 演进模式 + 经验系统反向学习 + 多项修复
+
+**核心洞察**：第三十二轮完成工具统一和沙箱安全加固后，项目进入功能扩展期——中英文双语界面、火山AI网关聚合 Provider、read_file 支持 PDF/Word、技能专属规则 rules.md、演进模式开关、经验系统反向学习修复。同时修复了多个阻断性 bug（Chat 回复重复两份、directExecute 仍走已选技能、tool_call_log 空导致 handoff 无 datasource_id、ChromaDB 中文表名不兼容）。本轮改动跨 17 个提交（09-04 ~ 09-20），按主题分 6 组记录。
+
+#### 11.44.1 中英文双语界面（i18n 全栈）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **前端 vue-i18n 全量** | 21 个 .vue + locales/zh.ts + en.ts | 安装 vue-i18n 9.14；创建 zh.ts + en.ts（各 ~1686 行，覆盖全部页面）；21 个 .vue 文件 1679 行中文硬编码 → `t('key')` 调用；main.ts 动态 locale + App.vue ElConfigProvider 响应式切换 zhCn/en |
+| **语言切换按钮** | MainLayout.vue | 右上角 EN/中文 切换按钮，localStorage 持久化 |
+| **axios 自动 X-Lang** | api/index.ts | axios 拦截器自动发送 `X-Lang` 请求头 |
+| **后端 i18n 模块** | core/i18n.py（新增 ~475 行） | ~300 条双语消息字典 + `t()` 函数 + ContextVar 语言上下文 |
+| **I18nMiddleware** | main.py | 从 `X-Lang` 请求头读取语言设入 ContextVar |
+| **18 个端点 t() 替换** | 18 个 endpoints/*.py | HTTPException detail / SSE yield content / API message 全部替换为 `t()` 调用 |
+
+#### 11.44.2 火山AI网关 Provider + vision 超时保护
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **火山AI网关 Provider** | llm.py | 新增 seed provider「火山AI网关」（火山引擎 AI 网关，聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan 等模型，一个 API Key 调多家模型） |
+| **vision 超时保护** | llm.py | `vision()` 调用加 `asyncio.wait_for` 120s 超时保护，避免视觉模型调用卡死 |
+| **vision 截断续写** | llm.py | `vision()` finish_reason=length 时追加 partial +「继续」同模型续写≤5轮（后随 extract_image_table 工具删除而移除，回归直接调用） |
+
+#### 11.44.3 read_file 支持 PDF/Word + ChromaDB 中文表名翻译
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **read_file PDF 解析** | tool_registry.py + datasource.py | 主进程用 pdfplumber/fitz 解析 PDF（不受沙箱 import 限制）；支持 `pdf_page_images` 参数返回渲染页面图片列表（供 OCR）；pdfplumber 旋转自动校正 + total_pages 返回 |
+| **read_file Word 解析** | tool_registry.py | 主进程用 python-docx 解析 .docx 文件 |
+| **read_file/write_file 异步化** | tool_registry.py | `asyncio.to_thread` 包装同步 IO，避免阻塞事件循环 |
+| **ChromaDB 中文表名翻译** | connectors.py | ChromaConnector 中文集合名 LLM 翻译为英文（ChromaDB 命名限制 `[a-zA-Z0-9._-]`） |
+| **LLM 模型显式指定** | llm.py + 5 个 endpoints | 全链路 `chat`/`chat_with_messages` 显式传 `model=_default/_flash`（推理任务用 default，简单任务用 flash） |
+| **embed 超时** | llm.py | embed 加 30s 超时防卡死 |
+| **llm_generate 详细日志** | tool_registry.py | content/reasoning 长度 + preview，空 content 告警 |
+| **向量索引重建非阻塞** | main.py | 移至后台非阻塞执行 |
+
+#### 11.44.4 rules.md 技能专属规则机制 + document-rule-extractor 技能
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **rules.md 机制** | SKILL_SPEC.md + skill_creator.py + standards_parser.py + data_inspector_agent.py | 技能包内可选 `rules.md` 定义技能额外数据检查规则（编号 `SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*`）；DataInspector 执行全局规则之外合并执行技能规则；skill_creator 引导 AI 写规则到 rules.md 不写脚本代码 |
+| **standards_parser 解析 rules.md** | standards_parser.py | `parse_skill_rules(skill_path)` 解析技能包内 rules.md，返回按类别分组的规则列表 |
+| **DataInspector 合并执行** | data_inspector_agent.py | `_load_skill_rules` 加载技能专属规则；有规则才注入逐条检查指令，无规则不注入假规则 |
+| **SKILL-DQ-004 行数异常检测** | inspector_tools.py + rules.md | 附录明细表行数异常确定性检测（确定性规则） |
+| **document-rule-extractor 技能** | data/skills/ae92c92d | 从 PDF/Word 规则文档提取结构化规则写入知识库表；OCR+text 统一流水线（`_scan_all_pages_for_tables` 单次并发 OCR / `_merge_blocks_by_number` 同表号合并 / `_extract_header_hint_from_md` 动态表头注入 / `_merge_same_sequence_rows` + `_sort_rows_by_sequence` 行排序 / HTML 标签清洗 / `_filter_md_by_table_number` 严格匹配 / `_validate_table_quality` 质量校验） |
+| **read_file PDF 渲染内联** | tool_registry.py | 删除 `render_pdf_pages` 独立工具，PDF 页面渲染内联到 `read_file(pdf_page_images=...)` 参数 |
+| **SKILL_SPEC 8.5 动态注入** | SKILL_SPEC.md | 脚本 LLM 提示词不硬编码业务词，从数据动态提取特征注入 |
+| **rules.md 示例** | data/skills/ae92c92d/rules.md | 3 条 SKILL-DQ 规则（提取一致性检查 / 合并单元格校验 / 子列对应检查）从脚本代码移到 rules.md |
+
+#### 11.44.5 演进模式 + 经验系统反向学习修复 + migrate-and-translate 技能
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **演进模式开关** | chat.py + schemas/chat.py + ChatView.vue + chat.ts | `evolution_mode` 字段（默认开启）；开启时走数据/技能/流程匹配，关闭时直接路由 Agent 处理（跳过 classify + 匹配） |
+| **经验系统反向学习循环修复** | data_harness.py + data_processor_agent.py + data_analyst_agent.py | `collect_experience` 增加行数波动检查（>3x 中位数不记 positive）；修复 `debug_lessons` 死字段，注入技能经验到调试 prompt；清空 91 条假阳性 positive |
+| **DQ-UNI-003 升级** | inspector_tools.py | 重复行 >30% 从 warning 升级为 error 触发修复回交 |
+| **Inspector prompt 优化** | data_inspector_agent.py | 区分确定性/主观规则，避免 LLM 对确定性规则主观判断 |
+| **migrate-and-translate-to-chinese 技能** | data/skills/0e8dd02d | 跨数据源迁移数据，非中文文本自动翻译成中文（去重 + 并发翻译 + 分批写入） |
+| **沙箱 __import__ hook 解除 builtins** | skill_runner.py | `_BLOCKED_MODULES` 移除 builtins（拦截 builtins import 影响脚本访问内置函数） |
+| **调试滚动优化** | SkillView.vue | 用户上翻时不抢滚动（检测滚动位置决定是否自动滚到底部） |
+
+#### 11.44.6 Bug 修复（阻断性 + 体验性）
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **Chat 回复重复两份** | data_processor_agent.py + data_analyst_agent.py + chat.py | 根因：`run()` 流式过程中已逐 token yield content，循环结束又 yield 一次完整 content；删除重复 yield + done 事件兜底加 endswith 防误判 |
+| **directExecute 仍走已选技能** | chat.py + ChatView.vue | `directExecute+use_skill=false` 时仍注入技能 context（last_skill_id 存在就注入未排除）；加 `not direct_execute` / `not (direct_execute and not use_skill)` 条件；前端 continueProcessing 清除 selectedData 的 skill 字段 |
+| **tool_call_log 空导致 handoff 无 datasource_id** | skill_runner.py + data_processor_agent.py + multi_agent.py | 根因：`_builtins.call_tool` 替换但模块全局 `call_tool` 未替换，导致 `_TOOL_CALL_LOG` 永远为空；加 `call_tool = _logged_call_tool` + `__main__` 末尾显式输出 + flush=True |
+| **多表 handoff** | multi_agent.py + data_inspector_agent.py | handoff payload 从单表改为 `output_tables` 列表，Inspector 遍历所有写入表分别 `run_all_checks`，报告合并 |
+| **connector 返回实际表名** | connectors.py + tool_registry.py | 9 个 connector `write_table_data` 统一返回 `table_name` 字段（实际物理名，非入参）；handler 用 result 里 table_name 存 TableMetadata |
+| **pysqlite3-binary 替换 sqlite3** | app/__init__.py + main.py + requirements.txt | ChromaDB 要求 sqlite3≥3.35.0，系统自带 sqlite3 版本可能不够；`pysqlite3-binary` 自带 3.51.1，在所有 import sqlite3 之前替换标准库模块 |
+| **图片上传 table_name 丢失** | chat.py | 图片上传也写 `source_data_name`（之前 `if not is_image` 跳过，导致 switchSession 恢复时 table_name 丢失） |
+| **GenericFileConnector 匹配** | connectors.py | `get_schema` 返回 `f.name`（带后缀）；`get_table_data`/`get_table_stats` 支持 4 种匹配（f.name/f.stem/filename_SheetName/stem_SheetName） |
+| **extract_image_table 工具** | tool_registry.py（后删除） | ac76188 新增 `extract_image_table` 分页提取表格图片工具；b3aa25a 删除（内联到技能脚本处理，工具表保持 29 个） |
+
+**验证**：`app.main` 完整加载；pysqlite3 替换生效（sqlite3.sqlite_version ≥ 3.35.0）；i18n 前后端全链路（X-Lang 请求头 → ContextVar → t() 返回对应语言）；document-rule-extractor 技能 PDF 解析 + OCR 归并 + 规则提取完整链路通；rules.md 机制（skill_creator 引导 + DataInspector 合并执行）；演进模式开关前端控制；经验系统假阳性清除。
+
+**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 29 个工具）在本轮保持不变（extract_image_table 新增后删除，工具数稳定 29）。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。

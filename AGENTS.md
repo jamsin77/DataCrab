@@ -22,7 +22,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 - **前端**：Vue 3 + TypeScript / Vite 5 / Element Plus / Pinia / ECharts / Monaco Editor
 - **数据库**：SQLite（开发默认）/ PostgreSQL 14+（生产）
 - **向量库**：ChromaDB（文档知识库 RAG）
-- **LLM**：GLM（智谱，默认）/ Qwen / SiliconFlow / 自定义 OpenAI 兼容
+- **LLM**：GLM（智谱，默认）/ Qwen / SiliconFlow / 火山AI网关（聚合 DeepSeek/Doubao/GLM/MiniMax/HunYuan）/ 火山方舟 / Azure / 自定义 OpenAI 兼容
 
 ## 关键文件导航
 
@@ -54,7 +54,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `experience.py` | 经验库（per-operator 经验积累 + 跨算子聚合） |
 | `data_harness.py` | **非侵入式流程层 Harness：ConvergenceGuard（收敛检测）+ collect_experience（经验采集）** |
 | `prompt_docs.py` | 平台规范文档（PLATFORM_CONVENTIONS_DOC）+ 安全红线（SAFETY_RULES_DOC），注入生成/调试/NL 推断三处；`TOOL_FUNCTIONS_DOC` 已删除（LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可） |
-| `standards_parser.py` | 数据标准/质量/安全规则解析器（解析合法值/检测逻辑） |
+| `standards_parser.py` | 数据标准/质量/安全规则解析器（解析合法值/检测逻辑）；**`parse_skill_rules` 解析技能包内 rules.md（SKILL-STD/SKILL-DQ/SKILL-SEC 编号）** |
 | `task_runner.py` | **调度任务后台执行器（execute_task 分派 skill/operator/pipeline + 定时调度扫描器 scheduler_loop）** |
 | `permission_service.py` | RBAC 权限管理服务（用户/角色/权限，view/use/manage 三级） |
 | `kb_service.py` | 文档知识库服务（解析+切片+嵌入+ChromaDB 存取+语义检索） |
@@ -63,12 +63,13 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `match_service.py` | **向量索引服务（ChromaDB）——技能/流程/算子/数据表 embedding 存取 + 语义检索；LLM 自适应匹配（粗筛→精排两阶段，超阈值才粗筛）；`llm_match_tables` 统一函数（exclude_datasource_id 参数区分源/目标匹配）；`check_similar_resources` 通用相似资源检测；`_mlog` 独立写 match_detail.log；`rebuild_index` 全量重建（启动时可触发）** |
 | `soul.md` | 助手人格定义（原 personal.md，rename 对齐「灵魂」语义）；安全红线已移至 DATA_PROCESSOR_INSTRUCTIONS |
 | `version.py`（core） | **版本号动态生成（`get_version`：YYYY.MM.DD.提交次数，git log 生成，`@lru_cache` 缓存）** |
+| `i18n.py`（core） | **后端国际化模块——~300 条双语消息字典 + `t()` 函数 + ContextVar 语言上下文；I18nMiddleware 从 `X-Lang` 请求头读取语言** |
 
 > 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
 17 个端点文件、共 140 个 OpenAPI paths（175 个 path+method operations），主要：
-- `chat.py` — 对话/流式响应/数据处理；**classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）**；chat 类型走 ChatAgent 直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
+- `chat.py` — 对话/流式响应/数据处理；**演进模式开关（`evolution_mode`，关闭时跳过匹配直接路由 Agent）**；classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）；chat 类型走 ChatAgent 直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（23 paths，最多）
 - `operator.py` — 算子 CRUD + 执行
@@ -867,6 +868,14 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 全局 | "沙箱模板注入 17 个适配函数" | 第三十二轮已删除，只留 call_tool 统一入口 + 安全 hooks |
 | 全局 | "聊天上传虚拟数据源 type=excel" | 第三十二轮已改 type=generic_file + 去扩展名过滤（接受任意文件） |
 | 全局 | "DataProcessor 13 工具 / DataAnalyst 11 工具" | 第三十二轮 DataProcessor 20 工具 / DataAnalyst 14 工具（新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes） |
+| 第三十二轮 | "工具数 29 个" | 第三十三轮 extract_image_table 工具新增（ac76188）后删除（b3aa25a，内联到技能脚本），工具数稳定 29 |
+| 全局 | "LLM Provider 5 种（智谱/阿里/硅基/Azure/自定义）" | 第三十三轮新增火山AI网关 Provider（聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan）+ 火山方舟，共 7 种 |
+| 全局 | "read_file 只读文本/CSV" | 第三十三轮 read_file 支持 PDF（pdfplumber/fitz）+ Word（python-docx）+ PDF 页面渲染（`pdf_page_images` 参数） |
+| 全局 | "规则库 3 份（STD/DQ/SEC）" | 第三十三轮新增技能专属 rules.md（`SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*` 编号），DataInspector 合并执行全局规则 + 技能规则 |
+| 全局 | "sqlite3 标准库" | 第三十三轮 pysqlite3-binary 替换标准库 sqlite3（ChromaDB≥3.35.0 兼容，pysqlite3 自带 3.51.1） |
+| 全局 | "无国际化" | 第三十三轮新增全栈 i18n（前端 vue-i18n + 后端 core/i18n.py + I18nMiddleware + `X-Lang` 请求头） |
+| 全局 | "Chat 匹配始终走" | 第三十三轮新增演进模式开关（`evolution_mode`，关闭时跳过 classify + 匹配直接路由 Agent） |
+| 全局 | "handoff 单表" | 第三十三轮 handoff payload 从单表改为 `output_tables` 列表，Inspector 遍历所有写入表检查 |
 
 ### 第二十九轮（Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化 + 输入历史隔离）
 
@@ -1141,3 +1150,72 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 **验证**：`app.main` 加载 139 OpenAPI paths（删 14 个旧端点）；131 测试全通过；10 个技能脚本语法全通过；零残留（SANDBOX_TOOLS_DOC/TOOL_FUNCTIONS_DOC/call_operator/sandbox_ns/is_public grep 全空）。
 
 **与前轮关系**：第三十一轮的 Agent 工具 + 沙箱函数两套实现在本轮彻底统一为一个 `call_tool` 入口 +一套 tool_registry handler。第十~十六轮建立的沙箱适配函数层（split→records 转换、_wrap_tool_log、_resolve_ds 等）在本轮全部删除。第十四~二十八轮的 13 个旧 /internal/* 端点在本轮删除。第八轮的 sandbox_ns.py 在第二十八轮已删引用，本轮确认无残留。
+
+### 第三十三轮（中英文双语 + 火山AI网关 + PDF/Word解析 + rules.md技能规则 + 演进模式 + 经验系统反向学习 + 多项修复）
+
+**核心洞察**：第三十二轮完成工具统一和沙箱安全加固后，项目进入功能扩展期——中英文双语界面、火山AI网关聚合 Provider、read_file 支持 PDF/Word、技能专属规则 rules.md、演进模式开关、经验系统反向学习修复。同时修复了多个阻断性 bug（Chat 回复重复两份、directExecute 仍走已选技能、tool_call_log 空导致 handoff 无 datasource_id、ChromaDB 中文表名不兼容）。本轮改动跨 17 个提交（09-04 ~ 09-20），按主题分 6 组记录。
+
+**中英文双语界面（i18n 全栈）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **前端 vue-i18n 全量** | 21 个 .vue + locales/zh.ts + en.ts | 安装 vue-i18n 9.14；创建 zh.ts + en.ts（各 ~1686 行，覆盖全部页面）；21 个 .vue 文件 1679 行中文硬编码 → `t('key')` 调用；main.ts 动态 locale + App.vue ElConfigProvider 响应式切换 zhCn/en |
+| **语言切换按钮** | MainLayout.vue | 右上角 EN/中文 切换按钮，localStorage 持久化 |
+| **axios 自动 X-Lang** | api/index.ts | axios 拦截器自动发送 `X-Lang` 请求头 |
+| **后端 i18n 模块** | core/i18n.py（新增 ~475 行） | ~300 条双语消息字典 + `t()` 函数 + ContextVar 语言上下文 |
+| **I18nMiddleware** | main.py | 从 `X-Lang` 请求头读取语言设入 ContextVar |
+| **18 个端点 t() 替换** | 18 个 endpoints/*.py | HTTPException detail / SSE yield content / API message 全部替换为 `t()` 调用 |
+
+**火山AI网关 Provider + vision 超时保护**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **火山AI网关 Provider** | llm.py | 新增 seed provider「火山AI网关」（火山引擎 AI 网关，聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan 等模型，一个 API Key 调多家模型） |
+| **vision 超时保护** | llm.py | `vision()` 调用加 `asyncio.wait_for` 120s 超时保护，避免视觉模型调用卡死 |
+
+**read_file 支持 PDF/Word + ChromaDB 中文表名翻译**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **read_file PDF 解析** | tool_registry.py + datasource.py | 主进程用 pdfplumber/fitz 解析 PDF（不受沙箱 import 限制）；支持 `pdf_page_images` 参数返回渲染页面图片列表（供 OCR）；pdfplumber 旋转自动校正 + total_pages 返回 |
+| **read_file Word 解析** | tool_registry.py | 主进程用 python-docx 解析 .docx 文件 |
+| **read_file/write_file 异步化** | tool_registry.py | `asyncio.to_thread` 包装同步 IO，避免阻塞事件循环 |
+| **ChromaDB 中文表名翻译** | connectors.py | ChromaConnector 中文集合名 LLM 翻译为英文（ChromaDB 命名限制 `[a-zA-Z0-9._-]`） |
+| **LLM 模型显式指定** | llm.py + 5 个 endpoints | 全链路 `chat`/`chat_with_messages` 显式传 `model=_default/_flash`（推理任务用 default，简单任务用 flash） |
+| **embed 超时 + llm_generate 日志** | llm.py + tool_registry.py | embed 加 30s 超时防卡死；llm_generate 加详细日志（content/reasoning 长度 + preview，空 content 告警） |
+
+**rules.md 技能专属规则机制 + document-rule-extractor 技能**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **rules.md 机制** | SKILL_SPEC.md + skill_creator.py + standards_parser.py + data_inspector_agent.py | 技能包内可选 `rules.md` 定义技能额外数据检查规则（编号 `SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*`）；DataInspector 执行全局规则之外合并执行技能规则；skill_creator 引导 AI 写规则到 rules.md 不写脚本代码 |
+| **standards_parser 解析 rules.md** | standards_parser.py | `parse_skill_rules(skill_path)` 解析技能包内 rules.md，返回按类别分组的规则列表 |
+| **DataInspector 合并执行** | data_inspector_agent.py | `_load_skill_rules` 加载技能专属规则；有规则才注入逐条检查指令，无规则不注入假规则 |
+| **document-rule-extractor 技能** | data/skills/ae92c92d | 从 PDF/Word 规则文档提取结构化规则写入知识库表；OCR+text 统一流水线（`_scan_all_pages_for_tables` 单次并发 OCR / `_merge_blocks_by_number` 同表号合并 / `_extract_header_hint_from_md` 动态表头注入 / `_validate_table_quality` 质量校验） |
+| **read_file PDF 渲染内联** | tool_registry.py | 删除 `render_pdf_pages` 独立工具，PDF 页面渲染内联到 `read_file(pdf_page_images=...)` 参数 |
+| **SKILL_SPEC 8.5 动态注入** | SKILL_SPEC.md | 脚本 LLM 提示词不硬编码业务词，从数据动态提取特征注入 |
+
+**演进模式 + 经验系统反向学习修复 + migrate-and-translate 技能**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **演进模式开关** | chat.py + schemas/chat.py + ChatView.vue + chat.ts | `evolution_mode` 字段（默认开启）；开启时走数据/技能/流程匹配，关闭时直接路由 Agent 处理（跳过 classify + 匹配） |
+| **经验系统反向学习循环修复** | data_harness.py + data_processor_agent.py + data_analyst_agent.py | `collect_experience` 增加行数波动检查（>3x 中位数不记 positive）；修复 `debug_lessons` 死字段，注入技能经验到调试 prompt；清空 91 条假阳性 positive |
+| **DQ-UNI-003 升级** | inspector_tools.py | 重复行 >30% 从 warning 升级为 error 触发修复回交 |
+| **migrate-and-translate-to-chinese 技能** | data/skills/0e8dd02d | 跨数据源迁移数据，非中文文本自动翻译成中文（去重 + 并发翻译 + 分批写入） |
+| **沙箱 __import__ hook 解除 builtins** | skill_runner.py | `_BLOCKED_MODULES` 移除 builtins（拦截 builtins import 影响脚本访问内置函数） |
+
+**Bug 修复（阻断性 + 体验性）**：
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| **Chat 回复重复两份** | data_processor_agent.py + data_analyst_agent.py + chat.py | 根因：`run()` 流式过程中已逐 token yield content，循环结束又 yield 一次完整 content；删除重复 yield + done 事件兜底加 endswith 防误判 |
+| **directExecute 仍走已选技能** | chat.py + ChatView.vue | `directExecute+use_skill=false` 时仍注入技能 context；加 `not direct_execute` / `not (direct_execute and not use_skill)` 条件；前端 continueProcessing 清除 selectedData 的 skill 字段 |
+| **tool_call_log 空导致 handoff 无 datasource_id** | skill_runner.py + data_processor_agent.py + multi_agent.py | 根因：`_builtins.call_tool` 替换但模块全局 `call_tool` 未替换，导致 `_TOOL_CALL_LOG` 永远为空；加 `call_tool = _logged_call_tool` + `__main__` 末尾显式输出 + flush=True |
+| **多表 handoff** | multi_agent.py + data_inspector_agent.py | handoff payload 从单表改为 `output_tables` 列表，Inspector 遍历所有写入表分别 `run_all_checks`，报告合并 |
+| **connector 返回实际表名** | connectors.py + tool_registry.py | 9 个 connector `write_table_data` 统一返回 `table_name` 字段（实际物理名，非入参）；handler 用 result 里 table_name 存 TableMetadata |
+| **pysqlite3-binary 替换 sqlite3** | app/__init__.py + main.py + requirements.txt | ChromaDB 要求 sqlite3≥3.35.0，系统自带 sqlite3 版本可能不够；`pysqlite3-binary` 自带 3.51.1，在所有 import sqlite3 之前替换标准库模块 |
+| **图片上传 table_name 丢失** | chat.py | 图片上传也写 `source_data_name`（之前 `if not is_image` 跳过，导致 switchSession 恢复时 table_name 丢失） |
+| **GenericFileConnector 匹配** | connectors.py | `get_schema` 返回 `f.name`（带后缀）；`get_table_data`/`get_table_stats` 支持 4 种匹配（f.name/f.stem/filename_SheetName/stem_SheetName） |
+
+**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 29 个工具）在本轮保持不变（extract_image_table 新增后删除，工具数稳定 29）。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。

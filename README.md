@@ -160,10 +160,12 @@ assets/           # 静态资源
 ### 12. LLM 多模型支持
 
 | 提供商 | 说明 |
-|--------|------|
+|--------|--------|
 | 智谱AI (GLM) | 智谱 AI（默认），GLM-5.2 / GLM-5.1 / GLM-4 / GLM-4-Flash 等 |
 | 阿里百炼 | Qwen3.7-Max / Qwen3.6-Flash 等 |
 | 硅基流动 | DeepSeek-V3 / Qwen2.5-7B-Instruct 等 |
+| 火山AI网关 | 火山引擎 AI 网关（聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan 等模型，一个 API Key 调多家） |
+| 火山方舟 | 字节跳动火山引擎方舟平台（豆包系列模型） |
 | Azure OpenAI | 客户端支持（配置 azure_endpoint + api_version） |
 | 自定义服务 | 兼容 OpenAI API 的任意端点（vLLM、Ollama 等），可上传适配器代码 |
 
@@ -195,17 +197,42 @@ assets/           # 静态资源
 - **关键帧抽取**：`extract_keyframes()` 返回带时间戳的关键帧图片列表，帧图片可直接传给 `llm_vision` 做内容理解
 - ffmpeg 场景检测优先，未安装时回退 opencv 等间隔抽取；帧图片 PIL 压缩 1024px + JPEG quality 85
 
-### 15. 版本号动态生成
+### 15. 文档解析能力
+
+- **PDF 解析**：`read_file` 工具支持 PDF 文件解析（pdfplumber/fitz），含旋转自动校正、总页数返回
+- **PDF 页面渲染**：`read_file(pdf_page_images=...)` 返回渲染页面图片列表，供 OCR 使用
+- **Word 解析**：`read_file` 支持 .docx 文件解析（python-docx）
+- 主进程解析（不受沙箱 import 限制），异步化避免阻塞事件循环
+
+### 16. 中英文双语界面
+
+- 前端 vue-i18n 全量国际化，21 个页面 1679 行中文硬编码 → `t('key')` 调用
+- 右上角 EN/中文 语言切换按钮，localStorage 持久化
+- 后端 `app/core/i18n.py` ~300 条双语消息字典 + `t()` 函数 + ContextVar 语言上下文
+- axios 拦截器自动发送 `X-Lang` 请求头，I18nMiddleware 从请求头读取语言
+
+### 17. 演进模式
+
+- `evolution_mode` 开关（默认开启）：开启时走数据/技能/流程匹配（classify + 并行匹配 + 建议卡片）
+- 关闭时直接路由 Agent 处理（跳过 classify + 匹配），适合已熟悉系统的用户快速执行
+
+### 18. 技能专属规则（rules.md）
+
+- 技能包内可选 `rules.md` 文件，定义技能额外的数据检查规则（编号 `SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*`）
+- DataInspector 执行全局规则之外合并执行技能规则
+- `skill_creator` 引导 AI 创建/修改技能时，数据检查规则写到 rules.md，不写脚本代码
+
+### 19. 版本号动态生成
 
 - 版本号格式：`YYYY.MM.DD.提交次数`（git log 生成，`@lru_cache` 缓存）
 - 侧边栏底部、登录页、关于页三处显示
 - `GET /config/version` 端点（无需认证）
 
-### 16. 关于页
+### 20. 关于页
 
 - 系统设置中新增「关于」tab，展示项目简介、核心特性、技术栈、开源地址
 
-### 17. 资产导入导出
+### 21. 资产导入导出
 
 - 7 类资产一键 ZIP 迁移：技能 / 算子 / 流程 / LLM 配置 / 自定义连接器 / 数据源 / 调度
 - API Key / 密码不导出（导入后手动填）；数据源连接配置含密码（便于跨机器直接使用）
@@ -223,7 +250,7 @@ assets/           # 静态资源
 - **语言**：Python 3.11+
 - **Web 框架**：FastAPI + Uvicorn
 - **ORM**：SQLAlchemy 2.0（异步，支持 SQLite / PostgreSQL）
-- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动 / Azure / 自定义 OpenAI 兼容
+- **LLM 集成**：智谱 GLM / 阿里百炼 / 硅基流动 / 火山AI网关 / 火山方舟 / Azure / 自定义 OpenAI 兼容
 - **数据处理**：pandas, numpy
 
 ### 前端
@@ -252,7 +279,7 @@ DataCrab/
 ├── backend/                    # 后端服务
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
-│   │   ├── core/              # 核心配置（数据库、安全、类型）
+│   │   ├── core/              # 核心配置（数据库、安全、类型、i18n 国际化）
 │   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，140 个 OpenAPI paths）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
@@ -371,3 +398,7 @@ npm run dev    # Vite 开发服务器，默认端口 5173
 11. **Prefix Cache 优化**：system prompt 进程级 memoize + datasource_context 移出 system → user message，字节稳定命中 GLM context cache，input 成本降 30%+
 12. **资产导入导出**：7 类资产（技能/算子/流程/LLM 配置/连接器/数据源/调度）一键 ZIP 迁移，API Key 不导出，按 name 去重，跨机器引用稳定
 13. **LLM 配置去全局化**：无全局 provider/api_key/model 属性，所有 LLM 调用强制基于用户配置（contextvar）；`.env` 无需配置 LLM，全在前端管理（存 DB）
+14. **中英文双语界面**：前端 vue-i18n + 后端 i18n.py + `X-Lang` 请求头全栈国际化，右上角一键切换
+15. **演进模式**：`evolution_mode` 开关控制是否走数据/技能/流程匹配，关闭时直接路由 Agent 快速执行
+16. **技能专属规则**：技能包内 `rules.md` 定义技能额外的数据检查规则，DataInspector 合并执行全局规则 + 技能规则
+17. **PDF/Word 文档解析**：`read_file` 工具支持 PDF（pdfplumber/fitz，含页面渲染供 OCR）+ Word（python-docx）解析
