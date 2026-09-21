@@ -1080,6 +1080,20 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 168, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则': 16, 'ru"
+    },
+    {
+      "timestamp": "2026-09-20T19:50:32.469736",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 9, 'total_rules_written': 96, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_测试仪器通用要求表': 9, '表1 电磁兼容"
+    },
+    {
+      "timestamp": "2026-09-20T20:04:05.989263",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 9, 'total_rules_written': 111, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_测试仪器通用要求表': 9, '表1 电磁兼"
     }
   ],
   "lessons": "### 常见错误\n\n#### 1. read_file 调用超时（最频繁，~40次）\n- 根因: PDF 文本提取（read_file）在主进程耗时过长，沙箱子进程等待期间无 stdout 输出，触发 300 秒 idle 超时\n- 修复: 使用 PDF 文本缓存（_load_pdf_text_cached），首次解析后写入 .pdfcache.txt，后续直接读缓存\n- 避免: 不要在 call_tool(read_file) 调用期间不做任何 print，必须先 print 进度\n\n#### 2. 沙箱禁止 import os/sys/fitz 等\n- 根因: 沙箱 __import__ hook 拦截危险模块，fitz 依赖链中 import glob 被拦截\n- 修复: 用 pathlib.Path 替代 os.path，用 call_tool 替代直接文件操作\n- 避免: 不要在脚本中 import fitz/PyMuPDF，用平台 read_file/render_pdf_pages\n\n#### 3. document_paths 被传为 list 而非 str\n- 根因: 前端有时传 list 类型，脚本用 .split(\",\") 报 AttributeError\n- 修复: 入口处统一转换 paths = [p.strip() for p in (document_paths if isinstance(document_paths, str) else \",\".join(document_paths)).split(\",\") if p.strip()]\n\n#### 4. Excel 写入 Permission denied\n- 根因: 目标 Excel 文件被其他进程占用（可能上次执行未释放）\n- 修复: 写入前检查文件是否被占用，或使用 overwrite 策略\n\n#### 5. LLM 返回空 content / JSON 解析失败\n- 根因: 推理模型 reasoning 过长导致 content 被截断，或返回空字符串\n- 修复: 空 content 时重试（最多3次），最终失败显式报错不吞异常\n\n### 成功模式\n\n#### 1. PDF 文本缓存是必须的\n- 首次解析 PDF 用 read_file，成功后立即写 .pdfcache.txt 缓存\n- 后续运行直接读缓存，避免重复慢解析超时\n\n#### 2. 文本路径优先，OCR 仅在文本层无数据时使用\n- OCR（llm_vision）比文本路径慢 5-10 倍，且容易产生重复行（幻觉）\n- 文本层有数据的表格优先走文本还原路径\n- 仅在 _table_block_has_data 返回 False（图片型 PDF）时才走 OCR\n- 瞬态错误（timeout/JSON/网络）重试文本路径，不切 OCR\n\n#### 3. 数据质量校验必须在写入前执行\n- _validate_table_quality 检查重复行率/行数异常/空行率\n- 质量校验失败直接 raise（不吞异常），让脚本崩溃记 negative\n- 附录明细表正常 30-50 行，超 80 行判定为幻觉\n"

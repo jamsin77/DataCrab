@@ -179,19 +179,19 @@
       <div class="enrich-summary">
         <span class="enrich-summary-item">
           <el-icon color="#409eff"><DataAnalysis /></el-icon>
-          总计 {{ enrichDialog.tables.length }}
+          {{ t('metadata.enrichTotal', { n: enrichDialog.tables.length }) }}
         </span>
         <span class="enrich-summary-item">
           <el-icon color="#67c23a"><CircleCheckFilled /></el-icon>
-          成功 {{ enrichDoneCount }}
+          {{ t('metadata.enrichSuccess', { n: enrichDoneCount }) }}
         </span>
         <span class="enrich-summary-item" v-if="enrichErrorCount">
           <el-icon color="#f56c6c"><CircleCloseFilled /></el-icon>
-          失败 {{ enrichErrorCount }}
+          {{ t('metadata.enrichFailedCount', { n: enrichErrorCount }) }}
         </span>
         <span class="enrich-summary-item" v-if="enrichDialog.processing">
           <el-icon class="is-loading"><Loading /></el-icon>
-          进行中 {{ enrichProcessingCount }}
+          {{ t('metadata.enrichInProgress', { n: enrichProcessingCount }) }}
         </span>
       </div>
 
@@ -220,7 +220,7 @@
 
       <template #footer>
         <el-button v-if="enrichDialog.processing" type="warning" @click="onEnrichDialogClose">
-          中止并关闭
+          {{ t('metadata.enrichAbortClose') }}
         </el-button>
         <el-button v-else type="primary" @click="enrichDialog.visible = false">
           {{ t('common.confirm') }}
@@ -269,7 +269,7 @@ function onEnrichDialogClose() {
   enrichDialog.tables.forEach(t => {
     if (t.status === 'processing' || t.status === 'pending') {
       t.status = 'error'
-      t.errorMsg = '已中止'
+      t.errorMsg = t('metadata.enrichAborted')
     }
   })
 }
@@ -297,9 +297,9 @@ const enrichDoneCount = computed(() => enrichDialog.tables.filter(t => t.status 
 const enrichErrorCount = computed(() => enrichDialog.tables.filter(t => t.status === 'error').length)
 const enrichProcessingCount = computed(() => enrichDialog.tables.filter(t => t.status === 'processing' || t.status === 'pending').length)
 const enrichDialogTitle = computed(() => {
-  if (enrichDialog.processing) return `AI 增强中（${enrichDoneCount.value}/${enrichDialog.tables.length}）`
-  if (enrichErrorCount.value > 0) return `AI 增强完成（成功 ${enrichDoneCount.value}，失败 ${enrichErrorCount.value}）`
-  return `AI 增强完成（${enrichDoneCount.value} 项）`
+  if (enrichDialog.processing) return t('metadata.enrichProgressTitle', { done: enrichDoneCount.value, total: enrichDialog.tables.length })
+  if (enrichErrorCount.value > 0) return t('metadata.enrichCompleteWithFail', { success: enrichDoneCount.value, fail: enrichErrorCount.value })
+  return t('metadata.enrichCompleteTitle', { count: enrichDoneCount.value })
 })
 
 async function enrichStreamConcurrent(rows: any[]) {
@@ -333,7 +333,7 @@ async function enrichStreamConcurrent(rows: any[]) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({} as any))
     enrichDialog.processing = false
-    enrichDialog.tables.forEach(t => { t.status = 'error'; t.errorMsg = err.detail || '请求失败' })
+    enrichDialog.tables.forEach(t => { t.status = 'error'; t.errorMsg = err.detail || t('metadata.enrichRequestFailed') })
     return
   }
 
@@ -526,7 +526,7 @@ async function batchEnrich() {
   try {
     await enrichStreamConcurrent(rows)
     if (enrichErrorCount.value > 0) {
-      ElMessage.warning(`成功 ${enrichDoneCount.value}，失败 ${enrichErrorCount.value}`)
+      ElMessage.warning(t('metadata.enrichSuccessFailWarning', { success: enrichDoneCount.value, fail: enrichErrorCount.value }))
     } else {
       ElMessage.success(t('metadata.batchEnrichComplete', { success: enrichDoneCount.value }))
     }

@@ -1340,6 +1340,81 @@ def _sort_rows_by_sequence(headers: List[str], rows: List[List[str]]) -> List[Li
     return [r for _, r in indexed]
 
 
+_SPELL_DIGITS = "零一二三四五六七八九"
+
+
+def _to_cn_number(n: int) -> str:
+    """把 0~99 整数转为中文数字，用于列名规范化（避免数字开头触发 snake_case 告警）。"""
+    if n < 0:
+        return str(n)
+    if n < 10:
+        return _SPELL_DIGITS[n]
+    if n < 20:
+        return "十" + ("" if n % 10 == 0 else _SPELL_DIGITS[n % 10])
+    tens, ones = n // 10, n % 10
+    return _SPELL_DIGITS[tens] + "十" + ("" if ones == 0 else _SPELL_DIGITS[ones])
+
+
+def _normalize_numeric_headers(headers: List[str]) -> List[str]:
+    """把以数字开头的列名（如「3次占比(%)」「11次占比 %」）改为中文数字开头。
+
+    平台 snake_case 命名规范对「数字开头列名」报 error，而中文/字母开头的列名
+    （如「基波占比」「额定容量(MW)」）不报。仅改列名，不动数据行。
+    """
+    if not headers:
+        return headers
+    out = []
+    for h in headers:
+        h = (h or "").strip()
+        m = re.match(r"^(\d+)(\s*次.*)$", h)
+        if m:
+            h = _to_cn_number(int(m.group(1))) + m.group(2)
+        out.append(h)
+    return out
+
+
+def _transpose_metric_table(headers: List[str], rows: List[List[str]]):
+    """检测并还原「指标在行、样品在列」的转置表。
+
+    附录 A 多张实测数据表被 PDF 文本层按列优先抽取，LLM 归并后变成：
+    首列名为「测试编号/项目」，其余列名为纯数字（1、2、3…），真正的指标名
+    （基波占比、额定容量、电流总有效值…）下沉为每行首列、样品被当成列。
+    满足确定性特征（首列含编号/项目/测试字样 且 其余列名全为纯数字）时，
+    还原为常规宽表：行=样品，列=指标。
+    """
+    if not headers or not rows or len(headers) < 2:
+        return headers, rows
+    first = (str(headers[0]) or "").strip() if headers else ""
+    if not first or not any(k in first for k in ("编号", "项目", "指标", "测试")):
+        return headers, rows
+    num_headers = [str(h).strip() if h is not None else "" for h in headers[1:]]
+    if not num_headers or not all(re.fullmatch(r"\d+", h) for h in num_headers):
+        return headers, rows
+    metrics = [(str(r[0]).strip() if r and len(r) > 0 else "") for r in rows]
+    if len(metrics) != len(rows) or not any(metrics):
+        return headers, rows
+    n_samples = len(num_headers)
+    if n_samples < 2:
+        return headers, rows
+    new_headers = list(metrics)
+    new_rows: List[List[str]] = []
+    for si in range(n_samples):
+        new_row: List[str] = []
+        for ri in range(len(rows)):
+            cell = rows[ri][si + 1] if len(rows[ri]) > si + 1 else ""
+            new_row.append("" if cell is None else str(cell))
+        new_rows.append(new_row)
+    # 将「运行编号/名称/相别」类标识列提升到首列，作为样品主键
+    id_idx = next((i for i, m in enumerate(new_headers)
+                   if any(k in m for k in ("编号", "名称", "相别"))), None)
+    if id_idx is not None and id_idx != 0:
+        new_headers.insert(0, new_headers.pop(id_idx))
+        for r in new_rows:
+            r.insert(0, r.pop(id_idx))
+    print(f"  [转置还原] 表由 {len(rows)} 指标 × {n_samples} 样品 还原为宽表 {len(new_rows)} 行 × {len(new_headers)} 列")
+    return new_headers, new_rows
+
+
 def _estimate_appendix_start_page(text: str) -> int:
     """估算附录 A 起始页（1-indexed），用页眉/页脚水印作为分页锚点。
 
@@ -1957,10 +2032,11 @@ def _extract_table_literal(block: Dict[str, str], pdf_path: str = "") -> Dict[st
     number = block.get("number") or ""
     content = block.get("content") or ""
 
-    # 表1 是「设备状态 → 推荐检修时间」固定 2 列 4 行映射表。
-    # PDF 文本层按列优先转置抽取，LLM 还原常把状态名误当表头、时间值错位填入，
-    # 导致首列变表标题、末两列空值。该表内容固定且短，此处按源文档原文确定性重建。
-    if number == "1" or (title and "停电检修时间" in title and "表" in title):
+    # 表1 按文档区分：DL/T 1684 的「停电检修时间」、DL/T 2840 的「电磁兼容性能要求」。
+    # 二者文本层都按列优先转置抽取，LLM 还原常把状态名/合并单元格父项误当表头，
+    # 导致错位。内容固定且短，此处按源文档原文确定性重建。
+    # 仅凭 number=="1" 无法区分两份文档，必须以标题关键词判定，避免串文档错配。
+    if title and "停电检修时间" in title:
         _t1_headers = ["设备状态", "推荐检修时间"]
         _t1_rows = [
             ["正常状态", "正常周期或延长一年"],
@@ -1968,7 +2044,24 @@ def _extract_table_literal(block: Dict[str, str], pdf_path: str = "") -> Dict[st
             ["异常状态", "适时安排"],
             ["严重状态", "尽快安排"],
         ]
-        print(f"  [表格] 「{title}」(表{number}) 为固定映射表，按原文确定性重建 4 行")
+        print(f"  [表格] 「{title}」(表{number}) 为设备状态→检修时间映射表，按原文确定性重建 4 行")
+        return {
+            "table_name": _sanitize_table_name(f"表{number} {title}".strip()),
+            "table_number": number,
+            "headers": _t1_headers,
+            "rows": _t1_rows,
+        }
+
+    if title and "电磁兼容" in title and "性能要求" in title:
+        _t1_headers = ["试验对象", "试验项目", "参考标准及试验等级", "试验结果的评定"]
+        _t1_judge = "试验时，功能或性能暂时丧失或降低，但在骚扰停止后能自行恢复，无需操作者干预"
+        _t1_rows = [
+            ["测试仪器", "静电放电抗扰度", "GB/T 17626.2，4级", _t1_judge],
+            ["测试仪器", "射频电磁场辐射抗扰度", "GB/T 17626.3，3级", _t1_judge],
+            ["测试仪器", "射频场感应的传导骚扰抗扰度", "GB/T 17626.6，3类", _t1_judge],
+            ["测试仪器", "工频磁场抗扰度", "GB/T 17626.8，5级", _t1_judge],
+        ]
+        print(f"  [表格] 「{title}」(表{number}) 为电磁兼容性能要求表，按原文确定性重建 4 行")
         return {
             "table_name": _sanitize_table_name(f"表{number} {title}".strip()),
             "table_number": number,
