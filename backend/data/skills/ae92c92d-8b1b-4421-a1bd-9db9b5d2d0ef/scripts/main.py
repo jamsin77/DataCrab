@@ -1515,18 +1515,21 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
         # SKILL-DQ-002: 列数不一致 → 补空/合并多余列
         if "SKILL-DQ-002" in rule_ids:
             _adjusted = 0
+            ncols = len(headers)
             for rec in recs:
-                while len(list(rec.values())) < len(headers):
+                # 按headers遍历，确保列数与headers一致
+                while len(list(rec.keys())) < ncols:
                     rec[f"col_{len(rec)}"] = ""
                     _adjusted += 1
-                if len(list(rec.values())) > len(headers):
-                    vals = list(rec.values())
-                    overflow = vals[len(headers):]
-                    last_key = list(rec.keys())[len(headers) - 1]
-                    overflow_str = "；".join(str(v) for v in overflow if str(v).strip())
-                    if overflow_str:
-                        rec[last_key] = str(rec[last_key]) + "；" + overflow_str if rec[last_key] else overflow_str
-                    for k in list(rec.keys())[len(headers):]:
+                if len(list(rec.keys())) > ncols:
+                    all_keys = list(rec.keys())
+                    overflow_keys = all_keys[ncols:]
+                    overflow_vals = [str(rec[k]).strip() for k in overflow_keys if str(rec.get(k, "")).strip()]
+                    if overflow_vals:
+                        last_key = headers[ncols - 1]
+                        old_val = str(rec.get(last_key, ""))
+                        rec[last_key] = old_val + "；" + "；".join(overflow_vals) if old_val else "；".join(overflow_vals)
+                    for k in overflow_keys:
                         del rec[k]
                     _adjusted += 1
             if _adjusted:
@@ -1602,26 +1605,22 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
     把有问题的行 + 上下文行 + 源文档片段给 LLM，让它输出修复后的行。
     LLM 可以输出比原来更多的行（补回丢失的行），按序号插入到正确位置。
     """
-    _llm_issues = []
-    for iss in tbl_issues:
-        desc = str(iss.get("description", ""))
-        if any(kw in desc for kw in ["截断", "截", "漏", "缺失", "不完整", "错位", "错配", "矛盾", "丢失", "减少", "消失"]):
-            _llm_issues.append(iss)
-    if not _llm_issues:
-        return 0
-
     if not recs:
         return 0
     headers = list(recs[0].keys())
     source_doc = recs[0].get("source_document", "")
     updated_at = recs[0].get("updated_at", "")
 
+    # 所有 error/critical 的 issue 都交给 LLM 修复
+    _llm_issues = [iss for iss in tbl_issues if str(iss.get("severity", "")).strip().lower() in ("error", "critical")]
+    if not _llm_issues:
+        return 0
+
     # 从 issue 描述中提取行号/序号
-    import re as _re
     target_rows = set()
     for iss in _llm_issues:
         desc = str(iss.get("description", ""))
-        for m in _re.finditer(r"第(\d+)行|序号(\d+)|(\d+)行", desc):
+        for m in re.finditer(r"第(\d+)行|序号(\d+)|(\d+)行", desc):
             for g in m.groups():
                 if g:
                     target_rows.add(int(g) - 1)
@@ -1635,13 +1634,13 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
             continue
         context = []
         if ri > 0:
-            context.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:50] for h in headers}})
-        context.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:100] for h in headers}})
+            context.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:200] for h in headers}})
+        context.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:200] for h in headers}})
         if ri + 1 < len(recs):
-            context.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:50] for h in headers}})
+            context.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:200] for h in headers}})
         _rows_for_llm.extend(context)
 
-    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))[:150]}" for i in _llm_issues)
+    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))[:200]}" for i in _llm_issues)
 
     # 找到序号列（如果有）
     seq_col = -1
@@ -1664,14 +1663,14 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
     prompt += "| " + " | ".join("---" for _ in headers) + " |\n"
     for r in _rows_for_llm:
         vals = r.get("values", {})
-        cells = [str(vals.get(h, ""))[:80] for h in headers]
+        cells = [str(vals.get(h, ""))[:200] for h in headers]
         tag = "←问题行" if r.get("issue") else ""
         prompt += f"| {' | '.join(cells)} | {tag}\n"
 
     prompt += f"""
 
 源文档片段（供参考）:
-{source_text[:3000]}
+{source_text[:6000]}
 
 请输出修复后的行（Markdown 表格行格式，含表头行和分隔行）。
 - 如果需要补行，直接在正确位置插入新行
@@ -2104,7 +2103,7 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         written_total += n
         print(f"  [完成] 表「{tbl}」写入 {n} 条")
 
-    # 写入后自检：不限轮数，直到无问题或超过 10 轮，每轮修复后重新写入修改过的表
+    # 写入后自检：最多 5 轮，每轮修复后重新写入修改过的表
     _check_round = 0
     _all_check_issues = []
     while _check_round < 5:
