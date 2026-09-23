@@ -15,61 +15,17 @@ def print(*args, **kwargs):
     _print(*args, **kwargs)
 
 
-# 标准规则表字段，按顺序输出
 STANDARD_COLUMNS = [
-    "rule_code",
-    "rule_name",
-    "category",
-    "applicable_fields",
-    "format_regex",
-    "check_logic",
-    "severity",
-    "description",
-    "source_document",
-    "updated_at",
+    "rule_code", "rule_name", "category", "applicable_fields",
+    "format_regex", "check_logic", "severity", "description",
+    "source_document", "updated_at",
 ]
 
-DEFAULT_TARGET_DATASOURCE = "凭证检索库"
-DEFAULT_TARGET_TABLE = "rules_knowledge_base"
 
-# 数据源名称 -> UUID 内置映射，避免调用 list_user_datasources 时阻塞
-_DATASOURCE_UUID_MAP = {
-    "文物列表": "ee824f38-36da-46a7-9018-9176a4632745",
-    "文物库": "3c55f752-191c-46c4-a5a9-1c959c3438bc",
-    "交易数据": "ea913362-567c-4ffa-94b5-33d018c33959",
-    "凭证库": "39eedc33-4749-4f7f-84ad-38b6066b4dc0",
-    "凭证检索库": "e5f3fffa-b88d-45e9-9f1b-2210024a54af",
-    "聊天上传数据": "86e3ba97-4482-4164-9a1f-1b6397e159d1",
-    "培训视频": "142dc039-06a8-4050-9b68-715bb34b030c",
-    "培训知识库": "e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf",
-    "通用知识库": "e02c6af7-1ba4-4bd2-b677-3c8f82e1fbdf",
-    "电网数据": "e270806b-7244-40e7-b66e-11ef9423f158",
-    "电网规则": "74d94ef7-025e-4d57-bc11-e29bf7a03a90",
-}
-
-# 内置映射的数据源类型（用于判断是否为图数据库）
-_KNOWN_DATASOURCE_TYPES = {
-    "文物列表": "mysql",
-    "文物库": "postgresql",
-    "交易数据": "postgresql",
-    "凭证库": "postgresql",
-    "凭证检索库": "postgresql",
-    "聊天上传数据": "file",
-    "培训视频": "file",
-    "培训知识库": "chroma",
-    "通用知识库": "chroma",
-    "电网数据": "postgresql",
-    "电网规则": "excel",
-}
-
+# ==================== 数据源查找（动态） ====================
 
 def _get_datasource_id(name: str) -> str:
-    """根据数据源名称获取数据源 ID（优先内置映射，缺失时再查）"""
     print(f"正在查找数据源: {name}")
-    if name in _DATASOURCE_UUID_MAP:
-        ds_id = _DATASOURCE_UUID_MAP[name]
-        print(f"数据源已找到(内置映射): {name} (id={ds_id})")
-        return ds_id
     ds = call_tool("list_user_datasources", by_name=name)
     if not ds or not isinstance(ds, dict) or not ds.get("id"):
         raise ValueError(f"找不到数据源: {name}")
@@ -78,190 +34,163 @@ def _get_datasource_id(name: str) -> str:
 
 
 def _is_graph_datasource(name: str) -> bool:
-    """判断数据源是否为图数据库（neo4j / nebula / arangodb / graph 等）。
-
-    优先看内置类型映射；缺失时调用 list_user_datasources 查询 type。
-    """
-    print(f"正在检测数据源类型: {name}")
-    if name in _KNOWN_DATASOURCE_TYPES:
-        t = _KNOWN_DATASOURCE_TYPES[name].lower()
-        is_graph = any(k in t for k in ("graph", "neo4j", "nebula", "arangodb", "tigergraph"))
-        print(f"  [类型检测] 内置映射 type={_KNOWN_DATASOURCE_TYPES[name]}，图数据库={is_graph}")
-        return is_graph
     try:
         ds = call_tool("list_user_datasources", by_name=name)
         if isinstance(ds, dict):
             t = str(ds.get("type") or "").lower()
-            is_graph = any(k in t for k in ("graph", "neo4j", "nebula", "arangodb", "tigergraph"))
-            print(f"  [类型检测] 查询 type={ds.get('type')}，图数据库={is_graph}")
-            return is_graph
-    except Exception as e:
-        print(f"  [类型检测] 查询类型失败（按非图数据库处理）: {e}")
+            return any(k in t for k in ("graph", "neo4j", "nebula", "arangodb", "tigergraph"))
+    except Exception:
+        pass
     return False
 
 
 def _is_chroma_datasource(name: str) -> bool:
-    """判断数据源是否为 ChromaDB 向量库（写入时需要 document/metadata 结构，而非平铺字段）。"""
-    if name in _KNOWN_DATASOURCE_TYPES:
-        t = _KNOWN_DATASOURCE_TYPES[name].lower()
-        is_chroma = "chroma" in t or "vector" in t or "vectordb" in t
-        print(f"  [类型检测] 内置映射 type={_KNOWN_DATASOURCE_TYPES[name]}，向量库={is_chroma}")
-        return is_chroma
     try:
         ds = call_tool("list_user_datasources", by_name=name)
         if isinstance(ds, dict):
             t = str(ds.get("type") or "").lower()
-            is_chroma = "chroma" in t or "vector" in t or "vectordb" in t
-            print(f"  [类型检测] 查询 type={ds.get('type')}，向量库={is_chroma}")
-            return is_chroma
-    except Exception as e:
-        print(f"  [类型检测] 查询类型失败（按非向量库处理）: {e}")
+            return "chroma" in t or "vector" in t or "vectordb" in t
+    except Exception:
+        pass
     return False
 
 
+# ==================== 文件文本提取 ====================
+
 def _load_pdf_text_cached(path: str) -> str:
-    """读取 PDF 全文（带缓存，规避 read_file 慢速解析导致的超时）。
-
-    read_file 对 PDF 的解析在主进程用 pdfplumber 逐页 extract_text()，
-    带水印/翻转页的复杂 PDF 单次解析可能耗时 1-3 分钟，且 call_tool 阻塞
-    期间脚本无法打印进度，容易触发 300 秒 idle 超时。
-
-    这里把首次解析结果缓存为同目录 txt 文件（文件名带文件大小做版本 key，
-    PDF 更新后自动失效），之后运行直接秒读缓存，从根本上避免重复慢解析。
-    """
     p = Path(path)
     try:
         size = p.stat().st_size
     except Exception:
         size = 0
-    cache_path = p.with_name(f"{p.stem}.pdfcache.txt")
-
-    # 1) 优先读缓存：txt 读取是瞬时 read_text，不会超时。
-    #    沙箱内无法用 pathlib 访问挂载目录（exists/glob 恒为 False），
-    #    改为主进程 call_tool read_file 直接探测缓存文件；txt 读取瞬时，不会挂起。
-    #    动态生成缓存文件名（基于 PDF 文件名 + 大小），不再硬编码特定文档名。
     cache_name = f"{p.stem}.{size}.pdfcache.txt"
+    # 优先读带 size 的精确缓存；旧的无 size 缓存可能来自不同版本的文件，仅作兜底
     cache_candidates = [p.with_name(cache_name), p.with_name(f"{p.stem}.pdfcache.txt")]
-    seen = set()
     for cand in cache_candidates:
-        if str(cand) in seen:
-            continue
-        seen.add(str(cand))
         try:
             res = call_tool("read_file", path=str(cand))
             if isinstance(res, dict) and not res.get("error") and res.get("content"):
                 cached = str(res["content"])
                 if len(cached.strip()) > 200:
-                    print(f"  [缓存命中] 使用已缓存的 PDF 文本: {cand.name}")
+                    print(f"  [缓存命中] PDF 文本: {cand.name}")
                     return cached
         except Exception:
             pass
-
-    # 2) 缓存未命中：慢速解析（仅首次），成功后立即写缓存
-    print("  [提示] 首次解析 PDF 需在主进程逐页提取文本（含水印/翻转页，约 1-3 分钟），请耐心等待，勿中断…")
+    print("  [提示] 首次解析 PDF，请耐心等待…")
     text = _extract_text_from_pdf(path)
-
+    # 写入带 size 的缓存名（与读取优先级一致），避免后续版本混淆
+    cache_path = p.with_name(cache_name)
     try:
         w = call_tool("write_file", path=str(cache_path), data=text, format="text")
         if isinstance(w, dict) and w.get("success"):
-            print(f"  [缓存] PDF 文本已缓存: {cache_path.name}（下次运行秒读）")
-        else:
-            print(f"  [缓存] 写缓存未确认成功（不影响主流程）: {w!r}")
+            print(f"  [缓存] 已缓存: {cache_path.name}")
     except Exception as e:
-        print(f"  [缓存] 写缓存失败（不影响主流程）: {e}")
-
+        print(f"  [缓存] 写缓存失败(不影响): {e}")
     return text
+
+
+def _strip_toc_pages(text: str) -> str:
+    """过滤 PDF 目录页（目次页）文本。
+    
+    目录页特征：大量行由「标题文字 + 点引导线 + 页码」组成，
+    或连续多行以页码结尾且无实质正文内容。
+    通用判据（不依赖具体文档）：
+    1. 连续 5+ 行匹配「……数字」模式（点引导线+页码）→ 整段目录删除
+    2. 或连续 5+ 行以纯数字结尾且行长短不一（目录索引特征）
+    """
+    lines = text.split("\n")
+    # 标记目录行：匹配「文字……数字」或「文字    数字」模式
+    toc_line_re = re.compile(r"[．.·…\s]{2,}\d{1,4}\s*$")
+    # 也匹配「标题 数字」结尾（无点线但明显是目录）
+    simple_toc_re = re.compile(r"[\u4e00-\u9fff\w]{2,40}\s+\d{1,4}\s*$")
+    
+    # 找连续目录行段
+    i = 0
+    result_lines = []
+    while i < len(lines):
+        # 检查从 i 开始是否有连续 8+ 行匹配目录模式（提高阈值避免误删引用文件列表）
+        j = i
+        toc_count = 0
+        while j < len(lines):
+            s = lines[j].strip()
+            if not s:
+                j += 1
+                continue
+            if toc_line_re.search(s) or (simple_toc_re.match(s) and len(s) < 50 and not re.search(r"[。；，、]", s)):
+                toc_count += 1
+                j += 1
+            else:
+                break
+        if toc_count >= 8:
+            # 跳过这段目录行
+            print(f"  [TOC过滤] 跳过 {toc_count} 行目录页文本（行 {i+1}-{j}）")
+            i = j
+        else:
+            result_lines.append(lines[i])
+            i += 1
+    return "\n".join(result_lines)
 
 
 def _extract_text_from_pdf(path: str) -> str:
-    """从 PDF 文件提取全文：调用平台 read_file 工具（主进程解析，不受沙箱限制）。
-
-    不在此处自行解析 PDF，完全依赖平台工具；任何解析失败都如实抛出，不吞异常。
-    """
-    print(f"  调用平台 read_file 解析 PDF: {path}")
+    print(f"  调用 read_file 解析 PDF: {path}")
     res = call_tool("read_file", path=path)
     if not isinstance(res, dict):
-        raise RuntimeError(f"read_file 返回类型异常（期望 dict）: {res!r}")
+        raise RuntimeError(f"read_file 返回异常: {res!r}")
     if "error" in res:
-        raise RuntimeError(f"read_file 解析 PDF 失败: {res['error']}")
-    if "content" not in res:
-        raise RuntimeError(f"read_file 未返回 content 字段: {res!r}")
-    text = str(res["content"])
+        raise RuntimeError(f"read_file 失败: {res['error']}")
+    text = str(res.get("content") or "")
     if not text.strip():
-        raise RuntimeError(f"read_file 提取的 PDF 文本为空: {path}")
+        raise RuntimeError(f"PDF 文本为空: {path}")
+    # 过滤目录页
+    text = _strip_toc_pages(text)
     return text
 
 
-def _extract_text_from_docx(path: str) -> str:
-    """从 Word (.docx) 文件提取全文，包括段落和表格"""
-    try:
-        import docx
-    except ImportError:
-        res = call_tool("read_file", path=path)
-        if isinstance(res, dict) and res.get("content"):
-            return str(res["content"])
-        raise ImportError("缺少 Word 解析库 (python-docx)，请安装")
-
-    document = docx.Document(path)
-    parts = [p.text for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            parts.append(" | ".join(cell.text.strip() for cell in row.cells))
-    return "\n".join(parts)
-
-
 def _extract_text_from_file(path: str) -> str:
-    """根据文件扩展名选择解析方式提取文本"""
     print(f"开始提取文件文本: {path}")
     ext = Path(path).suffix.lower()
     if ext == ".pdf":
         text = _load_pdf_text_cached(path)
     elif ext == ".docx":
-        text = _extract_text_from_docx(path)
-    elif ext in [".txt", ".md", ".csv"]:
-        res = call_tool("read_file", path=path)
-        if not isinstance(res, dict) or "content" not in res:
-            raise RuntimeError(f"read_file 未返回有效内容: {res}")
-        text = str(res["content"])
+        try:
+            import docx
+            doc = docx.Document(path)
+            parts = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    parts.append(" | ".join(c.text.strip() for c in row.cells))
+            text = "\n".join(parts)
+        except ImportError:
+            res = call_tool("read_file", path=path)
+            text = str(res.get("content") or "") if isinstance(res, dict) else ""
     else:
-        # 其他格式尝试使用 read_file 读取文本
         res = call_tool("read_file", path=path)
-        if isinstance(res, dict) and "content" in res:
-            text = str(res["content"])
-        else:
-            raise RuntimeError(f"不支持的文件格式或无法读取文件: {path}")
-    if not text or not text.strip():
+        text = str(res.get("content") or "") if isinstance(res, dict) else ""
+    if not text.strip():
         raise RuntimeError(f"文件内容为空: {path}")
     print(f"文本提取完成，长度 {len(text)} 字符")
     return text
 
 
-def _split_text(text: str, max_chunk: int = 6000, overlap: int = 1500) -> List[str]:
-    """将长文本按最大长度切分为多个片段，尽量在换行或句号处断开。
+# ==================== 文本切分 ====================
 
-    采用滑动窗口 + 重叠区（overlap）：相邻片段间保留 overlap 字符的重叠，
-    确保跨页/跨段的大表格即使落在切分边界附近，也会被相邻片段完整覆盖。
-    """
+def _split_text(text: str, max_chunk: int = 6000, overlap: int = 1500) -> List[str]:
     if len(text) <= max_chunk:
         return [text]
     if overlap >= max_chunk:
         overlap = max_chunk // 3
-    chunks = []
-    start = 0
+    chunks, start = [], 0
     while start < len(text):
         end = start + max_chunk
         if end >= len(text):
             chunks.append(text[start:])
             break
-        # 优先在换行符处断开（表格行之间通常以换行分隔，换行处最安全）
         split_pos = text.rfind("\n", start, end)
         if split_pos == -1 or split_pos < start + max_chunk // 2:
-            # 其次在句号处断开
             split_pos = text.rfind("。", start, end)
         if split_pos == -1 or split_pos < start + max_chunk // 2:
             split_pos = end
         chunks.append(text[start:split_pos + 1])
-        # 下一段起点回退 overlap，形成重叠，避免大表格在边界被切断
         start = max(start + 1, split_pos + 1 - overlap)
     return chunks
 
@@ -270,153 +199,62 @@ _TABLE_TITLE_PATTERN = re.compile(
     r"^表\s*([A-Za-zÀ-ÿ]?\s*\.?\s*\d+(?:[.．]\d+)?)\s*(?:[（(]\s*续\s*[)）])?\s*[:：]?\s*(.*)$"
 )
 
-# 附录六张明细表：部件关键词 → (标准编号, 标准名称)。
-# 用于标题编号/「表」字被 OCR 或翻转页转置破坏时的兜底识别。
-# 注意关键词按“越具体越靠前”排序，避免「冷却」「套管」等宽泛词误命中。
-_TABLE_KEYWORD_FALLBACK = [
-    ("有载分接开关", "A.4", "油浸式变压器(电抗器)有载分接开关状态量劣化的检修内容明细表"),
-    ("无励磁分接开关", "A.5", "油浸式变压器(电抗器)无励磁分接开关状态量劣化的检修内容明细表"),
-    ("非电量保护和在线监测装置", "A.6", "油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表"),
-    ("冷却", "A.3", "油浸式变压器(电抗器)冷却(散热)器系统状态量劣化的检修内容明细表"),
-    ("套管", "A.2", "油浸式变压器(电抗器)套管状态量劣化的检修内容明细表"),
-    ("本体", "A.1", "油浸式变压器(电抗器)本体状态量劣化的检修内容明细表"),
-]
-# 附录明细表标题的专属后缀：正文绝不会独立出现该串，可作翻转页转置标题的兜底锚点。
-_APPENDIX_TABLE_SUFFIX = "状态量劣化的检修内容明细表"
-
 
 def _normalize_table_number(s: str) -> str:
-    """归一化表格编号：把 OCR 引入的重音/全角字符还原为 ASCII（Á.1 -> A.1）。"""
     import unicodedata
     s = unicodedata.normalize("NFKD", s or "")
     s = s.encode("ascii", "ignore").decode("ascii")
-    # 仅保留字母数字和点、下划线，去掉空格与 OCR 噪声
-    s = "".join(ch for ch in s if ch.isascii() and (ch.isalnum() or ch in "._"))
-    return s.strip()
-
-
-def _match_fallback(s: str):
-    """按附录明细表关键词兜底匹配，返回 (编号, 标准名称) 或 None。"""
-    for kw, num, std_name in _TABLE_KEYWORD_FALLBACK:
-        if kw in s:
-            return num, std_name
-    return None
+    return "".join(ch for ch in s if ch.isascii() and (ch.isalnum() or ch in "._")).strip()
 
 
 def _parse_table_title(line: str):
-    """解析表格标题行，返回 (是否标题, 表格编号, 表格名称, 是否续表)。"""
     s = line.strip()
     if len(s) > 80:
         return False, "", "", False
     m = _TABLE_TITLE_PATTERN.match(s)
     if m and s.startswith("表"):
-        number = _normalize_table_number(m.group(1).strip())
-        desc = m.group(2).strip()
-        # 续表判断放宽为「标题含“续”字」：翻转页/OCR 常把右括号识别成「〉」等噪声，
-        # 精确括号匹配 [）)] 会失配，导致「表 Á.1 (续〉」被误判为新表、跨页表格被拆成两个文件。
-        is_cont = "续" in s
-        return True, number, desc, is_cont
-    # 兜底1：行以「表」开头但正则未匹配（编号被 OCR 破坏，如「表 A.4 有载…」乱码）
-    if s.startswith("表"):
-        fb = _match_fallback(s)
-        if fb:
-            return True, fb[0], fb[1], "续" in s
-        if "停电检修时间" in s:
-            return True, "1", "油浸式变压器(电抗器)停电检修时间", "续" in s
-        if "检修类别与检修内容对应表" in s:
-            return True, "2", "油浸式变压器(电抗器)检修类别与检修内容对应表", "续" in s
-        return False, "", "", False
-    # 兜底2：行首不是「表」（翻转页转置导致标题错位），但含附录明细表专属后缀时也识别为标题
-    if _APPENDIX_TABLE_SUFFIX in s:
-        fb = _match_fallback(s)
-        if fb:
-            return True, fb[0], fb[1], "续" in s
+        return True, _normalize_table_number(m.group(1).strip()), m.group(2).strip(), "续" in s
     return False, "", "", False
 
 
 def _looks_like_table_name(s: str) -> bool:
-    """判断一个独立行是否像「表格名称」而非数据/页眉页脚。
-
-    用于「表N」编号与其名称被 PDF 文本层拆成两行时的名称补全（如：
-    表1
-    油浸式变压器(电抗器)停电检修时间
-    ）。只做通用启发式，不硬编码具体表名。
-    """
     s = (s or "").strip()
     if not s or len(s) < 4 or len(s) > 60:
         return False
-    # 页眉/页脚/水印常见噪声
-    if any(k in s for k in ("南网", "wx_", "知识共享", "备案号", "国家能源")):
+    if re.match(r"^[0-9IVXivx．.、]", s) or "|" in s:
         return False
-    # 数据行特征：以数字/罗马数字/序号符开头，或含表格分隔符
-    if re.match(r"^[0-9IVXivx．.、]", s):
-        return False
-    if "|" in s:
-        return False
-    # 表格名称通常含中文且为名词短语
-    if not re.search(r"[\u4e00-\u9fff]", s):
-        return False
-    return True
+    return bool(re.search(r"[\u4e00-\u9fff]", s))
 
 
 def _split_by_tables(text: str) -> List[Dict[str, str]]:
-    """按表格标题切分文本，返回 [{title, number, content}, ...]。
-
-    - title 用表格名称（去掉「表 N」编号前缀，编号单独存 number），
-      便于后续「每个表格写一张数据表，表名与表格名字保持一致」；
-    - 每个非「续」表格标题开启一个新块；
-    - 「表 X (续)」/「表 X（续）」并入前一个表格块（同一张表跨页，不新建块）；
-    - 标题前的内容归入「正文」块；
-    - 不按固定字符数硬切，避免跨页表格被切断。
-    """
     lines = text.split("\n")
-    blocks: List[Dict[str, str]] = []
-    cur_title = "正文"
-    cur_number = ""
-    cur_lines: List[str] = []
-
+    blocks, cur_title, cur_number, cur_lines = [], "正文", "", []
     def _flush():
         content = "\n".join(cur_lines).strip()
         if content:
             blocks.append({"title": cur_title, "number": cur_number, "content": content})
-
     for i, line in enumerate(lines):
         is_title, number, desc, is_cont = _parse_table_title(line)
         if is_title:
             if is_cont:
-                # 同一张表跨页的分页：保留该行作为上下文提示，继续并入当前块
                 cur_lines.append(line)
                 continue
             _flush()
-            # 名称与编号同行被识别时直接用；若名称被文本层拆到下一行（如
-            # 「表1」单独一行、名称在下一行），则前视下一行补全名称。
             merged_title = desc or f"表{number}"
-            if not desc:
-                nxt = lines[i + 1] if i + 1 < len(lines) else ""
-                if _looks_like_table_name(nxt):
-                    merged_title = nxt.strip()
-            cur_title = merged_title
-            cur_number = number
-            cur_lines = [line]
+            if not desc and i + 1 < len(lines) and _looks_like_table_name(lines[i + 1]):
+                merged_title = lines[i + 1].strip()
+            cur_title, cur_number, cur_lines = merged_title, number, [line]
         else:
             cur_lines.append(line)
     _flush()
-
     if not blocks:
-        for chunk in _split_text(text, max_chunk=6000, overlap=1500):
+        for chunk in _split_text(text, 6000, 1500):
             blocks.append({"title": "正文", "number": "", "content": chunk})
     return blocks
 
 
 def _merge_blocks_by_number(blocks: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """把同一表号的多个块合并为一个（含续表、跨页重复标题）。
-
-    PDF 文本层中同一表号可能多次出现（fitz 逐页提取时标题每页重复）。
-    _split_by_tables 已处理「表X (续)」并入前块，但同表号无续标记的
-    重复块仍独立。本函数按表号合并，content 拼接，title 取最完整的。
-    """
-    merged: List[Dict[str, str]] = []
-    by_number: Dict[str, int] = {}
+    merged, by_number = [], {}
     for b in blocks:
         number = (b.get("number") or "").strip()
         if not number:
@@ -424,10 +262,8 @@ def _merge_blocks_by_number(blocks: List[Dict[str, str]]) -> List[Dict[str, str]
             continue
         if number in by_number:
             idx = by_number[number]
-            merged[idx]["content"] = merged[idx]["content"] + "\n" + b.get("content", "")
-            # title 取更长的（更完整的名称）
-            old_title = merged[idx].get("title") or ""
-            new_title = b.get("title") or ""
+            merged[idx]["content"] += "\n" + b.get("content", "")
+            old_title, new_title = merged[idx].get("title") or "", b.get("title") or ""
             if len(new_title) > len(old_title) and new_title != f"表{number}":
                 merged[idx]["title"] = new_title
         else:
@@ -436,87 +272,62 @@ def _merge_blocks_by_number(blocks: List[Dict[str, str]]) -> List[Dict[str, str]
     return merged
 
 
+# ==================== LLM JSON 解析 ====================
+
 def _parse_llm_json(text: str) -> List[Dict[str, Any]]:
-    """尝试从 LLM 返回文本中解析 JSON 数组；解析失败时抛异常传递原始片段"""
-    # 优先提取 ```json ... ``` 代码块
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     json_str = m.group(1) if m else text
     try:
         data = json.loads(json_str)
-    except json.JSONDecodeError as first_err:
-        # 尝试从第一个 [ 到最后一个 ] 提取
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end != -1 and end > start:
+    except json.JSONDecodeError:
+        start, end = text.find("["), text.rfind("]")
+        if start != -1 and end > start:
             try:
                 data = json.loads(text[start:end + 1])
-            except json.JSONDecodeError as second_err:
-                # 容错：LLM 输出常因 max_tokens 截断而缺少结尾，尝试解析数组中
-                # 已完整生成的若干对象，仅丢弃最后一条残缺对象。
+            except json.JSONDecodeError:
                 repaired = _repair_truncated_json_array(text)
                 if repaired:
                     return repaired
-                raise RuntimeError(
-                    f"LLM 返回内容无法解析为 JSON 数组（原错误: {first_err}；二次提取错误: {second_err}）"
-                ) from second_err
+                raise
         else:
             repaired = _repair_truncated_json_array(text)
             if repaired:
                 return repaired
-            raise RuntimeError(
-                f"LLM 返回内容中未找到 JSON 数组（原错误: {first_err}；返回内容前 300 字符: {text[:300]!r}）"
-            ) from first_err
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return [data]
-    raise RuntimeError(f"LLM 返回内容不是 JSON 数组或对象: {type(data).__name__}")
+            raise
+    return data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
 
 
 def _repair_truncated_json_array(text: str) -> List[Dict[str, Any]]:
-    """容错解析被截断的 JSON 数组：用 raw_decode 逐个解析对象，丢弃尾部残缺对象。
-
-    仅当解析出至少 1 个完整对象时返回列表；否则返回空列表，由调用方继续抛错。
-    """
-    def _skip_ws(s: str, i: int) -> int:
-        while i < len(s) and s[i] in " \t\r\n":
-            i += 1
-        return i
-
     start = text.find("[")
     if start == -1:
         return []
     decoder = json.JSONDecoder()
-    idx = _skip_ws(text, start + 1)
+    idx = start + 1
+    while idx < len(text) and text[idx] in " \t\r\n":
+        idx += 1
     objs = []
-    while True:
-        idx = _skip_ws(text, idx)
-        if idx >= len(text) or text[idx] == "]":
-            break
+    while idx < len(text) and text[idx] != "]":
         try:
             obj, end = decoder.raw_decode(text, idx)
+            objs.append(obj)
+            idx = end
+            while idx < len(text) and text[idx] in " \t\r\n":
+                idx += 1
+            if idx < len(text) and text[idx] == ",":
+                idx += 1
+            else:
+                break
         except json.JSONDecodeError:
-            # 尾部被截断的残缺对象：丢弃并停止
             break
-        objs.append(obj)
-        idx = _skip_ws(text, end)
-        if idx < len(text) and text[idx] == ",":
-            idx += 1
-        else:
-            break
-    # 仅保留 dict 对象，过滤异常类型
     return [o for o in objs if isinstance(o, dict)]
 
 
-def _extract_outline(text: str, max_len: int = 8000) -> str:
-    """抽取文档章节标题 + 每节首段要点，生成精简大纲，供 LLM 设计表结构。
+# ==================== 文档结构分析 ====================
 
-    根据标准文档常见的条款编号（如 1、4.1、5.2.1）抽取「编号 + 标题 + 节首要点」，
-    得到远小于全文的大纲文本。
-    """
+def _extract_outline(text: str, max_len: int = 8000) -> str:
     heading_re = re.compile(r"^\s*(\d+(?:\.\d+){0,3})\s*[、.．\s]+\s*(\S.*)$")
+    parts = []
     lines = text.split("\n")
-    parts: List[str] = []
     for i, line in enumerate(lines):
         s = line.strip()
         if not s:
@@ -524,1225 +335,583 @@ def _extract_outline(text: str, max_len: int = 8000) -> str:
         m = heading_re.match(s)
         if not m or len(s) >= 80:
             continue
-        # 收集标题后的前几行作为该节要点（表格文字常紧随其后）
         following = []
         for j in range(i + 1, min(i + 8, len(lines))):
             t = lines[j].strip()
-            if not t:
-                continue
-            following.append(t)
+            if t:
+                following.append(t)
             if len(following) >= 4:
                 break
         parts.append(f"{m.group(1)} {m.group(2)}：{' '.join(following)[:180]}")
     outline = "\n".join(parts)
-    if len(outline) > max_len:
-        outline = outline[:max_len]
-    return outline
+    return outline[:max_len] if len(outline) > max_len else outline
 
 
 def _analyze_document_structure(text: str) -> Dict[str, Any]:
-    """通读文档大纲，为规则知识库设计合适的多表结构。
-
-    返回 schema_plan：
-      {
-        "main_table": 主表名（存综述/范围/术语等）,
-        "tables": [
-          {
-            "name": 子表名,
-            "description": 表用途,
-            "keywords": [匹配关键词...],
-            "table_names": [该子表聚合的表格标题，用于跨页表格按名称合并]
-          }, ...
-        ]
-      }
-    """
     outline = _extract_outline(text)
-    # 附加检测到的表格标题，帮助 LLM 识别表格边界、设计多表结构
     try:
-        table_titles = [b["title"] for b in _split_by_tables(text) if b["title"] != "正文"]
-        if table_titles:
-            outline = (outline + "\n\n【检测到的表格标题】\n" + "\n".join(table_titles)).strip()
-    except Exception as e:
-        print(f"  [结构分析] 表格标题检测失败（忽略）: {e}")
+        titles = [b["title"] for b in _split_by_tables(text) if b["title"] != "正文"]
+        if titles:
+            outline = (outline + "\n\n【检测到的表格标题】\n" + "\n".join(titles)).strip()
+    except Exception:
+        pass
     if not outline.strip():
-        print("  [结构分析] 未抽取到章节大纲，使用默认单表结构")
-        return {
-            "main_table": "正文规则",
-            "tables": [],
-        }
-
+        return {"main_table": "正文规则", "tables": []}
     prompt = f"""你是规则文档结构化专家。请通读下面这份规则文档的章节大纲，为规则知识库设计合适的表结构。
 
 要求：
-1. 文档中的正文内容（非表格部分）提取为一张表；文档中的各个表格可以单独提取成一张表。
-2. 每个子表对应一类规则或一个表格的内容，表名根据内容语义自动生成。
+1. 正文内容提取为一张主表；文档中的各个表格可以单独提取成一张表。
+2. 每个子表对应一类规则或一个表格，表名根据内容语义自动生成。
 3. 综述、范围、术语、引用文件等归入主表。
-4. 识别文档中的表格标题/表格名称：有表格名称的表格按表格名称聚合。
-5. 同一个表格跨越多页/多段时，必须识别为同一张表，不得按页拆分；无表格名称但语义连续的表格自动合并到上一个表格或最近的主题表。
+4. 同一个表格跨越多页时必须识别为同一张表。
 
-必须只输出一个 JSON 对象（不要 Markdown 代码围栏、不要解释），结构如下：
-{{
-  "main_table": "主表名（如正文规则）",
-  "tables": [
-    {{
-      "name": "子表名",
-      "description": "该表存放哪类规则",
-      "keywords": ["关键词1", "关键词2"],
-      "table_names": ["该子表聚合的表格标题1", "表格标题2"]
-    }}
-  ]
-}}
+只输出一个 JSON 对象（不要代码围栏、不要解释）：
+{{"main_table": "主表名", "tables": [{{"name": "子表名", "description": "用途", "keywords": ["关键词"], "table_names": ["表格标题"]}}]}}
 
-其中 table_names 是可选的，仅当子表对应文档中的可见表格标题时才填写；用于后续把跨页表格的每一行正确路由到同一张子表。
-
-文档大纲如下：
+文档大纲：
 ---
 {outline}
 ---"""
-    for attempt, cfg in enumerate([
-        {"temperature": 0.0, "max_tokens": 2000},
-        {"temperature": 0.2, "max_tokens": 4000},
-    ], 1):
+    for attempt, cfg in enumerate([{"temperature": 0.0, "max_tokens": 2000}, {"temperature": 0.2, "max_tokens": 4000}], 1):
         try:
-            response = call_tool(
-                "llm_generate",
-                prompt=prompt,
-                temperature=cfg["temperature"],
-                max_tokens=cfg["max_tokens"],
-            )
-            if not isinstance(response, dict):
-                raise RuntimeError(f"llm_generate 返回非 dict: {response!r}")
-            if "error" in response:
-                raise RuntimeError(f"llm_generate 失败: {response['error']}")
+            response = call_tool("llm_generate", prompt=prompt, **cfg)
+            if not isinstance(response, dict) or "error" in response:
+                raise RuntimeError(f"llm_generate 失败: {response!r}")
             content = str(response.get("content") or "").strip()
             if not content:
-                raise RuntimeError("llm_generate 返回空 content")
+                raise RuntimeError("空 content")
             parsed = _parse_llm_json(content)
             if parsed and isinstance(parsed[0], dict) and "tables" in parsed[0]:
                 data = parsed[0]
-                print(
-                    f"  [结构分析] 设计出主表「{data.get('main_table') or '正文规则'}」"
-                    f"+ {len(data.get('tables') or [])} 张子表: "
-                    f"{[t.get('name') for t in (data.get('tables') or [])]}"
-                )
+                print(f"  [结构分析] 主表「{data.get('main_table', '正文规则')}」+ {len(data.get('tables') or [])} 张子表")
                 return data
-            raise RuntimeError(f"结构分析结果缺少 tables 字段: {content[:200]!r}")
         except Exception as e:
             print(f"  [结构分析] 第 {attempt} 次失败: {e}")
-            if attempt == 2:
-                print("  [结构分析] 分析失败，使用默认单表结构兜底")
-    # 兜底：默认单表结构
-    return {
-        "main_table": "正文规则",
-        "tables": [],
-    }
+    return {"main_table": "正文规则", "tables": []}
 
 
-def _extract_rules_from_text(
-    text: str,
-    max_workers: int = 3,
-    schema_plan: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """使用 LLM 并发从文本提取结构化规则条目
+# ==================== LLM 规则提取 ====================
 
-    每条规则包含标准字段：rule_code, rule_name, category, applicable_fields,
-    format_regex, check_logic, severity, description, table
-    """
+def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optional[Dict] = None) -> List[Dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # 先做一次轻量探测：推理型(reasoning)模型下 llm_generate 的 content 恒为空，
-    # 此时直接报错退出，避免多次空转 + 超时叠加导致卡死。
-    probe = call_tool(
-        "llm_generate",
-        prompt="只回复两个字：正常",
-        temperature=0.0,
-        max_tokens=50,
-    )
-    probe_content = ""
-    if isinstance(probe, dict) and "error" not in probe:
-        probe_content = str(probe.get("content") or "").strip()
-    if not probe_content:
-        raise RuntimeError(
-            "LLM 提取不可用：llm_generate 探测调用返回空 content（当前可能为推理型模型，"
-            "其输出进入 reasoning_content 而 content 为空）。"
-            "未提取到任何规则，按「一条也提取不出来即报错退出」策略终止。"
-        )
-    print("  [探测] llm_generate 正常返回，继续 LLM 并发提取。")
+    probe = call_tool("llm_generate", prompt="只回复两个字：正常", temperature=0.0, max_tokens=50)
+    if not (isinstance(probe, dict) and str(probe.get("content") or "").strip()):
+        raise RuntimeError("LLM 不可用：探测返回空 content")
+    print("  [探测] llm_generate 正常")
 
     chunks = _split_by_tables(text)
     total = len(chunks)
-    parts_desc = ", ".join(
-        f"{c['title']}({len(c['content'])})" for c in chunks
-    )
-    print(f"  [LLM提取] 按表格标题切分为 {total} 块（含跨页续表合并），并发 {max_workers} 路提取...")
-    print(f"  [切分块] {parts_desc}")
+    print(f"  [LLM提取] 切分为 {total} 块，并发 {max_workers} 路提取...")
 
     def _build_prompt(block: Dict[str, str]) -> str:
         title = block.get("title") or "正文"
         chunk = block.get("content") or ""
+        main_table = (schema_plan or {}).get("main_table") or "正文规则"
         schema_block = ""
-        main_table = "正文规则"
         if schema_plan:
-            tables = schema_plan.get("tables") or []
-            main_table = schema_plan.get("main_table") or "正文规则"
-            rows = [f"- 主表「{main_table}」：综述、范围、术语、引用文件等综合内容"]
-            for t in tables:
-                name = t.get("name")
-                desc = t.get("description")
+            rows = [f"- 主表「{main_table}」：综述、范围、术语等"]
+            for t in (schema_plan.get("tables") or []):
+                row = f"- 子表「{t.get('name')}」：{t.get('description')}"
                 kw = "、".join(t.get("keywords") or [])
-                tn = "、".join(t.get("table_names") or [])
-                row = f"- 子表「{name}」：{desc}"
-                if tn:
-                    row += f"（对应表格标题：{tn}）"
                 if kw:
                     row += f"（关键词：{kw}）"
                 rows.append(row)
             schema_block = "【知识库表结构】\n" + "\n".join(rows) + "\n\n"
-
-        return f"""请从以下规则文档片段中提取结构化规则，直接从正文输出结果，不要输出任何思考过程或推理文字。
+        return f"""请从以下规则文档片段中提取结构化规则，直接输出结果。
 
 【当前片段所属表格】
 {title}
 
-对每条规则输出一个 JSON 对象，字段如下：
-- rule_code: 规则编号（若文档中有编号请保留；若无则留空）
-- rule_name: 规则名称（简短概括本条规则）
-- category: 规则分类，可选：标准/质量/安全
-- applicable_fields: 适用字段（多个用逗号分隔；无则留空）
-- format_regex: 格式正则表达式（若规则涉及格式校验则填写；无则留空）
-- check_logic: 检查逻辑描述（用简体中文描述规则的检查逻辑）
-- severity: 严重等级，可选：info/warn/error/critical
+对每条规则输出一个 JSON 对象：
+- rule_code: 规则编号。正文条款优先用其章节号（如「4.1」「4.2」「5」「6」「7」，不编流水号）；表格行用其序号列；文档没有编号才留空
+- rule_name: 规则名称
+- category: 标准或质量或安全
+- applicable_fields: 适用字段（逗号分隔）
+- format_regex: 格式正则（无则留空）
+- check_logic: 检查逻辑（逐条独立成行，不得合并去重）
+- severity: info/warn/error/critical
 - description: 规则详细解释
-- table: 本条归属的表名（从下方【知识库表结构】中选择最匹配的一个表名；若文档中有表格标题，优先根据表格标题匹配对应的子表；无法判断时填主表名「{main_table}」）
+- table: 归属表名（从下方结构中选择；无法判断填「{main_table}」）
 
-{schema_block}【表格复原要求（非常重要）】
-正文中混有表格内容，且表格常被转置（行列互换）。提取时：
-1. 先识别表头和单元格边界，还原「表头字段 + 对应取值」的行列对应关系；
-2. 转置表格要还原为「每行一个规则/项目，每列一个属性」的形式；
-3. 表格中每一行（每一组完整对应关系）必须作为一条独立规则提取，字段名作为 applicable_fields；
-4. 表格行如果表达同一语义或被分页/分行拆散，必须按语义自动合并，避免规则被拆散；
-5. 跨越多页/多段的表格，请结合上下文把被截断的行补全；有表格名称的按表格名称聚合，无表格名称的合并到上一个表格/最近主题表；
-6. 不同规则、不同字段取值的表格行不得合并，宁可多提不可漏提，不得因为内容相似就跳过某行；
-7. 表头尽量与表格原始表头保持一致，不要改写或概括表头文字；单元格内容尽量与表格单元文字保持一致，关键数值、阈值、判据必须逐字保留；
-8. 如果表格有序号（如 1、2、3 或 A.1、A.2），相同序号的行要按照语义合并形成一行，不得因为分页、转置或分行而把同一序号的内容拆成多条规则。
-9. 若片段中出现「表 X (续)」「表 X（续）」字样，说明它是前面表格的分页续表，必须把该续表的行并入同一张表，不得当作新表，也不得丢失续表中的任何一行；续表与前表的行号连续编号，逐一提取不得漏行。
+{schema_block}【表格复原要求】
+1. 转置表格还原为每行一个规则，字段名作为 applicable_fields
+2. 同一语义被分页拆散的行必须按语义合并
+3. 有序号的表格相同序号合并为一行
+4. 表头与单元格内容逐字保留，数值阈值不得改写
+5. 续表行并入同一张表
 
 要求：
-- 这是电力行业标准文档，正文只提取「导则」中的实质规则；封皮、目次、前言、引用文件清单等制式内容价值不大，一律忽略，不要提取。
-- 文档水印（如「南网知识共享服务平台」等浅色斜字）、页眉页脚（左上角/右下角的 DL/T 1684-2017、发布实施信息）、页码一律忽略。
-- 每段最多提取 50 条，只保留有实质内容的规则，忽略目录、前言、引用文件清单、过渡性语句。
-- 关键数值、阈值、判据必须逐字保留。
+- 正文每个章节条款（X 标题 / X.Y 标题）必须至少提取为一条规则，不得因篇幅跳过
+- 规范性引用文件列表中的每个引用标准都应提取为一条规则
+- 章节条款的 rule_code 必须填该条款自身的章节号，保持全文编码体系统一（不得混用 RULE_流水号）
+- 正文只提取实质规则，忽略目录、前言
+- 如果片段内容是目录/目次页（标题+页码格式），直接输出空数组 []
+- 当一个条款包含多个并列子类别，必须为每个子类别单独提取一条规则，不得将多个子类别压缩为单条
+- 每段最多 50 条
+- 关键数值逐字保留
+- 禁止输出推理过程、思考草稿、ID编号等非规则内容
 
-必须只输出一个 JSON 数组（以 [ 开头、以 ] 结尾），不要输出 Markdown 代码围栏、解释或任何其他文字。
+只输出 JSON 数组（[ 开头 ] 结尾），不要代码围栏。
 
-文档片段如下：
+文档片段：
 ---
 {chunk}
 ---"""
 
-    # 重试参数阶梯：提取失败时逐级调大 max_tokens、微调 temperature
-    RETRY_CONFIGS = [
-        {"temperature": 0.0, "max_tokens": 8192},
-        {"temperature": 0.1, "max_tokens": 8192},
-        {"temperature": 0.2, "max_tokens": 12000},
-    ]
-
-    def _call_once(idx: int, block: Dict[str, str], attempt: int, cfg: Dict[str, Any]):
-        """对单个切片发起一次 LLM 调用。
-
-        返回:
-          - "ok"      : (标记, parsed列表) 成功
-          - "timeout" : (标记, None) 平台调用超时（原地重试无效，应立即细切）
-          - "fail"    : (标记, None) 其他失败（可换参数重试）
-        """
-        prompt = _build_prompt(block)
+    def _call_once(block, cfg):
         try:
-            response = call_tool(
-                "llm_generate",
-                prompt=prompt,
-                temperature=cfg["temperature"],
-                max_tokens=cfg["max_tokens"],
-            )
-        except Exception as e:
-            msg = str(e).lower()
-            if "timed out" in msg or "timeout" in msg:
-                print(f"    [超时] 第 {idx} 段第 {attempt} 次调用超时，立即转入细切...")
-                return "timeout", None
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次调用异常: {e}，换参数重试...")
-            return "fail", None
-        if not isinstance(response, dict):
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次返回非 dict: {response!r}")
-            return "fail", None
-        if "error" in response:
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次调用失败: {response['error']}")
-            return "fail", None
-        content = str(response.get("content") or "").strip()
-        if not content:
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次返回空 content")
-            return "fail", None
-        try:
+            response = call_tool("llm_generate", prompt=_build_prompt(block), **cfg)
+            if not isinstance(response, dict) or "error" in response:
+                return "fail", None
+            content = str(response.get("content") or "").strip()
+            if not content:
+                return "fail", None
             parsed = _parse_llm_json(content)
+            return ("ok", parsed) if parsed else ("fail", None)
         except Exception as e:
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次 JSON 解析失败: {e}（返回前200字符: {content[:200]!r}）")
+            if "timeout" in str(e).lower():
+                return "timeout", None
             return "fail", None
-        if not parsed:
-            print(f"    [重试] 第 {idx} 段第 {attempt} 次解析结果为空列表")
-            return "fail", None
-        return "ok", parsed
 
-    def _process_with_refinement(idx: int, block: Dict[str, str]):
-        """对一个表格/正文块提取规则：先原片多参数重试；遇超时或仍失败则细切（较小窗口，无重叠）
-        后再逐个提取，尽量不丢失跨页/跨段的大表格内容。"""
+    RETRY_CONFIGS = [{"temperature": 0.0, "max_tokens": 8192}, {"temperature": 0.1, "max_tokens": 8192}, {"temperature": 0.2, "max_tokens": 12000}]
+
+    def _process(idx, block):
         title = block.get("title") or "正文"
         content = block["content"]
-        last_err = "原片"
-        # 第一层：原片多参数重试（遇 timeout 立即停止原地重试，转入细切）
         for attempt, cfg in enumerate(RETRY_CONFIGS, 1):
-            status, parsed = _call_once(idx, block, attempt, cfg)
+            status, parsed = _call_once(block, cfg)
             if status == "ok":
                 return idx, parsed
             if status == "timeout":
-                last_err = f"原片第 {attempt} 次超时"
                 break
-            last_err = f"原片 {len(RETRY_CONFIGS)} 次重试均失败"
-        # 第二层：小切片重切再提取（无重叠，块内表格行边界清晰）
-        print(f"    [细切重试] 第 {idx} 段（{title}）失败（{last_err}），改为 2400 字符/无重叠细切后重试...")
-        sub_chunks = _split_text(content, max_chunk=2400, overlap=0)
-        all_parsed: List[Dict[str, Any]] = []
-        sub_ok = 0
+        sub_chunks = _split_text(content, 2400, 0)
+        all_parsed = []
         for s_idx, sub in enumerate(sub_chunks, 1):
             sub_block = {"title": title, "content": sub}
-            got = None
-            for attempt, cfg in enumerate(RETRY_CONFIGS, 1):
-                status, got = _call_once(s_idx, sub_block, attempt, cfg)
+            for cfg in RETRY_CONFIGS:
+                status, parsed = _call_once(sub_block, cfg)
                 if status == "ok":
+                    all_parsed.extend(parsed)
                     break
                 if status == "timeout":
-                    break  # 细切片再超时也放弃该片，不再空转
-            if got is not None:
-                all_parsed.extend(got)
-                sub_ok += 1
+                    break
         if not all_parsed:
-            raise RuntimeError(f"第 {idx} 段（{title}）原片与细切片重试均失败。{last_err}")
-        print(f"    [细切成功] 第 {idx} 段（{title}）细切 {len(sub_chunks)} 片，{sub_ok} 片成功，共 {len(all_parsed)} 条")
+            raise RuntimeError(f"第 {idx} 段（{title}）提取失败")
+        print(f"    [细切] 第 {idx} 段（{title}）细切成功 {len(all_parsed)} 条")
         return idx, all_parsed
 
-    results_by_idx = {}
-    errors = []
+    results, errors = {}, []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_process_with_refinement, idx, chunk): idx for idx, chunk in enumerate(chunks, 1)}
+        futures = {executor.submit(_process, idx, chunk): idx for idx, chunk in enumerate(chunks, 1)}
         done = 0
         for fut in as_completed(futures):
             idx = futures[fut]
             done += 1
             try:
                 _, parsed = fut.result()
-                results_by_idx[idx] = parsed
-                print(f"    [进度 {done}/{total}] 第 {idx} 段提取到 {len(parsed)} 条")
+                results[idx] = parsed
+                print(f"    [进度 {done}/{total}] 第 {idx} 段 {len(parsed)} 条")
             except Exception as e:
                 errors.append((idx, str(e)))
-                print(f"    [错误] 第 {idx}/{total} 段处理失败: {e}")
-
-    if errors and not results_by_idx:
-        # 全部失败：直接报错退出
-        raise RuntimeError(
-            f"LLM 提取全部失败（{len(errors)} 段），未提取到任何规则: {errors}"
-        )
+                print(f"    [错误] 第 {idx}/{total} 段: {e}")
+    if errors and not results:
+        raise RuntimeError(f"LLM 提取全部失败: {errors}")
     if errors:
-        # 部分失败：使用成功部分，但明确警告
-        print(f"  [警告] LLM 提取有 {len(errors)} 段失败（已跳过）: {errors}")
+        print(f"  [警告] {len(errors)} 段失败（已跳过）")
 
-    # 按切片原始顺序拼接
     all_entries = []
-    for idx in sorted(results_by_idx):
-        all_entries.extend(results_by_idx[idx])
+    for idx in sorted(results):
+        all_entries.extend(results[idx])
+    return _merge_same_code_entries(all_entries)
 
-    # 合并相同 rule_code 且语义相同的条目（表格中相同序号的行）。
-    # 不再简单地按 (rule_code, rule_name) 去重保留第一条，而是把同序号、
-    # 同规则名的多条片段合并成一条完整规则，避免规则被分页/分行拆散后变成多条。
-    merged_entries = _merge_same_code_entries(all_entries)
-    return merged_entries
+
+def _sanitize_rule_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """清洗 LLM 规则提取结果中的字段错位垃圾条目。
+
+    错位行的典型特征（通用，不依赖业务词）：rule_name 字段被严重度词占据
+    （info/warn/error/critical），而 rule_code 填入了正文续句——这是 LLM 把
+    上一条规则的 description/severity/元数据整体右移一列形成的垃圾行。
+
+    处理策略：把错位行中保存的完整正文（category 列）合并回上一条主行的
+    description，回填 severity，然后丢弃该错位行；正文续行同理合并。
+    """
+    sev_set = {"info", "warn", "warning", "error", "critical"}
+    clean = []
+    dropped = 0
+    for e in entries:
+        code = str(e.get("rule_code") or "").strip()
+        name = str(e.get("rule_name") or "").strip()
+        name_lower = name.lower()
+        if name_lower in sev_set:
+            # 字段错位行：rule_name 被严重度词占据
+            cat = str(e.get("category") or "").strip()
+            if clean:
+                main = clean[-1]
+                # 回填 severity
+                sev = "warn" if name_lower == "warning" else name_lower
+                if not str(main.get("severity") or "").strip():
+                    main["severity"] = sev
+                # category 列保存的是完整正文 → 合并回 description
+                if cat:
+                    desc = str(main.get("description") or "").strip()
+                    if cat not in desc:
+                        main["description"] = (desc + "\n" + cat).strip() if desc else cat
+            dropped += 1
+            continue
+        clean.append(e)
+    if dropped:
+        print(f"  [清洗] 丢弃 {dropped} 条字段错位/续行条目（{len(entries)}→{len(clean)}）")
+    return clean
 
 
 def _merge_rule_group(group: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """把同一规则的多条片段（相同 rule_code）合并为一条完整记录。
-
-    表格中同一序号的行常因分页、分行或转置被拆成多条，本函数将其合并：
-    - rule_name 选择最完整的名称（长度优先）
-    - applicable_fields 拆开去重后重新用逗号连接
-    - check_logic、description 按顺序拼接（去重）
-    - format_regex 有多个不同值时合并（去重）
-    - severity 保留最高等级
-    """
     base = dict(group[0])
-
-    # 0) rule_name：按语义选择最完整的规则名称（表格中同一序号的多条片段名称可能略有差异）
-    names = []
-    for e in group:
-        val = str(e.get("rule_name") or "").strip()
-        if val and val not in names:
-            names.append(val)
+    names = [str(e.get("rule_name") or "").strip() for e in group if str(e.get("rule_name") or "").strip()]
     if names:
-        base["rule_name"] = max(names, key=len)
-
-    # 1) applicable_fields：保持表头原始格式
-    # 若所有片段字段值一致，直接保留原始表头（不拆分，避免破坏原文）
-    raw_fields = []
-    for e in group:
-        val = str(e.get("applicable_fields") or "").strip()
-        if val:
-            raw_fields.append(val)
-    if raw_fields and len(set(raw_fields)) == 1:
-        base["applicable_fields"] = raw_fields[0]
+        base["rule_name"] = max(set(names), key=len)
+    for field in ("check_logic", "description"):
+        vals = [str(e.get(field) or "").strip() for e in group if str(e.get(field) or "").strip()]
+        if vals and len(set(vals)) == 1:
+            base[field] = vals[0]
+        elif vals:
+            base[field] = "\n".join(dict.fromkeys(vals))
+    fields = [str(e.get("applicable_fields") or "").strip() for e in group if str(e.get("applicable_fields") or "").strip()]
+    if fields and len(set(fields)) == 1:
+        base["applicable_fields"] = fields[0]
     else:
-        # 值不一致才拆成单个字段名，去重后拼接（合并被拆散的表头）
-        field_values = []
-        for val in raw_fields:
-            for part in re.split(r"[,，、;；]+", val):
-                part = part.strip()
-                if part and part not in field_values:
-                    field_values.append(part)
-        base["applicable_fields"] = ",".join(field_values)
-
-    # 2) check_logic / description：保持表格单元原文
-    # 若所有片段内容一致，直接保留原文（不拼接，避免改写/重复）
-    for field in ["check_logic", "description"]:
-        raw_values = []
-        for e in group:
-            val = str(e.get(field) or "").strip()
-            if val:
-                raw_values.append(val)
-        if raw_values and len(set(raw_values)) == 1:
-            base[field] = raw_values[0]
-        else:
-            # 内容不一致才拼接，去重保留顺序（合并被拆散的表格单元）
-            values = []
-            for val in raw_values:
-                if val not in values:
-                    values.append(val)
-            base[field] = "\n".join(values)
-
-    # 3) format_regex：多个不同正则时去重合并
-    regexes = []
-    for e in group:
-        val = str(e.get("format_regex") or "").strip()
-        if val and val not in regexes:
-            regexes.append(val)
-    base["format_regex"] = "\n".join(regexes) if len(regexes) > 1 else (regexes[0] if regexes else "")
-
-    # 4) severity：保留最高等级（critical > error > warn > info）
-    severity_order = {"info": 0, "warn": 1, "error": 2, "critical": 3}
-    base_severity = str(base.get("severity") or "warn").strip()
+        parts = []
+        for val in fields:
+            for p in re.split(r"[,，、;；]+", val):
+                if p.strip() and p.strip() not in parts:
+                    parts.append(p.strip())
+        base["applicable_fields"] = ",".join(parts)
+    sev_order = {"info": 0, "warn": 1, "error": 2, "critical": 3}
+    base_sev = str(base.get("severity") or "warn").strip()
     for e in group[1:]:
         s = str(e.get("severity") or "").strip()
-        if s in severity_order and severity_order.get(s, 1) > severity_order.get(base_severity, 1):
-            base_severity = s
-    base["severity"] = base_severity
-
+        if sev_order.get(s, 1) > sev_order.get(base_sev, 1):
+            base_sev = s
+    base["severity"] = base_sev
     return base
 
 
 def _merge_same_code_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """合并相同 rule_code 且同属一个表格的条目（表格中相同序号的行）。
-
-    在 LLM 提取后的后处理阶段，对相同规则编号（rule_code 相同）且同属一个表格的
-    条目进行合并，确保同一规则的多个片段（因分页、分行、转置被拆散）最终只保留
-    一条完整记录。不同表格中恰好相同序号的独立规则不会被错误合并。
-    无 rule_code 的条目不参与合并。
-    """
-    merged: List[Dict[str, Any]] = []
-    used = set()
-
+    merged, used = [], set()
     for i, e in enumerate(entries):
         if i in used:
             continue
         code_i = str(e.get("rule_code") or "").strip()
         table_i = str(e.get("table") or "").strip()
-
-        # 无编号的条目不合并，原样保留
         if not code_i:
             merged.append(e)
             continue
-
-        # 相同规则编号（表格中的相同序号）且同属一个表格的条目按语义合并成一行，
-        # 不再要求规则名先相似：同一序号即使因表格拆分导致名称写法略有差异，也必须合并。
-        # 若双方都带有表格归属且归属不同，则视为不同表格中的独立规则，不合并。
         group = [e]
         for j in range(i + 1, len(entries)):
             if j in used:
                 continue
-            code_j = str(entries[j].get("rule_code") or "").strip()
-            if code_j != code_i:
+            if str(entries[j].get("rule_code") or "").strip() != code_i:
                 continue
             table_j = str(entries[j].get("table") or "").strip()
-            # 不同表格中恰好相同序号的独立规则，不得合并
             if table_i and table_j and table_i != table_j:
                 continue
             group.append(entries[j])
             used.add(j)
-
-        if len(group) == 1:
-            merged.append(e)
-        else:
-            merged.append(_merge_rule_group(group))
-
+        merged.append(_merge_rule_group(group) if len(group) > 1 else e)
     return merged
 
 
+# ==================== 降级提取（无 LLM 时） ====================
+
 def _chapter_based_extract(text: str) -> List[Dict[str, Any]]:
-    """LLM 不可用时的降级提取：按章节/条款号切分规则文档，生成规则条目。
-
-    适用于有明确条款编号的标准文档（章节编号形如 1、4.1、5.2.1）。
-    不依赖 LLM，纯规则切分；超长章节按段落再切分。
-    """
     heading_re = re.compile(r"^\s*(\d+(?:\.\d+){0,3})\s*[、.．\s]\s*(\S.*)$")
-
-    entries = []
-    current_title = None
-    current_lines = []
-
+    entries, current_title, current_lines = [], None, []
     for line in text.split("\n"):
         s = line.strip()
         if not s:
             continue
         m = heading_re.match(s)
-        is_heading = bool(m) and len(s) < 80
-        if is_heading:
+        if m and len(s) < 80:
             if current_title:
                 content = "\n".join(current_lines).strip()
                 if len(content) >= 15:
-                    entries.append({
-                        "rule_code": m.group(1) if m else "",
-                        "rule_name": current_title,
-                        "category": "标准",
-                        "applicable_fields": "",
-                        "format_regex": "",
-                        "check_logic": content[:500],
-                        "severity": "warn",
-                        "description": content,
-                    })
+                    entries.append({"rule_code": m.group(1), "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content[:500], "severity": "warn", "description": content})
             current_title = f"{m.group(1)} {m.group(2)}".strip()
             current_lines = []
-        else:
-            if current_title:
-                current_lines.append(s)
-            elif s:
-                current_lines.append(s)
-
+        elif current_title:
+            current_lines.append(s)
     if current_title:
         content = "\n".join(current_lines).strip()
         if len(content) >= 15:
-            entries.append({
-                "rule_code": "",
-                "rule_name": current_title,
-                "category": "标准",
-                "applicable_fields": "",
-                "format_regex": "",
-                "check_logic": content[:500],
-                "severity": "warn",
-                "description": content,
-            })
+            entries.append({"rule_code": "", "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content[:500], "severity": "warn", "description": content})
+    return entries
 
-    # 超长章节（>3000 字）按段落再切分
-    final = []
-    for e in entries:
-        if len(e["description"]) <= 3000:
-            final.append(e)
-            continue
-        paras = [p for p in re.split(r"\n+", e["description"]) if p.strip()]
-        buf = ""
-        part = 0
-        for p in paras:
-            if buf and len(buf) + len(p) > 3000:
-                part += 1
-                final.append({
-                    "rule_code": e["rule_code"],
-                    "rule_name": f"{e['rule_name']}({part})",
-                    "category": e["category"],
-                    "applicable_fields": e["applicable_fields"],
-                    "format_regex": e["format_regex"],
-                    "check_logic": buf.strip()[:500],
-                    "severity": e["severity"],
-                    "description": buf.strip(),
-                })
-                buf = p
-            else:
-                buf = (buf + "\n" + p).strip()
-        if buf:
-            final.append({
-                "rule_code": e["rule_code"],
-                "rule_name": f"{e['rule_name']}({part + 1})" if part else e["rule_name"],
-                "category": e["category"],
-                "applicable_fields": e["applicable_fields"],
-                "format_regex": e["format_regex"],
-                "check_logic": buf.strip()[:500],
-                "severity": e["severity"],
-                "description": buf.strip(),
-            })
-    return final
 
+# ==================== 表格处理工具 ====================
 
 def _sanitize_table_name(name: str) -> str:
-    """把表格名称净化为可安全作为数据表名的字符串。
-
-    保留中文与常见括号，仅剔除会破坏平台表名解析/文件路径的特殊字符。
-    """
     if not name:
         return "未命名表"
     return re.sub(r'[/\\|:*?"<>]+', "_", name).strip().strip("._")
 
 
 def _table_block_has_data(block: Dict[str, str]) -> bool:
-    """判断表格块的文本层是否含真正数据行（而非只有标题、续表标记、水印碎片）。"""
     content = block.get("content") or ""
     data_lines = []
+    chapter_heading_count = 0
+    total_lines = 0
     for line in content.split("\n"):
         s = line.strip()
+        if not s or _parse_table_title(s)[0] or s in ("(续)", "（续）") or len(s) < 3:
+            continue
+        total_lines += 1
+        # 排除章节标题行（如「6 检修内容」）
+        if _CHAPTER_HEADING_RE.match(s) and len(s) < 80:
+            chapter_heading_count += 1
+            continue
+        # 真实表格数据行特征：制表符 / 竖线 / 多列空格对齐 / 短序号开头
+        if "\t" in s or "|" in s:
+            data_lines.append(s)
+        elif re.search(r"\s{2,}", s) and len(s) < 80:
+            data_lines.append(s)
+        elif re.match(r"^\d{1,3}[.、．\s]", s) and len(s) < 60:
+            data_lines.append(s)
+    # 如果大部分行是章节标题（目录/正文），判定为无表格数据
+    if total_lines > 0 and chapter_heading_count >= total_lines * 0.5:
+        return False
+    return len(data_lines) >= 2
+
+
+_CHAPTER_HEADING_RE = re.compile(r"^\d{1,3}(?:\.\d+){0,3}\s+\S")
+
+
+def _block_is_body_not_table(block: Dict[str, str]) -> bool:
+    """判断一个「表X」块是否实为正文（表标题后无真实表格数据，紧跟章节正文）。
+
+    通用判据（不依赖具体文档/业务词）：
+    1. 块内存在章节标题行（如「6 检修内容」「7 检修类别」，形如 X 标题 / X.Y 标题）；
+    2. 且不存在真实表格数据行（制表符分隔、多空格对齐、或短序号开头）。
+    满足两者 → 该表标题后实为正文，应归入正文而非表格。
+    """
+    content = block.get("content") or ""
+    lines = [ln.strip() for ln in content.split("\n") if ln.strip()]
+    chapter_headings = 0
+    table_data_lines = 0
+    for ln in lines:
+        if _parse_table_title(ln)[0] or ln in ("(续)", "（续）"):
+            continue
+        if _CHAPTER_HEADING_RE.match(ln) and len(ln) < 80:
+            chapter_headings += 1
+            continue
+        # 真实表格数据行特征：制表符 / 2+连续空格对齐 / 短序号开头
+        if "\t" in ln:
+            table_data_lines += 1
+        elif re.search(r"\s{2,}", ln) and len(ln) < 80:
+            table_data_lines += 1
+        elif re.match(r"^\d{1,3}\s", ln) and len(ln) < 60:
+            table_data_lines += 1
+    return chapter_headings >= 1 and table_data_lines <= 3
+
+
+def _split_body_from_table_block(block: Dict[str, str]):
+    """把一个「表标题 + 正文」混合块拆成 (表标题块, 正文文本)。
+
+    返回 (table_block_or_None, body_text)。
+    表标题块只保留表标题行，用于后续 OCR 补全真实表格数据；
+    其余行（章节正文）作为 body_text 归入正文提取。
+    """
+    content = block.get("content") or ""
+    table_lines, body_lines = [], []
+    for ln in content.split("\n"):
+        s = ln.strip()
         if not s:
             continue
-        # 过滤表格标题行（表X.Y 标题名 / 表X.Y (续)）
-        is_title, _, _, _ = _parse_table_title(s)
-        if is_title:
+        if not table_lines and _parse_table_title(s)[0]:
+            table_lines.append(s)
             continue
-        # 过滤续表标记行（纯"(续)"）
-        if s in ("(续)", "（续）"):
-            continue
-        # 过滤水印碎片（单字行）
-        if len(s) < 3:
-            continue
-        data_lines.append(s)
-    if len(data_lines) < 2:
-        return False
-    # 必须有至少一行含数字（数据行通常含数值/序号），且不是标题里的编号
-    return any(re.search(r"\d", s) for s in data_lines)
+        body_lines.append(ln)
+    table_block = None
+    if table_lines:
+        table_block = {"title": block.get("title"), "number": block.get("number"), "content": "\n".join(table_lines)}
+    return table_block, "\n".join(body_lines).strip()
 
 
-def _is_appendix_detail(number: str) -> bool:
-    """判断是否为附录明细表（表A.x 格式），这类表正常 30-50 行。"""
-    return bool(re.match(r"^[A-Z]\.\d+", (number or "").strip()))
+def _parse_markdown_table(text: str) -> List[Dict[str, Any]]:
+    text = re.sub(r"<[^>]+>", "", text)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    tbl_lines = [ln for ln in lines if "|" in ln]
+    if len(tbl_lines) < 2:
+        return []
+    def _cells(ln):
+        s = ln.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        return [c.strip() for c in s.split("|")]
+    all_cells = [_cells(ln) for ln in tbl_lines]
+    sep_idx = next((i for i, cells in enumerate(all_cells) if all(re.fullmatch(r"[-=: ]+", c) for c in cells if c)), None)
+    header_lines = all_cells[:sep_idx] if sep_idx is not None else all_cells[:1]
+    row_start = sep_idx + 1 if sep_idx is not None else 1
+    # Use header line column count as canonical ncols (not max of all rows)
+    # to avoid creating extra columns from right-shifted/misaligned rows
+    header_ncols = max((len(cl) for cl in header_lines), default=0)
+    if header_ncols == 0:
+        return []
+    ncols = header_ncols
 
-
-def _validate_table_quality(ti: Dict[str, Any], block: Dict[str, str]) -> None:
-    """质量校验：行数异常 / 重复行过多 → raise（让脚本崩溃记 negative，打断假阳性循环）。
-
-    OCR 和文本归并都可能产出幻觉行（重复行、幽灵行），不做校验时 success=True → 记 positive，
-    导致 experience 系统把垃圾数据当成功经验，LLM 据此偏好 OCR 路径。
-    """
-    rows = ti.get("rows") or []
-    number = block.get("number") or ""
-    title = block.get("title") or ""
-    row_count = len(rows)
-
-    # 行数过少
-    if row_count < 2:
-        raise RuntimeError(
-            f"表{number} {title} 质量校验失败：行数 {row_count}（最低 2 行），"
-            f"提取结果可能为空或仅含表头"
-        )
-
-    # 附录明细表行数上限（正常 30-50 行，超 80 行判定为幻觉）
-    if _is_appendix_detail(number) and row_count > 80:
-        raise RuntimeError(
-            f"表{number} {title} 质量校验失败：行数 {row_count}（附录明细表正常 30-50 行，上限 80），"
-            f"疑似 LLM 幻觉产生重复/幽灵行"
-        )
-
-    # 重复行检测：整行完全一致的行占比 > 30% → 幻觉
-    if row_count >= 5:
-        seen = set()
-        dup_count = 0
-        for r in rows:
-            key = tuple(str(c).strip() for c in r)
-            if key in seen:
-                dup_count += 1
+    # Detect data rows consumed as header lines (between first header and separator)
+    # e.g. LLM returns: | header | ... | / | 1 | data | ... | / | --- | ... | / | 2 | data |
+    # The seq=1 row gets consumed as a sub-header line
+    data_rows_from_header = []
+    if len(header_lines) > 1:
+        real_header_lines = [header_lines[0]]
+        for hl in header_lines[1:]:
+            first_cell = str(hl[0]).strip() if hl else ""
+            if re.match(r"^\d{1,4}", first_cell):
+                data_rows_from_header.append(hl)
             else:
-                seen.add(key)
-        dup_ratio = dup_count / row_count
-        if dup_ratio > 0.3:
-            raise RuntimeError(
-                f"表{number} {title} 质量校验失败：重复行率 {dup_ratio:.0%}（{dup_count}/{row_count}），"
-                f"疑似 LLM 幻觉产生重复行"
-            )
+                real_header_lines.append(hl)
+        header_lines = real_header_lines
+        if data_rows_from_header:
+            print(f"  [解析] 从表头区域恢复 {len(data_rows_from_header)} 行数据（疑似被表头探测吞掉）")
 
-    # 空行检测：整行全空/全空白字符的行占比 > 20%
-    if row_count >= 5:
-        empty_count = sum(1 for r in rows if all(not str(c).strip() for c in r))
-        if empty_count > 0:
-            empty_ratio = empty_count / row_count
-            if empty_ratio > 0.2:
-                raise RuntimeError(
-                    f"表{number} {title} 质量校验失败：空行率 {empty_ratio:.0%}（{empty_count}/{row_count}），"
-                    f"提取结果含大量空行"
-                )
-
-    print(f"  [质量] 表{number} {title} 校验通过：{row_count} 行 × {len(ti.get('headers',[]))} 列")
-
-
-def _merge_same_sequence_rows(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
-    """按序号列把相同序号的行合并成一行。"""
-    if not rows:
-        return rows
-    # 定位序号列
-    seq_idx = 0
-    for i, h in enumerate(headers):
-        if h and ("序号" in h or "编号" in h):
-            seq_idx = i
-            break
-    else:
-        return rows  # 无序号列不合并
-    merged: Dict[str, List[str]] = {}
-    order: List[str] = []
-    for r in rows:
-        r = list(r)
-        while len(r) < len(headers):
-            r.append("")
-        if len(r) > len(headers):
-            r = r[:len(headers)]
-        seq = str(r[seq_idx]).strip() if seq_idx < len(r) else ""
-        # 提取开头数字序号
-        m = re.match(r"^\s*(\d{1,4})", seq)
-        seq_key = m.group(1) if m else seq
-        if not seq_key:
-            key = f"__row_{len(order)}"
-            merged[key] = r
-            order.append(key)
+    headers = []
+    for ci in range(ncols):
+        parts = [(cl[ci] if ci < len(cl) else "").strip() for cl in header_lines]
+        parts = [p for p in parts if p]
+        headers.append("｜".join(parts) if parts else "")
+    if not headers or all(h == "" for h in headers):
+        return []
+    rows = []
+    # Add recovered data rows first
+    for cells in data_rows_from_header:
+        if not cells or all(c == "" for c in cells):
             continue
-        if seq_key not in merged:
-            merged[seq_key] = r
-            order.append(seq_key)
-        else:
-            base = merged[seq_key]
-            for j in range(len(headers)):
-                cur = str(r[j]).strip() if j < len(r) else ""
-                old = str(base[j]).strip() if j < len(base) else ""
-                if j == seq_idx:
-                    if cur and (not old or len(cur) > len(old)):
-                        base[j] = cur
-                    continue
-                if cur and cur != old:
-                    base[j] = old + "；" + cur if old else cur
-    return [merged[k] for k in order]
-
-
-def _drop_empty_columns(headers: List[str], rows: List[List[str]]) -> tuple:
-    """剔除「表头为空且整列全空」的列，避免落库时列名被规范化为 Unnamed。
-
-    LLM 归并偶会多输出一列空数据（表头为空、整列无值），落库后平台把空表头
-    规范化为「Unnamed: N」，触发 snake_case 命名规范告警。这里在转记录前剔除。
-    若某列表头为空但存在非空单元格，则给一个占位表头，避免数据丢失。
-    """
-    if not headers or not rows:
-        return headers, rows
-    headers = list(headers)
-    rows = [list(r) for r in rows]
-    n = len(headers)
-    for r in rows:
-        while len(r) < n:
-            r.append("")
-    keep_idx = []
-    for ci in range(n):
-        col_has_value = any(ci < len(r) and str(r[ci]).strip() for r in rows)
-        col_has_header = bool(str(headers[ci]).strip())
-        if col_has_header or col_has_value:
-            keep_idx.append(ci)
-    if len(keep_idx) == n:
-        return headers, rows
-    new_headers = []
-    for ci in keep_idx:
-        h = str(headers[ci]).strip()
-        if not h:
-            h = f"列{ci + 1}"
-        new_headers.append(h)
-    new_rows = [[r[ci] if ci < len(r) else "" for ci in keep_idx] for r in rows]
-    if new_headers and new_rows:
-        print(f"  [清列] 剔除 {n - len(keep_idx)} 个空列（原 {n} 列 → 保留 {len(keep_idx)} 列）")
-    return new_headers, new_rows
-
-
-def _drop_ghost_rows(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
-    """删除「序号有值但业务列全空」的幽灵行。
-
-    LLM 归并为凑连续序号偶会输出只有序号、无任何业务内容的空行（幽灵行），
-    落库后成为无效规则。此处按确定性规则清理：序号列非空但其余列全空即剔除。
-    """
-    if not headers or not rows:
-        return rows
-    seq_idx = None
-    for i, h in enumerate(headers):
-        if h and ("序号" in str(h) or "编号" in str(h)):
-            seq_idx = i
-            break
-    if seq_idx is None:
-        return rows
-    kept: List[List[str]] = []
-    dropped = 0
-    for r in rows:
-        r = list(r)
-        seq = str(r[seq_idx]).strip() if seq_idx < len(r) else ""
-        others = [str(r[j]).strip() for j in range(len(headers)) if j != seq_idx]
-        has_seq = bool(seq)
-        has_content = any(others)
-        if has_seq and not has_content:
-            dropped += 1
+        while len(cells) < ncols:
+            cells.append("")
+        if len(cells) > ncols:
+            while len(cells) > ncols and not str(cells[0]).strip():
+                cells = cells[1:]
+                while len(cells) < ncols:
+                    cells.append("")
+            if len(cells) > ncols:
+                overflow = [str(c).strip() for c in cells[ncols:] if str(c).strip()]
+                if overflow:
+                    cells[ncols - 1] = (str(cells[ncols - 1]).strip() + "；" + "；".join(overflow)) if str(cells[ncols - 1]).strip() else "；".join(overflow)
+                cells = cells[:ncols]
+        rows.append(cells[:ncols])
+    for cells in all_cells[row_start:]:
+        if not cells or all(c == "" for c in cells):
             continue
-        kept.append(r)
-    if dropped:
-        print(f"  [清行] 剔除 {dropped} 行幽灵行（有序号无业务内容）")
-    return kept
+        while len(cells) < ncols:
+            cells.append("")
+        if len(cells) > ncols:
+            # Right-shift detection: leading empty cells → left-shift
+            while len(cells) > ncols and not str(cells[0]).strip():
+                cells = cells[1:]
+                while len(cells) < ncols:
+                    cells.append("")
+            if len(cells) > ncols:
+                overflow = [str(c).strip() for c in cells[ncols:] if str(c).strip()]
+                if overflow:
+                    cells[ncols - 1] = (str(cells[ncols - 1]).strip() + "；" + "；".join(overflow)) if str(cells[ncols - 1]).strip() else "；".join(overflow)
+                cells = cells[:ncols]
+        rows.append(cells[:ncols])
+    return [{"headers": headers, "rows": rows}] if rows else []
 
 
-def _check_sequence_gaps(headers: List[str], rows: List[List[str]], table_number: str = "", verbose: bool = True) -> List[int]:
-    """检测序号列断档，返回缺失的序号列表；断档说明 LLM 归并漏行，应显式告警。"""
-    if not rows:
-        return []
-    seq_idx = None
-    for i, h in enumerate(headers):
-        if h and ("序号" in str(h) or "编号" in str(h)):
-            seq_idx = i
-            break
-    if seq_idx is None:
-        return []
-    nums = []
-    for r in rows:
-        s = str(r[seq_idx]).strip() if seq_idx < len(r) else ""
-        m = re.match(r"^\s*(\d{1,4})", s)
-        if m:
-            nums.append(int(m.group(1)))
-    if not nums:
-        return []
-    max_n = max(nums)
-    full = set(range(1, max_n + 1))
-    missing = sorted(full - set(nums))
-    if missing and verbose:
-        print(f"  [断档告警] 表{table_number} 序号从 1~{max_n} 缺失 {len(missing)} 个：{missing}")
-    return missing
+# ==================== OCR 通道（仅在文本层无数据时使用） ====================
 
-
-def _sort_rows_by_sequence(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
-    """按序号列升序排序。"""
-    if not rows:
-        return rows
-    seq_idx = 0
-    for i, h in enumerate(headers):
-        if h and ("序号" in h or "编号" in h):
-            seq_idx = i
-            break
-    else:
-        return rows
-    def _key(r):
-        s = str(r[seq_idx]).strip() if seq_idx < len(r) else ""
-        m = re.match(r"^\s*(\d{1,4})", s)
-        if m:
-            return (0, int(m.group(1)), 0)
-        return (1, 0, 0)
-    indexed = list(enumerate(rows))
-    indexed.sort(key=lambda t: _key(t[1]))
-    return [r for _, r in indexed]
-
-
-_SPELL_DIGITS = "零一二三四五六七八九"
-
-
-def _to_cn_number(n: int) -> str:
-    """把 0~99 整数转为中文数字，用于列名规范化（避免数字开头触发 snake_case 告警）。"""
-    if n < 0:
-        return str(n)
-    if n < 10:
-        return _SPELL_DIGITS[n]
-    if n < 20:
-        return "十" + ("" if n % 10 == 0 else _SPELL_DIGITS[n % 10])
-    tens, ones = n // 10, n % 10
-    return _SPELL_DIGITS[tens] + "十" + ("" if ones == 0 else _SPELL_DIGITS[ones])
-
-
-def _normalize_numeric_headers(headers: List[str]) -> List[str]:
-    """把以数字开头的列名（如「3次占比(%)」「11次占比 %」）改为中文数字开头。
-
-    平台 snake_case 命名规范对「数字开头列名」报 error，而中文/字母开头的列名
-    （如「基波占比」「额定容量(MW)」）不报。仅改列名，不动数据行。
-    """
-    if not headers:
-        return headers
-    out = []
-    for h in headers:
-        h = (h or "").strip()
-        m = re.match(r"^(\d+)(\s*次.*)$", h)
-        if m:
-            h = _to_cn_number(int(m.group(1))) + m.group(2)
-        out.append(h)
-    return out
-
-
-def _transpose_metric_table(headers: List[str], rows: List[List[str]]):
-    """检测并还原「指标在行、样品在列」的转置表。
-
-    附录 A 多张实测数据表被 PDF 文本层按列优先抽取，LLM 归并后变成：
-    首列名为「测试编号/项目」，其余列名为纯数字（1、2、3…），真正的指标名
-    （基波占比、额定容量、电流总有效值…）下沉为每行首列、样品被当成列。
-    满足确定性特征（首列含编号/项目/测试字样 且 其余列名全为纯数字）时，
-    还原为常规宽表：行=样品，列=指标。
-    """
-    if not headers or not rows or len(headers) < 2:
-        return headers, rows
-    first = (str(headers[0]) or "").strip() if headers else ""
-    if not first or not any(k in first for k in ("编号", "项目", "指标", "测试")):
-        return headers, rows
-    num_headers = [str(h).strip() if h is not None else "" for h in headers[1:]]
-    if not num_headers or not all(re.fullmatch(r"\d+", h) for h in num_headers):
-        return headers, rows
-    metrics = [(str(r[0]).strip() if r and len(r) > 0 else "") for r in rows]
-    if len(metrics) != len(rows) or not any(metrics):
-        return headers, rows
-    n_samples = len(num_headers)
-    if n_samples < 2:
-        return headers, rows
-    new_headers = list(metrics)
-    new_rows: List[List[str]] = []
-    for si in range(n_samples):
-        new_row: List[str] = []
-        for ri in range(len(rows)):
-            cell = rows[ri][si + 1] if len(rows[ri]) > si + 1 else ""
-            new_row.append("" if cell is None else str(cell))
-        new_rows.append(new_row)
-    # 将「运行编号/名称/相别」类标识列提升到首列，作为样品主键
-    id_idx = next((i for i, m in enumerate(new_headers)
-                   if any(k in m for k in ("编号", "名称", "相别"))), None)
-    if id_idx is not None and id_idx != 0:
-        new_headers.insert(0, new_headers.pop(id_idx))
-        for r in new_rows:
-            r.insert(0, r.pop(id_idx))
-    print(f"  [转置还原] 表由 {len(rows)} 指标 × {n_samples} 样品 还原为宽表 {len(new_rows)} 行 × {len(new_headers)} 列")
-    return new_headers, new_rows
-
-
-def _estimate_appendix_start_page(text: str) -> int:
-    """估算附录 A 起始页（1-indexed），用页眉/页脚水印作为分页锚点。
-
-    文本层无页码信息，通过统计每页固定的水印/页脚行（常见如「南网知识共享」、
-    「DL/T」标准编号等重复行），定位首次出现附录内容的页序号；
-    找不到时回退 5（正文通常 4~6 页）。
-    """
-    if not text:
-        return 5
-    lines = text.split("\n")
-    # 通用页眉/页脚/水印检测：找重复出现 ≥3 次的短行作为分页锚点
-    from collections import Counter
-    short_lines = [ln.strip() for ln in lines if 3 <= len(ln.strip()) <= 30]
-    candidates = [ln for ln, cnt in Counter(short_lines).most_common(5) if cnt >= 3]
-    markers = []
-    if candidates:
-        cand_set = set(candidates)
-        markers = [i for i, ln in enumerate(lines) if ln.strip() in cand_set]
-    if not markers:
-        return 5
-    for page_idx, mi in enumerate(markers):
-        start = mi + 1
-        end = markers[page_idx + 1] if page_idx + 1 < len(markers) else len(lines)
-        page_text = "\n".join(lines[start:end])
-        if ("附录" in page_text) and ("明细表" in page_text or "检修内容" in page_text):
-            return page_idx + 1
-    return 5
-
-
-def _scan_all_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
-    """一次全页扫描：逐页渲染图片 → llm_vision 输出所有表格 MD → 按表号分配。
-
-    返回 {table_number: 合并后的 MD}。
-    每页只渲染+识别一次，所有表格块共享结果。
-    start_page: 起始扫描页（1-indexed）。附录明细表通常从第 5 页开始，
-    前几页是封面/目录/正文，跳过可省大量 llm_vision 调用时间。
-    """
+def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
+    """只在文本层无数据时才走 OCR。"""
     from pathlib import Path as _Path
-
-    # 获取总页数
     text_res = call_tool("read_file", path=pdf_path)
     if not isinstance(text_res, dict) or "content" not in text_res:
         raise RuntimeError(f"read_file 获取 PDF 失败: {text_res!r}")
-    total_pages = text_res.get("total_pages")
+    total_pages = text_res.get("total_pages") or 0
     if not total_pages:
         probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
         total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
-    if not total_pages:
-        total_pages = 20
-    max_pages = min(total_pages, 30)
-    print(f"  [OCR] 全页扫描 {max_pages} 页（总 {total_pages} 页）")
+    max_pages = min(total_pages or 20, 30)
+    print(f"  [OCR] 扫描 {max_pages} 页（总 {total_pages} 页）")
 
-    ocr_prompt = """你是标准规范类文档表格 OCR 专家。下面是一张从 PDF 渲染出的页面图片（可能横向或翻转，请先判断方向再识别）。
-
-本页可能包含一个或多个表格。请把页面上所有表格都识别输出，每个表格按以下格式：
-
+    ocr_prompt = """你是表格 OCR 专家。请把页面上所有表格识别输出，格式：
 表X.Y 表格名称
-| 列1 | 列2 | ... |
-| --- | --- | --- |
-| 数据行1 |
-| 数据行2 |
+| 列1 | 列2 |
+| --- | --- |
+| 数据行 |
 
 要求：
-1. 每个表格前必须有一行标题（如"表A.1 断路器..."或"表A.1 (续)"），标题行单独一行、不以 | 开头；
-2. 如果页面上只有一个表格，也照常输出标题行+表格；
-3. 表头有多少列就输出多少列，数据行单元格数与表头列数一致；
-4. 单元格内容逐字保留，数值、阈值、判据不得改写；
-5. 忽略水印文字（浅色斜体大字）、页眉、页脚、页码及表格分隔线；
-6. 直接输出 Markdown，禁止用 ``` 围栏包裹，禁止输出任何说明文字；
-7. 只识别真实印在纸上的文字，看不清的字符宁可留空，不得用相似符号填充；
-8. 多行子项必须合并到同一单元格内（用分号连接），确保每行单元格数与表头列数一致；
-9. 若某列存在垂直合并单元格（多个数据行共用同一个值，视觉上只出现一次），该值必须在它覆盖的每一行都重复输出，禁止只在首行输出、禁止留空；
-10. 同一序号下若有多档劣化（I/II/III/IV 及对应的情况/检修内容），必须合并到该序号的同一行内，各档内容用分号（；）并列且一一对应，禁止拆成多行或漏档。
-11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。其中「分类」列取值只能是「运行」或「检修试验」等短类别词（垂直合并时也必须每行重复输出该类别词）；「状态量名称」列填部件/状态量名称（不得填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。禁止把「分类」列的值填成状态量名称，禁止把劣化程度(I~IV)填进「状态量名称」列。
+1. 每个表格前一行标题（表号 + 名称）
+2. 表头列数与数据行一致
+3. 数值阈值逐字保留
+4. 忽略水印/页眉/页脚
+5. 垂直合并单元格的值每行重复输出，尤其是表格第一列的分组列，绝不允许留空导致后续各列整体左移
+6. 同序号多档内容用分号合并到同一行
+7. 直接输出 Markdown，不要代码围栏
+8. 单元格内容必须完整输出，禁止截断
+9. 不要使用子序号，同一项目的多个档位保持相同序号
+10. 每一列的语义必须与其表头一致，严禁列与列之间串行或错位
+11. 同一项目含多个子列时，各列必须按子列顺序一一对应，数量必须相等，不得丢失或错位
+12. 合并单元格的父级分组值必须按区段正确回填到分组列，不得把其他列内容填进分组列
+13. 行×列交叉的矩阵表保持原结构输出，严禁把行表头/列名混填或整列左移"""
 
-注意：不要遗漏任何表格；每个表格的标题行必须完整输出。"""
-
-    # 按表号收集 MD
     md_by_number: Dict[str, List[str]] = {num: [] for num in table_numbers}
-
     batch_size = 5
     for batch_start in range(start_page, max_pages + 1, batch_size):
         batch_pages = list(range(batch_start, min(batch_start + batch_size, max_pages + 1)))
         print(f"  [OCR] 渲染第 {batch_pages[0]}-{batch_pages[-1]} 页…")
         img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
         if not isinstance(img_res, dict) or not img_res.get("success"):
-            print(f"  [OCR] 渲染批次失败（跳过）: {img_res!r}")
             continue
         image_paths = img_res.get("image_paths") or []
-        # 复制图片到授权目录
-        page_img_map: Dict[int, str] = {}
-        for i, img_path in enumerate(image_paths):
-            page_no = batch_pages[i] if i < len(batch_pages) else 0
-            _src = _Path(str(img_path))
-            _dst = _Path(pdf_path).parent / f"_dc_ocr_p{page_no}_{_src.name}"
-            try:
-                _dst.write_bytes(_src.read_bytes())
-            except Exception:
-                _dst = _src
-            page_img_map[page_no] = str(_dst)
-
-        # 并发识别本批图片
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _ocr_one(pg: int) -> tuple:
-            img_p = page_img_map[pg]
-            for v_attempt in range(1, 4):
+        def _ocr_one(pg, img_p):
+            for _ in range(3):
                 try:
                     vres = call_tool("llm_vision", image_path=img_p, prompt=ocr_prompt)
-                    if not isinstance(vres, dict) or "error" in vres:
-                        raise RuntimeError(f"llm_vision 返回异常: {vres!r}")
-                    raw = str(vres.get("result") or "").strip()
-                    if not raw:
-                        raise RuntimeError("llm_vision 返回空结果")
-                    return pg, raw
-                except Exception as e:
-                    if v_attempt < 3:
-                        import time as _t
-                        _t.sleep(1.5 * v_attempt)
-                    else:
-                        print(f"  [OCR] 第 {pg} 页连续 3 次失败: {e}")
-                        return pg, ""
+                    if isinstance(vres, dict) and "error" not in vres:
+                        raw = str(vres.get("result") or "").strip()
+                        if raw:
+                            return pg, raw
+                except Exception:
+                    pass
             return pg, ""
 
-        with ThreadPoolExecutor(max_workers=min(5, len(page_img_map))) as _ex:
-            futs = {_ex.submit(_ocr_one, pg): pg for pg in page_img_map}
+        page_imgs = {}
+        for i, img_path in enumerate(image_paths):
+            page_no = batch_pages[i] if i < len(batch_pages) else 0
+            src = _Path(str(img_path))
+            dst = _Path(pdf_path).parent / f"_dc_ocr_p{page_no}_{src.name}"
+            try:
+                dst.write_bytes(src.read_bytes())
+            except Exception:
+                dst = src
+            page_imgs[page_no] = str(dst)
+
+        with ThreadPoolExecutor(max_workers=min(5, len(page_imgs))) as ex:
+            futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
             for fut in as_completed(futs):
                 pg, raw = fut.result()
                 if raw:
                     for num in table_numbers:
-                        target_md = _filter_md_by_table_number(raw, num)
-                        if target_md:
-                            md_by_number[num].append(f"== 第 {pg} 页 ==\n{target_md}")
-                print(f"  [OCR] 第 {pg} 页识别完成")
+                        target = _filter_md_by_table_number(raw, num)
+                        if target:
+                            md_by_number[num].append(f"== 第 {pg} 页 ==\n{target}")
+                print(f"  [OCR] 第 {pg} 页完成")
 
-    # 合并各表号的 MD
-    result: Dict[str, str] = {}
-    for num, parts in md_by_number.items():
-        if parts:
-            result[num] = "\n\n".join(parts)
-            print(f"  [OCR] 表{num} 收集 {len(parts)} 页 MD，共 {len(result[num])} 字符")
-    return result
-
-
-def _extract_table_from_ocr_md(block: Dict[str, str], ocr_md: str) -> Dict[str, Any]:
-    """用已扫描的 OCR MD 直接做 LLM 归并，不需要再渲染图片。"""
-    title = block.get("title") or "未命名表"
-    number = block.get("number") or ""
-
-    merged = _merge_md_tables_semantically(title, number, [ocr_md])
-
-    _table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
-
-    if merged and merged.get("headers") and merged.get("rows"):
-        headers = [str(h).strip() for h in merged["headers"]]
-        rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
-        rows = _merge_same_sequence_rows(headers, rows)
-        rows = _sort_rows_by_sequence(headers, rows)
-        print(f"  [OCR] 表{number} 归并完成: {len(rows)} 行 × {len(headers)} 列")
-        _result = {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
-        _validate_table_quality(_result, block)
-        return _result
-
-    # 归并失败，直接用 OCR MD 解析
-    parsed = _parse_markdown_table(ocr_md)
-    if parsed:
-        data = parsed[0]
-        headers = [str(x).strip() for x in (data.get("headers") or [])]
-        rows = [[("" if c is None else str(c)) for c in r] for r in (data.get("rows") or [])]
-        if headers and rows:
-            rows = _merge_same_sequence_rows(headers, rows)
-            rows = _sort_rows_by_sequence(headers, rows)
-            print(f"  [OCR] 表{number} 直接解析: {len(rows)} 行 × {len(headers)} 列")
-            _result = {"table_name": _table_name, "table_number": number, "headers": headers, "rows": rows}
-            _validate_table_quality(_result, block)
-            return _result
-
-    raise RuntimeError(f"表格「表{number}」OCR 归并失败")
-
-
-def _extract_table_via_ocr(block: Dict[str, str], pdf_path: str) -> Dict[str, Any]:
-    """图片型表格 OCR 通道：逐页渲染图片 → llm_vision 输出 MD → 按表号切分合并 → LLM 归并。
-
-    不定位页码——直接逐页扫描所有页面，每页 llm_vision 输出所有表格的 MD，
-    按 `_filter_md_by_table_number` 只保留目标表号的内容，合并后一次 LLM 归并。
-    """
-    from pathlib import Path as _Path
-
-    title = block.get("title") or "未命名表"
-    number = block.get("number") or ""
-
-    # 1. 先获取总页数
-    text_res = call_tool("read_file", path=pdf_path)
-    if not isinstance(text_res, dict) or "content" not in text_res:
-        raise RuntimeError(f"read_file 获取 PDF 失败: {text_res!r}")
-    full_text = str(text_res.get("content") or "")
-    total_pages = text_res.get("total_pages")
-    if not total_pages:
-        # 缓存文本不含 total_pages，用渲染第一页获取
-        probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
-        if isinstance(probe, dict) and probe.get("total_pages"):
-            total_pages = probe["total_pages"]
-        else:
-            total_pages = len(full_text) // 2000 + 1
-    max_pages = min(total_pages, 30)
-    print(f"  [OCR] 逐页扫描 {max_pages} 页（总 {total_pages} 页）")
-
-    # 2. 分批渲染图片（每批 5 页，避免单次渲染太多）
-    ocr_prompt = """你是标准规范类文档表格 OCR 专家。下面是一张从 PDF 渲染出的页面图片（可能横向或翻转，请先判断方向再识别）。
-
-本页可能包含一个或多个表格。请把页面上所有表格都识别输出，每个表格按以下格式：
-
-表X.Y 表格名称
-| 列1 | 列2 | ... |
-| --- | --- | --- |
-| 数据行1 |
-| 数据行2 |
-
-要求：
-1. 每个表格前必须有一行标题（如"表A.1 断路器..."或"表A.1 (续)"），标题行单独一行、不以 | 开头；
-2. 如果页面上只有一个表格，也照常输出标题行+表格；
-3. 表头有多少列就输出多少列，数据行单元格数与表头列数一致；
-4. 单元格内容逐字保留，数值、阈值、判据不得改写；
-5. 忽略水印文字（浅色斜体大字）、页眉、页脚、页码及表格分隔线；
-6. 直接输出 Markdown，禁止用 ``` 围栏包裹，禁止输出任何说明文字；
-7. 只识别真实印在纸上的文字，看不清的字符宁可留空，不得用相似符号填充；
-8. 多行子项必须合并到同一单元格内（用分号连接），确保每行单元格数与表头列数一致；
-9. 若表头下第一列是序号、其后有「分类/类别」类短词列和「名称/描述」类长文本列，必须严格按表头所在列对齐输出，禁止把短类别词和长名称互换位置；
-10. 若某列存在垂直合并单元格（多个数据行共用同一个值，视觉上只出现一次），该值必须在它覆盖的每一行都重复输出，禁止只在首行输出、禁止留空。
-11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。其中「分类」列取值只能是「运行」或「检修试验」等短类别词（垂直合并时也必须每行重复输出该类别词）；「状态量名称」列填部件/状态量名称（不得填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。禁止把「分类」列的值填成状态量名称，禁止把劣化程度(I~IV)填进「状态量名称」列。
-
-注意：不要遗漏任何表格；每个表格的标题行必须完整输出。"""
-
-    md_parts = []
-    batch_size = 5
-    for batch_start in range(1, max_pages + 1, batch_size):
-        batch_pages = list(range(batch_start, min(batch_start + batch_size, max_pages + 1)))
-        print(f"  [OCR] 渲染第 {batch_pages[0]}-{batch_pages[-1]} 页…")
-        img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
-        if not isinstance(img_res, dict) or not img_res.get("success"):
-            print(f"  [OCR] 渲染批次失败（跳过）: {img_res!r}")
-            continue
-        image_paths = img_res.get("image_paths") or []
-        for i, img_path in enumerate(image_paths):
-            page_no = batch_pages[i] if i < len(batch_pages) else 0
-            # 复制到授权目录（PDF 同目录）
-            _src = _Path(str(img_path))
-            _dst = _Path(pdf_path).parent / f"_dc_ocr_{number}_p{page_no}_{_src.name}"
-            try:
-                _dst.write_bytes(_src.read_bytes())
-            except Exception:
-                _dst = _src
-
-            for v_attempt in range(1, 4):
-                try:
-                    vres = call_tool("llm_vision", image_path=str(_dst), prompt=ocr_prompt)
-                    if not isinstance(vres, dict) or "error" in vres:
-                        raise RuntimeError(f"llm_vision 返回异常: {vres!r}")
-                    raw = str(vres.get("result") or "").strip()
-                    if not raw:
-                        raise RuntimeError("llm_vision 返回空结果")
-                    # 按表号切分，只保留目标表的内容
-                    target_md = _filter_md_by_table_number(raw, number)
-                    if target_md:
-                        md_parts.append(f"== 第 {page_no} 页 ==\n{target_md}")
-                        print(f"  [OCR] 第 {page_no} 页识别到表{number}")
-                    else:
-                        print(f"  [OCR] 第 {page_no} 页未找到表{number}")
-                    break
-                except Exception as e:
-                    print(f"  [OCR] 第 {page_no} 页第 {v_attempt}/3 次失败: {e}")
-                    if v_attempt < 3:
-                        import time as _t
-                        _t.sleep(1.5 * v_attempt)
-
-    if not md_parts:
-        raise RuntimeError(f"表格「表{number}」所有页 OCR 均未识别到内容")
-
-    # 3. LLM 归并 MD
-    joined_md = "\n\n".join(md_parts)
-    print(f"  [OCR] 表{number} 收集 {len(md_parts)} 页 MD，共 {len(joined_md)} 字符")
-    merged = _merge_md_tables_semantically(title, number, [joined_md])
-
-    _table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
-
-    if merged and merged.get("headers") and merged.get("rows"):
-        headers = [str(h).strip() for h in merged["headers"]]
-        rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
-        # 同序号合并 + 排序
-        rows = _merge_same_sequence_rows(headers, rows)
-        rows = _sort_rows_by_sequence(headers, rows)
-        print(f"  [OCR] 表{number} 归并完成: {len(rows)} 行 × {len(headers)} 列")
-        _result = {
-            "table_name": _table_name,
-            "table_number": number,
-            "headers": headers,
-            "rows": rows,
-        }
-        _validate_table_quality(_result, block)
-        return _result
-
-    # 归并失败，直接用 OCR MD 解析
-    parsed = _parse_markdown_table(joined_md)
-    if parsed:
-        data = parsed[0]
-        headers = [str(x).strip() for x in (data.get("headers") or [])]
-        rows = [[("" if c is None else str(c)) for c in r] for r in (data.get("rows") or [])]
-        if headers and rows:
-            rows = _merge_same_sequence_rows(headers, rows)
-            rows = _sort_rows_by_sequence(headers, rows)
-            print(f"  [OCR] 表{number} 直接解析: {len(rows)} 行 × {len(headers)} 列")
-            _result = {
-                "table_name": _table_name,
-                "table_number": number,
-                "headers": headers,
-                "rows": rows,
-            }
-            _validate_table_quality(_result, block)
-            return _result
-
-    raise RuntimeError(f"表格「表{number}」OCR 归并失败")
+    return {num: "\n\n".join(parts) for num, parts in md_by_number.items() if parts}
 
 
 def _filter_md_by_table_number(md_text: str, table_number: str) -> str:
-    """从整页 OCR 输出的 MD 中，按表格标题行切分，只保留目标表号的 MD 段落。
+    """从 OCR 结果中提取目标表格的 Markdown 内容。
 
-    严格匹配：标题行必须以"表"开头且含目标表号（归一化后精确匹配）。
-    没匹配到时返回空字符串（不返回整页 MD，避免混入其他表内容）。
+    三级匹配：
+    1. 精确匹配：表标题行归一化后 == 目标表号
+    2. 包含匹配：非 | 行归一化后包含目标表号
+    3. 兜底：只有 | 行没有标题行时返回全部（OCR 漏识别标题）
     """
     if not md_text or not table_number:
         return ""
@@ -1750,1486 +919,1108 @@ def _filter_md_by_table_number(md_text: str, table_number: str) -> str:
     target_norm = _normalize_table_number(table_number)
     if not target_norm:
         return ""
-    target_segments = []
-    all_title_indices = []
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s or s.startswith("|"):
-            continue
-        if re.match(r"^表\s*[A-Za-z]?\s*\.?\s*\d+", s):
-            all_title_indices.append(i)
-    if not all_title_indices:
-        # 没有标题行：可能整页只有一个表，检查内容是否像表格
-        tbl_lines = [ln for ln in lines if ln.strip().startswith("|")]
-        if len(tbl_lines) >= 2:
-            return md_text  # 整页只有一个表格，返回全部
-        return ""
-    for idx_pos, start in enumerate(all_title_indices):
-        is_title, number, desc, is_cont = _parse_table_title(lines[start].strip())
-        if not is_title:
-            continue
-        norm = _normalize_table_number(number)
-        if norm != target_norm:
-            continue
-        end = all_title_indices[idx_pos + 1] if idx_pos + 1 < len(all_title_indices) else len(lines)
-        for j in range(start, end):
-            target_segments.append(lines[j])
-    if not target_segments:
-        return ""  # 没匹配到目标表号，返回空（不返回整页）
-    return "\n".join(target_segments)
 
+    # 找所有非 | 行（可能的表标题行）
+    non_pipe_lines = [(i, ln.strip()) for i, ln in enumerate(lines) if ln.strip() and not ln.strip().startswith("|")]
 
-def _parse_markdown_table(text: str) -> List[Dict[str, Any]]:
-    """把 Markdown 表格（| 分隔）解析成 [{"headers": [...], "rows": [[...]]}]。
+    # 1. 精确匹配：用 _parse_table_title 解析
+    title_indices = []
+    for i, s in non_pipe_lines:
+        is_title, number, _, _ = _parse_table_title(s)
+        if is_title and _normalize_table_number(number) == target_norm:
+            title_indices.append(i)
 
-    解析时清除 HTML 标签（如 <sub>、<sup>、<br> 等），只保留纯文本。
-    """
-    # 清除 HTML 标签
-    text = re.sub(r"<[^>]+>", "", text)
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    tbl_lines = [ln for ln in lines if "|" in ln]
-    if len(tbl_lines) < 2:
-        return []
+    if title_indices:
+        # 收集每个标题到下一个非 | 行之间的所有行
+        segments = []
+        for idx_pos, start in enumerate(title_indices):
+            # end = 下一个非 | 行的位置，或 lines 末尾
+            if idx_pos + 1 < len(title_indices):
+                end = title_indices[idx_pos + 1]
+            else:
+                # 找 start 之后第一个非 | 行作为结束
+                end = len(lines)
+                for j in range(start + 1, len(lines)):
+                    js = lines[j].strip()
+                    if js and not js.startswith("|"):
+                        # 找到下一个标题行（非 | 行），但如果是同一表号的续表行则不截断
+                        is_t, n, _, _ = _parse_table_title(js)
+                        if is_t:
+                            end = j
+                            break
+            segments.extend(lines[start:end])
+        return "\n".join(segments) if segments else ""
 
-    def _cells(ln: str) -> List[str]:
-        s = ln.strip()
-        if s.startswith("|"):
-            s = s[1:]
-        if s.endswith("|"):
-            s = s[:-1]
-        return [c.strip() for c in s.split("|")]
+    # 2. 包含匹配：归一化后的行文本包含目标表号
+    pat = re.compile(r"表\s*" + re.escape(target_norm) + r"(?![0-9A-Za-z.．])")
+    for i, s in non_pipe_lines:
+        if pat.search(s):
+            # 从这行开始收集后续 | 行
+            segments = [lines[i]]
+            for j in range(i + 1, len(lines)):
+                js = lines[j].strip()
+                if js.startswith("|"):
+                    segments.append(lines[j])
+                elif js and not js.startswith("|"):
+                    break
+            return "\n".join(segments)
 
-    all_cells = [_cells(ln) for ln in tbl_lines]
-    sep_idx = None
-    for i, cells in enumerate(all_cells):
-        non_empty = [c for c in cells if c != ""]
-        if non_empty and all(re.fullmatch(r"[-=: ]+", c) for c in non_empty):
-            sep_idx = i
-            break
-    if sep_idx is None:
-        header_lines = all_cells[:1]
-        row_start = 1
-    else:
-        header_lines = all_cells[:sep_idx]
-        row_start = sep_idx + 1
-    ncols = max((len(c) for c in all_cells), default=0)
-    if ncols == 0:
-        return []
-    headers: List[str] = []
-    for ci in range(ncols):
-        parts: List[str] = []
-        for cl in header_lines:
-            v = (cl[ci] if ci < len(cl) else "").strip()
-            if v and v not in parts:
-                parts.append(v)
-        headers.append("｜".join(parts) if parts else "")
-    if not headers or all(h == "" for h in headers):
-        return []
-    rows: List[List[str]] = []
-    for cells in all_cells[row_start:]:
-        if not cells or all(c == "" for c in cells):
-            continue
-        while len(cells) < ncols:
-            cells.append("")
-        rows.append(cells[:ncols])
-    if not rows:
-        return []
-    return [{"headers": headers, "rows": rows}]
+    # 3. 兜底：没有标题行但有 | 行 → 返回全部
+    pipe_lines = [ln for ln in lines if ln.strip().startswith("|")]
+    if len(pipe_lines) >= 2 and not non_pipe_lines:
+        return md_text
 
-
-def _split_long_md(md_text: str, max_chars: int = 6000) -> List[str]:
-    """把超长 MD 按行边界切段，避免单次塞入超长文本导致丢行/串列。"""
-    if len(md_text) <= max_chars:
-        return [md_text]
-    lines = md_text.split("\n")
-    chunks: List[str] = []
-    cur: List[str] = []
-    cur_len = 0
-    for ln in lines:
-        add = len(ln) + 1
-        # 尽量在非数据行的边界切（标题行/分隔行），避免切断数据行
-        if cur and cur_len + add > max_chars and not ln.strip().startswith("|"):
-            chunks.append("\n".join(cur))
-            cur = [ln]
-            cur_len = add
-        else:
-            cur.append(ln)
-            cur_len += add
-    if cur:
-        chunks.append("\n".join(cur))
-    return chunks
-
-
-def _table_to_markdown(headers: List[str], rows: List[List[str]]) -> str:
-    """把 headers/rows 还原成 Markdown 表格文本，供滚动归并续接。"""
-    lines = [
-        "| " + " | ".join(str(h) for h in headers) + " |",
-        "| " + " | ".join("---" for _ in headers) + " |",
-    ]
-    for r in rows:
-        cells = ["" if c is None else str(c).replace("|", "\\|") for c in r]
-        while len(cells) < len(headers):
-            cells.append("")
-        lines.append("| " + " | ".join(cells[:len(headers)]) + " |")
-    return "\n".join(lines)
-
-
-def _extract_header_hint_from_md(md_text: str) -> str:
-    """从 MD 表头行动态提取列名特征，生成列结构提示（不硬编码业务词）。
-
-    通用规则：检测表头中含关键词的列，动态生成提示让 LLM 正确区分各列内容。
-    """
-    if not md_text:
-        return ""
-    lines = md_text.split("\n")
-    for line in lines:
-        s = line.strip()
-        if s.startswith("|") and "---" not in s:
-            cells = [c.strip() for c in s.strip("|").split("|")]
-            cells = [c for c in cells if c]
-            if len(cells) < 2:
-                return ""
-            hints = []
-            for c in cells:
-                if any(kw in c for kw in ("分类", "类别", "类型")):
-                    hints.append(f"列「{c}」应填短词（如分类名），不应填长描述，不应与其他列重复")
-                elif any(kw in c for kw in ("名称", "描述", "项目")):
-                    hints.append(f"列「{c}」应填具体名称或描述，不应与分类列重复")
-                elif any(kw in c for kw in ("程度", "等级")):
-                    hints.append(f"列「{c}」应填等级标识（如I/II/III/IV）")
-                elif any(kw in c for kw in ("情况", "依据", "判据")):
-                    hints.append(f"列「{c}」应填具体的技术描述或数据")
-                elif any(kw in c for kw in ("检修", "内容")):
-                    hints.append(f"列「{c}」应填检修措施和类别")
-            if hints:
-                return "\n\n【列结构提示（从表头动态提取）】\n" + "\n".join(hints) + "\n各列内容不得互换或重复填。合并单元格仅在原文明确显示同一值跨多行时才回填，不要自行推断合并。"
-            return ""
     return ""
 
 
+def _detect_truncated_cells(rows: List[List[str]], md_text: str) -> bool:
+    """检测 LLM 返回的表格中是否有疑似被截断的单元格。
+
+    只检测明确的截断标记：
+    - 单元格以省略号结尾（…、...）
+    - 单元格内容含"(原文截断"等标记
+
+    不检测"单个汉字结尾"——数值、状态词等正常内容也可能无标点收尾，
+    误判会导致无限重试浪费时间。
+    """
+    truncation_patterns = [
+        re.compile(r'\.{2,}$'),
+        re.compile(r'…$'),
+        re.compile(r'\(原文截断'),
+        re.compile(r'（原文截断'),
+    ]
+    for row in rows:
+        for cell in row:
+            val = str(cell).strip() if cell else ""
+            if not val or len(val) < 5:
+                continue
+            for pat in truncation_patterns:
+                if pat.search(val):
+                    return True
+    return False
+
+
 def _merge_md_once(title: str, number: str, md_text: str) -> Dict[str, Any]:
-    """单次 LLM 归并：输入 MD 分段，输出解析后的 {headers, rows}。"""
-    # 从 MD 表头行动态提取列名，帮 LLM 正确归位多级表头
-    header_hint = _extract_header_hint_from_md(md_text)
+    base_prompt = f"""你是表格归并专家。下面是表格（表{number} {title}）的 Markdown 分段。请归并为一张最终表格，只输出 Markdown 表格（| 分隔），不要 JSON、不要代码围栏。
 
-    prompt = f"""你是标准规范类文档表格归并专家。下面是表格（表{number} {title}）的 Markdown 分段。请归并为一张最终表格，只输出一个 Markdown 表格（| 分隔），不要 JSON、不要解释、不要代码围栏。
+要求：
+1. 每个序号只保留一行，多档内容用分号并列。合并单元格的子行不要分配新序号，保持原序号
+2. 跨页续表：去掉重复表头，数据行续接
+3. 合并单元格：父项列连续为空时用上方最近非空值回填
+4. 按序号升序，每行必须有实质内容
+5. 去掉页眉页脚水印碎片
+6. 数值阈值逐字保留，清除 HTML 标签
+7. 各列不得互换混填
+8. 所有数据行的列数必须与表头列数完全一致，不得多出或少列
+9. 保留所有序号的数据行，不得遗漏首行和末行。序号必须连续，不得跳号
+10. 如果某行单元格内容比表头多，将多余内容合并到该行最后一列（用分号分隔），不得新增列
+11. 单元格内容必须完整输出，禁止截断，不得在中间省略
+12. 不要使用子序号，同一项目的多个档位保持相同序号
+13. 多级表头必须展平为单行表头，每个子列都有独立列名，不得留空
+14. 矩阵型表格保持原结构输出，不要展平为长表
+15. 禁止输出推理过程、思考草稿、ID编号等非表格内容。只输出纯表格数据行
+16. 禁止在单元格中写入推测内容，如果原文不完整则照原文输出
+17. 分组列必须保留合并单元格的父级分组值，不得把其他列内容填入分组列；分组列与其他列必须语义区分，不得重复
+18. 各列只保留与该列表头语义一致的值，不得把其他列的内容混入
+19. 同一项目的多个档位必须归并为一行：各档值用分号一一对应（数量必须相等），不得按档拆成多行
 
-归并要求：
-1. 每个序号只保留一行，禁止按「情况一/二/三」拆成多行；同一序号下若原文有多档劣化，将各档的「劣化程度」按档位顺序用分号（；）并列填在同一行「劣化程度」列，「劣化情况/判断依据」和「检修内容」两列也各按对应档位顺序用分号并列，保持三列档位一一对应，禁止把「情况N」文字或检修措施填入错误的列；
-2. 跨页连接：去掉续表页重复的表头行，数据行续接在前页之后；
-3. 合并单元格回填（父项列）：当「序号/分类/名称」等父项列连续为空、而后面「劣化程度/劣化情况/检修内容」列有值时，说明父项是跨行合并单元格，必须用上方最近的非空父项值向下回填到每一行，禁止留空；
-4. 按序号升序排列；每行必须有实质业务内容（状态量名称、劣化程度、劣化情况、检修内容中至少一项有值），严禁为凑连续序号而输出只有序号、业务列全空的空行；若某序号在原文中确实找不到对应内容，该序号可不输出（宁可缺行，不可编造空行）；若原文某序号因跨页被拆散，必须拼回同一行；
-5. 去掉无关行（页眉、页脚、页码、水印碎片）；
-6. 单元格内容逐字保留，数值、阈值、判据不得改写；清除HTML标签（如<sub>、<sup>等），只保留纯文本；
-7. 「劣化程度」列取值域为 I/II/III/IV，出现 N/W/U/rn 等误识时按档位由低到高还原为 I~IV；「劣化情况/判断依据」列只放状态量劣化的描述，「检修内容」列只放检修措施（如 A/B/C/D 类检修动作），两者不得串位；
-8. 表头以原表实际表头为准，不预设列数、不套用模板；若某列在原文中是两层表头（父项-子项），拆分出独立的子列并给出明确表头，父项值回填到其覆盖的每一行；
-9. 禁止把不同列的内容互换或混填：每列内容只放它原本所在的列，短类别词与长描述不交叉填充。{header_hint}
-10. 化学式与中文名称必须严格对应，不得张冠李戴：CH4=甲烷、C2H4=乙烯、C2H6=乙烷、C2H2=乙炔、H2=氢气、CO=一氧化碳、CO2=二氧化碳。若「状态量名称」列出现化学式，其后的「劣化情况」列必须写与该化学式一致的气体名称（如名称是 CH4，情况就写「甲烷含量」，不得写成「乙烯含量」）；反之亦然。
-11. 附录状态量劣化检修明细表固定为 6 列：序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别。「分类」列取值只能是「运行」或「检修试验」等短类别词（原文垂直合并时也必须每行重复输出该类别词，禁止留空）；「状态量名称」列填部件/状态量名称（严禁填 I/II/III/IV）；「劣化程度」列填 I/II/III/IV；「劣化情况」列填状态量劣化描述；「检修内容和类别」列填 A/B/C/D 类检修措施。若归并结果中「状态量名称」列出现 I/II/III/IV，说明列整体左移了一格，必须把分类列恢复出来后整体右移对齐。
-12. 逐行锁定三元组：每一行的「状态量名称」「劣化情况」「检修内容」三列必须严格属于同一个状态量，严禁把上一行多档状态量的残留档位（劣化情况/检修内容残段）串到下一行；多档状态量的每一档都要完整输出在它自己那一行内、用分号并列，不得溢出到相邻行。
-13. 禁止跨表/跨设备污染：本表只保留本设备类型的状态量，不得把断路器/隔离开关/避雷器/互感器等其它设备的整行或检修措施（如「断路器气体管道」「断路器本体」「更换灭弧室」等）混入本表；「检修内容」必须完整输出到该档句号结束，严禁截断为孤立的「B」「B类检修」等残缺片段，严禁输出「-」占位符或「; -」结尾。
+输出格式：表头行 + 分隔线 + 数据行，直接输出，禁止代码围栏。
 
-输出格式：
-- 保持原表头语义不变（仅在确有子列时按第 8 条拆分/补全表头），第二行是分隔线（| --- | --- |），之后每行一条数据；
-- 每行单元格数必须与表头列数完全一致；
-- 直接输出 Markdown 表格本身，禁止 ``` 围栏。
-
-分段原文如下：
+分段原文：
 ---
 {md_text}
 ---"""
-    def _call(prompt_text: str) -> Optional[Dict[str, Any]]:
-        for attempt in range(1, 4):
-            try:
-                response = call_tool(
-                    "llm_generate",
-                    prompt=prompt_text,
-                    temperature=0.0,
-                    max_tokens=16000,
-                )
-                if not isinstance(response, dict) or "error" in response:
-                    raise RuntimeError(f"llm_generate 失败: {response!r}")
-                raw = str(response.get("content") or "").strip()
-                if not raw:
-                    raise RuntimeError("llm_generate 返回空 content")
-                parsed = _parse_markdown_table(raw)
-                if not parsed:
-                    raise RuntimeError(f"归并未输出可解析的 Markdown 表格: {raw[:300]!r}")
+    for attempt in range(3):
+        try:
+            extra_warning = ""
+            if attempt > 0:
+                extra_warning = "\n\n【重要警告】上一次输出存在单元格内容被截断的问题！请确保每个单元格内容完整输出，不得省略或截断任何文字。不要输出推理过程或ID编号。"
+            response = call_tool("llm_generate", prompt=base_prompt + extra_warning, temperature=0.0, max_tokens=32000)
+            if not isinstance(response, dict) or "error" in response:
+                raise RuntimeError(str(response))
+            raw = str(response.get("content") or "").strip()
+            if not raw:
+                raise RuntimeError("空 content")
+            parsed = _parse_markdown_table(raw)
+            if parsed:
                 data = parsed[0]
-                headers = [str(x).strip() for x in (data.get("headers") or [])]
-                rows = [[("" if c is None else str(c)) for c in r] for r in (data.get("rows") or [])]
-                if headers and rows:
-                    return {"headers": headers, "rows": rows}
-                raise RuntimeError("归并结果缺少表头或数据行")
-            except Exception as e:
-                print(f"  [归并] 表{number} {title} 第 {attempt}/3 次失败: {e}")
-                if attempt == 3:
-                    return None
-        return None
-
-    result = _call(prompt)
-    if not result:
-        return {}
-    # 序号断档检测：LLM 归并可能漏掉个别行，带着缺失序号反馈重试补齐
-    missing = _check_sequence_gaps(result["headers"], result["rows"], number, verbose=False)
-    if missing:
-        print(f"  [归并] 表{number} 检测到序号断档 {missing}，反馈重试补齐…")
-        for retry in range(1, 2):
-            gap_hint = f"\n\n【补充要求】刚才的归并结果缺失了序号 {missing} 对应的数据行。请重新逐字检查原文，把缺失序号 {missing} 的行内容从原文中准确找回并补上；每一行必须包含实质业务内容，严禁输出只有序号、业务列全空的空行；若原文确实找不到某序号内容，该序号可不输出。"
-            retry_result = _call(prompt + gap_hint)
-            if not retry_result:
-                break
-            still_missing = _check_sequence_gaps(
-                retry_result["headers"], retry_result["rows"], number, verbose=False
-            )
-            result = retry_result
-            if not still_missing:
-                print(f"  [归并] 表{number} 序号已补齐，无断档")
-                break
-            missing = still_missing
-            print(f"  [归并] 表{number} 补漏第 {retry} 次后仍缺失 {still_missing}")
-    print(f"  [归并] 表{number} {title} 完成: {len(result['rows'])} 行 × {len(result['headers'])} 列")
-    return result
+                if data.get("headers") and data.get("rows"):
+                    # 检测截断
+                    if _detect_truncated_cells(data["rows"], md_text):
+                        if attempt < 2:
+                            print(f"    [截断检测] 第 {attempt + 1}/3 次输出疑似截断，重试")
+                            continue
+                        else:
+                            print(f"    [截断检测] 3次重试后仍有截断，使用最后一次结果")
+                    return {"headers": data["headers"], "rows": data["rows"]}
+            raise RuntimeError(f"归并无有效表格: {raw[:200]!r}")
+        except Exception as e:
+            if attempt < 2:
+                print(f"    [归并重试] 第 {attempt + 1}/3: {e}")
+            else:
+                raise
+    return {"headers": [], "rows": []}
 
 
-def _merge_md_tables_semantically(title: str, number: str, md_texts: List[str]) -> Dict[str, Any]:
-    """把 MD 表格分段交给 LLM 归并：序号合并+排序+跨页连接+合并单元格回填。
+def _merge_md_tables(title: str, number: str, md_parts: List[str]) -> Dict[str, Any]:
+    all_md = "\n\n".join(p for p in md_parts if p and p.strip())
+    if not all_md.strip():
+        return {"headers": [], "rows": []}
+    # 大表分段归并：如果输入超过 8000 字符，按页标记分段，先逐段归并再合并
+    if len(all_md) > 8000:
+        return _merge_large_md(title, number, all_md)
+    return _merge_md_once(title, number, all_md)
 
-    超长输入不再硬截断（会丢尾部数据行），改为按行边界切段后滚动归并，
-    每次只给 LLM「当前已归并结果 + 新一段」，控制上下文长度的同时不丢行。
-    """
-    if not md_texts:
-        return {}
-    joined = "\n\n".join(md_texts)
-    chunks = _split_long_md(joined, 6000)
-    if not chunks:
-        return {}
-    if len(chunks) == 1:
-        return _merge_md_once(title, number, chunks[0])
-    # 滚动归并
-    acc_md = chunks[0]
-    result: Dict[str, Any] = {}
-    for i, ch in enumerate(chunks[1:], start=2):
-        print(f"  [归并] 表{number} 分段归并 {i}/{len(chunks)}（本段 {len(ch)} 字符）")
-        result = _merge_md_once(title, number, acc_md + "\n\n" + ch)
-        if not result:
-            # 本段归并失败：原始续接，避免丢数据，继续下一段
-            acc_md = acc_md + "\n\n" + ch
+
+def _merge_large_md(title: str, number: str, all_md: str) -> Dict[str, Any]:
+    """大表分段归并：按页标记（== 第 N 页 ==）拆分，逐段归并，再合并结果。"""
+    # 按 == 第 N 页 == 拆分
+    page_parts = re.split(r"(?=== 第 \d+ 页 ==)", all_md)
+    page_parts = [p.strip() for p in page_parts if p.strip()]
+    if len(page_parts) <= 1:
+        return _merge_md_once(title, number, all_md)
+    print(f"  [大表分段] 表{number} 输入 {len(all_md)} 字符，拆分为 {len(page_parts)} 段")
+
+    # 逐段归并
+    merged_results = []
+    for i, part in enumerate(page_parts):
+        if not part.strip():
             continue
-        acc_md = _table_to_markdown(result["headers"], result["rows"])
-    if result:
+        print(f"    [大表分段] 归并第 {i+1}/{len(page_parts)} 段（{len(part)} 字符）...")
+        result = _merge_md_once(title, number, part)
+        if result.get("headers") and result.get("rows"):
+            merged_results.append(result)
+
+    if not merged_results:
+        return {"headers": [], "rows": []}
+    if len(merged_results) == 1:
+        return merged_results[0]
+
+    # 合并多段结果：取第一段表头，后续段去掉表头续接
+    final_headers = merged_results[0]["headers"]
+    final_rows = list(merged_results[0]["rows"])
+    for seg in merged_results[1:]:
+        seg_rows = seg.get("rows", [])
+        for row in seg_rows:
+            # 列数对齐
+            while len(row) < len(final_headers):
+                row.append("")
+            if len(row) > len(final_headers):
+                overflow = [str(c).strip() for c in row[len(final_headers):] if str(c).strip()]
+                if overflow:
+                    row[len(final_headers) - 1] = str(row[len(final_headers) - 1]) + "；" + "；".join(overflow)
+                row = row[:len(final_headers)]
+            final_rows.append(row[:len(final_headers)])
+    print(f"  [大表分段] 合并完成：{len(final_rows)} 行")
+    return {"headers": final_headers, "rows": final_rows}
+
+
+def _extract_table_from_ocr(block: Dict[str, str], ocr_md: str) -> Dict[str, Any]:
+    title = block.get("title") or "未命名表"
+    number = block.get("number") or ""
+    merged = _merge_md_tables(title, number, [ocr_md])
+    table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
+    if merged.get("headers") and merged.get("rows"):
+        headers = [str(h).strip() for h in merged["headers"]]
+        rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
+        result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
         return result
-    # 滚动过程中全部失败，最后兜底整体归并一次
-    return _merge_md_once(title, number, joined)
+    parsed = _parse_markdown_table(ocr_md)
+    if parsed:
+        data = parsed[0]
+        headers = [str(x).strip() for x in (data.get("headers") or [])]
+        rows = [[("" if c is None else str(c)) for c in r] for r in (data.get("rows") or [])]
+        if headers and rows:
+            result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
+            return result
+    raise RuntimeError(f"表{number} OCR 归并失败")
 
 
-def _extract_table_literal(block: Dict[str, str], pdf_path: str = "") -> Dict[str, Any]:
-    """把一个表格块还原为二维表格：返回 {table_name, headers, rows}。
-
-    文本层有数据时走 LLM 语义归并；文本层无数据（图片型表格）时走 OCR 通道。
-    """
+def _extract_table_literal(block: Dict[str, str]) -> Dict[str, Any]:
     title = block.get("title") or "未命名表"
     number = block.get("number") or ""
     content = block.get("content") or ""
-
-    # 表1 按文档区分：DL/T 1684 的「停电检修时间」、DL/T 2840 的「电磁兼容性能要求」。
-    # 二者文本层都按列优先转置抽取，LLM 还原常把状态名/合并单元格父项误当表头，
-    # 导致错位。内容固定且短，此处按源文档原文确定性重建。
-    # 仅凭 number=="1" 无法区分两份文档，必须以标题关键词判定，避免串文档错配。
-    if title and "停电检修时间" in title:
-        _t1_headers = ["设备状态", "推荐检修时间"]
-        _t1_rows = [
-            ["正常状态", "正常周期或延长一年"],
-            ["注意状态", "不大于正常周期"],
-            ["异常状态", "适时安排"],
-            ["严重状态", "尽快安排"],
-        ]
-        print(f"  [表格] 「{title}」(表{number}) 为设备状态→检修时间映射表，按原文确定性重建 4 行")
-        return {
-            "table_name": _sanitize_table_name(f"表{number} {title}".strip()),
-            "table_number": number,
-            "headers": _t1_headers,
-            "rows": _t1_rows,
-        }
-
-    if title and "电磁兼容" in title and "性能要求" in title:
-        _t1_headers = ["试验对象", "试验项目", "参考标准及试验等级", "试验结果的评定"]
-        _t1_judge = "试验时，功能或性能暂时丧失或降低，但在骚扰停止后能自行恢复，无需操作者干预"
-        _t1_rows = [
-            ["测试仪器", "静电放电抗扰度", "GB/T 17626.2，4级", _t1_judge],
-            ["测试仪器", "射频电磁场辐射抗扰度", "GB/T 17626.3，3级", _t1_judge],
-            ["测试仪器", "射频场感应的传导骚扰抗扰度", "GB/T 17626.6，3类", _t1_judge],
-            ["测试仪器", "工频磁场抗扰度", "GB/T 17626.8，5级", _t1_judge],
-        ]
-        print(f"  [表格] 「{title}」(表{number}) 为电磁兼容性能要求表，按原文确定性重建 4 行")
-        return {
-            "table_name": _sanitize_table_name(f"表{number} {title}".strip()),
-            "table_number": number,
-            "headers": _t1_headers,
-            "rows": _t1_rows,
-        }
-
-    # 文本层无数据（图片型表格）→ OCR 通道
-    if pdf_path and not _table_block_has_data(block):
-        print(f"  [表格] 「{title}」(表{number}) 文本层无数据，转入视觉 OCR…")
-        return _extract_table_via_ocr(block, pdf_path)
-
-    full_name = (f"表{number} {title}".strip() if number and title and title != f"表{number}"
-                 else (f"表{number}" if number else title))
-
-    # 文本层有数据：第一阶段——只做忠实还原，把乱序文本层还原成 Markdown，
-    # 不做列类型判定、不做语义归并、不做子列拆分（这些交给第二阶段统一处理）。
-    _transient_keywords = ("timeout", "timed out", "timedout", "ConnectionError",
-                            "Connection", "JSONDecodeError", "Expecting value",
-                            "json", "URLError", "HTTPError", "ReadTimeout",
-                            "RemoteDisconnected", "ConnectionReset")
-    _max_text_retries = 2
-    for _retry in range(_max_text_retries + 1):
-        try:
-            md = _reconstruct_md_from_text_block(title, number, content)
-            if md:
-                merged = _merge_md_tables_semantically(title, number, [md])
-                if merged and merged.get("headers") and merged.get("rows"):
-                    headers = [str(h).strip() for h in merged["headers"]]
-                    rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
-                    _result = {
-                        "table_name": _sanitize_table_name(full_name),
-                        "table_number": number,
-                        "headers": headers,
-                        "rows": rows,
-                    }
-                    _validate_table_quality(_result, block)
-                    return _result
-            # md 为空或 merged 为空——内容质量问题，可以切 OCR
-            break
-        except Exception as e:
-            _err_str = str(e)
-            # 质量校验 raise 的不切 OCR（数据问题不是瞬态错误，切 OCR 只会产出更差的数据）
-            if "质量校验失败" in _err_str:
-                raise
-            # 瞬态错误（timeout/JSON/网络）→ 重试文本路径，不切 OCR
-            _is_transient = any(kw.lower() in _err_str.lower() for kw in _transient_keywords)
-            if _is_transient and _retry < _max_text_retries:
-                print(f"  [表格] 「{title}」(表{number}) 文本还原瞬态错误({e})，重试 {_retry+1}/{_max_text_retries}…")
-                continue
-            # 非瞬态错误（内容质量问题、空结果等）→ 切 OCR
-            print(f"  [表格] 「{title}」(表{number}) 文本层还原失败({e})，回退视觉 OCR…")
-            break
-    # 文本层还原失败 → OCR 通道兜底
-    if pdf_path:
-        return _extract_table_via_ocr(block, pdf_path)
-    raise RuntimeError(f"表格「{title}」字面还原失败")
+    merged = _merge_md_tables(title, number, [content])
+    table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
+    if merged.get("headers") and merged.get("rows"):
+        headers = [str(h).strip() for h in merged["headers"]]
+        rows = [[("" if c is None else str(c)) for c in r] for r in merged["rows"]]
+        result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
+        return result
+    parsed = _parse_markdown_table(content)
+    if parsed:
+        data = parsed[0]
+        headers = [str(x).strip() for x in (data.get("headers") or [])]
+        rows = [[("" if c is None else str(c)) for c in r] for r in (data.get("rows") or [])]
+        if headers and rows:
+            result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
+            return result
+    raise RuntimeError(f"表{number} 文本归并失败")
 
 
-def _reconstruct_md_from_text_block(title: str, number: str, content: str) -> str:
-    """第一阶段：把文本层抽取的（可能乱序/转置）片段忠实还原成 Markdown 表格。
-
-    只做识别还原，不做语义归纳、列类型判定、子列拆分；超长时按行边界切段还原后拼接。
+def _merge_rows_by_seq(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """如果表格第一列是序号列，按序号进行确定性语义归并：
+    - 相同序号的多行合并为一行
+    - 子序号（3.1→3）归并到父序号
+    - float 序号归一化（3.0→3）
+    - 连续同关键列值的行归并（处理LLM给合并单元格子行分配新序号的情况）
+    各列差异内容用分号拼接。
     """
-    if not content or not content.strip():
-        return ""
-    chunks = _split_long_md(content, 10000) if len(content) > 10000 else [content]
-    md_parts: List[str] = []
-    for ci, ch in enumerate(chunks, 1):
-        prompt = f"""你是标准规范类文档表格识别专家。下面是表格（表{number} {title}）从 PDF 文本层抽取出的文字片段，可能因转置、跨页、翻转页而错乱。请只做忠实还原，把片段还原成一个 Markdown 表格（| 分隔），不要 JSON、不要解释、不要代码围栏。
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers or not rows or len(headers) < 2:
+        return ti
 
-还原要求：
-1. 先还原「表头字段 + 对应取值」的行列对应关系，表头列数与每行单元格数一致；
-2. 有多少行就保持多少行，不删除、不合并、不新增序号或行；跨页拆分的内容补齐为一行；
-3. 表头以片段中实际出现的表头文字为准，不预设列数、不套用模板；多级表头（父项-子项）按「父项｜子项」拼成完整列名；
-4. 单元格内容忠实保留，数值、阈值、判据不得改写；对 PDF 字体映射导致的确定性错字按电力行业术语修正：'泊'→'油'（渗泊/漏泊/泊位/泊温/储泊柜/绝缘泊/补泊）、'套营'→'套管'、'检修z'或'检修2'→'检修：'、'DLlT'→'DL/T'、'B工2'→'B.2.2'；
-5. 「劣化程度」列取值域为 I/II/III/IV，出现 N/W/U/rn 等罗马数字误识时，按该行劣化档位由低到高的顺序还原为 I~IV，不要照抄错误字符；
-6. 忽略由表格竖线/图形转成的纯符号噪声行（如'卡一一一一'、'•---'、'户---'、'Z、~'、'1至行'、'Jé行'等），它们不是数据，不要填入任何单元格；
-7. 忽略水印文字、页眉、页脚、页码；
-8. 直接输出 Markdown 表格本身，第二行是分隔线（| --- | --- |），禁止 ``` 围栏。
+    first_header = str(headers[0]).strip()
+    # 判断第一列是否为序号列：表头含"序号"/"编号"或大部分首单元格为纯数字
+    is_seq_col = "序号" in first_header or "编号" in first_header
+    if not is_seq_col:
+        num_count = sum(1 for r in rows if r and re.match(r"^\d{1,4}(\.\d+)?$", str(r[0]).strip()))
+        if num_count < len(rows) * 0.5:
+            return ti
+        is_seq_col = True
 
-文字片段如下：
----
-{ch}
----"""
-        for attempt in range(1, 4):
-            try:
-                response = call_tool(
-                    "llm_generate",
-                    prompt=prompt,
-                    temperature=0.0,
-                    max_tokens=16000,
-                )
-                if not isinstance(response, dict) or "error" in response:
-                    raise RuntimeError(f"llm_generate 失败: {response!r}")
-                raw = str(response.get("content") or "").strip()
-                if not raw:
-                    raise RuntimeError("llm_generate 返回空 content")
-                parsed = _parse_markdown_table(raw)
-                if not parsed:
-                    raise RuntimeError(f"还原未输出可解析的 Markdown 表格: {raw[:300]!r}")
-                # 拼回 MD 文本，供统一下一阶段归并
-                md_parts.append(_table_to_markdown(
-                    [str(x).strip() for x in (parsed[0].get("headers") or [])],
-                    [[("" if c is None else str(c)) for c in r] for r in (parsed[0].get("rows") or [])],
-                ))
-                print(f"  [文字还原] 表{number} {title} 分段 {ci}/{len(chunks)} 完成")
-                break
-            except Exception as e:
-                print(f"  [文字还原] 表{number} {title} 分段 {ci}/{len(chunks)} 第 {attempt}/3 次失败: {e}")
-                if attempt == 3:
-                    return ""
-    return "\n\n".join(md_parts)
+    # 归一化序号值：float "3.0" → "3"
+    def _norm_seq(val):
+        s = str(val).strip()
+        if re.match(r"^\d+\.0+$", s):
+            return str(int(float(s)))
+        return s
 
+    # 提取父序号： "3.1" → "3", "3" → "3"
+    def _parent_seq(val):
+        s = _norm_seq(val)
+        m = re.match(r"^(\d+)\.\d+$", s)
+        return m.group(1) if m else s
 
-def _table_rows_to_records(table_info: Dict[str, Any], source_document: str) -> List[Dict[str, Any]]:
-    """把字面表格（headers + rows）转成可写入数据源的记录列表（每行一个 dict）。"""
-    headers = table_info.get("headers") or []
-    rows = table_info.get("rows") or []
-    records: List[Dict[str, Any]] = []
+    def _merge_into(existing, row):
+        """将 row 的内容合并到 existing 行，差异内容用分号拼接"""
+        for ci in range(1, len(headers)):
+            new_val = str(row[ci]).strip() if ci < len(row) else ""
+            old_val = str(existing[ci]).strip() if ci < len(existing) else ""
+            if new_val and new_val != old_val:
+                if old_val:
+                    # 按分号（中英文）拆段去重后拼接，避免同段重复粘贴
+                    parts = [p.strip() for p in re.split(r"[；;]", old_val) if p.strip()]
+                    for piece in re.split(r"[；;]", new_val):
+                        piece = piece.strip()
+                        if piece and piece not in parts:
+                            parts.append(piece)
+                    existing[ci] = "；".join(parts)
+                else:
+                    existing[ci] = new_val
+
+    # 步骤1: 按父序号分组归并（处理子序号 3.1→3 和完全相同序号）
+    merged_rows = []
+    seq_map = {}  # parent_seq -> index in merged_rows
     for row in rows:
-        if not isinstance(row, list):
-            row = [row]
-        rec: Dict[str, Any] = {}
-        for idx, h in enumerate(headers):
-            cell = row[idx] if idx < len(row) else ""
-            rec[h] = "" if cell is None else str(cell)
-        # 若某行单元格数多于表头（异常），把多余列塞进附加列，避免数据丢失
-        if len(row) > len(headers):
-            rec["_extra_cells"] = json.dumps(row[len(headers):], ensure_ascii=False)
+        raw_seq = str(row[0]).strip() if row else ""
+        parent = _parent_seq(raw_seq)
+        if parent not in seq_map:
+            new_row = list(row)
+            new_row[0] = parent  # 归一化序号
+            merged_rows.append(new_row)
+            seq_map[parent] = len(merged_rows) - 1
+        else:
+            idx = seq_map[parent]
+            _merge_into(merged_rows[idx], row)
+
+    original_count = len(rows)
+
+    if len(merged_rows) < original_count:
+        print(f"  [序号归并] {original_count} 行 → {len(merged_rows)} 行（按序号合并）")
+
+    result = dict(ti)
+    result["rows"] = merged_rows
+    return result
+
+
+def _filter_polluted_rows(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """过滤 LLM 推理草稿污染行。
+    污染行特征：
+    - 首列含 markdown 标记（**ID、** 等）
+    - 首列匹配 '数字.  **ID' 模式（LLM 推理草稿编号）
+    - 任意列含推理文本标记（'这可能'、'(原文混合'、'推测为'、'数据提取错误'、'(原文截断'）
+    """
+    rows = ti.get("rows") or []
+    if not rows:
+        return ti
+    pollution_patterns = [
+        re.compile(r'\*\*ID\b', re.IGNORECASE),
+        re.compile(r'^\d+\.\s+\*\*'),
+        re.compile(r'这可能'),
+        re.compile(r'\(原文混合'),
+        re.compile(r'推测为'),
+        re.compile(r'数据提取错误'),
+        re.compile(r'\(原文截断'),
+    ]
+    clean_rows = []
+    removed = 0
+    for row in rows:
+        is_polluted = False
+        for cell in row:
+            cell_str = str(cell) if cell else ""
+            for pat in pollution_patterns:
+                if pat.search(cell_str):
+                    is_polluted = True
+                    break
+            if is_polluted:
+                break
+        if is_polluted:
+            removed += 1
+        else:
+            clean_rows.append(row)
+    if removed > 0:
+        print(f"  [过滤] 移除 {removed} 行 LLM 推理草稿污染行（{len(rows)}→{len(clean_rows)}）")
+    result = dict(ti)
+    result["rows"] = clean_rows
+    return result
+
+
+def _clean_placeholder_cells(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """清理单元格中的 LLM 臆测占位文本。"""
+    placeholder_patterns = [
+        re.compile(r'\(原文截断[^)]*\)'),
+        re.compile(r'\(推测[^)]*\)'),
+        re.compile(r'\(原文混合[^)]*\)'),
+    ]
+    rows = ti.get("rows") or []
+    cleaned = 0
+    for row in rows:
+        for ci in range(len(row)):
+            val = str(row[ci]) if row[ci] else ""
+            for pat in placeholder_patterns:
+                new_val = pat.sub("", val).strip()
+                if new_val != val:
+                    row[ci] = new_val
+                    cleaned += 1
+    if cleaned > 0:
+        print(f"  [清理] 清理 {cleaned} 个占位文本单元格")
+    return ti
+
+
+def _forward_fill_merged_cells(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """对合并单元格列（垂直合并）进行前向填充：列值为空时用上方最近非空值补全。"""
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers or not rows or len(headers) < 2:
+        return ti
+    fill_cols = []
+    for ci in range(len(headers)):
+        col_vals = [str(r[ci]).strip() if ci < len(r) else "" for r in rows]
+        non_empty = [v for v in col_vals if v]
+        if not col_vals:
+            continue
+        empty_ratio = 1.0 - len(non_empty) / len(col_vals)
+        header = str(headers[ci]).strip()
+        if "序号" in header or "编号" in header:
+            continue
+        if 0.1 <= empty_ratio <= 0.9 and non_empty:
+            fill_cols.append(ci)
+    if not fill_cols:
+        return ti
+    filled_count = 0
+    for ci in fill_cols:
+        for row in rows:
+            while len(row) <= ci:
+                row.append("")
+        # 1) 向下填充：空值用上方最近非空值补全
+        last_val = ""
+        for ri in range(len(rows)):
+            val = str(rows[ri][ci]).strip()
+            if val:
+                last_val = val
+            elif last_val:
+                rows[ri][ci] = last_val
+                filled_count += 1
+        # 2) 向上回填：合并单元格段首整段为空（OCR 漏打印父值），
+        #    用该列下方第一个非空值回填开头的连续空段
+        first_val = ""
+        for ri in range(len(rows)):
+            v = str(rows[ri][ci]).strip()
+            if v:
+                first_val = v
+                break
+        if first_val:
+            for ri in range(len(rows)):
+                if str(rows[ri][ci]).strip():
+                    break
+                rows[ri][ci] = first_val
+                filled_count += 1
+    if filled_count > 0:
+        print(f"  [合并单元格] 前向填充 {filled_count} 个空值（{len(fill_cols)} 列）")
+    result = dict(ti)
+    result["rows"] = rows
+    return result
+
+
+def _merge_duplicate_headers(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """合并重复列名：当多个列名相同时（多级表头展平不彻底），将对应列内容按行拼接。"""
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers:
+        return ti
+    col_positions = {}
+    for ci, h in enumerate(headers):
+        h_clean = str(h).strip()
+        if h_clean:
+            col_positions.setdefault(h_clean, []).append(ci)
+    dup_groups = {h: positions for h, positions in col_positions.items() if len(positions) > 1}
+    if not dup_groups:
+        return ti
+    keep_positions = set()
+    remove_positions = set()
+    for h, positions in dup_groups.items():
+        keep_positions.add(positions[0])
+        remove_positions.update(positions[1:])
+    for ci in range(len(headers)):
+        h_clean = str(headers[ci]).strip()
+        if h_clean not in dup_groups:
+            keep_positions.add(ci)
+    new_headers = [headers[ci] for ci in sorted(keep_positions)]
+    new_rows = []
+    for row in rows:
+        new_row = []
+        for ci in sorted(keep_positions):
+            h_clean = str(headers[ci]).strip() if ci < len(headers) else ""
+            same_col_positions = [ci]
+            if h_clean in dup_groups:
+                same_col_positions = dup_groups[h_clean]
+            vals = []
+            for pos in same_col_positions:
+                if pos < len(row):
+                    v = str(row[pos]).strip()
+                    if v:
+                        vals.append(v)
+            new_row.append("；".join(vals) if vals else (row[ci] if ci < len(row) else ""))
+        new_rows.append(new_row)
+    print(f"  [子列拼接] 合并 {len(dup_groups)} 组重复列名")
+    result = dict(ti)
+    result["headers"] = new_headers
+    result["rows"] = new_rows
+    return result
+
+
+def _normalize_column_count(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """确保每行列数与表头列数一致：缺失列补空，多余列合并到最后一列。"""
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers:
+        return ti
+    ncols = len(headers)
+    normalized = []
+    adjusted = 0
+    for row in rows:
+        while len(row) < ncols:
+            row.append("")
+            adjusted += 1
+        if len(row) > ncols and ncols > 0:
+            overflow = [str(c).strip() for c in row[ncols:] if str(c).strip()]
+            if overflow:
+                last_val = str(row[ncols - 1]).strip() if row[ncols - 1] else ""
+                merged = last_val + "；" + "；".join(overflow) if last_val else "；".join(overflow)
+                row[ncols - 1] = merged
+                adjusted += 1
+            row = row[:ncols]
+        normalized.append(row)
+    if adjusted > 0:
+        print(f"  [列数归一] 调整 {adjusted} 行到 {ncols} 列")
+    result = dict(ti)
+    result["rows"] = normalized
+    return result
+
+
+def _table_rows_to_records(ti: Dict[str, Any], source_document: str) -> List[Dict[str, Any]]:
+    ti = _filter_polluted_rows(ti)
+    ti = _clean_placeholder_cells(ti)
+    ti = _forward_fill_merged_cells(ti)
+    ti = _merge_rows_by_seq(ti)
+    ti = _merge_duplicate_headers(ti)
+    ti = _normalize_column_count(ti)
+    # 表头归一化：去除字间空格（如「劣 化 情 况」→「劣化情况」），统一跨表列名
+    ti["headers"] = [re.sub(r"\s+", "", str(h)) for h in (ti.get("headers") or [])]
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 确保序号列保持字符串格式（避免 Excel 自动转为数字/浮点）
+    seq_header = ""
+    if headers:
+        first_header = str(headers[0]).strip()
+        if "序号" in first_header or "编号" in first_header:
+            seq_header = first_header
+    records = []
+    for row in rows:
+        rec = {}
+        for ci, h in enumerate(headers):
+            val = "" if ci >= len(row) or row[ci] is None else str(row[ci])
+            # 序号列强制保持字符串格式
+            if h == seq_header and val:
+                val = val.strip()
+            rec[str(h)] = val
         rec["source_document"] = source_document
-        rec["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rec["updated_at"] = now
         records.append(rec)
     return records
 
 
-def _fix_cross_column_mismatches(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
-    """修正「状态量名称」列与「劣化情况」列之间的化学式-中文名称矛盾。
+def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], source_text: str, table_original_titles: Dict[str, str] = None) -> int:
+    """按行/列修复 check_skill_rules 发现的问题（不整表重写）。
 
-    LLM 归并偶会把气体化学式写错（如名称列 C2H4 但情况列写「甲烷含量」）。
-    甲烷的化学式必为 CH4，因此当「劣化情况」明确出现「甲烷」而名称列出现
-    C2H4 时，名称列是错字，确定性替换为 CH4；反向同理。仅做化学常识级修正，
-    不引入其他语义改写。
+    根据 rule_id 和 issue 描述定位问题行列，只修有问题的单元格：
+    - SKILL-DQ-001 表名问题：用原始表标题替换
+    - SKILL-DQ-002 列错位/列数不一致：对齐列数（补空/合并多余列）
+    - SKILL-DQ-003 序号未归并：重新执行序号归并
+    - SKILL-DQ-004 合并单元格未补全：重新执行前向填充
+    - SKILL-DQ-005 子列未拼接：重新执行重复列名合并
+    - 内容截断/OCR漏行等确定性修复不了的问题：调 LLM 按行修复（不整表重写）
+    返回修复计数。
     """
-    if not headers or not rows:
-        return rows
-    name_idx = None
-    cond_idx = None
-    for i, h in enumerate(headers):
-        hs = str(h)
-        if name_idx is None and "名称" in hs:
-            name_idx = i
-        if cond_idx is None and ("情况" in hs or "依据" in hs or "判据" in hs):
-            cond_idx = i
-    if name_idx is None or cond_idx is None:
-        return rows
-    new_rows = []
-    for r in rows:
-        r = list(r)
-        name = str(r[name_idx]).strip() if name_idx < len(r) else ""
-        cond = str(r[cond_idx]).strip() if cond_idx < len(r) else ""
-        if name and cond:
-            # 名称含 C2H4（乙烯）但情况写「甲烷」→ 名称应为 CH4
-            if "C2H4" in name and "甲烷" in cond and "CH4" not in name:
-                name = name.replace("C2H4", "CH4")
-                r[name_idx] = name
-            # 名称含 CH4（甲烷）但情况写「乙烯」→ 名称应为 C2H4
-            if "CH4" in name and "乙烯" in cond and "C2H4" not in name:
-                name = name.replace("CH4", "C2H4")
-                r[name_idx] = name
-        new_rows.append(r)
-    return new_rows
+    fixed_count = 0
+    if table_original_titles is None:
+        table_original_titles = {}
 
+    # 按表分组问题
+    issues_by_tbl = {}
+    for tbl, iss in issues:
+        issues_by_tbl.setdefault(tbl, []).append(iss)
 
-def _clean_repeated_header_tokens(headers: List[str]) -> List[str]:
-    """修正表头「状态量状态量名称」这类重复拼接。
-
-    多级表头归并时父项「状态量」被重复拼入子项，产生「评价状态量状态量名称」。
-    这里去掉相邻重复的词片段，恢复为「评价状态量名称」等规范形式。
-    """
-    cleaned = []
-    for h in headers:
-        h = str(h)
-        # 去重相邻重复的词（按「状态量」等常见词切分后连续重复则合并）
-        for token in ("状态量", "检修", "评价", "名称", "分类"):
-            doubled = token + token
-            while doubled in h:
-                h = h.replace(doubled, token)
-        cleaned.append(h)
-    return cleaned
-
-
-_STANDARD_DETAIL_HEADERS = ["序号", "分类", "状态量名称", "劣化程度", "劣化情况", "检修内容和类别"]
-
-
-def _is_detail_table(headers: List[str]) -> bool:
-    """判断是否为附录 A 明细表（含劣化程度/劣化情况/检修内容等列）。"""
-    hs = "".join(str(h) for h in headers)
-    return any(k in hs for k in ("劣化程度", "劣化情况", "检修内容"))
-
-
-def _is_roman_only(s: str) -> bool:
-    """判断字符串是否只由罗马数字档位（I/II/III/IV）及其分隔符组成。"""
-    s = (s or "").strip()
-    if not s:
-        return False
-    parts = [p.strip() for p in re.split(r"[;；~～,，/]", s) if p.strip()]
-    if not parts:
-        return False
-    return all(re.fullmatch(r"(I{1,3}|IV)", p.upper()) for p in parts)
-
-
-def _normalize_semicolons(s: str) -> str:
-    """清理首尾分号及连续分号产生的空子项。"""
-    s = (s or "").strip()
-    s = re.sub(r"[;；]{2,}", "；", s)
-    s = s.strip(";； ")
-    return s
-
-
-def _infer_category(name: str, degree: str, cond: str) -> str:
-    """根据状态量名称/劣化描述推断父级分类（运行/检修试验）。"""
-    blob = f"{name} {degree} {cond}"
-    test_kw = ("绝缘电阻", "二次回路", "回路电阻", "操作电压", "分合闸线圈",
-               "机械特性", "同期", "分合闸时间", "速度", "微水", "湿度",
-               "分解产物", "局部放电", "试验", "防跳", "三相不一致",
-               "SF6气体湿度", "SF6气体分解")
-    return "检修试验" if any(k in blob for k in test_kw) else "运行"
-
-
-def _join_nonempty(a: str, b: str) -> str:
-    a = (a or "").strip()
-    b = (b or "").strip()
-    if a and b:
-        return a + "；" + b
-    return a or b
-
-
-def _fix_appendix_column_alignment(headers: List[str], rows: List[List[str]]) -> tuple:
-    """修复 GIS 附录明细表的列错位/表头粘连（确定性兜底）。
-
-    附录 A.1~A.7 明细表固定 6 业务列：
-    序号 | 分类 | 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别
-
-    OCR/LLM 归并常丢失垂直合并的「分类」父列（运行/检修试验），导致两种情况：
-      1) 左移型：分类列被名称顶替、名称列填了罗马数字（劣化程度）……
-      2) 缺列型：表头粘连（序号分类/序号 分类），数据缺分类列。
-    此函数做确定性修复：拆分粘连表头/单元格、整体右移、分类回填、分号清理。
-    """
-    if not headers or not rows:
-        return headers, rows
-    if not _is_detail_table(headers):
-        return headers, rows
-    headers = [str(h).strip() for h in headers]
-    rows = [list(r) for r in rows]
-
-    STD = list(_STANDARD_DETAIL_HEADERS)
-
-    # 1) 展开粘连表头
-    expanded = []
-    for h in headers:
-        if re.fullmatch(r"序号[\s　]*分类|序号[\s　]*类别", h):
-            expanded.extend(["序号", "分类"])
-        elif re.fullmatch(r"状态量[\s　]*状态量名称", h):
-            expanded.append("状态量名称")
-        elif h:
-            expanded.append(h)
-    headers = expanded
-
-    # 2) 若缺「分类」列，在「序号」列后插入空列
-    if not any(("分类" in h or "类别" in h) for h in headers):
-        seq_i = next((i for i, h in enumerate(headers) if "序号" in h or "编号" in h), 0)
-        headers.insert(seq_i + 1, "分类")
-        for r in rows:
-            r.insert(seq_i + 1, "")
-
-    # 3) 统一行宽
-    n = len(headers)
-    for r in rows:
-        while len(r) < n:
-            r.append("")
-        if len(r) > n:
-            r[:] = r[:n]
-
-    seq_i = next((i for i, h in enumerate(headers) if "序号" in h or "编号" in h), 0)
-    cat_i = next((i for i, h in enumerate(headers) if "分类" in h or "类别" in h), None)
-    name_i = next((i for i, h in enumerate(headers) if "名称" in h), None)
-    degree_i = next((i for i, h in enumerate(headers) if "程度" in h), None)
-    cond_i = next((i for i, h in enumerate(headers) if "情况" in h or "依据" in h or "判据" in h), None)
-    repair_i = next((i for i, h in enumerate(headers) if "检修" in h), None)
-
-    # 4) 分离「序号」列粘连的名称（如 "1 SF6压力表及密度继电器"）
-    if name_i is not None:
-        for r in rows:
-            seq_cell = str(r[seq_i]).strip() if seq_i < len(r) else ""
-            m = re.match(r"^(\d{1,4})[\s　]+(.+)$", seq_cell)
-            if m:
-                r[seq_i] = m.group(1)
-                if not str(r[name_i]).strip():
-                    r[name_i] = m.group(2)
-
-    # 5) 左移型检测：逐行判断——名称列为纯罗马数字（实为劣化程度）即该行左移，
-    #    对该行整体右移一格、还原真实状态量名称并按名称回填父级分类（混合表逐行修复）
-    if name_i is not None and cat_i is not None:
-        shifted = 0
-        for r in rows:
-            if name_i < len(r) and _is_roman_only(str(r[name_i])):
-                old = list(r)
-                source_name = str(old[cat_i]).strip() if cat_i < len(old) else ""
-                source_degree = str(old[name_i]).strip() if name_i < len(old) else ""
-                source_cond = str(old[degree_i]).strip() if degree_i is not None and degree_i < len(old) else ""
-                # 名称列放回真实状态量名称；劣化程度列放回罗马档位
-                r[name_i] = source_name
-                if degree_i is not None:
-                    r[degree_i] = source_degree
-                # 后续列整体右移：原程度→情况、原情况→检修
-                if cond_i is not None and degree_i is not None:
-                    r[cond_i] = source_cond
-                if repair_i is not None and cond_i is not None:
-                    r[repair_i] = _join_nonempty(
-                        str(old[cond_i]).strip() if cond_i < len(old) else "",
-                        str(old[repair_i]).strip() if repair_i < len(old) else "",
-                    )
-                # 分类列按状态量名称+劣化描述推断父级分类（运行/检修试验/其他）
-                r[cat_i] = _infer_category(source_name, source_degree, source_cond)
-                shifted += 1
-        if shifted:
-            print(f"  [列对齐] 检测到明细表 {shifted} 行左移（名称列为罗马数字），已逐行右移并回填分类列")
-
-    # 6) 分类列空值回填（缺列型：合并单元格值未回填）
-    if cat_i is not None:
-        for r in rows:
-            if not str(r[cat_i]).strip():
-                nm = str(r[name_i]).strip() if name_i is not None and name_i < len(r) else ""
-                dg = str(r[degree_i]).strip() if degree_i is not None and degree_i < len(r) else ""
-                cd = str(r[cond_i]).strip() if cond_i is not None and cond_i < len(r) else ""
-                r[cat_i] = _infer_category(nm, dg, cd)
-
-    # 7) 分号清理（所有非序号文本列）
-    for r in rows:
-        for i in range(len(r)):
-            if i != seq_i:
-                r[i] = _normalize_semicolons(str(r[i]))
-
-    # 7.5) 检修内容列确定性清理：去除「-」占位符、孤立截断残段、首尾空分号
-    if repair_i is not None:
-        for r in rows:
-            if repair_i >= len(r):
-                continue
-            text = str(r[repair_i])
-            # 去掉独立的「-」占位符与「; -」结尾（LLM 截断残留）
-            text = re.sub(r"(^|[;；])\s*[-—]\s*([;；]|$)", r"\1", text)
-            text = re.sub(r"[;；]\s*$", "", text)
-            text = text.strip()
-            # 孤立截断残段（如只剩「B」「B类检修」无任何动作）→ 置空待后续兜底
-            if re.fullmatch(r"[A-D]类?检修?", text):
-                text = ""
-            r[repair_i] = text
-
-
-    # 8) 表头对齐到标准 6 列名（仅当角色顺序完全匹配时）
-    if len(headers) == len(STD):
-        roles = []
-        for h in headers:
-            if "序号" in h:
-                roles.append("seq")
-            elif "分类" in h or "类别" in h:
-                roles.append("cat")
-            elif "名称" in h:
-                roles.append("name")
-            elif "程度" in h:
-                roles.append("degree")
-            elif "情况" in h or "依据" in h:
-                roles.append("cond")
-            elif "检修" in h:
-                roles.append("repair")
-            else:
-                roles.append("other")
-        if roles == ["seq", "cat", "name", "degree", "cond", "repair"]:
-            headers = list(STD)
-
-    return headers, rows
-
-
-def _fix_parent_child_column_shift(headers: List[str], rows: List[List[str]]) -> tuple:
-    """检测并修复「父项分类列填了子项内容、子项名称列空」的父子列串位。
-
-    LLM 归并附录明细表时偶把子项（状态量名称）填入父项（分类）列，导致
-    分类列唯一值过多（如 34/37）、名称列大面积空值。检测到该特征时，
-    用规则把「分类列中明显是子项的长描述」回填到名称列，并重建父项分组。
-    """
-    if not headers or not rows:
-        return headers, rows
-    headers = list(headers)
-    rows = [list(r) for r in rows]
-
-    # 定位 分类/名称 两列
-    cat_idx = name_idx = None
-    for i, h in enumerate(headers):
-        hs = str(h)
-        if cat_idx is None and "分类" in hs:
-            cat_idx = i
-        if name_idx is None and "名称" in hs:
-            name_idx = i
-    if cat_idx is None or name_idx is None or cat_idx == name_idx:
-        return headers, rows
-
-    # 特征判断：名称列空值率高（>50%）且分类列非空
-    n = len(rows)
-    name_empty = sum(1 for r in rows if name_idx < len(r) and not str(r[name_idx]).strip())
-    if n == 0 or name_empty / n <= 0.5:
-        return headers, rows
-
-    # 父项集合（修复前快照已知的正确组名）
-    known_groups = (
-        "短路电流、短路次数", "变压器过负荷", "过励磁", "检修试验", "其他",
-        "本体储油柜油位", "本体", "套管", "冷却", "散热", "有载分接开关",
-        "无励磁分接开关", "非电量保护", "在线监测",
-    )
-    new_rows = []
-    for r in rows:
-        r = list(r)
-        cat = str(r[cat_idx]).strip() if cat_idx < len(r) else ""
-        name = str(r[name_idx]).strip() if name_idx < len(r) else ""
-        # 名称列空但分类列有值：分类列很可能填的是子项名称
-        if not name and cat:
-            # 若分类值是已知父项，则保留为父项、名称留空等后续回填
-            if cat in known_groups:
-                new_rows.append(r)
-                continue
-            # 否则视为子项误入父项列：把内容移到名称列，父项留空待回填
-            r[name_idx] = cat
-            r[cat_idx] = ""
-        new_rows.append(r)
-
-    # 父项列空时用上方最近的非空父项值向下回填（合并单元格展开）
-    last_cat = ""
-    for r in new_rows:
-        c = str(r[cat_idx]).strip() if cat_idx < len(r) else ""
-        if c:
-            last_cat = c
-        elif last_cat and (name_idx >= len(r) or not str(r[name_idx]).strip()):
-            r[cat_idx] = last_cat
-    return headers, new_rows
-
-
-def _fix_repair_content_column_shift(headers: List[str], rows: List[List[str]]) -> List[List[str]]:
-    """修正「劣化情况/判断依据」列混入「X 类检修」片段、而「检修内容」列为空的列串位。
-
-    PDF 跨列文本合并时，检修措施文本（如「D 类检修：进行油色谱…」）会被串入
-    劣化情况列并与原判断依据拼接（可能无分隔符）。检测到情况列含「X 类检修」
-    片段且检修内容列为空时，按「X 类检修」起点切分，把检修片段移回检修内容列。
-    """
-    if not headers or not rows:
-        return rows
-    headers = list(headers)
-    rows = [list(r) for r in rows]
-
-    cond_idx = repair_idx = None
-    for i, h in enumerate(headers):
-        hs = str(h)
-        if cond_idx is None and ("情况" in hs or "依据" in hs or "判据" in hs):
-            cond_idx = i
-        if repair_idx is None and "检修内容" in hs:
-            repair_idx = i
-    if cond_idx is None or repair_idx is None or cond_idx == repair_idx:
-        return rows
-
-    repair_start_re = re.compile(r"[A-D]\s*类\s*检修\s*[:：]")
-
-    def _split_repair(text: str):
-        """按「X 类检修」起点切分，返回 (判断依据部分, 检修内容部分)。"""
-        text = text.strip()
-        if not text:
-            return text, ""
-        cond_parts = []
-        repair_parts = []
-        for p in re.split(r"[;；]", text):
-            p = p.strip()
-            if not p:
-                continue
-            m = repair_start_re.search(p)
-            if m:
-                before = p[:m.start()].strip()
-                after = p[m.start():].strip()
-                if before:
-                    cond_parts.append(before)
-                repair_parts.append(after)
-            else:
-                cond_parts.append(p)
-        return "；".join(cond_parts), "；".join(repair_parts)
-
-    new_rows = []
-    for r in rows:
-        r = list(r)
-        cond = str(r[cond_idx]).strip() if cond_idx < len(r) else ""
-        repair = str(r[repair_idx]).strip() if repair_idx < len(r) else ""
-        # 仅当检修内容列为空、且情况列含检修片段时处理
-        if repair or not cond or not repair_start_re.search(cond):
-            new_rows.append(r)
+    for tbl, tbl_issues in issues_by_tbl.items():
+        recs = grouped.get(tbl, [])
+        if not recs:
             continue
-        new_cond, new_repair = _split_repair(cond)
-        if new_repair:
-            r[cond_idx] = new_cond
-            r[repair_idx] = new_repair
-        new_rows.append(r)
-    return new_rows
+        headers = list(recs[0].keys())
+        rule_ids = {iss.get("rule_id", "") for iss in tbl_issues}
+
+        # SKILL-DQ-001: 表名问题 → 用原始表标题替换
+        if "SKILL-DQ-001" in rule_ids:
+            original_title = table_original_titles.get(tbl, "")
+            if original_title and original_title != tbl:
+                # 保留 _records_map 的 key 一致性
+                old_key = tbl
+                new_key = original_title
+                # 避免 key 冲突
+                if new_key not in grouped:
+                    grouped[new_key] = grouped.pop(old_key)
+                    if old_key in table_original_titles:
+                        table_original_titles[new_key] = table_original_titles.pop(old_key)
+                    print(f"  [修复] 表名「{old_key}」→「{new_key}」（原始表标题）")
+                    fixed_count += 1
+                else:
+                    print(f"  [修复] 表名「{old_key}」原始标题「{new_key}」已存在，跳过")
+            else:
+                for iss in tbl_issues:
+                    if iss.get("rule_id") == "SKILL-DQ-001":
+                        print(f"  [修复] 表名「{tbl}」无原始标题可用，描述: {str(iss.get('description',''))[:80]}")
+
+        # SKILL-DQ-002: 列数不一致 → 补空/合并多余列
+        if "SKILL-DQ-002" in rule_ids:
+            _adjusted = 0
+            for rec in recs:
+                while len(list(rec.values())) < len(headers):
+                    rec[f"col_{len(rec)}"] = ""
+                    _adjusted += 1
+                if len(list(rec.values())) > len(headers):
+                    vals = list(rec.values())
+                    overflow = vals[len(headers):]
+                    last_key = list(rec.keys())[len(headers) - 1]
+                    overflow_str = "；".join(str(v) for v in overflow if str(v).strip())
+                    if overflow_str:
+                        rec[last_key] = str(rec[last_key]) + "；" + overflow_str if rec[last_key] else overflow_str
+                    for k in list(rec.keys())[len(headers):]:
+                        del rec[k]
+                    _adjusted += 1
+            if _adjusted:
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-002 列数对齐 {_adjusted} 行")
+                fixed_count += _adjusted
+
+        # SKILL-DQ-003: 序号未归并 → 重新执行序号归并
+        if "SKILL-DQ-003" in rule_ids:
+            ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
+            ti = _merge_rows_by_seq(ti)
+            new_rows = ti.get("rows", [])
+            if len(new_rows) < len(recs):
+                new_recs = []
+                for row in new_rows:
+                    rec = {}
+                    for ci, h in enumerate(headers):
+                        rec[h] = row[ci] if ci < len(row) else ""
+                    rec["source_document"] = recs[0].get("source_document", "")
+                    rec["updated_at"] = recs[0].get("updated_at", "")
+                    new_recs.append(rec)
+                grouped[tbl] = new_recs
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-003 序号归并 {len(recs)}→{len(new_recs)} 行")
+                fixed_count += abs(len(recs) - len(new_recs))
+
+        # SKILL-DQ-004: 合并单元格未补全 → 重新执行前向填充
+        if "SKILL-DQ-004" in rule_ids:
+            recs = grouped.get(tbl, recs)
+            ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
+            ti = _forward_fill_merged_cells(ti)
+            new_rows = ti.get("rows", [])
+            filled = 0
+            for ri, rec in enumerate(recs):
+                for ci, h in enumerate(headers):
+                    new_val = new_rows[ri][ci] if ri < len(new_rows) and ci < len(new_rows[ri]) else ""
+                    if new_val and not rec.get(h):
+                        rec[h] = new_val
+                        filled += 1
+            if filled:
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-004 前向填充 {filled} 个空值")
+                fixed_count += filled
+
+        # SKILL-DQ-005: 子列未拼接 → 重新执行重复列名合并
+        if "SKILL-DQ-005" in rule_ids:
+            recs = grouped.get(tbl, recs)
+            ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
+            ti = _merge_duplicate_headers(ti)
+            new_headers = ti.get("headers", [])
+            new_rows = ti.get("rows", [])
+            if len(new_headers) < len(headers):
+                new_recs = []
+                for row in new_rows:
+                    rec = {}
+                    for ci, h in enumerate(new_headers):
+                        rec[h] = row[ci] if ci < len(row) else ""
+                    rec["source_document"] = recs[0].get("source_document", "")
+                    rec["updated_at"] = recs[0].get("updated_at", "")
+                    new_recs.append(rec)
+                grouped[tbl] = new_recs
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-005 子列合并 {len(headers)}→{len(new_headers)} 列")
+                fixed_count += abs(len(headers) - len(new_headers))
+
+        # 内容截断/OCR漏行等 → 调 LLM 按行修复（不整表重写）
+        _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text)
+        if _llm_fixed:
+            fixed_count += _llm_fixed
+
+    return fixed_count
 
 
-def _fix_cross_table_detail_pollution(headers: List[str], rows: List[List[str]], table_number: str = "") -> List[List[str]]:
-    """确定性修复附录明细表的跨行串位 / 跨设备污染。
+def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_text: str) -> int:
+    """调 LLM 按行修复确定性处理不了的问题（截断/内容错误/漏行/列错位）。
 
-    LLM 滚动归并多个附录表时，因各表序号结构相似、通用状态量（振动和异常声响、
-    放电声、SF6气体密度等）反复出现，会把另一张表的行内容或上一行的档位残段
-    串入本表。此函数按表号 + 状态量名称关键词做确定性修正，不依赖具体行号。
+    把有问题的行 + 上下文行 + 源文档片段给 LLM，让它输出修复后的行。
+    LLM 可以输出比原来更多的行（补回丢失的行），按序号插入到正确位置。
     """
-    if not headers or not rows:
-        return rows
-    name_i = cond_i = repair_i = None
-    for i, h in enumerate(headers):
-        hs = str(h)
-        if name_i is None and "名称" in hs:
-            name_i = i
-        if cond_i is None and ("情况" in hs or "依据" in hs or "判据" in hs):
-            cond_i = i
-        if repair_i is None and "检修内容" in hs:
-            repair_i = i
-    if name_i is None or repair_i is None:
-        return rows
+    _llm_issues = []
+    for iss in tbl_issues:
+        desc = str(iss.get("description", ""))
+        if any(kw in desc for kw in ["截断", "截", "漏", "缺失", "不完整", "错位", "错配", "矛盾", "丢失", "减少", "消失"]):
+            _llm_issues.append(iss)
+    if not _llm_issues:
+        return 0
 
-    def _cell(r, idx):
-        return str(r[idx]).strip() if idx is not None and idx < len(r) else ""
+    if not recs:
+        return 0
+    headers = list(recs[0].keys())
+    source_doc = recs[0].get("source_document", "")
+    updated_at = recs[0].get("updated_at", "")
 
-    fixed_lines = 0
-    n = len(rows)
+    # 从 issue 描述中提取行号/序号
+    import re as _re
+    target_rows = set()
+    for iss in _llm_issues:
+        desc = str(iss.get("description", ""))
+        for m in _re.finditer(r"第(\d+)行|序号(\d+)|(\d+)行", desc):
+            for g in m.groups():
+                if g:
+                    target_rows.add(int(g) - 1)
+    if not target_rows:
+        target_rows = set(range(min(5, len(recs))))
 
-    # 检测本表是否为断路器表（断路器表自身含「断路器/灭弧室/开断短路电流/机械操作次数」
-    # 等内容是正常的，不能误判为跨设备污染）
-    blob_all = " ".join(" ".join(str(c) for c in r) for r in rows)
-    is_breaker_table = any(
-        k in blob_all for k in ("开断短路电流", "机械操作次数", "灭弧室", "分合闸弹簧")
-    )
+    # 准备 LLM 输入：有问题的行 + 上下文（前后各1行）
+    _rows_for_llm = []
+    for ri in sorted(target_rows):
+        if ri < 0 or ri >= len(recs):
+            continue
+        context = []
+        if ri > 0:
+            context.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:50] for h in headers}})
+        context.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:100] for h in headers}})
+        if ri + 1 < len(recs):
+            context.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:50] for h in headers}})
+        _rows_for_llm.extend(context)
 
-    for idx, r in enumerate(rows):
-        r = list(r)
-        name = _cell(r, name_i)
-        repair = _cell(r, repair_i)
-        cond = _cell(r, cond_i)
+    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))[:150]}" for i in _llm_issues)
 
-        # A.2「SF6气体密度」行混入「辅助开关」检修 → 与「辅助开关」行互换检修内容（列串位）
-        if "SF6气体密度" in name and "辅助开关" in repair:
-            other_j = None
-            for j in range(n):
-                if j == idx:
-                    continue
-                _n = _cell(rows[j], name_i)
-                _rp = _cell(rows[j], repair_i)
-                if "辅助开关" in _n and ("SF6气体密度" in _rp or _rp == ""):
-                    other_j = j
-                    break
-            if other_j is None:
-                for j in range(n):
-                    if j != idx and "辅助开关" in _cell(rows[j], name_i):
-                        other_j = j
-                        break
-            if other_j is not None:
-                # 交换两行的 劣化情况/检修内容 两列（状态量名称各留原行）
-                o = list(rows[other_j])
-                for col in (cond_i, repair_i):
-                    if col is not None:
-                        r[col], o[col] = o[col], r[col]
-                rows[other_j] = o
-                fixed_lines += 1
+    # 找到序号列（如果有）
+    seq_col = -1
+    for ci, h in enumerate(headers):
+        if "序号" in str(h) or "编号" in str(h):
+            seq_col = ci
+            break
 
-        # 跨设备污染：非断路器表（避雷器/互感器等）混入断路器专属内容 → 保守清理专属词
-        if not is_breaker_table and ("断路器" in repair or "更换灭弧室" in repair):
-            repair = repair.replace("断路器气体管道", "气体管道")
-            repair = repair.replace("断路器本体", "本体")
-            repair = repair.replace("更换灭弧室", "处理受损部件")
-            r[repair_i] = repair
-            fixed_lines += 1
+    prompt = f"""请修复以下表格中有问题的行。可以输出比原来更多的行（补回丢失的数据行）。
 
-        # 「断电/漏气补气间隔」串入相邻行（如计数器行）——只清理明确匹配的片段
-        if "SF6气体密度" not in name and "补气" in cond:
-            stripped = re.sub(r"[;；]*\s*SF6气体两次补气间隔[^;；]*", "", cond)
-            stripped = re.sub(r"[;；]*\s*两次补气间隔[^;；]*", "", stripped)
-            stripped = re.sub(r"^[;；\s]+|[;；\s]+$", "", stripped)
-            if stripped != cond:
-                if cond_i is not None:
-                    r[cond_i] = stripped
-                # 检修内容里对应补气片段一并清理
-                repair_clean = re.sub(r"[;；]*\s*情况[一二三][:：][^;；]*补气[^;；]*", "", repair)
-                repair_clean = re.sub(r"[;；]*\s*[A-D]\s*类\s*检修\s*[:：][^;；]*补气[^;；]*", "", repair_clean)
-                repair_clean = re.sub(r"^[;；\s]+|[;；\s]+$", "", repair_clean)
-                if repair_clean != repair:
-                    r[repair_i] = repair_clean
-                fixed_lines += 1
+表名: {tbl}
+列: {" | ".join(headers)}
 
-        rows[idx] = r
+问题:
+{issue_descs}
 
-    if fixed_lines:
-        print(f"  [去污染] 表{table_number} 修正跨行串位/跨设备污染 {fixed_lines} 处")
-    return rows
+有问题的行及上下文:
+"""
+    prompt += "| " + " | ".join(headers) + " |\n"
+    prompt += "| " + " | ".join("---" for _ in headers) + " |\n"
+    for r in _rows_for_llm:
+        vals = r.get("values", {})
+        cells = [str(vals.get(h, ""))[:80] for h in headers]
+        tag = "←问题行" if r.get("issue") else ""
+        prompt += f"| {' | '.join(cells)} | {tag}\n"
+
+    prompt += f"""
+
+源文档片段（供参考）:
+{source_text[:3000]}
+
+请输出修复后的行（Markdown 表格行格式，含表头行和分隔行）。
+- 如果需要补行，直接在正确位置插入新行
+- 如果需要修改已有行，输出修改后的完整行
+- 不要输出没有问题的行
+- 不要输出解释"""
+
+    try:
+        _resp = call_tool("llm_generate", prompt=prompt, temperature=0.0, max_tokens=8000)
+        content = _resp.get("content", "") if isinstance(_resp, dict) else ""
+        if not content:
+            return 0
+        parsed = _parse_markdown_table(content)
+        if not parsed:
+            return 0
+        fixed_data = parsed[0]
+        fixed_rows = fixed_data.get("rows", [])
+        if not fixed_rows:
+            return 0
+
+        # 把 LLM 输出的行转成 dict
+        fixed_recs = []
+        for row in fixed_rows:
+            rec = {}
+            for ci, h in enumerate(headers):
+                rec[h] = str(row[ci])[:200] if ci < len(row) else ""
+            rec["source_document"] = source_doc
+            rec["updated_at"] = updated_at
+            fixed_recs.append(rec)
+
+        # 合并修复后的行到原数据
+        # 策略：按序号匹配替换，没有匹配的按位置插入
+        _fixed_count = 0
+        _added_count = 0
+
+        if seq_col >= 0:
+            # 有序号列：按序号匹配
+            existing_seqs = {}
+            for ri, rec in enumerate(recs):
+                seq = str(rec.get(headers[seq_col], "")).strip()
+                if seq:
+                    existing_seqs[seq] = ri
+
+            used_indices = set()
+            for fr in fixed_recs:
+                seq = str(fr.get(headers[seq_col], "")).strip()
+                if seq and seq in existing_seqs:
+                    # 替换已有行
+                    ri = existing_seqs[seq]
+                    _changed = False
+                    for h in headers:
+                        new_val = str(fr.get(h, ""))
+                        old_val = str(recs[ri].get(h, ""))
+                        if new_val and new_val != old_val:
+                            recs[ri][h] = new_val
+                            _changed = True
+                    if _changed:
+                        _fixed_count += 1
+                    used_indices.add(ri)
+                else:
+                    # 新行——按序号插入到正确位置
+                    insert_pos = len(recs)
+                    if seq:
+                        # 找到比它大的最小序号位置
+                        for ri, rec in enumerate(recs):
+                            cur_seq = str(rec.get(headers[seq_col], "")).strip()
+                            try:
+                                if cur_seq and float(cur_seq) > float(seq):
+                                    insert_pos = ri
+                                    break
+                            except (ValueError, TypeError):
+                                continue
+                    recs.insert(insert_pos, fr)
+                    _added_count += 1
+        else:
+            # 无序号列：按行号替换
+            sorted_targets = sorted(target_rows)
+            for idx, fr in enumerate(fixed_recs):
+                if idx < len(sorted_targets) and sorted_targets[idx] < len(recs):
+                    ri = sorted_targets[idx]
+                    _changed = False
+                    for h in headers:
+                        new_val = str(fr.get(h, ""))
+                        old_val = str(recs[ri].get(h, ""))
+                        if new_val and new_val != old_val:
+                            recs[ri][h] = new_val
+                            _changed = True
+                    if _changed:
+                        _fixed_count += 1
+                else:
+                    # 多出的行追加到末尾
+                    recs.append(fr)
+                    _added_count += 1
+
+        if _fixed_count or _added_count:
+            print(f"  [修复] 表「{tbl}」LLM 修复 {_fixed_count} 行 + 补 {_added_count} 行")
+        return _fixed_count + _added_count
+    except Exception as e:
+        print(f"  [修复] 表「{tbl}」LLM 按行修复失败: {e}")
+        return 0
 
 
 def _to_rule_records(entries: List[Dict[str, Any]], source_document: str) -> List[Dict[str, Any]]:
-    """将提取的条目转换为标准规则表记录（STANDARD_COLUMNS 字段）"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    records = []
-    seq = 0
+    records, seq = [], 0
     for e in entries:
         rule_code = str(e.get("rule_code") or "").strip()
         rule_name = str(e.get("rule_name") or "").strip()
         if not rule_name:
             continue
-        # 若无 rule_code，自动生成
+        if rule_code and re.fullmatch(r"\d+\.0+", rule_code):
+            rule_code = rule_code.split(".")[0]
         if not rule_code:
             seq += 1
             rule_code = f"RULE_{seq:04d}"
-        category = str(e.get("category") or "标准").strip()
-        applicable_fields = str(e.get("applicable_fields") or "").strip()
-        format_regex = str(e.get("format_regex") or "").strip()
-        check_logic = str(e.get("check_logic") or "").strip()
-        severity = str(e.get("severity") or "warn").strip()
-        description = str(e.get("description") or "").strip()
-        table_assign = str(e.get("table") or "").strip()
-
         records.append({
-            "rule_code": rule_code,
-            "rule_name": rule_name,
-            "category": category,
-            "applicable_fields": applicable_fields,
-            "format_regex": format_regex,
-            "check_logic": check_logic,
-            "severity": severity,
-            "description": description,
-            "source_document": source_document,
-            "updated_at": now,
-            "_table_assign": table_assign,  # 内部字段，用于路由后移除
+            "rule_code": rule_code, "rule_name": rule_name,
+            "category": str(e.get("category") or "标准").strip(),
+            "applicable_fields": str(e.get("applicable_fields") or "").strip(),
+            "format_regex": str(e.get("format_regex") or "").strip(),
+            "check_logic": str(e.get("check_logic") or "").strip(),
+            "severity": str(e.get("severity") or "warn").strip(),
+            "description": str(e.get("description") or "").strip(),
+            "source_document": source_document, "updated_at": now,
+            "_table_assign": str(e.get("table") or "").strip(),
         })
     return records
 
 
-def _drop_cross_table_rows(
-    grouped: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, List[Dict[str, Any]]]:
-    """剔除附录明细表之间因续表归并导致的跨表串位行。
-
-    PDF 文本层/LLM 归并续表时，「套管介损及电容量」这类属于 A.2 套管表的
-    明细行（表A.2 序号5/6 已正确存在）偶会被并入 A.1 本体表。本函数按
-    确定性规则清理：凡表名含「本体」且分类/名称列出现套管介损、套管电容量
-    等套管专属内容（本体表自身不含此类部件），即判定为串位行，予以剔除。
-    不引入任何语义改写，仅做确定性串位清理。
-    """
-    if not grouped:
-        return grouped
-
-    def _is_body_table(name: str) -> bool:
-        return ("本体" in name) and ("明细表" in name) and ("套管" not in name)
-
-    # 套管专属串位特征：分类列含「套管介损」或名称列含「套管介质损耗/套管电容量」
-    def _is_bushing_row(rec: Dict[str, Any]) -> bool:
-        cat_col = None
-        name_col = None
-        for k in rec:
-            ks = str(k)
-            if "分类" in ks:
-                cat_col = rec.get(k)
-            if "名称" in ks:
-                name_col = rec.get(k)
-        cat = str(cat_col or "").strip()
-        name = str(name_col or "").strip()
-        cat_bad = ("套管介损" in cat) or ("套管电容量" in cat)
-        name_bad = ("套管介质损耗" in name) or ("套管电容量" in name)
-        return cat_bad or name_bad
-
-    cleaned: Dict[str, List[Dict[str, Any]]] = {}
-    for tbl, recs in grouped.items():
-        if _is_body_table(tbl):
-            kept = [r for r in recs if not _is_bushing_row(r)]
-            dropped = len(recs) - len(kept)
-            if dropped:
-                print(f"  [清洗] 表「{tbl}」剔除 {dropped} 行跨表串位（套管类）")
-            cleaned[tbl] = kept
-        else:
-            cleaned[tbl] = recs
-    return cleaned
-
-
-def _apply_text_corrections(text: Any) -> Any:
-    """对 PDF 字体映射/LLM 还原产生的确定性错字做词级纠错。
-
-    这些错字（如「泊→油」「差别注→差别大于」「鵲瓦斯→重瓦斯」）在同文档的
-    其他表中存在正确版本，可高置信度确定性替换；只做确定性词级替换，不引入
-    语义改写。非字符串值原样返回。
-    """
-    if not isinstance(text, str) or not text:
-        return text
-    # 短语优先替换，避免短词先命中破坏上下文
-    corrections = [
-        # 阈值/比较符号误识（同一原文在表A.4 正确、表A.5 错误，可确定性回填）
-        ("差别注三相", "差别大于三相"),
-        ("偏差主主三相", "偏差大于三相"),
-        ("变化二~2%", "变化大于2%"),
-        ("变化二~", "变化大于"),
-        ("差别注", "差别大于"),
-        ("偏差主主", "偏差大于"),
-        ("主主三相", "大于三相"),
-        # 电力行业术语确定性错字
-        ("鵲瓦斯", "重瓦斯"),
-        ("脱利", "脱釉"),
-        ("渗泊", "渗油"),
-        ("漏泊", "漏油"),
-        ("泊色谱", "油色谱"),
-        ("泊流", "油流"),
-        ("泊位", "油位"),
-        ("泊温", "油温"),
-        ("储泊柜", "储油柜"),
-        ("绝缘泊", "绝缘油"),
-        ("补泊", "补油"),
-        ("套营", "套管"),
-        ("DLlT", "DL/T"),
-        ("B工2", "B.2.2"),
-        ("检修z", "检修："),
-        ("检修2", "检修："),
-    ]
-    for bad, good in corrections:
-        if bad in text:
-            text = text.replace(bad, good)
-    return text
-
-
-def _to_chroma_records(
-    records: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """把平铺的规则记录转换为 ChromaDB 向量库需要的 {id, document, metadata} 结构。
-
-    根因修复：平台 ChromaDB 连接器写入时取 r["document"]（或 r["text"]）作为被向量化的正文，
-    取 r["metadata"] 作为元数据。此前脚本写的是平铺字段 rule_code/rule_name/...，
-    导致 document 全为空、metadata 全部兜底为 {"_source": "datacrab"}，
-    检索时只能命中「DataCrab」占位元数据，真正的规则正文全部丢失。
-    """
-    chroma_records = []
+def _to_chroma_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result = []
     for i, r in enumerate(records):
-        rule_code = str(r.get("rule_code") or "").strip()
-        rule_name = str(r.get("rule_name") or "").strip()
-        category = str(r.get("category") or "").strip()
-        applicable_fields = str(r.get("applicable_fields") or "").strip()
-        format_regex = str(r.get("format_regex") or "").strip()
-        check_logic = str(r.get("check_logic") or "").strip()
-        severity = str(r.get("severity") or "").strip()
-        description = str(r.get("description") or "").strip()
-
-        # document 是被向量化检索的正文：拼接名称、适用字段、检查逻辑、说明，保证可被语义检索
         doc_parts = []
-        if rule_name:
-            doc_parts.append(f"规则名称：{rule_name}")
-        if applicable_fields:
-            doc_parts.append(f"适用字段：{applicable_fields}")
-        if check_logic:
-            doc_parts.append(f"检查逻辑：{check_logic}")
-        if description and description != check_logic:
-            doc_parts.append(f"规则说明：{description}")
-        document = "；".join(doc_parts) if doc_parts else (rule_name or rule_code or " ")
-
-        # 结构化字段放入 metadata，便于过滤和展示
-        metadata = {
-            "rule_code": rule_code,
-            "rule_name": rule_name,
-            "category": category or "标准",
-            "applicable_fields": applicable_fields,
-            "format_regex": format_regex,
-            "check_logic": check_logic,
-            "severity": severity or "warn",
-            "description": description,
-            "source_document": str(r.get("source_document") or ""),
-            "updated_at": str(r.get("updated_at") or ""),
-        }
-
-        # id 必须全局唯一：同一 rule_code 可能对应多条不同表格行（如 A.1-6-II），
-        # 直接用 rule_code 会触发 DuplicateIDError，故追加全局序号保证唯一。
-        base_id = rule_code if rule_code else "rule"
-        chroma_records.append({
-            "id": f"{base_id}_{i + 1}",
-            "document": document,
-            "metadata": metadata,
+        for key, label in [("rule_name", "规则名称"), ("applicable_fields", "适用字段"), ("check_logic", "检查逻辑"), ("description", "规则说明")]:
+            val = str(r.get(key) or "").strip()
+            if val:
+                doc_parts.append(f"{label}：{val}")
+        result.append({
+            "id": f"{r.get('rule_code', 'rule')}_{i+1}",
+            "document": "；".join(doc_parts) if doc_parts else r.get("rule_name", " "),
+            "metadata": {k: r.get(k, "") for k in STANDARD_COLUMNS},
         })
-    return chroma_records
+    return result
 
 
-def _partition_records_by_table(
-    records: List[Dict[str, Any]],
-    main_table: str,
-    schema_plan: Optional[Dict[str, Any]] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """将记录路由到不同表。
-
-    优先级：
-    1. 条目带 LLM 判定的 table 归属 → 写入对应子表
-    2. schema_plan 中有子表定义 → 按关键词/表格标题匹配
-    3. 无匹配 → 写入主表
-    """
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-    sub_tables = {}
-    if schema_plan:
-        for t in (schema_plan.get("tables") or []):
-            name = t.get("name") or ""
-            if name:
-                sub_tables[name] = t
-
-    for r in records:
-        tbl_assign = r.pop("_table_assign", "")
-        tbl = main_table  # 默认主表
-
-        if tbl_assign and tbl_assign != "其他" and tbl_assign != main_table:
-            # LLM 明确指定了子表名：规范化为 主表_子表 形式
-            tbl = tbl_assign if tbl_assign.startswith(main_table) else f"{main_table}_{tbl_assign}"
-        elif sub_tables:
-            # 按关键词/表格标题匹配子表
-            rule_name = str(r.get("rule_name") or "")
-            description = str(r.get("description") or "")
-            check_logic = str(r.get("check_logic") or "")
-            blob = f"{rule_name} {description} {check_logic}"
-            best_match = None
-            best_score = 0
-            for tbl_name, tbl_info in sub_tables.items():
-                # 关键词匹配
-                keywords = tbl_info.get("keywords") or []
-                keyword_score = sum(1 for kw in keywords if kw in blob)
-                # 表格标题匹配（标题通常出现在表格附近或描述中）
-                table_names = tbl_info.get("table_names") or []
-                table_score = sum(2 for tn in table_names if tn and tn in blob)
-                score = keyword_score + table_score
-                if score > best_score:
-                    best_score = score
-                    best_match = tbl_name
-            if best_match and best_score > 0:
-                tbl = best_match if best_match.startswith(main_table) else f"{main_table}_{best_match}"
-
-        # 清理内部字段，只保留标准列
-        clean_r = {k: v for k, v in r.items() if not k.startswith("_")}
-        groups.setdefault(tbl, []).append(clean_r)
-
-    return groups
-
-
-def _to_graph_records(
-    records: List[Dict[str, Any]],
-    source_document: str,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """将规则记录转换为图数据库格式：节点表 + 关系表。
-
-    图模型设计：
-      - 节点表：node_id, node_label, name, properties(JSON), source_document, updated_at
-        - 每个分类（标准/质量/安全）一个 Category 节点
-        - 每个规则一个 Rule 节点，规则字段作为节点属性
-      - 关系表：edge_id, source_node_id, target_node_id, relation_type, source_document, updated_at
-        - Rule -[:HAS_CATEGORY]-> Category
-
-    返回 {"nodes": [...], "edges": [...]}
-    """
+def _to_graph_records(records: List[Dict[str, Any]], source_document: str) -> Dict[str, List]:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    nodes: List[Dict[str, Any]] = []
-    edges: List[Dict[str, Any]] = []
-
-    # 1) 分类节点（去重）
-    category_nodes: Dict[str, str] = {}
+    nodes, edges, cat_nodes, seq = [], [], {}, 0
     for r in records:
         cat = str(r.get("category") or "标准").strip()
-        if cat not in category_nodes:
-            node_id = f"cat_{cat}"
-            category_nodes[cat] = node_id
-            nodes.append({
-                "node_id": node_id,
-                "node_label": "Category",
-                "name": cat,
-                "properties": json.dumps({"category": cat}, ensure_ascii=False),
-                "source_document": source_document,
-                "updated_at": now,
-            })
-
-    # 2) 规则节点 + 规则与分类的关系
-    edge_seq = 0
-    for r in records:
-        rule_code = str(r.get("rule_code") or "").strip()
-        rule_name = str(r.get("rule_name") or "").strip()
-        # rule_code 作为节点唯一 ID（若重复则追加序号避免冲突）
-        node_id = f"rule_{rule_code}"
-        props = {
-            "rule_code": rule_code,
-            "rule_name": rule_name,
-            "category": str(r.get("category") or "标准").strip(),
-            "applicable_fields": str(r.get("applicable_fields") or "").strip(),
-            "format_regex": str(r.get("format_regex") or "").strip(),
-            "check_logic": str(r.get("check_logic") or "").strip(),
-            "severity": str(r.get("severity") or "warn").strip(),
-            "description": str(r.get("description") or "").strip(),
-        }
-        nodes.append({
-            "node_id": node_id,
-            "node_label": "Rule",
-            "name": rule_name or rule_code,
-            "properties": json.dumps(props, ensure_ascii=False),
-            "source_document": source_document,
-            "updated_at": now,
-        })
-
-        cat = str(r.get("category") or "标准").strip()
-        edge_seq += 1
-        edges.append({
-            "edge_id": f"e{edge_seq:06d}",
-            "source_node_id": node_id,
-            "target_node_id": category_nodes.get(cat, "cat_标准"),
-            "relation_type": "HAS_CATEGORY",
-            "source_document": source_document,
-            "updated_at": now,
-        })
-
+        if cat not in cat_nodes:
+            cat_nodes[cat] = f"cat_{cat}"
+            nodes.append({"node_id": f"cat_{cat}", "node_label": "Category", "name": cat, "properties": json.dumps({"category": cat}, ensure_ascii=False), "source_document": source_document, "updated_at": now})
+        node_id = f"rule_{r.get('rule_code', '')}"
+        nodes.append({"node_id": node_id, "node_label": "Rule", "name": r.get("rule_name", ""), "properties": json.dumps({k: r.get(k, "") for k in STANDARD_COLUMNS if k != "source_document" and k != "updated_at"}, ensure_ascii=False), "source_document": source_document, "updated_at": now})
+        seq += 1
+        edges.append({"edge_id": f"e{seq:06d}", "source_node_id": node_id, "target_node_id": cat_nodes[cat], "relation_type": "HAS_CATEGORY", "source_document": source_document, "updated_at": now})
     return {"nodes": nodes, "edges": edges}
 
 
 def _translate_table_name(table: str) -> str:
-    """把中文表名翻译成语义化英文名（snake_case）。
-
-    根因：平台 ChromaDB 连接器 _normalize_table_name_async 翻译中文表名时
-    max_tokens=200 过小，推理型模型下 content 为空，平台会退化为 dc_ + md5 hash。
-    脚本侧用 llm_generate 给足 max_tokens 自行翻译，平台对纯 ASCII 名会直接放行。
-    """
     import re as _re
-    # 已是合法 ASCII 名，直接返回（平台不会 hash）
     if _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', table):
         return table
-
-    for attempt in range(1, 4):
+    for attempt in range(3):
         try:
-            response = call_tool(
-                "llm_generate",
-                prompt=(
-                    f"把下面的中文表名翻译成英文，单词之间用下划线连接（snake_case），"
-                    f"只输出翻译后的英文名，不要任何解释、不要标点符号、不要代码块：\n{table}"
-                ),
-                temperature=0.0,
-                max_tokens=500,
-            )
-            if not isinstance(response, dict) or "error" in response:
-                raise RuntimeError(f"llm_generate 失败: {response!r}")
-            en = str(response.get("content") or "").strip().strip("`\"'").strip()
-            # 清洗为合法 collection 名（仅保留字母数字._-，中文残留剔除）
-            en = _re.sub(r'[^a-zA-Z0-9._-]+', '_', en).strip('._-')
-            if en and _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', en):
-                print(f"  [表名翻译] '{table}' -> '{en}'")
-                return en
-            raise RuntimeError(f"翻译结果不合法: {en!r}")
-        except Exception as e:
-            print(f"  [表名翻译] 第 {attempt}/3 次翻译失败 '{table}': {e}")
-            if attempt == 3:
-                raise RuntimeError(
-                    f"表名 '{table}' 无法翻译成语义化英文名，请检查 LLM 服务。"
-                    f"（原错误: {e}）"
-                )
-    raise RuntimeError(f"表名 '{table}' 翻译失败")
+            response = call_tool("llm_generate", prompt=f"把中文表名翻译成英文 snake_case，只输出英文名：\n{table}", temperature=0.0, max_tokens=500)
+            if isinstance(response, dict) and "error" not in response:
+                en = _re.sub(r'[^a-zA-Z0-9._-]+', '_', str(response.get("content") or "").strip().strip("`\"'")).strip("._-")
+                if en and _re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', en):
+                    return en
+        except Exception:
+            pass
+    raise RuntimeError(f"表名翻译失败: {table}")
 
 
-def _write_records(
-    ds_id: str,
-    table_name: str,
-    records: List[Dict[str, Any]],
-    if_table_exists: str = "replace",
-) -> int:
-    """分批写入规则表，返回写入总条数。
-
-    首批用传入策略（如 replace 清空重建）串行写入，确保清空/建表先于追加完成；
-    其余批次用 append 策略并发写入。
-    """
+def _write_records(ds_id: str, table_name: str, records: List[Dict], if_table_exists: str = "replace") -> int:
     if not records:
         return 0
     from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def _write_with_fallback(tbl: str, recs: List[Dict[str, Any]], strategy: str) -> Dict[str, Any]:
-        """单次写入；命中平台 Excel 连接器的 NoneType 拼接 bug 时降级重试。
-
-        平台 bug：表名精确匹配已存在的 xlsx 文件名时，_resolve_table_name 返回
-        整数 sheet 索引 0，write_table_data 里 actual_sheet 变成 None，最后
-        os.path.basename(file_path) + "|" + None 报 TypeError。
-        绕过：改用显式「文件名|Sheet名」格式，使 _resolve_table_name 返回字符串
-        sheet，走不到 int/None 分支。
-        """
-        res = call_tool(
-            "write_table_data",
-            datasource_id=ds_id,
-            table_name=tbl,
-            records=recs,
-            if_table_exists=strategy,
-        )
-        if not res.get("success"):
-            msg = str(res.get("message") or "")
-            if "NoneType" in msg:
-                fb = f"{tbl}|Sheet1"
-                print(f"  检测到 Excel 连接器 NoneType 拼接 bug，改用显式 sheet 表名「{fb}」重试...")
-                res = call_tool(
-                    "write_table_data",
-                    datasource_id=ds_id,
-                    table_name=fb,
-                    records=recs,
-                    if_table_exists=strategy,
-                )
-        return res
-
     batch_size = 400
     batches = [records[i:i + batch_size] for i in range(0, len(records), batch_size)]
-    total = len(records)
-    batch_total = len(batches)
-    print(f"开始写入表 {table_name}，共 {total} 条，分 {batch_total} 批")
-
-    # 首批用传入策略串行写（须先于并发 append 完成）
-    first = batches[0]
-    print(f"  正在写入第 1/{batch_total} 批 ({len(first)} 条，strategy={if_table_exists})...")
-    result = _write_with_fallback(table_name, first, if_table_exists)
+    total, batch_total = len(records), len(batches)
+    print(f"写入表 {table_name}，共 {total} 条，分 {batch_total} 批")
+    print(f"  正在写入第 1/{batch_total} 批 ({len(batches[0])} 条，strategy={if_table_exists})...")
+    result = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=batches[0], if_table_exists=if_table_exists)
     if not result.get("success"):
-        raise RuntimeError(f"写入数据失败(表 {table_name}): {result.get('message') or result.get('error') or result}")
-
-    # 剩余批次并发 append
-    rest = batches[1:]
-    if rest:
-        def _append(batch_num: int, batch: List[Dict[str, Any]]) -> int:
-            print(f"  正在写入第 {batch_num}/{batch_total} 批 ({len(batch)} 条，strategy=append)...")
-            r = _write_with_fallback(table_name, batch, "append")
+        raise RuntimeError(f"写入失败(表 {table_name}): {result.get('message') or result.get('error') or result}")
+    if len(batches) > 1:
+        def _append(batch_num, batch):
+            print(f"  正在写入第 {batch_num}/{batch_total} 批 ({len(batch)} 条)...")
+            r = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=batch, if_table_exists="append")
             if not r.get("success"):
-                raise RuntimeError(f"写入数据失败(表 {table_name} 第 {batch_num} 批): {r.get('message') or r.get('error') or r}")
+                raise RuntimeError(f"写入失败(表 {table_name} 第 {batch_num} 批): {r.get('message') or r.get('error')}")
             return len(batch)
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(_append, i + 2, b): i + 2 for i, b in enumerate(rest)}
-            for fut in as_completed(futures):
-                fut.result()  # 传播异常，不吞
-
+        # Excel 引擎不支持对同一文件的并发 append（会触发 Permission denied），改为串行
+        for i, b in enumerate(batches[1:]):
+            _append(i + 2, b)
     print(f"写入完成: {total} 条")
     return total
 
 
-def extract_rules_to_kb(
-    document_paths: str,
-    target_datasource_name: str = DEFAULT_TARGET_DATASOURCE,
-    target_table_name: str = DEFAULT_TARGET_TABLE,
-    if_table_exists: str = "replace",
-) -> Dict[str, Any]:
-    """主业务函数：解析文档 -> LLM 提取规则 -> 同序号行后处理合并 -> 合并写入规则知识库表"""
-    # 1. 解析并校验文档路径（兼容 str 和 list 两种传入方式）
+def _partition_records(records: List[Dict], main_table: str, schema_plan: Optional[Dict] = None) -> Dict[str, List[Dict]]:
+    groups, sub_tables = {}, {}
+    if schema_plan:
+        for t in (schema_plan.get("tables") or []):
+            if t.get("name"):
+                sub_tables[t["name"]] = t
+    for r in records:
+        tbl_assign = r.pop("_table_assign", "")
+        tbl = main_table
+        if tbl_assign and tbl_assign not in ("其他", main_table):
+            tbl = tbl_assign if tbl_assign.startswith(main_table) else f"{main_table}_{tbl_assign}"
+        elif sub_tables:
+            blob = f"{r.get('rule_name', '')} {r.get('description', '')} {r.get('check_logic', '')}"
+            best_match, best_score = None, 0
+            for name, info in sub_tables.items():
+                score = sum(1 for kw in (info.get("keywords") or []) if kw in blob) + sum(2 for tn in (info.get("table_names") or []) if tn and tn in blob)
+                if score > best_score:
+                    best_score, best_match = score, name
+            if best_match and best_score > 0:
+                tbl = best_match if best_match.startswith(main_table) else f"{main_table}_{best_match}"
+        groups.setdefault(tbl, []).append({k: v for k, v in r.items() if not k.startswith("_")})
+    return groups
+
+
+# ==================== 主函数 ====================
+
+def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target_table_name: str, if_table_exists: str = "replace") -> Dict[str, Any]:
     if isinstance(document_paths, (list, tuple)):
         paths = [str(p).strip() for p in document_paths if str(p).strip()]
     elif isinstance(document_paths, str):
         paths = [p.strip() for p in document_paths.split(",") if p.strip()]
     else:
-        raise ValueError(f"document_paths 必须是 str 或 list，收到 {type(document_paths).__name__}")
+        raise ValueError(f"document_paths 必须是 str 或 list")
     if not paths:
-        raise ValueError("document_paths 参数不能为空，请提供至少一个 PDF/Word 文件路径")
+        raise ValueError("document_paths 不能为空")
+    if not target_datasource_name:
+        raise ValueError("缺少 target_datasource_name")
+    if not target_table_name:
+        raise ValueError("缺少 target_table_name")
 
-    # 2. 获取目标数据源 ID，并检测是否为图数据库
+    # 解析文件路径：如果路径不是绝对路径或不在授权目录内，
+    # 通过 list_user_file_links 查找文件链接目录，拼接完整路径
+    resolved_paths = []
+    for p in paths:
+        pp = Path(p)
+        if pp.is_absolute() and pp.exists():
+            resolved_paths.append(p)
+            continue
+        # 尝试在文件链接目录中查找
+        found = False
+        links_res = call_tool("list_user_file_links")
+        if isinstance(links_res, dict):
+            for link in links_res.get("file_links", []):
+                link_path = Path(link.get("path", ""))
+                candidate = link_path / p
+                if candidate.exists():
+                    resolved_paths.append(str(candidate))
+                    found = True
+                    break
+        if not found:
+            # 保留原始路径，让后续 read_file 报错给出明确信息
+            resolved_paths.append(p)
+    paths = resolved_paths
+
     target_ds_id = _get_datasource_id(target_datasource_name)
     is_graph = _is_graph_datasource(target_datasource_name)
     print(f"目标数据源: {target_datasource_name} (id={target_ds_id}, 图数据库={is_graph})")
 
-    # 3. 逐个文档：正文走规则提取，表格走字面还原（每个表格一张同名数据表）
-    all_entries = []
-    table_records_map: Dict[str, List[Dict[str, Any]]] = {}
-    schema_plan: Optional[Dict[str, Any]] = None
+    all_entries, table_records_map, schema_plan = [], {}, None
+    source_text_by_path: Dict[str, str] = {}
+    _table_original_titles: Dict[str, str] = {}
+
     for idx, path in enumerate(paths, 1):
         print(f"[{idx}/{len(paths)}] 处理文档: {path}")
         text = _extract_text_from_file(path)
+        source_text_by_path[path] = text
         print(f"  文档文本总长 {len(text)} 字符")
 
-        blocks = _split_by_tables(text)
-        blocks = _merge_blocks_by_number(blocks)
-        print(f"  [切分诊断] 共识别 {len(blocks)} 个块：")
-        for b in blocks:
-            print(f"    - number={b.get('number')!r} title={b.get('title')!r} content_len={len(b.get('content') or '')}")
+        blocks = _merge_blocks_by_number(_split_by_tables(text))
+        print(f"  [切分] 共 {len(blocks)} 个块")
 
-        # 文本层无数据（图片型 PDF）的表格走 OCR；有数据的走文本还原路径
-        # （_extract_table_literal 内部瞬态错误重试文本、质量校验失败直接 raise 不切 OCR）
-        appendix_start = _estimate_appendix_start_page(text)
-        ocr_table_blocks = [
-            b for b in blocks
-            if (b.get("title") or "正文") != "正文"
-            and not _table_block_has_data(b)
-        ]
-        ocr_md_cache: Dict[str, str] = {}  # number -> 合并后的 MD
-        if ocr_table_blocks and path:
-            print(f"  [OCR] {len(ocr_table_blocks)} 个表格需要 OCR，从第 {appendix_start} 页全页扫描…")
-            ocr_md_cache = _scan_all_pages_for_tables(
-                path,
-                [b.get("number") for b in ocr_table_blocks if b.get("number")],
-                start_page=appendix_start,
-            )
+        # 只对文本层无数据的表格走 OCR
+        ocr_blocks = [b for b in blocks if (b.get("title") or "正文") != "正文" and not _table_block_has_data(b)]
+        ocr_md_cache = {}
+        if ocr_blocks and ocr_blocks[0].get("number"):
+            print(f"  [OCR] {len(ocr_blocks)} 个表格文本层无数据，需要 OCR")
+            ocr_md_cache = _scan_pages_for_tables(path, [b["number"] for b in ocr_blocks if b.get("number")])
+        else:
+            print(f"  [OCR] 所有表格文本层有数据，跳过 OCR")
 
-        body_parts: List[str] = []
-        table_blocks_by_path: List[Dict[str, Any]] = []
+        body_parts, table_blocks = [], []
         for b in blocks:
             if (b.get("title") or "正文") == "正文":
                 body_parts.append(b.get("content") or "")
+            elif _block_is_body_not_table(b):
+                # 表标题后无真实表格数据、紧跟章节正文 → 拆成表标题块(触发OCR) + 正文
+                tbl_block, body_text = _split_body_from_table_block(b)
+                if tbl_block:
+                    table_blocks.append(tbl_block)
+                    print(f"  [归类] 「表{b.get('number')} {b.get('title')}」拆出表标题块(待OCR) + 正文")
+                if body_text:
+                    body_parts.append(body_text)
             else:
-                table_blocks_by_path.append(b)
+                table_blocks.append(b)
 
-        # 表格块彼此独立（每块 2 次 LLM：还原+归并），并发还原以压缩总耗时
-        def _process_table_block(b: Dict[str, Any]) -> Dict[str, Any]:
+        def _process_table(b):
             number = b.get("number") or ""
-            if number in ocr_md_cache:
-                # OCR 通道：用已扫描的 MD
-                ti = _extract_table_from_ocr_md(b, ocr_md_cache[number])
-            else:
-                ti = _extract_table_literal(b, pdf_path=path)
-            # 同序号合并 + 排序
-            if ti.get("headers") and ti.get("rows"):
-                ti["rows"] = _merge_same_sequence_rows(ti["headers"], ti["rows"])
-                ti["rows"] = _sort_rows_by_sequence(ti["headers"], ti["rows"])
-                # 剔除「表头空且整列全空」的列，避免落库后列名变 Unnamed
-                ti["headers"], ti["rows"] = _drop_empty_columns(ti["headers"], ti["rows"])
-                # 表头去重（状态量状态量名称 → 状态量名称）
-                ti["headers"] = _clean_repeated_header_tokens(ti["headers"])
-                # 附录明细表列对齐兜底（拆粘连表头/单元格、整体右移、分类回填、分号清理）
-                ti["headers"], ti["rows"] = _fix_appendix_column_alignment(ti["headers"], ti["rows"])
-                # 修正「名称列化学式」与「情况列中文名」的确定性矛盾
-                ti["rows"] = _fix_cross_column_mismatches(ti["headers"], ti["rows"])
-                # 修复父子列串位（分类列误填子项、名称列空）
-                ti["headers"], ti["rows"] = _fix_parent_child_column_shift(ti["headers"], ti["rows"])
-                # 修复「X 类检修」片段串入情况列、检修内容列为空
-                ti["rows"] = _fix_repair_content_column_shift(ti["headers"], ti["rows"])
-                # 修复跨行串位/跨设备污染（断路器内容串入他表、SF6密度与辅助开关互换）
-                ti["rows"] = _fix_cross_table_detail_pollution(
-                    ti["headers"], ti["rows"], b.get("number") or ""
-                )
-                # 兜底剔除幽灵行（有序号无业务内容的空行）
-                ti["rows"] = _drop_ghost_rows(ti["headers"], ti["rows"])
-                # 序号断档检测：LLM 漏行应显式告警，不静默通过
-                _check_sequence_gaps(ti["headers"], ti["rows"], b.get("number") or "")
-            tbl_name = ti["table_name"]
-            recs = _table_rows_to_records(ti, Path(path).name)
-            return {"table_name": tbl_name, "records": recs, "title": b.get("title"), "number": b.get("number")}
+            try:
+                if number in ocr_md_cache:
+                    ti = _extract_table_from_ocr(b, ocr_md_cache[number])
+                else:
+                    ti = _extract_table_literal(b)
+                if ti.get("headers") and ti.get("rows"):
+                    pass
+                return {"table_name": ti["table_name"], "records": _table_rows_to_records(ti, Path(path).name), "title": b.get("title"), "number": number}
+            except Exception as e:
+                print(f"  [表格] 表{number} 提取失败: {e}")
+                return {"table_name": _sanitize_table_name(f"表{number} {b.get('title', '')}".strip()), "records": [], "title": b.get("title"), "number": number}
 
-        if table_blocks_by_path:
+        if table_blocks:
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            print(f"  [表格] 并发还原 {len(table_blocks_by_path)} 张表 (max_workers=8)…")
-            results_by_index: Dict[int, Dict[str, Any]] = {}
+            print(f"  [表格] 并发还原 {len(table_blocks)} 张表...")
+            results_by_idx = {}
             with ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_idx = {
-                    executor.submit(_process_table_block, b): i
-                    for i, b in enumerate(table_blocks_by_path)
-                }
-                for fut in as_completed(future_to_idx):
-                    idx = future_to_idx[fut]
+                futs = {executor.submit(_process_table, b): i for i, b in enumerate(table_blocks)}
+                for fut in as_completed(futs):
+                    i = futs[fut]
                     r = fut.result()
-                    results_by_index[idx] = r
-                    print(
-                        f"  [表格] 完成 {len(results_by_index)}/{len(table_blocks_by_path)}: "
-                        f"「{r['table_name']}」{len(r['records'])} 行"
-                    )
-            # 按原始顺序合并，保证输出与串行一致
-            for i in range(len(table_blocks_by_path)):
-                r = results_by_index[i]
+                    results_by_idx[i] = r
+                    print(f"  [表格] 完成 {len(results_by_idx)}/{len(table_blocks)}: 「{r['table_name']}」{len(r['records'])} 行")
+            for i in range(len(table_blocks)):
+                r = results_by_idx[i]
                 table_records_map.setdefault(r["table_name"], []).extend(r["records"])
+                # 记录原始表标题（供自检修复表名用）
+                _orig_title = ""
+                if r.get("number") and r.get("title"):
+                    _orig_title = f"表{r['number']} {r['title']}".strip()
+                elif r.get("title"):
+                    _orig_title = r["title"]
+                if _orig_title and _orig_title != r["table_name"]:
+                    _table_original_titles[r["table_name"]] = _orig_title
 
-        # 正文（导则等非表格内容）走规则提取
         body_text = "\n".join(p for p in body_parts if p.strip()).strip()
         if body_text:
             schema_plan = _analyze_document_structure(body_text)
             main_tbl = schema_plan.get("main_table") or "正文规则"
-            sub_tbls = [t.get("name") for t in (schema_plan.get("tables") or [])]
-            print(f"  [表结构] 主表「{main_tbl}」+ {len(sub_tbls)} 张子表: {sub_tbls}")
-
+            print(f"  [表结构] 主表「{main_tbl}」+ {len(schema_plan.get('tables') or [])} 张子表")
             entries = _extract_rules_from_text(body_text, schema_plan=schema_plan)
             for e in entries:
                 e["source_document"] = Path(path).name
@@ -3237,346 +2028,154 @@ def extract_rules_to_kb(
             print(f"  从 {Path(path).name} 正文提取到 {len(entries)} 条规则")
 
     if not all_entries and not table_records_map:
-        raise RuntimeError(
-            "未提取到任何规则或表格数据：请检查文档文本内容与 LLM 服务是否正常"
-        )
+        raise RuntimeError("未提取到任何规则或表格数据")
 
-    print(
-        f"共提取到 {len(all_entries)} 条正文规则、{len(table_records_map)} 张表格"
-    )
-
-    # 4. 正文规则转换为标准规则表记录（表格记录已是二维表行，直接使用）
+    print(f"共提取到 {len(all_entries)} 条正文规则、{len(table_records_map)} 张表格")
     source_doc = Path(paths[0]).name if len(paths) == 1 else f"{len(paths)} 个文档"
     records = _to_rule_records(all_entries, source_doc)
 
-    # 5. 按目标数据源类型选择写入方式
     if is_graph:
-        # 图数据库：转换为节点/关系图模型
-        print("目标数据源为图数据库，按图模型结构（节点/关系/属性）存储规则...")
-        graph_model = _to_graph_records(records, source_doc)
-        node_records = graph_model["nodes"]
-        edge_records = graph_model["edges"]
-        if not node_records:
-            raise RuntimeError("图模型转换后无节点记录，无法写入。")
-
+        print("目标为图数据库，按图模型存储...")
+        graph = _to_graph_records(records, source_doc)
         nodes_table = f"{target_table_name}_nodes"
         edges_table = f"{target_table_name}_edges"
-
-        print(f"  节点表「{nodes_table}」: {len(node_records)} 条")
-        print(f"  关系表「{edges_table}」: {len(edge_records)} 条")
-
-        # 并行写入节点表和关系表
         from concurrent.futures import ThreadPoolExecutor, as_completed
-
         write_results = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_nodes = executor.submit(
-                _write_records, target_ds_id, nodes_table, node_records, if_table_exists
-            )
-            future_edges = executor.submit(
-                _write_records, target_ds_id, edges_table, edge_records, if_table_exists
-            )
-            for fut in as_completed([future_nodes, future_edges]):
-                if fut is future_nodes:
+            f_nodes = executor.submit(_write_records, target_ds_id, nodes_table, graph["nodes"], if_table_exists)
+            f_edges = executor.submit(_write_records, target_ds_id, edges_table, graph["edges"], if_table_exists)
+            for fut in as_completed([f_nodes, f_edges]):
+                if fut is f_nodes:
                     write_results["nodes"] = fut.result()
                 else:
                     write_results["edges"] = fut.result()
+        print(f"  节点 {write_results.get('nodes', 0)} 条，边 {write_results.get('edges', 0)} 条")
+        return {"success": True, "extracted_rules": len(all_entries), "total_rules_written": write_results.get("nodes", 0), "graph_model": True, "nodes_table": nodes_table, "edges_table": edges_table, "target_table": nodes_table, "target_datasource": target_datasource_name, "tables_written": {nodes_table: write_results.get("nodes", 0), edges_table: write_results.get("edges", 0)}}
 
-        print(f"  [完成] 节点表写入 {write_results.get('nodes', 0)} 条")
-        print(f"  [完成] 关系表写入 {write_results.get('edges', 0)} 条")
-
-        return {
-            "success": True,
-            "extracted_rules": len(all_entries),
-            "total_rules_written": write_results.get("nodes", 0),
-            "graph_model": True,
-            "nodes_table": nodes_table,
-            "edges_table": edges_table,
-            "target_table": nodes_table,  # 主输出表（平台用于定位检查）
-            "target_datasource": target_datasource_name,
-            "tables_written": {
-                nodes_table: write_results.get("nodes", 0),
-                edges_table: write_results.get("edges", 0),
-            },
-        }
-
-    # 关系型数据源：正文规则多表路由 + 表格按名称建表，合并为统一 grouped 写入
-    grouped = _partition_records_by_table(records, target_table_name, schema_plan)
-    # 表格记录：每个表格一张与表格名字一致的独立数据表
+    grouped = _partition_records(records, target_table_name, schema_plan)
     for tbl_name, trecs in table_records_map.items():
-        # 避免与正文规则表重名（几乎不可能），若有冲突追加「_表格明细」后缀
         dest = tbl_name
         while dest in grouped:
             dest = f"{tbl_name}_表格明细"
         grouped[dest] = trecs
 
-    # 跨表串位清洗：附录续表归并时，「套管介损及电容量」这类属于 A.2 套管
-    # 的明细行偶被并入 A.1 本体表（表A.2 序号5/6 已正确存在）。按确定性规则
-    # 从本体表中剔除分类列为套管/介损/电容量的串位行，不做任何语义改写。
-    grouped = _drop_cross_table_rows(grouped)
+    # 过滤空壳占位表：schema_plan 生成的英文子表如果只有1-2行且无实质内容，跳过写入
+    tables_to_remove = []
+    for tbl, recs in grouped.items():
+        if len(recs) <= 2 and tbl != target_table_name:
+            if re.match(r'^[a-zA-Z_]', tbl) and tbl.startswith(target_table_name + "_"):
+                has_substance = False
+                for r in recs:
+                    cl = str(r.get("check_logic") or "").strip()
+                    desc = str(r.get("description") or "").strip()
+                    if len(cl) > 20 or len(desc) > 20:
+                        has_substance = True
+                        break
+                if not has_substance:
+                    tables_to_remove.append(tbl)
+                    print(f"  [过滤] 跳过空壳占位表「{tbl}」（{len(recs)} 行，无实质内容）")
+    for tbl in tables_to_remove:
+        del grouped[tbl]
 
-    # ===== 确定性补丁：DL/T 1684 附录 A.1 完整重建 + A.6 分类列错位修复 =====
-    # 根因1（A.1 缺行+错位）：PDF 文本流把多档「劣化程度+情况一/二/三」拆成碎片，
-    # LLM 单块还原时整块丢失若干序号，且纵向合并单元格「状态量分类」值在文本层
-    # 基本丢失（仅残留「其他」），导致已有行整列左移：分类列误填名称、名称列误填
-    # 劣化情况。按原文逐字核对重建 37 行，绕开不稳定的 LLM 还原。
-    # 根因2（A.6 分类错位）：合并单元格「其他」被错配给最后一行，导致前 7 行分类空、
-    # 第 8 行名称空。整表按原文重写 8 行。
-    _A1_KEY = "表A.1 油浸式变压器(电抗器)本体状态量劣化的检修内容明细表"
-    _A6_KEY = "表A.6 油浸式变压器(电抗器)非电量保护和在线监测装置状态量劣化的检修内容明细表"
-    _SRC_DOC = "DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf"
-
-    _A1_FULL = [
-        {"序号": 1, "状态量分类": "运行", "状态量名称": "短路电流、短路次数",
-         "劣化程度": "I；II；IV",
-         "劣化情况": "情况一:50%允许短路电流≤短路冲击电流<70%允许短路电流，次数累计≤6次，短路冲击后油色谱分析结果正常；70%允许短路电流≤短路冲击电流<90%允许短路电流，按次扣分；情况二:短路冲击电流≥90%允许短路电流，按次扣分，短路冲击后油色谱异常",
-         "检修内容": "C类检修:冲击后第1、2月内各进行一次跟踪检测，重点加强油色谱检测，如在跟踪检测时发现色谱数据有增长趋势，则进行C类检修并增加绕组变形等诊断性试验，视进一步试验结果进行处理；如跟踪检测时发现色谱无异常，恢复正常运行维护工作；C类检修:进行例行试验及绕组变形等诊断性试验，必要时进行局部放电试验，查找色谱异常原因并处理"},
-        {"序号": 2, "状态量分类": "运行", "状态量名称": "短路冲击累计次数",
-         "劣化程度": "IV", "劣化情况": "短路冲击电流≥90%允许短路电流，按次扣分",
-         "检修内容": "C类检修:进行例行试验及绕组变形等诊断性试验，必要时进行局部放电试验，查找色谱异常原因并处理"},
-        {"序号": 3, "状态量分类": "运行", "状态量名称": "变压器过负荷",
-         "劣化程度": "", "劣化情况": "达到短期急救负荷运行规定或长期急救负荷运行规定；情况一:油温超标；情况二:油色谱异常；情况三:长期急救过负荷，且无扩建计划",
-         "检修内容": "D类检修:监视油位、油温，进行红外检测，并采取降低负荷措施；C类检修:进行例行试验，查找色谱异常原因并处理；A类检修:扩容改造(更换)"},
-        {"序号": 4, "状态量分类": "运行", "状态量名称": "过励磁",
-         "劣化程度": "", "劣化情况": "达到过励磁限值；情况一:短期过励磁；情况二:长期过励磁",
-         "检修内容": "D类检修:进行油色谱检测，必要时对无调压能力的变压器进行改造或更换；A类检修:更换"},
-        {"序号": 5, "状态量分类": "运行", "状态量名称": "油枕密封元件(胶囊、隔膜、金属膨胀器)",
-         "劣化程度": "II；IV", "劣化情况": "情况一:金属膨胀器有卡滞、隔膜式油枕密封面有渗油迹；情况二:金属膨胀器破裂、胶囊、隔膜破损",
-         "检修内容": "B类检修:更换储油柜；B类检修:进行储油柜改造"},
-        {"序号": 6, "状态量分类": "运行", "状态量名称": "本体储油柜油位",
-         "劣化程度": "II", "劣化情况": "油位异常(过高或过低)；情况一:呼吸回路堵塞；情况二:油温偏高；情况三:油温正常",
-         "检修内容": "C类检修:检查呼吸器及管道，并进行油处理；D类检修:检查冷却器装置运行是否正常，开展铁芯接地电流、红外和色谱检测，查明原因；B类检修:放油或者补油处理"},
-        {"序号": 7, "状态量分类": "运行", "状态量名称": "渗油",
-         "劣化程度": "II", "劣化情况": "有轻微渗油，未形成油滴，部位位于非负压区；情况一:不需停电处理；情况二:需停电处理",
-         "检修内容": "D类检修:对渗漏油部位进行处理；C类检修:监测渗油缺陷发展趋势，停电时对渗漏油部位进行处理"},
-        {"序号": 8, "状态量分类": "运行", "状态量名称": "漏油",
-         "劣化程度": "II；IV", "劣化情况": "情况一:有轻微渗漏(但渗漏部位位于非负压区)，不快于每滴5s(每分钟12滴)；情况二:渗漏位于负压区或油滴速度快于每滴5s(每分钟12滴)或形成油流",
-         "检修内容": "D类检修:对渗漏油部位进行处理；B类检修:监测渗油缺陷发展趋势，停电时对渗漏油部位进行处理"},
-        {"序号": 9, "状态量分类": "运行", "状态量名称": "噪声及振动",
-         "劣化程度": "II", "劣化情况": "情况一:噪声、振动异常，绝缘油色谱正常；情况二:噪声、振动异常，绝缘油色谱异常",
-         "检修内容": "D类检修:加强油色谱跟踪，如发现色谱变为异常，则应进行进一步诊断分析；A类检修:检查绕组是否存在变形，内部紧固件是否有松动并进行处理"},
-        {"序号": 10, "状态量分类": "运行", "状态量名称": "表面锈蚀",
-         "劣化程度": "III", "劣化情况": "表面漆层破损和轻微锈蚀；表面锈蚀严重",
-         "检修内容": "C类检修:进行防腐处理；D类检修:进行防腐处理"},
-        {"序号": 11, "状态量分类": "运行", "状态量名称": "呼吸器",
-         "劣化程度": "II；IV", "劣化情况": "吸湿器油封异常，或呼吸器呼吸不畅通，或硅胶潮解变色部分超过总量的2/3或硅胶自上而下变色；呼吸器无呼吸",
-         "检修内容": "D类检修:检查玻璃罩、胶垫等是否完好，并进行处理。如果硅胶吸潮饱和，应予以更换。对吸湿器油封进行补油"},
-        {"序号": 12, "状态量分类": "运行", "状态量名称": "运行油温",
-         "劣化程度": "III", "劣化情况": "顶层油温异常",
-         "检修内容": "A类检修:吊罩检查发热部位及原因；C类检修:进行绕组电阻、介质损耗因数等停电试验，分析发热原因；D类检修:进行油色谱、红外测温以及铁芯接地电流检测，分析发热原因；对冷却系统进行检查处理"},
-        {"序号": 19, "状态量分类": "检修试验", "状态量名称": "绕组频率响应测试",
-         "劣化程度": "IV", "劣化情况": "绕组频响测试反映绕组有变形",
-         "检修内容": "A类检修:对绕组进行处理或更换"},
-        {"序号": 20, "状态量分类": "检修试验", "状态量名称": "短路阻抗",
-         "劣化程度": "II~IV", "劣化情况": "2%≤短路阻抗与原始值的差异<3%；短路阻抗与原始值的差异≥3%",
-         "检修内容": "C类检修:结合例行试验，增加电容量和低电压阻抗项目，综合分析试验数据"},
-        {"序号": 31, "状态量分类": "检修试验", "状态量名称": "变压器中性点直流电流测试",
-         "劣化程度": "I~III", "劣化情况": "1A≤中性点直流电流<3A；中性点直流电流≥3A",
-         "检修内容": "B类检修:对变压器进行消磁处理，同时对中性点采取限制直流措施；D类检修:对中性点直流电流进行监测"},
-        {"序号": 32, "状态量分类": "检修试验", "状态量名称": "局部放电",
-         "劣化程度": "IV", "劣化情况": "发现异常放电信号或典型放电图谱",
-         "检修内容": "A类检修:进行吊罩或钻检，检查并处理内部放电故障；C类检修:进行停电诊断试验"},
-        {"序号": 13, "状态量分类": "运行", "状态量名称": "压力释放阀",
-         "劣化程度": "IV", "劣化情况": "动作(周围有油迹)",
-         "检修内容": "B类检修:检查呼吸器及连管，并进行处理"},
-        {"序号": 14, "状态量分类": "运行", "状态量名称": "气体继电器",
-         "劣化程度": "II；IV", "劣化情况": "轻瓦斯发信，但色谱分析无异常；轻瓦斯发信，且色谱异常或重瓦斯动作",
-         "检修内容": "D类检修:监视油位、油温，进行红外检测，并采取降低负荷措施。；B类检修:进行诊断性试验，查找色谱异常原因"},
-        {"序号": 15, "状态量分类": "检修试验", "状态量名称": "绕组直流电阻",
-         "劣化程度": "IV", "劣化情况": "(1)各相绕组相互间的差别≥三相平均值的2%，无中性点引出线的绕组，线间偏差≥三相平均值的1%。(2)与以前相同部位测得值折算到相同温度其变化≥2%，且三相间阻值大小关系与出厂不一致",
-         "检修内容": "A类检修:检查并处理导电回路短路、开路故障，检查并处理分接开关接触不良等缺陷。C类检修:进行直流电阻测试，综合分析试验数据"},
-        {"序号": 16, "状态量分类": "检修试验", "状态量名称": "绕组介质损耗因数",
-         "劣化程度": "II；III", "劣化情况": "介质损耗因数未超标准限值，但与同类、同间隔设备有显著性差异(参见DL/T 393-2010附录A)；介质损耗因数超标，电容量无明显变化",
-         "检修内容": "B类检修:进行本体干燥及油处理。C类检修:进行绕组介质损耗因数测试，综合分析试验数据。D类检修:进行油色谱、油耐压试验"},
-        {"序号": 17, "状态量分类": "检修试验", "状态量名称": "电容量",
-         "劣化程度": "II~IV", "劣化情况": "3%≤绕组电容量变化<5%；绕组电容变化≥5%",
-         "检修内容": "B类检修:进行油处理。C类检修:进行其他测试，综合分析试验数据。；A类检修:处理绕组位移、变形或地屏蔽接地不良。C类检修:进行低电压阻抗和绕组变形测试，综合分析试验数据"},
-        {"序号": 18, "状态量分类": "检修试验", "状态量名称": "铁芯接地电流",
-         "劣化程度": "I~IV", "劣化情况": "铁芯多点接地，但运行中通过采取限流措施，铁芯接地电流一般<0.1A；0.1A≤铁芯接地电流<0.3A；铁芯接地电流≥0.3A",
-         "检修内容": "A类检修:对铁芯进行处理，进行铁芯接地电流测试，综合分析试验数据。C类检修:进行铁芯接地电流测试，综合分析试验数据"},
-        {"序号": 21, "状态量分类": "检修试验", "状态量名称": "泄漏电流",
-         "劣化程度": "II~IV", "劣化情况": "30%≤历次相比变化<50%；历次相比变化≥50%",
-         "检修内容": "B类检修:进行本体或分接开关绝缘处理。C类检修:进行其他绝缘试验，综合分析试验数据"},
-        {"序号": 22, "状态量分类": "检修试验", "状态量名称": "绕组绝缘电阻、吸收比或极化指数",
-         "劣化程度": "IV", "劣化情况": "绝缘电阻不满足DL/T 393-2010要求",
-         "检修内容": "A类检修:对内绝缘进行检查并处理。C类检修:开展其他绝缘试验，综合分析试验数据"},
-        {"序号": 23, "状态量分类": "检修试验", "状态量名称": "油介质损耗因数(tanδ)",
-         "劣化程度": "II", "劣化情况": "110kV~220kV: tanδ≥4%；330kV及以上: tanδ≥2%",
-         "检修内容": "B类检修:进行油处理。D类检修:缩短试验周期，跟踪分析试验数据"},
-        {"序号": 24, "状态量分类": "检修试验", "状态量名称": "油击穿电压",
-         "劣化程度": "II", "劣化情况": "110(66)kV~220kV: ≤35kV；330kV及以上: ≤50kV",
-         "检修内容": "B类检修:更换油，必要时对分接开关进行冲洗。D类检修:缩短试验周期，跟踪分析试验数据"},
-        {"序号": 25, "状态量分类": "检修试验", "状态量名称": "油中水分含量",
-         "劣化程度": "II", "劣化情况": "110(66)kV: ≥35mg/L；220kV: ≥25mg/L；330kV及以上: ≥15mg/L",
-         "检修内容": "B类检修:进行油处理。D类检修:缩短试验周期，跟踪分析试验数据"},
-        {"序号": 26, "状态量分类": "检修试验", "状态量名称": "油中含气量",
-         "劣化程度": "II", "劣化情况": "500kV变压器油中含气量(体积分数)≥3%",
-         "检修内容": "B类检修:查明原因，进行油处理或缺陷处理。D类检修:缩短试验周期，跟踪分析试验数据"},
-        {"序号": 27, "状态量分类": "检修试验", "状态量名称": "绝缘纸聚合度",
-         "劣化程度": "IV", "劣化情况": "绝缘纸聚合度≤250",
-         "检修内容": "A类检修:更换或返厂改造"},
-        {"序号": 28, "状态量分类": "检修试验", "状态量名称": "糠醛含量",
-         "劣化程度": "IV", "劣化情况": "糠醛含量异常",
-         "检修内容": "A类检修:更换或返厂改造。B类检修:进行绝缘纸聚合度检测"},
-        {"序号": 29, "状态量分类": "检修试验", "状态量名称": "红外测温",
-         "劣化程度": "II", "劣化情况": "油箱红外测温异常；情况一:油色谱异常；情况二:油色谱正常",
-         "检修内容": "A类检修:查明原因，处理发热缺陷。在停电处理前，加强油色谱跟踪分析和红外检测。；D类检修:对发热缺陷加强红外测温"},
-        {"序号": 30, "状态量分类": "检修试验", "状态量名称": "油中溶解气体分析",
-         "劣化程度": "II~IV", "劣化情况": "总烃含量≥150μL/L，且有增长趋势，产气速率<10%/月；总烃含量≥150μL/L，且有增长趋势，产气速率≥10%/月；C2H2乙炔含量≥注意值(330kV及以上注意值为1μL/L，其他电压等级注意值为5μL/L)；H2含量≥150μL/L",
-         "检修内容": "A类检修:进行故障分析，查找缺陷部位并处理，处理前加强色谱检测。D类检修:加强色谱检测，将D类检修周期缩短至1/2。B类检修:结合停电检修进行油脱气处理。A类检修:例行试验及诊断性试验，进行故障分析，必要时转为A类检修"},
-        {"序号": 33, "状态量分类": "其他", "状态量名称": "已发布的家族缺陷，或者同厂、同型、同期设备的故障信息",
-         "劣化程度": "II；IV", "劣化情况": "一般缺陷未整改；重大缺陷未整改",
-         "检修内容": "根据具体家族缺陷确定检修内容和类别；根据具体家族缺陷确定检修内容和类别"},
-        {"序号": 34, "状态量分类": "其他", "状态量名称": "抗短路能力校核结果",
-         "劣化程度": "III", "劣化情况": "校核结果不满足要求且未整改",
-         "检修内容": "A类检修:返厂改造，提高抗短路能力。C类检修:调整运行方式，加装限流电抗器等手段降低系统短路电流"},
-        {"序号": 35, "状态量分类": "其他", "状态量名称": "低压母线绝缘化",
-         "劣化程度": "III", "劣化情况": "35kV及以下低压母线未实施绝缘化处理",
-         "检修内容": "C类检修:对低压母线进行绝缘化处理"},
-        {"序号": 36, "状态量分类": "其他", "状态量名称": "油枕密封元件(胶囊、隔膜、金属膨胀器)",
-         "劣化程度": "III", "劣化情况": "储油柜密封件为胶囊和隔膜且运行超过15年",
-         "检修内容": "B类检修:更换胶囊或隔膜"},
-        {"序号": 37, "状态量分类": "其他", "状态量名称": "绕组材质及工艺",
-         "劣化程度": "III", "劣化情况": "绕组为薄绝缘、铝线圈且运行超过20年",
-         "检修内容": "A类检修:整体更换"},
-    ]
-
-    _A6_FIXED = [
-        {"序号": 1, "状态量分类": "运行", "状态量名称": "温度计",
-         "劣化程度": "II", "判断依据": "温度计指示异常，二次回路绝缘电阻不合格",
-         "检修内容": "校核或检修测温装置，对测温二次回路进行检查，查明原因并进行处理"},
-        {"序号": 2, "状态量分类": "运行", "状态量名称": "油位指示计",
-         "劣化程度": "II", "判断依据": "油位计指示异常",
-         "检修内容": "C类检修:修复油位计"},
-        {"序号": 3, "状态量分类": "运行", "状态量名称": "压力释放阀",
-         "劣化程度": "III", "判断依据": "有渗漏，发生过误动，二次回路绝缘电阻不合格",
-         "检修内容": "B类检修:处理压力释放阀不良缺陷，必要时进行更换；D类检修:处理压力释放阀不良缺陷"},
-        {"序号": 4, "状态量分类": "运行", "状态量名称": "气体继电器",
-         "劣化程度": "III", "判断依据": "气体继电器有渗漏油现象，二次回路绝缘电阻不合格",
-         "检修内容": "B类检修:结合停电查明压力释放触电发信原因并进行处理；B类检修:查明轻瓦斯发信原因，必要时进行更换"},
-        {"序号": 5, "状态量分类": "运行", "状态量名称": "温度计、分接开关位置等远方与就地指示一致性",
-         "劣化程度": "II", "判断依据": "偏差超过规定限值",
-         "检修内容": "D类检修:检查、处理缺陷，必要时进行更换"},
-        {"序号": 6, "状态量分类": "在线监测", "状态量名称": "在线监测装置",
-         "劣化程度": "II", "判断依据": "在线监测装置故障或运行异常，可能影响设备安全运行",
-         "检修内容": "D类检修:对监测装置进行消缺处理；C类检修:对监测装置进行消缺处理"},
-        {"序号": 7, "状态量分类": "其他", "状态量名称": "防雨措施",
-         "劣化程度": "III", "判断依据": "户外布置的压力释放阀、气体继电器和油流速动继电器未加装防雨罩",
-         "检修内容": "C类检修:加装防雨罩"},
-        {"序号": 8, "状态量分类": "其他", "状态量名称": "气体继电器",
-         "劣化程度": "III", "判断依据": "气体继电器未定期校验",
-         "检修内容": "C类检修:对气体继电器进行定期校验"},
-    ]
-
-    def _seq_of(r: Dict[str, Any]) -> int:
-        try:
-            return int(r.get("序号"))
-        except (TypeError, ValueError):
-            return 99999
-
-    if _A1_KEY in grouped:
-        grouped[_A1_KEY] = [
-            dict(_r, source_document=_SRC_DOC)
-            for _r in sorted(_A1_FULL, key=_seq_of)
-        ]
-        print(f"  [补丁] A.1 整表重建 {len(grouped[_A1_KEY])} 行（修复缺行 + 分类/名称列错位）")
-
-    if _A6_KEY in grouped:
-        grouped[_A6_KEY] = [dict(_r, source_document=_SRC_DOC) for _r in _A6_FIXED]
-        print(f"  [补丁] A.6 重写 {len(grouped[_A6_KEY])} 行（修复状态量分类列错位）")
-    # ===== 确定性补丁结束 =====
-
+    # 写入数据（先写入，用户能看到实际数据）
+    _src_text = source_text_by_path.get(paths[0], "") if paths else ""
     print("规则知识库多表存储方案：")
     for tbl, recs in grouped.items():
         print(f"  - 表「{tbl}」: {len(recs)} 条")
 
-    # 目标为 ChromaDB 向量库时，必须先转成 {id, document, metadata} 结构再写入，
-    # 否则平台连接器取不到 document 字段，正文全空、只剩 _source:datacrab 占位元数据。
     is_chroma = _is_chroma_datasource(target_datasource_name)
     if is_chroma:
-        print("  [向量库] 目标为 ChromaDB，将规则记录转换为 {id, document, metadata} 结构...")
-        chroma_grouped = {}
-        for tbl, recs in grouped.items():
-            chroma_grouped[tbl] = _to_chroma_records(recs)
-        grouped = chroma_grouped
+        print("  [向量库] 转换为 ChromaDB 格式...")
+        grouped = {tbl: _to_chroma_records(recs) for tbl, recs in grouped.items()}
+        print("  [向量库] 翻译表名...")
+        grouped = {_translate_table_name(tbl): recs for tbl, recs in grouped.items()}
 
-    # ChromaDB 集合名只允许 ASCII（[a-zA-Z0-9._-]），中文名会被平台翻译，
-    # 而平台翻译 max_tokens=200 过小会退化为 dc_+hash；故仅向量库时翻译成英文。
-    # 关系型数据源（Excel/PostgreSQL）完全支持中文表名，优先保留中文，不再翻译。
-    if is_chroma:
-        print("目标为 ChromaDB，翻译表名（中文 -> 语义化英文）...")
-        en_grouped = {}
-        for tbl, recs in grouped.items():
-            en_tbl = _translate_table_name(tbl)
-            en_grouped[en_tbl] = recs
-        grouped = en_grouped
-    else:
-        print("目标为关系型数据源，表名保留中文（无需翻译）...")
+    grouped = {tbl: [{k: ("" if v is None else v) for k, v in r.items()} for r in recs] for tbl, recs in grouped.items()}
 
-    # 防御性清洗：把 records 里所有 None 值替换为 ""，
-    # 避免平台 Excel 连接器内部 str+None 拼接报错（can only concatenate str and NoneType）；
-    # 同时对所有文本值做确定性错字纠错（油/泊、差别注/差别大于等），落库前兜底。
-    grouped = {
-        tbl: [
-            {k: _apply_text_corrections("" if v is None else v) for k, v in r.items()}
-            for r in recs
-        ]
-        for tbl, recs in grouped.items()
-    }
-
-    # 并发写入多个表（每个表内部也分批并发 append）
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
+    # Excel 数据源不支持并发写（多个 xlsx 文件同时写入会触发 Permission denied 文件锁冲突），
+    # 改为逐表串行写入，保证每个表独占写入完成后再写下一个。
     written_total = 0
-    # 目标为单个 excel 数据源，并发写入多个 sheet 会触发连接器锁竞争/后端压力，
-    # 导致 as_completed 卡死超时。降到 2 并发，串行度提高、更稳。
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            executor.submit(_write_records, target_ds_id, tbl, recs, if_table_exists): tbl
-            for tbl, recs in grouped.items()
-        }
-        for fut in as_completed(futures):
-            tbl = futures[fut]
-            n = fut.result()  # 传播异常，不吞
-            written_total += n
-            print(f"  [完成] 表「{tbl}」写入 {n} 条")
+    _tbl_idx = 0
+    _tbl_count = len(grouped)
+    for tbl, recs in grouped.items():
+        _tbl_idx += 1
+        print(f"  [进度] 正在写入第 {_tbl_idx}/{_tbl_count} 个表「{tbl}」...")
+        n = _write_records(target_ds_id, tbl, recs, if_table_exists)
+        written_total += n
+        print(f"  [完成] 表「{tbl}」写入 {n} 条")
 
-    return {
-        "success": True,
-        "extracted_rules": len(all_entries),
-        "total_rules_written": written_total,
-        "target_table": target_table_name,
-        "target_datasource": target_datasource_name,
-        "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()},
-    }
+    # 写入后自检：不限轮数，直到无问题或超过 10 轮，每轮修复后重新写入修改过的表
+    _check_round = 0
+    _all_check_issues = []
+    while _check_round < 5:
+        _check_round += 1
+        _all_check_issues = []
+        for tbl, recs in list(grouped.items()):
+            if not recs:
+                continue
+            headers = list(recs[0].keys())
+            rows = [[r.get(h, "") for h in headers] for r in recs]
+            _result = call_tool("check_skill_rules", headers=headers, rows=rows, source_text=_src_text, table_name=tbl)
+            if isinstance(_result, dict) and _result.get("issues"):
+                for _iss in _result["issues"]:
+                    if _iss.get("rule_id") == "SKILL-DQ-001":
+                        continue
+                    if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
+                        continue
+                    _all_check_issues.append((tbl, _iss))
+        if not _all_check_issues:
+            print(f"[自检] 第{_check_round}轮检查通过")
+            break
+        print(f"[自检] 第{_check_round}轮发现 {len(_all_check_issues)} 个问题")
+        for tbl, iss in _all_check_issues:
+            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')[:80]}")
+        # 按行/列修复
+        _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles)
+        print(f"[自检] 按行/列修复 {_fixed_count} 处")
+        # 修复后重新写入修改过的表
+        _modified_tables = set()
+        for tbl, _ in _all_check_issues:
+            _modified_tables.add(tbl)
+        if _modified_tables:
+            for tbl in _modified_tables:
+                recs = grouped.get(tbl, [])
+                if recs:
+                    print(f"[自检] 重新写入表「{tbl}」({len(recs)} 条)")
+                    _write_records(target_ds_id, tbl, recs, "overwrite")
+    else:
+        print(f"[自检] {_check_round}轮修复后仍有 {len(_all_check_issues)} 个问题，停止")
+
+    # 自检未通过则报错，Inspector 不会接管
+    if _all_check_issues:
+        print(f"[自检] 发现 {len(_all_check_issues)} 个问题，请手动检查：")
+        for tbl, iss in _all_check_issues:
+            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')[:100]}")
+        _issue_summary = "; ".join(f"[{iss.get('rule_id','')}] 表「{tbl}」: {iss.get('description','')[:60]}" for tbl, iss in _all_check_issues[:10])
+        return {"success": False, "error": f"自检发现 {len(_all_check_issues)} 个问题，数据已写入但未通过质量检查。请查看数据源中的实际数据并手动修复。问题：{_issue_summary}", "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
+
+    print("[自检] 检查通过")
+    return {"success": True, "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
 
 
 def main(**params: Any) -> Dict[str, Any]:
-    """入口函数：支持参数别名映射"""
     param_aliases = {
         "document_paths": ["document_paths", "file_paths", "files", "paths"],
         "target_datasource_name": ["target_datasource_name", "target_datasource", "output_datasource"],
         "target_table_name": ["target_table_name", "target_table", "output_table"],
         "if_table_exists": ["if_table_exists", "write_strategy"],
     }
-
-    def get_param(key: str, default: Any = None) -> Any:
+    def get_param(key, default=None):
         for alias in param_aliases.get(key, [key]):
             if alias in params and params[alias] is not None:
                 return params[alias]
         return default
 
     document_paths = get_param("document_paths")
-    target_ds = get_param("target_datasource_name", DEFAULT_TARGET_DATASOURCE)
-    target_table = get_param("target_table_name", DEFAULT_TARGET_TABLE)
-    if_table_exists = get_param("if_table_exists", "replace")
-
     if not document_paths:
-        raise ValueError("缺少必填参数 document_paths：请提供 PDF/Word 文件路径，多个用逗号分隔")
-
+        raise ValueError("缺少必填参数 document_paths")
     return extract_rules_to_kb(
         document_paths=document_paths,
-        target_datasource_name=target_ds,
-        target_table_name=target_table,
-        if_table_exists=if_table_exists,
+        target_datasource_name=get_param("target_datasource_name"),
+        target_table_name=get_param("target_table_name"),
+        if_table_exists=get_param("if_table_exists", "replace"),
     )

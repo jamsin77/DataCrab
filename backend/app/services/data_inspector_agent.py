@@ -115,6 +115,49 @@ def _format_skill_rules_for_llm(skill_rules: Dict) -> str:
     return "\n\n以下技能专属规则无法自动检查，请基于上述报告数据主观判断：\n" + "\n".join(_nl_rules)
 
 
+async def _run_skill_rules_check(output_tables, skill_path, context, db, user_id):
+    """调 check_skill_rules 工具检查技能规则（与技能脚本自检一致的方式）。
+
+    遍历所有输出表，加载 DataFrame 转 headers/rows，调 check_skill_rules。
+    check_skill_rules 内部对有 regex/legal_values 的规则做确定性检查，
+    对纯自然语言规则调 LLM 判断——与技能脚本 main.py 自检调用方式完全一致。
+    """
+    if not skill_path:
+        return []
+    from app.services.inspector_tools import inspector_tools
+    from app.services.tool_registry import execute_tool
+    from app.core.database import async_session as _insp_session
+
+    _all_issues = []
+    for _tbl_info in output_tables:
+        _ds_id = _tbl_info.get("datasource_id", "")
+        _tbl_name = _tbl_info.get("table_name", "")
+        if not _ds_id or not _tbl_name:
+            continue
+        try:
+            async with _insp_session() as _chk_sess:
+                df = await inspector_tools._load_data(_ds_id, _tbl_name, _chk_sess, use_cache=True)
+            headers = list(df.columns)
+            rows = [[str(c) if c is not None else "" for c in row] for row in df.head(20).values.tolist()]
+            _result = await execute_tool("check_skill_rules", {
+                "headers": headers,
+                "rows": rows,
+                "source_text": "",
+                "table_name": _tbl_name,
+                "skill_path": skill_path,
+            }, db, user_id, context)
+            _data = json.loads(_result) if isinstance(_result, str) else _result
+            if isinstance(_data, dict) and _data.get("issues"):
+                for iss in _data["issues"]:
+                    if not iss.get("table"):
+                        iss["table"] = _tbl_name
+                    _all_issues.append(iss)
+        except Exception as e:
+            logger.warning(f"Inspector 调 check_skill_rules 失败: {e}")
+    logger.info(f"[Inspector] check_skill_rules 返回 {len(_all_issues)} 条技能规则 issue")
+    return _all_issues
+
+
 DATA_INSPECTOR_INSTRUCTIONS = """你是 DataCrab 的 DataInspector（数据检查智能体），一位数据质量专家。
 
 ## 核心能力
@@ -205,6 +248,27 @@ class DataInspectorAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"加载技能规则失败(非致命): {e}")
 
+        # 查源数据源类型（用于判定是否文档提取场景）
+        _source_ds_type = ""
+        _source_ds_id = context.get("debug_source_datasource_id", "")
+        if _source_ds_id:
+            try:
+                from app.models.datasource import DataSource as _DS
+                from sqlalchemy import select as _select
+                async with _insp_session() as _ds_sess:
+                    _ds_r = await _ds_sess.execute(_select(_DS).where(_DS.id == _uuid.UUID(_source_ds_id)))
+                    _source_ds = _ds_r.scalar_one_or_none()
+                    if _source_ds:
+                        _source_ds_type = _source_ds.type or ""
+                        _cfg = _source_ds.connection_config or {}
+                        if isinstance(_cfg, dict):
+                            _file_path = _cfg.get("file_path") or _cfg.get("path") or _cfg.get("file") or ""
+                            if _file_path:
+                                _source_ds_type = _source_ds_type + "|" + str(_file_path)
+            except Exception as _e:
+                logger.warning(f"查源数据源类型失败(非致命): {_e}")
+        logger.info(f"[Inspector] source_ds_type={_source_ds_type}")
+
         await llm_manager.initialize()
 
         system_prompt = self.build_system_prompt(context)
@@ -229,7 +293,7 @@ class DataInspectorAgent(BaseAgent):
                 logger.info(f"[Inspector] 检查表 {_idx}/{len(_output_tables)}: {_tbl_name}")
                 yield {"type": "progress", "message": f"  📊 {_tbl_name}：正在获取数据概览..."}
                 async with _insp_session() as _chk_sess:
-                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules)
+                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules, source_ds_type=_source_ds_type)
                 _all_check_results[_tbl_name] = _cr
                 _issue_count = sum(len(r.get("issues", [])) for r in _cr.values() if isinstance(r, dict))
                 _dim_summary = []
@@ -261,41 +325,17 @@ class DataInspectorAgent(BaseAgent):
                 _tbl_list = "\n".join(f"  - 数据源ID: {t.get('datasource_id','')}, 表名: {t.get('table_name','')}" for t in _output_tables)
                 inspect_prompt += f"输出表清单（可用 query_table_data 查询数据）:\n{_tbl_list}\n"
             inspect_prompt += _format_skill_rules_for_llm(skill_rules)
-            # 仅当技能有专属规则时才注入逐条检查指令；无 rules.md 的技能不注入假规则
-            if skill_rules:
-                # 区分：带 regex/legal_values 的规则已被 run_all_checks 确定性执行，只有纯自然语言规则需要 LLM 判断
-                _subjective_rules = []
-                for cat_key in ("std", "dq", "sec"):
-                    for r in skill_rules.get(cat_key, []):
-                        if not r.get("regex") and not r.get("legal_values"):
-                            _subjective_rules.append(r)
-                if _subjective_rules:
-                    inspect_prompt += "\n\n**以下技能专属规则需要你基于报告内容主观判断（确定性规则已自动执行）：**"
-                    _rule_idx = 0
-                    for r in _subjective_rules:
-                        _rule_idx += 1
-                        _rid = r.get("rule_id", f"SKILL-SUB-{_rule_idx}")
-                        _desc = r.get("description", r.get("name", ""))
-                        inspect_prompt += f"\n{_rule_idx}. {_rid}：{_desc}"
-                else:
-                    inspect_prompt += "\n\n技能专属规则已全部通过确定性检查自动执行。"
-                inspect_prompt += "\n\n请基于以上确定性检查报告总结分析结论。"
-                inspect_prompt += "\n如发现需要修复的问题，在分析结论末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
-                inspect_prompt += "\n```json"
-                inspect_prompt += "\n{\"skill_rule_issues\": ["
-                inspect_prompt += "\n  {\"rule_id\": \"规则ID\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
-                inspect_prompt += "\n]}"
-                inspect_prompt += "\n```"
-                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。pass 表示该条规则检查通过。无问题则不需要输出 JSON。"
+            # 调 check_skill_rules 工具检查技能规则（与自检一致，不再让 LLM 看 format_report 二次判断）
+            _skill_issues = await _run_skill_rules_check(_output_tables, _skill_path, context, db, user_id)
+            if _skill_issues:
+                _cr = context.get("_check_results", {})
+                if isinstance(_cr, dict):
+                    _cr["skill_rule_issues"] = _skill_issues
+                    context["_check_results"] = _cr
+                inspect_prompt += f"\n\n技能专属规则检查完成，发现 {len(_skill_issues)} 个问题。"
             else:
-                inspect_prompt += "\n\n以上确定性检查结果已完整，请直接基于报告内容总结分析结论。"
-                inspect_prompt += "\n如发现需要修复的问题，在分析结论末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
-                inspect_prompt += "\n```json"
-                inspect_prompt += "\n{\"skill_rule_issues\": ["
-                inspect_prompt += "\n  {\"rule_id\": \"规则ID或自定义\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
-                inspect_prompt += "\n]}"
-                inspect_prompt += "\n```"
-                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。无问题则不需要输出 JSON。"
+                inspect_prompt += "\n\n技能专属规则检查完成，未发现问题。"
+            inspect_prompt += "\n\n请基于以上检查报告总结分析结论。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] INSPECT_RESULT report_len={len(report)} report_head={report[:200]} report_tail={report[-400:]}")
@@ -316,7 +356,7 @@ class DataInspectorAgent(BaseAgent):
                 logger.info(f"[Inspector] 复查表 {_idx}/{len(_output_tables)}: {_tbl_name}")
                 yield {"type": "progress", "message": f"  📊 {_tbl_name}：正在获取数据概览..."}
                 async with _insp_session() as _chk_sess:
-                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules)
+                    _cr = await inspector_tools.run_all_checks(_ds_id, _tbl_name, _chk_sess, skill_rules=skill_rules, source_ds_type=_source_ds_type)
                 _all_check_results[_tbl_name] = _cr
                 _issue_count = sum(len(r.get("issues", [])) for r in _cr.values() if isinstance(r, dict))
                 _dim_summary = []
@@ -336,18 +376,17 @@ class DataInspectorAgent(BaseAgent):
             if _user_msg:
                 inspect_prompt += f"用户原始请求: {_user_msg[:500]}\n"
             inspect_prompt += _format_skill_rules_for_llm(skill_rules)
-            if skill_rules:
-                inspect_prompt += "\n\n你可以使用 read_file 读取源文档、query_table_data 查看提取后的实际数据，来对照判断技能专属规则。"
-                inspect_prompt += "\n\n检查完成后，在分析结论的末尾输出以下 JSON（用 ```json 包裹），供系统自动触发修复："
-                inspect_prompt += "\n```json"
-                inspect_prompt += "\n{\"skill_rule_issues\": ["
-                inspect_prompt += "\n  {\"rule_id\": \"规则ID\", \"severity\": \"error/warning/pass\", \"table\": \"表名\", \"column\": \"列名或空\", \"description\": \"问题描述\", \"suggestion\": \"修复建议\"}"
-                inspect_prompt += "\n]}"
-                inspect_prompt += "\n```"
-                inspect_prompt += "\nseverity 必须是 error/warning/pass 之一。pass 表示该条规则检查通过。"
+            # 调 check_skill_rules 工具检查技能规则（与自检一致）
+            _skill_issues = await _run_skill_rules_check(_output_tables, _skill_path, context, db, user_id)
+            if _skill_issues:
+                _cr = context.get("_check_results", {})
+                if isinstance(_cr, dict):
+                    _cr["skill_rule_issues"] = _skill_issues
+                    context["_check_results"] = _cr
+                inspect_prompt += f"\n\n技能专属规则检查完成，发现 {len(_skill_issues)} 个问题。"
             else:
-                inspect_prompt += "\n\n以上确定性检查结果已完整，请直接基于报告内容确认之前的问题是否已修复，并检查是否引入新问题。"
-            inspect_prompt += "\n请确认之前的问题是否已修复，并检查是否引入新问题。"
+                inspect_prompt += "\n\n技能专属规则检查完成，未发现问题。"
+            inspect_prompt += "\n\n请确认之前的问题是否已修复，并检查是否引入新问题。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
             logger.info(f"[Inspector-DEBUG] FIX_COMPLETED report_len={len(report)} report_preview={report[:200]}")
@@ -419,14 +458,7 @@ class DataInspectorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                # 最终结论：解析 SKILL-DQ JSON issue，塞入 check_results
-                _skill_issues = _parse_skill_rule_issues(content)
-                if _skill_issues:
-                    _cr = context.get("_check_results", {})
-                    if isinstance(_cr, dict):
-                        _cr["skill_rule_issues"] = _skill_issues
-                        context["_check_results"] = _cr
-                    logger.info(f"[Inspector] 解析到 {len(_skill_issues)} 条技能规则 issue")
+                # 最终结论：skill_rule_issues 已在预执行阶段通过 check_skill_rules 获取，不再从 LLM 输出解析
                 yield {"type": "content", "content": content}
                 yield {"type": "done", "result": {"agent": self.name, "content": content, "success": True, "check_results": context.get("_check_results")}}
                 return

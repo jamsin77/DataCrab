@@ -35,10 +35,11 @@ from app.services.agent_utils import (
     build_pressure_warning,
     should_compact,
     compact_messages,
+    estimate_messages_tokens,
     build_tool_action_event,
 )
 from app.services.tool_guidance import get_tool_guidance
-from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC
+from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC, SKILL_RULES_DOC
 
 DATA_PROCESSOR_INSTRUCTIONS = """你是 DataCrab 的 DataProcessor（数据处理智能体），一位数据处理专家。
 
@@ -77,6 +78,7 @@ MAIN_TOOLS = [
     "write_table_data", "iter_table_data", "read_file", "write_file",
     "llm_generate", "extract_video_info", "extract_keyframes",
     "edit_script", "run_script", "read_script", "grep_script",
+    "check_skill_rules",
 ]
 
 
@@ -100,9 +102,10 @@ VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否�
 - 不要在脚本中安装数据库扩展、不要直接调用外部 API
 - 不要吞掉异常：except 块必须 re-raise 或返回 success=False（不能静默返回 success=True 隐藏错误）
 - 下方「平台约定」文档列出了 call_tool 可用工具和返回格式，修改脚本前先看
+- 下方「技能脚本通用规则」禁止硬编码业务词/表结构假设/等级词集，修改前先看
 """
 
-# 调试 system prompt 静态前缀缓存（借鉴 DeepAnalyze sectionCache：字节稳定 → 命中 prefix cache）
+# 调试 system prompt 静态前缀缓存：字节稳定 → 命中 prefix cache
 # key = (is_skill, max_rounds, max_inspections)；一次会话内不变
 _DEBUG_STATIC_PROMPT_CACHE: Dict[tuple, str] = {}
 
@@ -324,6 +327,7 @@ class DataProcessorAgent(BaseAgent):
         script_name = context.get("debug_script_name", "main.py")
         _tool_call_meta: Dict[str, tuple] = {}
         _last_round_had_fix = False
+        _has_edited = False  # 调查阶段用 flash，edit_script 后切深度模型
 
         # system prompt：主对话用 build_system_prompt，调试用 build_debug_system_prompt
         if _is_debug:
@@ -349,8 +353,7 @@ class DataProcessorAgent(BaseAgent):
         _inspection_round = context.get("debug_inspection_round", 0)
         if message.reason == HandoffReason.FIX_REQUIRED:
             # DataInspector 发现问题，回交修复
-            _inspection_round += 1
-            context["debug_inspection_round"] = _inspection_round
+            # debug_inspection_round 已在 multi_agent.py Processor→Inspector 时递增，这里只读
             _max_inspections = context.get("debug_max_inspections", 7)
             if _inspection_round > _max_inspections:
                 yield {"type": "content", "content": f"已达到最大检查修复轮次（{_max_inspections}轮），DataInspector 仍发现问题，请人工介入。"}
@@ -400,7 +403,7 @@ class DataProcessorAgent(BaseAgent):
             max_iterations = 100  # 调试模式需要更多轮次
         logger.info(f"DataProcessor: complexity={complexity}, budget={max_iterations} turns, debug={_is_debug}")
 
-        had_any_tool_calls = False
+        had_any_tool_calls = context.get("_had_any_tool_calls", False)
         pressure_warned = False
         has_preinjected_data = context.get("has_preinjected_data", False)
 
@@ -420,14 +423,18 @@ class DataProcessorAgent(BaseAgent):
                 _tool_call_meta.clear()
 
             # 上下文压缩（对齐 OpenCode compaction）
-            if should_compact(local_messages):
+            _compact_tokens = estimate_messages_tokens(local_messages)
+            _should = should_compact(local_messages)
+            logger.info(f"[run] should_compact={_should} tokens={_compact_tokens} threshold={int(128000*0.75)} msgs={len(local_messages)}")
+            if _should:
                 local_messages = await compact_messages(local_messages, llm_manager)
 
             # 流式调用（实时推送 thinking/content/tool_calls）
             tool_calls = []
             content = ""
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools, model=llm_manager._default,
+                messages=local_messages, tools=self.tools,
+                model=llm_manager._default,
                 temperature=0.1 if _is_debug else 0.3, tool_choice="auto",
             ):
                 t = event["type"]
@@ -444,6 +451,8 @@ class DataProcessorAgent(BaseAgent):
             # 检测是否为修改尝试（只数 run_script）
             _has_fix = tool_calls and any(tc["function"]["name"] == "run_script" for tc in tool_calls)
             _has_edit = tool_calls and any(tc["function"]["name"] == "edit_script" for tc in tool_calls)
+            if _has_edit:
+                _has_edited = True  # 切到深度模型，后续轮次用推理型
             if _has_fix:
                 _last_round_had_fix = True
                 _fix_attempts += 1
@@ -503,7 +512,13 @@ class DataProcessorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": "你刚才读了脚本但还没有执行。请直接调 run_script 执行技能，用执行结果验证脚本是否正常。"})
                     continue
 
-                # 调试模式从未调过工具 = give_up
+                # 调试模式：从未调过工具 → 先给一次重试机会（Inspector 回交时 LLM 可能先输出分析再调工具）
+                if _is_debug and not had_any_tool_calls and i < max_iterations - 1:
+                    local_messages.append({"role": "assistant", "content": content})
+                    local_messages.append({"role": "user", "content": "请分析问题后直接调 edit_script 修改脚本或 run_script 执行验证，不要只输出文字分析。"})
+                    continue
+
+                # 调试模式仍未调工具 = give_up
                 if _is_debug:
                     _record_give_up(context.get("debug_folder", ""), content[:500] or "未执行工具操作", content, script_name)
                     yield {"type": "give_up", "reason": content[:500] or "未执行工具操作"}
@@ -787,6 +802,7 @@ class DataProcessorAgent(BaseAgent):
             # 执行成功 → done 带执行结果，RunTime 决定是否交接 Inspector
             if _just_succeeded:
                 context["_processor_local_messages"] = local_messages
+                context["_had_any_tool_calls"] = had_any_tool_calls
                 yield {"type": "done", "result": {
                     "agent": self.name, "content": "执行成功", "success": True,
                     "execution_success": True,
@@ -966,6 +982,9 @@ class DataProcessorAgent(BaseAgent):
             return cached
 
         prompt = DEBUG_INSTRUCTIONS.replace("{max_exec_failures}", str(max_exec_failures))
+
+        # 技能通用规则（禁止硬编码业务词/表结构假设 + 返回值规范 + 代码组织）
+        prompt += "\n\n" + SKILL_RULES_DOC
 
         # 沙箱函数签名契约（对齐 OpenCode：工具 schema 永远在 prompt 里，LLM 不必猜 API）
         prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
