@@ -12,7 +12,7 @@ DataCrab 是一款基于大语言模型（LLM）的数据工程智能体，提�
 |------|------|------------|
 | **对话即处理** | 用自然语言代替编码，LLM 理解意图、匹配 Skill、生成可执行代码，结果以表格/图表返回 | Conversational Data Processing、Agentic UI |
 | **沉淀即资产** | 每次处理过程自动沉淀为可复用 Skill，逐步构建技能库，越用越聪明 | Skill-based Agent、Compound AI System |
-| **生态即闭环** | Skill 积累形成数据生态，DataProcessor 加工 + DataInspector 检查 + DataAnalyst 分析三智能体协作，从接入到输出闭环 | Multi-Agent Collaboration、Human-in-the-loop |
+| **生态即闭环** | Skill 积累形成数据生态，DataProcessor 加工 + DataInspector 检查 + DataAnalyst 分析 + ChatAgent 对话四智能体协作，从接入到输出闭环 | Multi-Agent Collaboration、Human-in-the-loop |
 | **Loop 化** | 最终目标：AI 理解需求 → 匹配 Skill → 执行 → 检查 → 自我修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
 
 > **Loop 化**是 DataCrab 的终极目标。正如业界所倡导的 Loop Engineering——不让 AI 只做单步推理，而是让它在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成。DataCrab 的多智能体 Handoff 机制和技能自我进化能力正是这一理念的具体实践。

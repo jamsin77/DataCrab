@@ -136,7 +136,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 
 **沙箱安全**：子进程 `__import__` hook 拦截危险模块（os/sys/sqlite3/socket 等）；`open()` 沙箱化（只允许临时目录 + 授权目录）；环境变量白名单（不传密钥）；删 PYTHONPATH（防 import app.*）；cwd 改临时目录；stdout 累积上限（5000 行/5MB）；并发限制（Semaphore(3)）；POSIX 资源限制（内存 2GB/CPU 600s/文件 500MB，Windows 跳过）。
 
-## 工程改进记录（借鉴 DeepAnalyze）
+## 工程改进记录
 
 ### 第一轮（基础工程优化）
 
@@ -253,7 +253,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 
 ### 第九轮（截断保证契约 + 推理预算正法 + Prefix Cache）
 
-**核心洞察**（对照 Opencode / DeepAnalyze）：max_tokens 是 cap 不是 charge，模型推理自终止——cap 只截断不省 token。第八轮的「4000 防 reasoning 无限拉长」是自我伤害。「推理链无限拉长」真因是循环推理，应用 StuckDetector + frequency_penalty 治本，而非 cap 治标。两个目标（不截断 + 省 Token）由同一组杠杆同时满足。
+**核心洞察**（对照 Opencode）：max_tokens 是 cap 不是 charge，模型推理自终止——cap 只截断不省 token。第八轮的「4000 防 reasoning 无限拉长」是自我伤害。「推理链无限拉长」真因是循环推理，应用 StuckDetector + frequency_penalty 治本，而非 cap 治标。两个目标（不截断 + 省 Token）由同一组杠杆同时满足。
 
 **截断保证契约（用户可见截断归零）**：L1 预防（max_tokens→12000）→ L2 续写（length 时 append partial +「继续」同模型续写 ≤5 轮，partial 复用为 cached input，不重生成不 clear_thinking）→ L3 强制推进（续写耗尽 → 同模型 + tool_choice=required，不换 fast_model）→ L4 循环推理正法（has_massive_repetition → frequency_penalty=0.1 一次性）。
 

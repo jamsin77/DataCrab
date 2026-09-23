@@ -8,7 +8,7 @@ DataCrab 数据工程智能体后端服务
 
 - **对话即处理**：LLM 理解意图、匹配 Skill、生成可执行代码
 - **沉淀即资产**：处理过程沉淀为可复用 Skill，越用越聪明
-- **生态即闭环**：DataProcessor + DataInspector + DataAnalyst 三智能体协作闭环
+- **生态即闭环**：DataProcessor + DataInspector + DataAnalyst + ChatAgent 四智能体协作闭环
 - **Loop 化**：AI 理解→执行→检查→自修复，全程无人干预（Self-healing Pipeline、Deep Agents）
 
 ## 功能特性

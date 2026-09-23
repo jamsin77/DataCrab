@@ -1468,7 +1468,7 @@ export default {
       introP2: '系统采用 Orchestrator-Worker 多智能体协作架构（参考 Claude Code / OpenAI Agents SDK）：DataProcessor 负责修改与执行，DataInspector 负责质量/标准/安全检查，DataAnalyst 承担只读分析。Handoff 由 RunTime 自动决策，Agent 不感知交接存在。内置自愈循环——AI 理解需求 → 执行 → 检查 → 自修复，全程无人干预，逐步迈向「Loop 化」终极目标。',
       introP3: '核心理念：对话即处理 → 沉淀即资产 → 生态即闭环 → Loop 化。AI 在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成；每次处理过程自动沉淀为可复用技能，越用越聪明。',
       feat1: '对话式数据工程，零代码完成查询/清洗/转换/分析/可视化全流程',
-      feat2: '三智能体协作闭环：DataProcessor 加工 + DataInspector 检查 + DataAnalyst 只读分析，Handoff 由 RunTime 自动决策',
+      feat2: '四智能体协作闭环：DataProcessor 加工 + DataInspector 检查 + DataAnalyst 只读分析 + ChatAgent 对话，Handoff 由 RunTime 自动决策',
       feat3: 'AI 调试助手：4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash），AI 修改脚本后自动执行验证',
       feat4: '自我进化经验库：失败记录反例、修错后成功采集正例，LLM 归纳经验注入后续生成/修改/调试提示词',
       feat5: '8 种数据源连接器：PostgreSQL / MySQL / SQLite / CSV / Excel / OBS-S3 / HDFS / ChromaDB；写入支持 7 种策略（fail/append/replace/overwrite/truncate/delete_rows/upsert）',

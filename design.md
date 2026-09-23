@@ -8,7 +8,7 @@
 |------|------|---------|
 | 对话即处理 | 自然语言代替编码，LLM 理解意图、匹配 Skill、生成代码 | Conversational Data Processing、Agentic UI |
 | 沉淀即资产 | 每次处理沉淀为可复用 Skill，越用越聪明 | Skill-based Agent、Compound AI System |
-| 生态即闭环 | Skill 积累形成生态，三智能体协作闭环 | Multi-Agent Collaboration |
+| 生态即闭环 | Skill 积累形成生态，四智能体协作闭环 | Multi-Agent Collaboration |
 | Loop 化 | AI 理解→执行→检查→自修复，全程无人干预 | Self-healing Pipeline、Full-loop Automation、Deep Agents |
 
 Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中持续迭代，直到任务完成。多智能体 Handoff 机制和技能自我进化能力是这一理念的具体实践。
@@ -4054,78 +4054,78 @@ DataCrab 的 SSE 流式端点遵循统一模式：
 ### 10.4 扩展性风险- **风险**: 系统扩展困难
 - **应对**: 模块化设计、插件机制、微服务架构
 
-## 11. 工程改进记录（借鉴 DeepAnalyze）
+## 11. 工程改进记录
 
-本章节记录借鉴 DeepAnalyze 通用 Agent 平台设计思想后，对 DataCrab 做的工程改进。每项改进标注了对应的文件和设计理念来源。
+本章节记录 DataCrab 的工程改进。每项改进标注了对应的文件和设计理念来源。
 
 ### 11.1 工具系统改进
 
 #### 工具去重（shared_tools.py）
 - **问题**：`agent.py` 和 `data_processor_agent.py` 有 5 个工具的 schema 和实现完全 copy-paste
 - **改进**：提取 `shared_tools.py`，统一定义 7 个公共工具的 schema + 实现，两个 Agent 各自 import
-- **理念**：借鉴 DeepAnalyze 的 ToolRegistry 统一管理思想
+- **理念**：ToolRegistry 统一管理思想
 
 #### 工具结果截断（agent_utils.py → truncate_tool_result）
 - **问题**：`query_table_data` 默认返回 100 行全量 JSON，多轮查询撑爆上下文
 - **改进**：工具返回 JSON 超 8000 字符时自动截断为前 5 行 + 列名 + 总行数 + 截断提示
-- **理念**：借鉴 DeepAnalyze 的 Micro-Compact 策略
+- **理念**：Micro-Compact 策略
 
 #### 工具诚实能力表（tool_guidance.py）
 - **问题**：工具描述只说能做什么，不说不能做什么，模型误用工具
 - **改进**：给每个工具标注覆盖率/精确度/已知局限，作为能力表注入 system prompt
-- **理念**：借鉴 DeepAnalyze 的"工具诚实"原则——把工具弱点如实写出来，模型才能正确组合工具
+- **理念**："工具诚实"原则——把工具弱点如实写出来，模型才能正确组合工具
 
 ### 11.2 Agent Loop 改进
 
 #### 卡死检测（agent_utils.py → StuckDetector）
 - **问题**：Agent loop 只有 `MAX_AGENT_ITERATIONS=12` 硬上限，不检测原地打转
 - **改进**：检测重复调用（连续 2 轮相同工具+参数）和空转（连续 3 轮无工具调用），注入策略切换提示
-- **理念**：借鉴 DeepAnalyze 的 StuckDetector（四种卡死模式，DataCrab 取两种）
+- **理念**：StuckDetector（四种卡死模式，DataCrab 取两种）
 
 #### 反幻觉检查（agent_utils.py → is_planning_only / should_warn_ungrounded_claim）
 - **问题**：Agent 可能"只规划不执行"或输出无工具支撑的数据声明（曾出过"AI虚构数据"bug）
 - **改进**：
   - finish 前检查输出是否只是规划文本（"我将...然后..."），如果是则拒绝结束
   - 工具结果携带 `_source` 来源标记（datasource:xxx/table:yyy）
-- **理念**：借鉴 DeepAnalyze 的"防只规划不执行"和零幻觉六层防御
+- **理念**："防只规划不执行"和零幻觉六层防御
 
 #### Handoff 收敛检测（data_harness.py → ConvergenceGuard）
 - **问题**：processor↔inspector 可能对同一问题来回踢皮球，白耗 10×12=120 次 API 调用
 - **改进**：`ConvergenceGuard` 非侵入式组件，`record()` 记录 handoff 签名（to_agent, datasource_id, table_name），`is_diverged()` 判断连续 4 次在同一张表上来回则终止；multi_agent.py 只调 3 行，不再内联签名追踪
-- **理念**：借鉴 DeepAnalyze 的收敛检测思想；流程层 Harness 非侵入式，业务代码不感知检测细节
+- **理念**：收敛检测思想；流程层 Harness 非侵入式，业务代码不感知检测细节
 
 ### 11.3 上下文管理改进
 
 #### CJK 感知 Token 估算（agent_utils.py → estimate_tokens）
 - **问题**：`_compress_history` 用字符数（`len()`）做触发判断，中文场景误差大
 - **改进**：CJK 字符 ×1.5、非 ASCII ×0.5、ASCII ×0.25 估算 token 数
-- **理念**：借鉴 DeepAnalyze 的 CJK 感知 Token 估算
+- **理念**：CJK 感知 Token 估算
 
 #### 压缩标识符保护（agent_utils.py → extract_identifiers / build_identifier_hint）
 - **问题**：历史摘要后 Agent 忘了之前查过什么表/数据源，又重复搜索
 - **改进**：压缩时机械抽取 UUID/表名/数据源 ID，在摘要 prompt 中要求保留这些标识符
-- **理念**：借鉴 DeepAnalyze 的标识符保护原则
+- **理念**：标识符保护原则
 
 ### 11.4 LLM 调用改进
 
 #### 瞬态重试（llm.py → _acreate_with_retry）
 - **问题**：429 限流/网络超时直接换模型，不重试同一模型；tenacity 声明了但没用
 - **改进**：对 RateLimitError/APITimeoutError/APIConnectionError/InternalServerError 做最多 2 次指数退避重试（2s→4s），重试耗尽再走 model-chain fallback
-- **理念**：借鉴 DeepAnalyze 的四级错误恢复链第一层
+- **理念**：四级错误恢复链第一层
 
 ### 11.5 路由改进
 
 #### 统一路由 + Handoff（chat.py）
 - **问题**：`_route_to_agent` 用关键词匹配预判路由（"检查/质量"→inspector），边界场景误判
 - **改进**：始终从 DataProcessorAgent 开始；**第二十三轮起 Handoff 由 RunTime `_decide_handoff()` 决策（Agent 不感知 handoff 存在）**；`_route_to_agent` 函数已删除
-- **理念**：借鉴 DeepAnalyze 的"Agent 自主性"原则——系统给信号不给约束；Orchestrator-Worker 原则——Agent 专注任务，流程编排由 RunTime 负责
+- **理念**："Agent 自主性"原则——系统给信号不给约束；Orchestrator-Worker 原则——Agent 专注任务，流程编排由 RunTime 负责
 
 ### 11.6 经验库改进
 
 #### 跨算子经验聚合（experience.py → distill_cross_patterns）
 - **问题**：经验按算子/skill 独立积累，缺少跨算子的通用模式发现
 - **改进**：`distill_cross_patterns()` 收集所有算子/技能的 lessons，用 LLM 提炼通用数据处理模式，存到 `global_lessons.md`
-- **理念**：借鉴 DeepAnalyze 的 AutoDream 跨会话经验整合思想
+- **理念**：AutoDream 跨会话经验整合思想
 
 ### 11.7 工程卫生
 
@@ -4350,13 +4350,13 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 
 ### 11.20 第九轮：截断保证契约 + 推理预算正法 + Prefix Cache
 
-**核心洞察**：对照 Opencode / DeepAnalyze 后发现，第八轮的「max_tokens=4000 防 reasoning 无限拉长」是自我伤害——max_tokens 是 cap 不是 charge，模型推理自终止，cap 只截断不省 token。「推理链无限拉长」的真因是循环推理（模型卡住绕圈），应用 StuckDetector + frequency_penalty 治本，而非 cap 治标。两个目标（不截断 + 省 Token）由同一组杠杆同时满足。
+**核心洞察**：对照 Opencode 后发现，第八轮的「max_tokens=4000 防 reasoning 无限拉长」是自我伤害——max_tokens 是 cap 不是 charge，模型推理自终止，cap 只截断不省 token。「推理链无限拉长」的真因是循环推理（模型卡住绕圈），应用 StuckDetector + frequency_penalty 治本，而非 cap 治标。两个目标（不截断 + 省 Token）由同一组杠杆同时满足。
 
 **截断保证契约（用户可见截断归零）**：
 - L1 预防：max_tokens 拉到 12000（cap≠cost，推理自终止不浪费）
 - L2 续写：finish_reason=length → append partial + 「请从你刚才停下的地方继续」同模型续写（≤5 轮），partial 复用为 input（命中 prefix cache），不重生成、不 clear_thinking
 - L3 强制推进：续写耗尽仍 length（极罕见）→ 同模型 + tool_choice=required 兜底（不换 fast_model，保住已生成推理）
-- L4 循环推理正法：has_massive_repetition 检测 reasoning 重复 → 下轮注入 frequency_penalty=0.1（一次性，DA line 1567 正法）
+- L4 循环推理正法：has_massive_repetition 检测 reasoning 重复 → 下轮注入 frequency_penalty=0.1（一次性，正法）
 
 | 改进 | 文件 | 说明 |
 |------|------|------|
@@ -4364,7 +4364,7 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | L2 截断续写机制 | llm.py | `chat_stream_with_tools_and_thinking` / `chat_stream_with_thinking` 新增 L2 续写：finish_reason=length 时 append 已生成 partial assistant + 「继续」user 消息，同模型续写，最多 5 轮；partial 作为 input 复用（命中 prefix cache），不重生成、不 clear_thinking；替换原 token_chain 升级链（4K→8K→16K 重生成）|
 | L3 强制推进（替代 fast_model 重定向） | data_processor_agent.py + data_inspector_agent.py | 删 length→fast_model 重定向（丢推理+双倍计费）；L2 续写耗尽仍 length → 同模型 + tool_choice=required 兜底（`_force_tool_attempts`，最多 2 次）；L3 也失败 → give_up 优雅终止（明确失败信号，不是截断的假结果）|
 | L4 循环推理正法 | agent_utils.py + llm.py + 2 个 agent | `has_massive_repetition`：取候选片段统计全文非重叠出现次数（≥3 次判定重复）；检测到 reasoning 重复 → 下轮 `frequency_penalty=0.1`（一次性，用完重置）；这是「推理链无限拉长」的真正根因治法，替代 4000-cap 治标 |
-| Prefix Cache 静态/动态分区 | data_processor_agent.py | `build_debug_system_prompt` 改静态/动态分区：静态区（指令+技能规范+沙箱文档+工具指引+安全+反幻觉）memoize 字节稳定，`---DYNAMIC_BOUNDARY---` 之上；动态区（脚本/SKILL.md/参数/经验/历史）每轮可变。移除 round_num 渐进式注入（破坏缓存）；GLM context cache 第二轮起命中静态前缀，input 降 30%+（DA line 1484-1536）|
+| Prefix Cache 静态/动态分区 | data_processor_agent.py | `build_debug_system_prompt` 改静态/动态分区：静态区（指令+技能规范+沙箱文档+工具指引+安全+反幻觉）memoize 字节稳定，`---DYNAMIC_BOUNDARY---` 之上；动态区（脚本/SKILL.md/参数/经验/历史）每轮可变。移除 round_num 渐进式注入（破坏缓存）；GLM context cache 第二轮起命中静态前缀，input 降 30%+ |
 | continue 事件可观测 | llm.py + 2 个 agent | L2 续写时 yield `{"type":"continue","round":n}`，agent 透传前端；L3/L4 触发打 warning 日志 |
 | 跨轮推理摘要保结论 | data_processor_agent.py | `thinking_content[:500]`（只取首段）→ 首 200 + 尾 300 字符（保住根因结论，而非只留开头背景）|
 | endpoints max_tokens 同步 | operator.py + pipeline.py + skill.py | 4 处 `chat_stream_with_thinking(max_tokens=4000/2000)` → 12000，与新默认一致 |
