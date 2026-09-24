@@ -397,7 +397,7 @@ def _register_data_tools():
         "function": {
             "name": "read_file",
             "description": (
-                "读取文件内容（自动检测格式：txt/json/csv/excel/parquet/pdf/docx）。"
+                "读取文件内容（自动检测格式：txt/json/csv/excel/parquet/pdf/docx/doc）。"
                 "限制：路径必须在文件链接授权目录内；不支持图片（用 llm_vision）和视频（用 extract_video_info）。"
             ),
             "parameters": {
@@ -1096,7 +1096,8 @@ async def _read_file_handler(args, db, user_id, context):
             text = await asyncio.to_thread(_extract_docx_text, str(p))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
         elif ext == ".doc":
-            return json.dumps({"error": "read_file 不支持旧版 .doc 文件，请转换为 .docx 或 .txt"}, ensure_ascii=False)
+            text = await asyncio.to_thread(_extract_doc_text, str(p))
+            return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
         else:
             text = await asyncio.to_thread(lambda: p.read_text(encoding="utf-8", errors="replace"))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
@@ -1206,6 +1207,266 @@ def _extract_docx_text(file_path: str) -> str:
         for row in table.rows:
             parts.append(" | ".join(cell.text.strip() for cell in row.cells))
     return "\n".join(parts)
+
+
+def _extract_doc_text(file_path: str) -> str:
+    """在主进程解析旧版 Word .doc 文本。
+
+    按文件 magic bytes 分发（.doc 扩展名可能是 OLE2 二进制 / WordML XML / RTF / 误命名的 docx）：
+    1. OLE2 (D0 CF 11 E0) → olefile + FIB piece table 解析（纯 Python）
+    2. ZIP  (50 4B 03 04) → 实际是 .docx，复用 _extract_docx_text
+    3. XML  (<?xml)        → WordML/Word 2003 XML 解析（提取 w:t 文本节点）
+    4. RTF  ({\\rtf)       → 简单 RTF 文本提取
+    5. 以上均失败 → soffice headless 转换兜底
+    """
+    errors = []
+
+    with open(file_path, "rb") as f:
+        magic = f.read(8)
+
+    if magic[:4] == b"\xd0\xcf\x11\xe0":
+        try:
+            import olefile
+            text = _extract_doc_via_olefile(file_path)
+            if text and len(text.strip()) > 20:
+                return text
+            errors.append("olefile: 提取文本过少或为空")
+        except ImportError:
+            errors.append("olefile 未安装（pip install olefile）")
+        except Exception as e:
+            errors.append(f"olefile: {e}")
+    elif magic[:4] == b"\x50\x4b\x03\x04":
+        try:
+            return _extract_docx_text(file_path)
+        except Exception as e:
+            errors.append(f"docx(zip): {e}")
+    elif magic[:5] in (b"<?xml", b"<?Xml", b"<?XML"):
+        try:
+            return _extract_doc_via_xml(file_path)
+        except Exception as e:
+            errors.append(f"xml: {e}")
+    elif magic[:5] == b"{\\rtf":
+        try:
+            return _extract_rtf_text(file_path)
+        except Exception as e:
+            errors.append(f"rtf: {e}")
+    else:
+        errors.append(f"未知格式（magic: {magic[:8].hex()}）")
+
+    try:
+        text = _extract_doc_via_soffice(file_path)
+        if text and len(text.strip()) > 20:
+            return text
+        errors.append("soffice: 转换成功但文本为空")
+    except FileNotFoundError:
+        errors.append("LibreOffice(soffice) 未安装")
+    except Exception as e:
+        errors.append(f"soffice: {e}")
+
+    raise RuntimeError(
+        f".doc 解析失败（{'; '.join(errors)}）。"
+        f"建议将文件转换为 .docx 或 .txt 格式后重试。"
+    )
+
+
+def _extract_doc_via_olefile(file_path: str) -> str:
+    """用 olefile 解析 OLE2 容器 + FIB piece table 提取文本。"""
+    import re
+    import struct
+
+    import olefile
+
+    ole = olefile.OleFileIO(file_path)
+    try:
+        if not ole.exists("WordDocument"):
+            raise ValueError("不是有效的 Word 文档（缺少 WordDocument 流）")
+
+        word_data = ole.openstream("WordDocument").read()
+
+        w_ident = struct.unpack_from("<H", word_data, 0)[0]
+        if w_ident != 0xA5EC:
+            raise ValueError(f"不是 Word 文档（magic=0x{w_ident:04X}）")
+
+        n_fib = struct.unpack_from("<H", word_data, 2)[0]
+        flags = struct.unpack_from("<H", word_data, 0x000A)[0]
+        f_complex = bool(flags & 0x0004)
+        f_which_tbl = bool(flags & 0x0200)
+
+        if n_fib < 0x00C1:
+            fc_min = struct.unpack_from("<I", word_data, 0x0018)[0]
+            fc_mac = struct.unpack_from("<I", word_data, 0x001C)[0]
+            return word_data[fc_min:fc_mac].decode("utf-16-le", errors="replace")
+
+        fc_clx = struct.unpack_from("<I", word_data, 0x01A2)[0]
+        lcb_clx = struct.unpack_from("<I", word_data, 0x01A6)[0]
+        ccp_text = struct.unpack_from("<I", word_data, 0x004C)[0]
+
+        if not f_complex or lcb_clx == 0:
+            fc_min = struct.unpack_from("<I", word_data, 0x0018)[0]
+            fc_mac = struct.unpack_from("<I", word_data, 0x001C)[0]
+            return word_data[fc_min:fc_mac].decode("utf-16-le", errors="replace")
+
+        table_name = "1Table" if f_which_tbl else "0Table"
+        if not ole.exists(table_name):
+            fc_min = struct.unpack_from("<I", word_data, 0x0018)[0]
+            fc_mac = struct.unpack_from("<I", word_data, 0x001C)[0]
+            return word_data[fc_min:fc_mac].decode("utf-16-le", errors="replace")
+
+        table_data = ole.openstream(table_name).read()
+        clx = table_data[fc_clx : fc_clx + lcb_clx]
+
+        pos = 0
+        while pos < len(clx):
+            if clx[pos] == 0x01:
+                cb_grpprl = struct.unpack_from("<h", clx, pos + 1)[0]
+                pos += 3 + cb_grpprl
+            elif clx[pos] == 0x02:
+                lcb_pcdt = struct.unpack_from("<I", clx, pos + 1)[0]
+                plc_pcd = clx[pos + 5 : pos + 5 + lcb_pcdt]
+                text = _parse_piece_table(word_data, plc_pcd, ccp_text)
+                text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+                return text
+            else:
+                break
+
+        fc_min = struct.unpack_from("<I", word_data, 0x0018)[0]
+        fc_mac = struct.unpack_from("<I", word_data, 0x001C)[0]
+        return word_data[fc_min:fc_mac].decode("utf-16-le", errors="replace")
+    finally:
+        ole.close()
+
+
+def _parse_piece_table(word_data: bytes, plc_pcd: bytes, ccp_text: int) -> str:
+    """解析 PlcPcd（piece table）提取文本片段。
+
+    PlcPcd = (n+1) CPs (4B each) + n PCDs (8B each)。
+    每个 PCD 的 fc 字段 bit30=1 表示 ANSI(cp1252) 压缩文本，否则 UTF-16-LE。
+    """
+    import struct
+
+    if len(plc_pcd) < 16:
+        return ""
+
+    n = (len(plc_pcd) - 4) // 12
+    if n <= 0:
+        return ""
+
+    cps = []
+    for i in range(n + 1):
+        cps.append(struct.unpack_from("<I", plc_pcd, i * 4)[0])
+
+    pcd_offset = (n + 1) * 4
+    pieces = []
+    for i in range(n):
+        pcd = plc_pcd[pcd_offset + i * 8 : pcd_offset + (i + 1) * 8]
+        fc = struct.unpack_from("<I", pcd, 2)[0]
+        char_count = cps[i + 1] - cps[i]
+        if char_count <= 0:
+            continue
+
+        if fc & 0x40000000:
+            real_fc = (fc & 0x3FFFFFFF) // 2
+            piece = word_data[real_fc : real_fc + char_count].decode("cp1252", errors="replace")
+        else:
+            piece = word_data[fc : fc + char_count * 2].decode("utf-16-le", errors="replace")
+        pieces.append(piece)
+
+    text = "".join(pieces)
+    if 0 < ccp_text < len(text):
+        text = text[:ccp_text]
+    return text
+
+
+def _extract_doc_via_soffice(file_path: str) -> str:
+    """用 LibreOffice headless 将 .doc 转换为 .docx 后复用 _extract_docx_text。"""
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    soffice = None
+    if os.name == "nt":
+        for p in [
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ]:
+            if Path(p).exists():
+                soffice = p
+                break
+    else:
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+
+    if not soffice:
+        raise FileNotFoundError("未找到 LibreOffice (soffice)")
+
+    out_dir = tempfile.mkdtemp(prefix="dc_doc_conv_")
+    try:
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "docx", "--outdir", out_dir, file_path],
+            capture_output=True, timeout=60, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"soffice 转换失败: {result.stderr[:200]}")
+
+        docx_path = Path(out_dir) / (Path(file_path).stem + ".docx")
+        if not docx_path.exists():
+            docx_files = list(Path(out_dir).glob("*.docx"))
+            if not docx_files:
+                raise RuntimeError("soffice 转换后未找到 .docx 文件")
+            docx_path = docx_files[0]
+
+        return _extract_docx_text(str(docx_path))
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def _extract_doc_via_xml(file_path: str) -> str:
+    """解析 WordML / Word 2003 XML / Flat OPC 格式的 .doc 文件。
+
+    这些文件本质是 XML，文本在 w:t 元素中（两个可能的命名空间）。
+    """
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+
+    _NAMESPACES = [
+        "http://schemas.microsoft.com/office/word/2003/wordml",
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    ]
+
+    parts = []
+    for ns in _NAMESPACES:
+        texts = root.findall(f".//{{{ns}}}t")
+        if texts:
+            for t in texts:
+                if t.text:
+                    parts.append(t.text)
+            break
+
+    if not parts:
+        for elem in root.iter():
+            if elem.tag.endswith("}t") or elem.tag == "t":
+                if elem.text:
+                    parts.append(elem.text)
+
+    return "\n".join(parts)
+
+
+def _extract_rtf_text(file_path: str) -> str:
+    """简单 RTF 文本提取（剥离控制词和花括号）。"""
+    import re
+
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+
+    content = re.sub(r"\\u-?\d+\??", lambda m: chr(int(m.group()[2:].rstrip("?")) % 65536) if m.group()[2:].rstrip("?").lstrip("-").isdigit() else "", content)
+    content = re.sub(r"\\'[0-9a-fA-F]{2}", "", content)
+    content = re.sub(r"\\[a-zA-Z]+-?\d*\s?", "", content)
+    content = re.sub(r"\\[^a-zA-Z]", "", content)
+    content = re.sub(r"[{}]", "", content)
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    return content.strip()
 
 
 async def _write_file_handler(args, db, user_id, context):
@@ -2072,9 +2333,178 @@ async def _delete_llm_adapter_handler(args, db, user_id, context):
     return _json.dumps({"success": True, "message": f"Provider '{display_name}' ({provider_name}) 已删除"}, ensure_ascii=False)
 
 
+async def _check_skill_rules_handler(args, db, user_id, context):
+    """检查提取结果是否符合技能 rules.md 定义的规则。
+
+    有 regex/legal_values 的规则 → 本地确定性检查
+    纯自然语言规则 → 调 llm_generate 让 LLM 判断
+    """
+    import json as _json
+    import re as _re
+    from app.services.standards_parser import parse_skill_rules
+
+    headers = args.get("headers", [])
+    rows = args.get("rows", [])
+    source_text = args.get("source_text", "")
+    table_name = args.get("table_name", "")
+    skill_path = args.get("skill_path", "")
+
+    if not skill_path:
+        # 从 context 获取 skill_path
+        skill_path = context.get("debug_skill_path") or context.get("debug_folder") or ""
+
+    if not skill_path:
+        return _json.dumps({"issues": [], "message": "无 skill_path，跳过技能规则检查"}, ensure_ascii=False)
+
+    from pathlib import Path as _Path
+    rules_path = _Path(skill_path) / "rules.md"
+    if not rules_path.exists():
+        return _json.dumps({"issues": [], "message": "无 rules.md，跳过技能规则检查"}, ensure_ascii=False)
+
+    try:
+        skill_rules = parse_skill_rules(rules_path)
+    except Exception as e:
+        logger.warning(f"check_skill_rules: 解析 rules.md 失败: {e}")
+        return _json.dumps({"issues": [], "message": f"解析 rules.md 失败: {e}"}, ensure_ascii=False)
+
+    if not (skill_rules.get("std") or skill_rules.get("dq") or skill_rules.get("sec")):
+        return _json.dumps({"issues": [], "message": "rules.md 无规则"}, ensure_ascii=False)
+
+    all_rules = []
+    for cat in ("std", "dq", "sec"):
+        for r in skill_rules.get(cat, []):
+            all_rules.append(r)
+
+    if not all_rules:
+        return _json.dumps({"issues": [], "message": "rules.md 无规则"}, ensure_ascii=False)
+
+    issues = []
+    _subjective_rules = []
+
+    for rule in all_rules:
+        rid = rule.get("id") or rule.get("rule_id") or ""
+        name = rule.get("name") or rule.get("description") or ""
+        severity = rule.get("severity", "warning")
+        fields = rule.get("fields") or rule.get("scope_fields") or []
+
+        matched_cols = []
+        if fields:
+            for fi in fields:
+                for ci, h in enumerate(headers):
+                    if fi.lower() in str(h).lower():
+                        matched_cols.append(ci)
+                        break
+        else:
+            matched_cols = list(range(len(headers)))
+
+        regex = rule.get("regex")
+        if regex:
+            for ci in matched_cols:
+                for ri, row in enumerate(rows):
+                    if ci < len(row):
+                        val = str(row[ci]).strip()
+                        if val and not _re.match(regex, val):
+                            issues.append({
+                                "rule_id": rid,
+                                "severity": severity,
+                                "column": headers[ci] if ci < len(headers) else f"col_{ci}",
+                                "row": ri + 1,
+                                "description": f"列 '{headers[ci]}' 第 {ri+1} 行值 '{val[:40]}' 不符合规则 {rid} {name} 的正则 {regex}",
+                                "suggestion": f"按 {rid} 格式修正",
+                            })
+
+        legal = rule.get("legal_values")
+        if legal:
+            for ci in matched_cols:
+                for ri, row in enumerate(rows):
+                    if ci < len(row):
+                        val = str(row[ci]).strip()
+                        if val and val not in [str(x) for x in legal]:
+                            issues.append({
+                                "rule_id": rid,
+                                "severity": severity,
+                                "column": headers[ci] if ci < len(headers) else f"col_{ci}",
+                                "row": ri + 1,
+                                "description": f"列 '{headers[ci]}' 第 {ri+1} 行值 '{val[:40]}' 不在规则 {rid} {name} 的合法值列表中",
+                                "suggestion": f"按 {rid} 修正为合法值",
+                            })
+
+        if not regex and not legal:
+            _subjective_rules.append(rule)
+
+    if _subjective_rules and rows:
+        rule_descs = []
+        for r in _subjective_rules:
+            rid = r.get("id") or r.get("rule_id") or ""
+            desc = r.get("description") or r.get("name") or ""
+            rule_descs.append(f"- {rid}: {desc}")
+
+        md_lines = ["| " + " | ".join(str(h) for h in headers) + " |"]
+        md_lines.append("| " + " | ".join("---" for _ in headers) + " |")
+        for row in rows:
+            cells = [str(row[ci])[:50] if ci < len(row) else "" for ci in range(len(headers))]
+            md_lines.append("| " + " | ".join(cells) + " |")
+        table_md = "\n".join(md_lines)
+
+        source_snippet = (source_text or "")[:2000]
+
+        rule_descs_text = "\n".join(rule_descs)
+        prompt = "请检查以下提取的表格数据是否符合技能规则。\n\n"
+        prompt += "技能规则：\n" + rule_descs_text + "\n\n"
+        prompt += "表名: " + str(table_name) + "\n\n"
+        prompt += f"提取的表格数据（共{len(rows)}行）：\n" + table_md + "\n\n"
+        prompt += "源文档片段：\n" + source_snippet + "\n\n"
+        prompt += '请逐条检查上述规则，输出 JSON：\n```json\n{"issues": [\n  {"rule_id": "规则ID", "severity": "error/warning/pass", "column": "列名或空", "description": "问题描述", "suggestion": "修复建议"}\n]}\n```\n'
+        prompt += "severity 为 error 或 warning 表示有问题，pass 表示通过。无问题则 issues 为空数组。"
+
+        try:
+            from app.services.llm import llm_manager, init_user_llm_context
+            if user_id:
+                await init_user_llm_context(user_id)
+            await llm_manager.initialize()
+            resp = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=2000, enable_thinking=False)
+            content = resp or ""
+            _start = content.find("{")
+            if _start >= 0:
+                _end = content.rfind("}")
+                if _end > _start:
+                    _json_str = content[_start:_end + 1]
+                    try:
+                        import json as _json2
+                        result = _json2.loads(_json_str)
+                        for iss in result.get("issues", []):
+                            issues.append(iss)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"check_skill_rules LLM 判断失败: {e}")
+
+    logger.info(f"[check_skill_rules] 表={table_name}, issues={len(issues)}")
+    return _json.dumps({"issues": issues}, ensure_ascii=False)
+
+
 # ==================== 检查工具（原 data_inspector_agent.py）====================
 
 def _register_inspector_tools():
+    register_tool("check_skill_rules", {
+        "type": "function",
+        "function": {
+            "name": "check_skill_rules",
+            "description": "检查提取结果是否符合技能 rules.md 定义的规则。有 regex/legal_values 的规则做确定性检查，纯自然语言规则调 LLM 判断。在写入数据源前调用此工具自检，发现问题后修复再写入。skill_path 自动从调试上下文获取，无需传参。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "headers": {"type": "array", "items": {"type": "string"}, "description": "表头列名列表"},
+                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "数据行，每行是列值数组"},
+                    "source_text": {"type": "string", "description": "源文档文本片段（供 LLM 对比判断）"},
+                    "table_name": {"type": "string", "description": "表名"},
+                    "skill_path": {"type": "string", "description": "技能文件夹路径（自动从上下文获取，通常不需要手动传）"},
+                },
+                "required": ["headers", "rows"],
+            },
+        },
+    }, _check_skill_rules_handler, cacheable=False)
+
     register_tool("profile_data", {
         "type": "function",
         "function": {

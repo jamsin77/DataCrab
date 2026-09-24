@@ -1,8 +1,4 @@
 # DataCrab - 数据工程智能体
-> **原作者**: Simon ([Gitee: DataCrab/DataCrab](https://gitee.com/DataCrab/DataCrab))  
-> **许可证**: 木兰宽松许可证 v2（MulanPSL-2.0）  
-> **本仓库**: 基于原项目同步，补充了桌面部署模式的前端静态文件托管（SPA fallback），便于本地一键启动。
-
 
 > **原作者**: Simon ([Gitee: DataCrab/DataCrab](https://gitee.com/DataCrab/DataCrab))  
 > **许可证**: 木兰宽松许可证 v2（MulanPSL-2.0）  

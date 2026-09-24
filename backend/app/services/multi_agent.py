@@ -463,8 +463,9 @@ async def stream_agent_events_sse(
     import json
 
     if user_id:
-        from app.services.llm import init_user_llm_context
-        await init_user_llm_context(user_id)
+        from app.services.llm import init_user_llm_context, get_user_llm_config
+        if not get_user_llm_config():
+            await init_user_llm_context(user_id)
 
     runtime_gen = runtime.run(agent_name, message, context)
 
@@ -496,7 +497,7 @@ async def stream_agent_events_sse(
                 if agent == "data_inspector" and _reason != HandoffReason.DELEGATE.value:
                     evt = {"type": "inspecting", "message": "执行成功，DataInspector 正在检查数据质量..."}
                 elif agent == "data_processor" and _reason == HandoffReason.FIX_REQUIRED.value:
-                    _retry_round = context.get("debug_inspection_round", 0) + 1
+                    _retry_round = context.get("debug_inspection_round", 0)
                     _fix_issues = context.get("debug_fix_issues", [])
                     _issue_lines = []
                     for _fi in _fix_issues[:5]:

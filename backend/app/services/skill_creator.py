@@ -7,7 +7,7 @@ from loguru import logger
 
 from app.services.llm import llm_manager
 from app.services.skill_parser import parse_skill_md, build_skill_md
-from app.services.prompt_docs import SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC
+from app.services.prompt_docs import SAFETY_RULES_DOC, PLATFORM_CONVENTIONS_DOC, SKILL_RULES_DOC
 from app.services.tool_guidance import get_tool_guidance
 from app.services.agent_utils import get_anti_hallucination_section
 
@@ -182,6 +182,8 @@ SKILL_CREATOR_SYSTEM_PROMPT = """你是一个 Skill Creator，专门为 DataCrab
 
 """ + SKILL_SPEC + """
 
+""" + SKILL_RULES_DOC + """
+
 """ + PLATFORM_CONVENTIONS_DOC + """
 
 """ + _COMMON_PITFALLS + """
@@ -325,7 +327,7 @@ def main(**params):
     return filter_by_dynasty(**params)
 ===SCRIPT_END===
 
-（可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀，与全局规则区分。
+（可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号必须用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀（分别对应标准/质量/安全），与全局规则区分。禁止用其他前缀（如 SKILL-DRE）否则不会被识别。
 
 **重要：数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。** 脚本只负责数据处理（提取/清洗/转换/写入），检查由 DataInspector 通过 rules.md 执行。如果用户要求加检查规则，输出或修改 rules.md，不要改脚本。
 
@@ -744,7 +746,7 @@ async def modify_skill_stream(
 2. 脚本需要修改时必须用补丁格式（<<<OLD / >>>NEW），禁止输出 ===SCRIPT:main.py=== 完整脚本
 3. old_string 必须从现有脚本中逐字复制（包括缩进和空格），不能凭记忆重写
 4. 如果只修改文档说明，不输出脚本部分
-5. 数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。如果用户要求加检查规则，输出 ===RULES_MD=== / ===RULES_MD_END=== 段落，不要改脚本
+5. 数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。如果用户要求加检查规则，输出 ===RULES_MD=== / ===RULES_MD_END=== 段落，不要改脚本。规则编号必须用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀（分别对应标准/质量/安全），禁止用其他前缀（如 SKILL-DRE）否则不会被识别
 
 ===RULES_MD===
 ### SKILL-STD-001 规则名称
@@ -754,8 +756,8 @@ async def modify_skill_stream(
 ===RULES_MD_END===
 """
 
-    from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC
-    _modify_system = "你是 DataCrab Skill 修改助手。你修改现有 Skill 包，不创建新技能。\n\n脚本修改必须用补丁格式（===SCRIPT_PATCH:文件名.py=== + <<<OLD / >>>NEW + ===PATCH_END===），只输出修改的部分，禁止输出完整脚本。old_string 必须从现有脚本中逐字复制。\n\nSKILL.md 可以输出完整内容（用 ===SKILL_MD=== / ===SKILL_MD_END=== 包裹）。\n\n" + PLATFORM_CONVENTIONS_DOC
+    from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC, SKILL_RULES_DOC
+    _modify_system = "你是 DataCrab Skill 修改助手。你修改现有 Skill 包，不创建新技能。\n\n脚本修改必须用补丁格式（===SCRIPT_PATCH:文件名.py=== + <<<OLD / >>>NEW + ===PATCH_END===），只输出修改的部分，禁止输出完整脚本。old_string 必须从现有脚本中逐字复制。\n\nSKILL.md 可以输出完整内容（用 ===SKILL_MD=== / ===SKILL_MD_END=== 包裹）。\n\n" + PLATFORM_CONVENTIONS_DOC + "\n\n" + SKILL_RULES_DOC
     logger.info(f"[modify_skill] service进入, instruction={instruction[:100]}")
     logger.info(f"[modify_skill] system_prompt={_modify_system}")
     logger.info(f"[modify_skill] user_prompt_len={len(user_prompt)} SCRIPT_PATCH_in_prompt={'SCRIPT_PATCH' in user_prompt}")

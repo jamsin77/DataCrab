@@ -286,7 +286,7 @@ def parse_skill_rules(skill_path) -> Dict[str, List[Dict]]:
         每个元素结构与全局 parse_standards/parse_quality_rules/parse_security_rules 一致。
         无 rules.md 或解析失败返回空列表。
 
-    rules.md 格式示例（默认前缀 SKILL-STD-/SKILL-DQ-/SKILL-SEC-）：
+    rules.md 格式示例（前缀 SKILL-STD-/SKILL-DQ-/SKILL-SEC-）：
         ### SKILL-STD-001 身份证号格式
         - 适用字段: id_card,身份证号
         - 格式正则: ^\\d{17}[\\dXx]$
@@ -296,6 +296,8 @@ def parse_skill_rules(skill_path) -> Dict[str, List[Dict]]:
         - 检查逻辑: protection_level='国家级' 时 serial_no 不能为空
         - 阈值: 0
         - 严重等级: critical
+
+    > 前缀必须是 SKILL-STD / SKILL-DQ / SKILL-SEC 之一，其他前缀（如 SKILL-DRE）不会被识别。
     """
     from pathlib import Path
     p = Path(skill_path) / "rules.md" if not str(skill_path).endswith("rules.md") else Path(skill_path)

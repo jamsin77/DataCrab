@@ -181,21 +181,6 @@ class DataInspectorTools:
             df = await self._load_data(datasource_id, table_name, db)
             columns = list(df.columns)
 
-            # 命名规范（DQ-VAL-001 / naming_convention）
-            if not standard_rules or "naming_convention" in standard_rules:
-                _sev = _dq_severity("DQ-VAL-001", "warning")
-                for col in df.columns:
-                    if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
-                        suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
-                        issues.append({
-                            "dimension": "naming_convention",
-                            "rule_id": "DQ-VAL-001",
-                            "column": col,
-                            "severity": _sev,
-                            "description": f"列名 '{col}' 不符合 snake_case 命名规范",
-                            "suggestion": f"建议重命名为 '{suggestion}'",
-                        })
-
             # 类型一致性
             if not standard_rules or "type_consistency" in standard_rules:
                 _sev = _dq_severity("DQ-CON-003", "warning")
@@ -590,7 +575,7 @@ class DataInspectorTools:
                                 "dimension": "completeness",
                                 "rule_id": "DQ-COM-001",
                                 "column": col,
-                                "severity": _dq_severity("DQ-COM-001", "error"),
+                                "severity": _dq_severity("DQ-COM-001", "warning"),
                                 "description": f"必填字段 '{col}' 有 {null_count} 个空值（阈值 0%）",
                                 "suggestion": "补充缺失值或回源补数",
                             })
@@ -630,10 +615,97 @@ class DataInspectorTools:
                                 "suggestion": "排查重复产生原因（重跑、Join 膨胀）",
                             })
 
+            # 文档提取质量（DQ-DOC-001~003）：仅源数据源为文档类型时执行
+            _DOC_EXTENSIONS = ('.pdf', '.docx', '.doc', '.pptx', '.ppt', '.txt', '.md')
+            _is_doc_source = False
+            if source_ds_type:
+                _src_lower = source_ds_type.lower()
+                if _src_lower in ('generic_file', 'pdf', 'word', 'document'):
+                    _is_doc_source = True
+                elif any(_src_lower.endswith(ext) for ext in _DOC_EXTENSIONS):
+                    _is_doc_source = True
+            if _is_doc_source:
+                _doc_issues = self._check_doc_quality(df, table_name)
+                issues.extend(_doc_issues)
+
             return {"dimension": "quality", "passed": len(issues) == 0, "issues": issues}
         except Exception as e:
             logger.error(f"check_data_quality 失败: {e}")
             return {"dimension": "quality", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
+
+    def _check_doc_quality(self, df, table_name: str = "") -> list:
+        """文档提取质量检查（DQ-DOC-001~003，确定性 pandas 实现）
+
+        Args:
+            df: 提取结果的 DataFrame
+            table_name: 表名
+        Returns:
+            issues list
+        """
+        import pandas as pd
+        issues = []
+        total = len(df)
+        if total == 0:
+            return issues
+
+        # DQ-DOC-002 合并单元格回填校验：检测各列孤立空值（前后行有值、中间行为空）
+        _sev_002 = _dq_severity("DQ-DOC-002", "warning")
+        for col in df.columns:
+            vals = df[col].tolist()
+            for i in range(1, len(vals) - 1):
+                _prev = pd.notna(vals[i - 1]) and str(vals[i - 1]).strip() != ""
+                _curr = pd.isna(vals[i]) or str(vals[i]).strip() == ""
+                _next = pd.notna(vals[i + 1]) and str(vals[i + 1]).strip() != ""
+                if _prev and _curr and _next:
+                    issues.append({
+                        "dimension": "doc_quality",
+                        "rule_id": "DQ-DOC-002",
+                        "column": col,
+                        "severity": _sev_002,
+                        "description": f"列 '{col}' 第 {i + 1} 行为孤立空值（前后行有值），疑似合并单元格未回填",
+                        "suggestion": "将合并单元格的父值回填到该行",
+                    })
+                    break  # 每列只报一次
+
+        # DQ-DOC-003 多级表头子列对应校验：检测同列中非空值后跟连续空值
+        _sev_003 = _dq_severity("DQ-DOC-003", "warning")
+        for col in df.columns:
+            vals = df[col].tolist()
+            _has_value = False
+            _empty_start = -1
+            for i in range(len(vals)):
+                _is_empty = pd.isna(vals[i]) or str(vals[i]).strip() == ""
+                if not _is_empty:
+                    _has_value = True
+                    if _empty_start >= 0 and i - _empty_start >= 2:
+                        # 连续空值 >= 2 且后面又有值
+                        issues.append({
+                            "dimension": "doc_quality",
+                            "rule_id": "DQ-DOC-003",
+                            "column": col,
+                            "severity": _sev_003,
+                            "description": f"列 '{col}' 第 {_empty_start + 1}~{i} 行为连续空值（前后有值），疑似多级表头父项未回填",
+                            "suggestion": "识别多级表头层级，将父项值回填到所有子列行",
+                        })
+                        break
+                    _empty_start = -1
+                else:
+                    if _has_value and _empty_start < 0:
+                        _empty_start = i
+
+        # DQ-DOC-001 提取完整性校验：检测行数是否明显偏少（< 2 行可能是提取失败）
+        _sev_001 = _dq_severity("DQ-DOC-001", "warning")
+        if total < 2:
+            issues.append({
+                "dimension": "doc_quality",
+                "rule_id": "DQ-DOC-001",
+                "column": "",
+                "severity": _sev_001,
+                "description": f"表 '{table_name}' 仅 {total} 行数据，疑似提取不完整",
+                "suggestion": "检查提取逻辑是否遗漏内容，必要时重新提取",
+            })
+
+        return issues
 
     async def check_data_security(self, datasource_id: str, table_name: str, db: AsyncSession) -> dict:
         import pandas as pd
@@ -819,13 +891,6 @@ class DataInspectorTools:
         try:
             issues = []
             columns = list(df.columns)
-            # 命名规范
-            if not standard_rules or "naming_convention" in standard_rules:
-                _sev = _dq_severity("DQ-VAL-001", "warning")
-                for col in df.columns:
-                    if not re.match(r'^[a-z][a-z0-9_]*$', col) and not re.match(r'^[\u4e00-\u9fff]', col):
-                        suggestion = re.sub(r'([A-Z])', r'_\1', col).lower()
-                        issues.append({"dimension": "naming_convention", "rule_id": "DQ-VAL-001", "column": col, "severity": _sev, "description": f"列名 '{col}' 不符合 snake_case 命名规范", "suggestion": f"建议重命名为 '{suggestion}'"})
             # 类型一致性
             if not standard_rules or "type_consistency" in standard_rules:
                 _sev = _dq_severity("DQ-CON-003", "warning")
@@ -886,12 +951,13 @@ class DataInspectorTools:
             logger.error(f"_check_standards_from_df 失败: {e}")
             return {"dimension": "standards", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
-    def _check_quality_from_df(self, df, quality_dimensions=None, skill_rules=None, table_name="") -> dict:
+    def _check_quality_from_df(self, df, quality_dimensions=None, skill_rules=None, table_name="", source_ds_type="") -> dict:
         """从 DataFrame 执行质量检查（同步，不加载 DB）
 
         Args:
             skill_rules: 技能专属规则，合并执行 skill_rules["dq"] 中带 regex 的规则
-            table_name: 表名（用于行数异常检测，附录明细表表名含「表A.x」时触发 SKILL-DQ-004）
+            table_name: 表名
+            source_ds_type: 源数据源类型，用于判定是否文档提取场景
         """
         import pandas as pd
         try:
@@ -900,26 +966,6 @@ class DataInspectorTools:
             dq_rules = _load_quality_rules()
             null_thr = 1 - (dq_rules.get("DQ-COM-003", {}).get("threshold_value") or 0.9)
             dupe_thr = dq_rules.get("DQ-UNI-003", {}).get("threshold_value") or 0.01
-
-            # SKILL-DQ-004: 附录明细表行数异常检测（确定性检查，不依赖 LLM）
-            # 附录明细表（表名含「表A.x」格式）正常行数 5-60 行，超 60 行判定为 LLM 幻觉
-            if table_name and re.search(r'表\s*[A-Z]\.\d+', table_name):
-                _max_rows = 60
-                for rule in (skill_rules or {}).get("dq", []) if skill_rules else []:
-                    if rule.get("id") == "SKILL-DQ-004" and rule.get("threshold"):
-                        try:
-                            _max_rows = int(rule["threshold"])
-                        except (ValueError, TypeError):
-                            pass
-                        break
-                if total > _max_rows:
-                    issues.append({
-                        "dimension": "validity",
-                        "rule_id": "SKILL-DQ-004",
-                        "severity": "error",
-                        "description": f"附录明细表 '{table_name}' 行数 {total} 超过上限 {_max_rows}，疑似 LLM 提取产生重复/幽灵行",
-                        "suggestion": "检查提取脚本的 OCR/文本归并逻辑，剔除重复行和幽灵行",
-                    })
 
             # 完整性
             if not quality_dimensions or "completeness" in quality_dimensions:
@@ -1063,11 +1109,11 @@ class DataInspectorTools:
         """ChromaDB 向量库专用检查（结构化 STD/DQ/SEC 规则不适用）。
 
         5 条确定性检查：
-        - VEC-001 集合存在性 + 文档数 > 0（error）
-        - VEC-002 文档内容非空率（warning，阈值 50%）
-        - VEC-003 文档重复率（warning，阈值 30%）
-        - VEC-004 metadata 完整性（warning）
-        - VEC-005 embedding 非零验证（error，抽 10 条）
+        - DQ-VEC-001 集合存在性 + 文档数 > 0（error）
+        - DQ-VEC-002 文档内容非空率（warning，阈值 50%）
+        - DQ-VEC-003 文档重复率（warning，阈值 30%）
+        - DQ-VEC-004 metadata 完整性（warning）
+        - DQ-VEC-005 embedding 非零验证（error，抽 10 条）
         """
         import pandas as pd
         try:
@@ -1088,63 +1134,63 @@ class DataInspectorTools:
             issues: List[Dict[str, Any]] = []
             row_count = len(df)
 
-            # VEC-001: 集合存在性 + 文档数
+            # DQ-VEC-001: 集合存在性 + 文档数
             if row_count == 0:
                 issues.append({
-                    "rule_id": "VEC-001", "severity": "error",
+                    "rule_id": "DQ-VEC-001", "severity": "error",
                     "description": f"集合 '{table_name}' 为空或不存在，未写入任何文档",
                     "affected": row_count,
                 })
             else:
                 issues.append({
-                    "rule_id": "VEC-001", "severity": "info",
+                    "rule_id": "DQ-VEC-001", "severity": "info",
                     "description": f"集合 '{table_name}' 存在，共 {row_count} 条文档",
                     "affected": row_count,
                 })
 
             if row_count > 0:
-                # VEC-002: 文档内容非空率
+                # DQ-VEC-002: 文档内容非空率
                 doc_col = "document" if "document" in df.columns else None
                 if doc_col:
                     empty_docs = df[doc_col].isna().sum() + (df[doc_col] == "").sum()
                     empty_rate = empty_docs / row_count if row_count else 0
                     if empty_rate > 0.5:
                         issues.append({
-                            "rule_id": "VEC-002", "severity": "warning",
+                            "rule_id": "DQ-VEC-002", "severity": "warning",
                             "description": f"文档内容空值率 {empty_rate:.1%}（超过 50%），大量文档无文本内容",
                             "affected": int(empty_docs),
                         })
                     else:
                         issues.append({
-                            "rule_id": "VEC-002", "severity": "info",
+                            "rule_id": "DQ-VEC-002", "severity": "info",
                             "description": f"文档内容空值率 {empty_rate:.1%}",
                             "affected": int(empty_docs),
                         })
                 else:
                     issues.append({
-                        "rule_id": "VEC-002", "severity": "warning",
+                        "rule_id": "DQ-VEC-002", "severity": "warning",
                         "description": "未找到 document 列，无法检查文档内容",
                         "affected": 0,
                     })
 
-                # VEC-003: 文档重复率
+                # DQ-VEC-003: 文档重复率
                 if doc_col:
                     dup_count = df[doc_col].duplicated().sum()
                     dup_rate = dup_count / row_count if row_count else 0
                     if dup_rate > 0.3:
                         issues.append({
-                            "rule_id": "VEC-003", "severity": "warning",
+                            "rule_id": "DQ-VEC-003", "severity": "warning",
                             "description": f"文档重复率 {dup_rate:.1%}（超过 30%），存在大量重复内容",
                             "affected": int(dup_count),
                         })
                     else:
                         issues.append({
-                            "rule_id": "VEC-003", "severity": "info",
+                            "rule_id": "DQ-VEC-003", "severity": "info",
                             "description": f"文档重复率 {dup_rate:.1%}",
                             "affected": int(dup_count),
                         })
 
-                # VEC-004: metadata 完整性（meta_ 前缀列的非空率）
+                # DQ-VEC-004: metadata 完整性（meta_ 前缀列的非空率）
                 meta_cols = [c for c in df.columns if c.startswith("meta_")]
                 if meta_cols:
                     low_fill_cols = []
@@ -1154,24 +1200,24 @@ class DataInspectorTools:
                             low_fill_cols.append(f"{mc}({fill_rate:.0%})")
                     if low_fill_cols:
                         issues.append({
-                            "rule_id": "VEC-004", "severity": "warning",
+                            "rule_id": "DQ-VEC-004", "severity": "warning",
                             "description": f"metadata 字段填充率低: {', '.join(low_fill_cols[:5])}",
                             "affected": len(low_fill_cols),
                         })
                     else:
                         issues.append({
-                            "rule_id": "VEC-004", "severity": "info",
+                            "rule_id": "DQ-VEC-004", "severity": "info",
                             "description": f"metadata 完整性正常（{len(meta_cols)} 个字段）",
                             "affected": 0,
                         })
                 else:
                     issues.append({
-                        "rule_id": "VEC-004", "severity": "info",
+                        "rule_id": "DQ-VEC-004", "severity": "info",
                         "description": "无 metadata 字段（纯文档集合）",
                         "affected": 0,
                     })
 
-                # VEC-005: embedding 非零验证（抽 10 条）
+                # DQ-VEC-005: embedding 非零验证（抽 10 条）
                 try:
                     sample_count = min(10, row_count)
                     client = connector._get_client()
@@ -1185,19 +1231,19 @@ class DataInspectorTools:
                     zero_count = sum(1 for e in embeddings if e and all(v == 0 for v in e))
                     if zero_count > 0:
                         issues.append({
-                            "rule_id": "VEC-005", "severity": "error",
+                            "rule_id": "DQ-VEC-005", "severity": "error",
                             "description": f"{zero_count}/{len(embeddings)} 条文档 embedding 为全零向量（向量化失败）",
                             "affected": zero_count,
                         })
                     else:
                         issues.append({
-                            "rule_id": "VEC-005", "severity": "info",
+                            "rule_id": "DQ-VEC-005", "severity": "info",
                             "description": f"embedding 非零验证通过（抽样 {len(embeddings)} 条）",
                             "affected": 0,
                         })
                 except Exception as e:
                     issues.append({
-                        "rule_id": "VEC-005", "severity": "warning",
+                        "rule_id": "DQ-VEC-005", "severity": "warning",
                         "description": f"embedding 验证跳过（无法获取 embedding: {e}）",
                         "affected": 0,
                     })
@@ -1222,11 +1268,12 @@ class DataInspectorTools:
             logger.error(f"ChromaDB 检查失败: {e}")
             return {"error": f"ChromaDB 检查失败: {e}", "profile": None, "standards": None, "quality": None, "security": None}
 
-    async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession, skill_rules=None) -> dict:
+    async def run_all_checks(self, datasource_id: str, table_name: str, db: AsyncSession, skill_rules=None, source_ds_type: str = "") -> dict:
         """预执行入口：加载数据1次 → 跑4项检查 → 返回紧凑报告
 
         Args:
             skill_rules: 技能专属规则 {"std":[...],"dq":[...],"sec":[...]}，合并到全局规则之外执行
+            source_ds_type: 源数据源类型（如 generic_file/excel/csv 等），用于判定是否文档提取场景
         """
         # 清缓存（复查时需要最新数据）
         cache_key = f"{datasource_id}:{table_name}"
@@ -1246,7 +1293,7 @@ class DataInspectorTools:
         # 同步检查（纯 pandas，共享同一 DataFrame）
         profile = self._profile_from_df(df)
         standards = self._check_standards_from_df(df, skill_rules=skill_rules)
-        quality = self._check_quality_from_df(df, skill_rules=skill_rules, table_name=table_name)
+        quality = self._check_quality_from_df(df, skill_rules=skill_rules, table_name=table_name, source_ds_type=source_ds_type)
         security = self._check_security_from_df(df, skill_rules=skill_rules)
 
         return {
@@ -1310,6 +1357,9 @@ class DataInspectorTools:
                 ("DQ-UNI-003", "整行重复"),
                 ("DQ-VAL-004", "异常值检测"),
                 ("DQ-CON-001", "跨字段逻辑一致"),
+                ("DQ-DOC-001", "提取完整性校验"),
+                ("DQ-DOC-002", "合并单元格回填"),
+                ("DQ-DOC-003", "多级表头子列对应"),
             ],
             "security": [
                 ("SEC-PII-001", "身份证号明文"),

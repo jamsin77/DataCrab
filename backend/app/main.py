@@ -601,6 +601,7 @@ async def health_check():
     }
 
 
+
 # ============================================================
 # 前端静态文件托管 & SPA fallback（桌面部署模式）
 # ============================================================
@@ -637,9 +638,7 @@ if _os.path.isdir(_FRONTEND_DIST):
     @app.get("/", include_in_schema=False)
     async def _root_handler():
         _index = _os.path.join(_FRONTEND_DIST, "index.html")
-        if _os.path.exists(_index):
-            return HTMLResponse(open(_index, encoding="utf-8").read())
-        return HTMLResponse("<h1>DataCrab</h1><p>前端未构建</p>")
+        return HTMLResponse(open(_index, encoding="utf-8").read()) if _os.path.exists(_index) else HTMLResponse("<h1>DataCrab</h1><p>前端未构建</p>")
 
     logger.info(f"前端静态文件托管: {_FRONTEND_DIST}")
 else:
