@@ -551,7 +551,7 @@ async def internal_execute_tool(body: dict, db: AsyncSession = Depends(get_db)):
         except (ValueError, TypeError):
             pass
 
-    _ctx = {"_sandbox_call": True}
+    _ctx = {"_sandbox_call": True, "debug_skill_path": body.get("skill_path", "")}
     try:
         async with _tool_session() as tool_db:
             result_str = await td.handler(args, tool_db, _uid, _ctx)

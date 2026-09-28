@@ -32,7 +32,7 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 - LLM 调用: `call_tool("llm_generate", prompt="...", system_prompt="...")` → {"content": "回复文本"}
 - 图片 OCR: `call_tool("llm_vision", image_path="...", prompt="...")` → {"result": "分析文本"}
 - 分块读取: `call_tool("iter_table_data", datasource_id=..., table_name=..., page=1, page_size=10000)` → {"columns", "rows", "page", "total", "has_next"}
-- 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}（支持 txt/json/csv/excel/parquet/pdf/docx，在主进程解析不受沙箱限制）
+- 读文件: `call_tool("read_file", path="...")` → {"format": "text/json/csv", "content": ...}（支持 txt/json/csv/excel/parquet/pdf/docx/doc，在主进程解析不受沙箱限制）
 - 写文件: `call_tool("write_file", path="...", data=..., format="csv")` → {"success", "path", "size"}
 - 视频信息: `call_tool("extract_video_info", video_path="...")` → {duration, width, height, fps, ...}
 - 抽关键帧: `call_tool("extract_keyframes", video_path="...", max_frames=8)` → {"frames": [...]}
@@ -103,3 +103,22 @@ os, sys, subprocess, shutil, ctypes, sqlite3, psycopg2, pymysql, asyncpg, sqlalc
 - 数据查询：用 `call_tool("query_table_data", ...)` / `call_tool("execute_sql", ...)` 替代直接连数据库
 - 环境变量：不可用（沙箱不传敏感环境变量），需要的配置通过参数传入
 - 时间戳：用 `from datetime import datetime` 替代 `os.path.getmtime`"""
+
+SKILL_RULES_DOC = """## 技能脚本通用规则（生成/修改/调试时必须遵守）
+
+### 通用性原则（核心约束）
+技能脚本将用于不同用户、不同领域、不同类型的文档，必须保持普遍适用。**禁止根据文档的存储位置、数据源类型、表格结构、列名、文档内容、行业领域、特定术语、数值判据等进行硬编码。** 数据源用 `call_tool("list_user_datasources", by_name=...)` 动态查询，表格列从实际表头动态识别，数值判据由 LLM 从文档提取。
+
+当 LLM 提取结果不理想时（漏行、列错位、跨表串扰等），应改进提取提示词、调整切分策略、优化 LLM 调用参数，**不得用确定性代码硬编码补丁绕过**。确定性后处理只做格式归一化（去 HTML 标签、统一分隔符、补序号占位），不做内容级修复。
+
+### 脚本返回值
+- 必须含 `success` 字段：`{"success": True, ...}` 或 `{"success": False, "error": "..."}`
+- processing 类技能（会写表）成功时必须返回 `target_table` 和 `target_datasource`，否则 Inspector 不启动
+- 核心操作失败必须返回 `success=False`，不得用空值冒充成功
+
+### 代码组织
+- 所有函数必须在 `if __name__` 之前（执行时 `if __name__` 及其后代码会被删除）
+- 复杂逻辑拆分为子函数，main 只做编排
+- 不得吞掉平台错误：`except Exception: pass` 或 `return {"success": True}` 隐藏错误是禁止的
+- call_tool 返回值必须检查 success 字段，失败时 raise
+"""

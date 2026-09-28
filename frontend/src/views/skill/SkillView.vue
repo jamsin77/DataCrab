@@ -211,7 +211,7 @@
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
-              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
               <div v-if="generating && idx === genMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
             </div>
           </div>
@@ -334,7 +334,7 @@
                       <span>{{ m }}</span>
                     </div>
                   </div>
-                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                  <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
                   <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking && !(msg.executingMsgs && msg.executingMsgs.length)" class="typing-indicator"><span></span><span></span><span></span></div>
                 </div>
               </div>
@@ -589,8 +589,11 @@
             <div v-if="debugMessages.length === 0 && !execRunning" class="debug-empty">
               <p>{{ t('skill.debugEmptyHint') }}</p>
             </div>
+            <div v-if="debugMessages.length > DEBUG_VISIBLE_COUNT && !showAllDebugMsgs" class="debug-show-more">
+              <el-button text size="small" @click="showAllDebugMsgs = true">{{ t('skill.showMoreHistory', { count: debugMessages.length - DEBUG_VISIBLE_COUNT }) }}</el-button>
+            </div>
             <div
-              v-for="(msg, idx) in debugMessages"
+              v-for="(msg, idx) in visibleDebugMessages"
               :key="idx"
               class="debug-message"
               :class="msg.role"
@@ -622,7 +625,7 @@
                         <span class="collapse-label">{{ t('skill.aiReply') }}</span>
                         <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
-                      <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                      <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
                     </el-collapse-item>
                   </el-collapse>
                   <div v-if="msg.executingMsgs && msg.executingMsgs.length" class="debug-msg-executing">
@@ -719,7 +722,7 @@
                           <span class="collapse-label">{{ t('skill.dataInspectionReport') }}</span>
                           <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                         </template>
-                        <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                        <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.inspectionReport)"></div>
                       </el-collapse-item>
                     </el-collapse>
                   </div>
@@ -881,6 +884,17 @@ const md = markdownIt({ html: false, breaks: true, linkify: true })
 
 function renderMarkdown(src: string): string {
   return md.render(src)
+}
+
+// Markdown 渲染缓存：避免输入框打字时组件 re-render 导致所有消息重新 md.render()
+const _mdRenderCache = new Map<string, string>()
+function getCachedMd(content: string): string {
+  if (!content) return ''
+  const cached = _mdRenderCache.get(content)
+  if (cached !== undefined) return cached
+  const html = renderMarkdown(content)
+  _mdRenderCache.set(content, html)
+  return html
 }
 
 function formatDate(d: string | null): string {
@@ -1737,6 +1751,12 @@ interface DebugMessage {
 }
 
 const debugMessages = ref<DebugMessage[]>([])
+const showAllDebugMsgs = ref(false)
+const DEBUG_VISIBLE_COUNT = 6
+const visibleDebugMessages = computed(() => {
+  if (showAllDebugMsgs.value || debugMessages.value.length <= DEBUG_VISIBLE_COUNT) return debugMessages.value
+  return debugMessages.value.slice(debugMessages.value.length - DEBUG_VISIBLE_COUNT)
+})
 const debugInput = ref('')
 const debugStreaming = ref(false)
 const debugMsgListRef = ref<HTMLElement>()
@@ -2507,6 +2527,7 @@ async function openDebug(skill: any, scriptName?: string) {
   execTab.value = 'nl'
   skillParams.value = []
   debugMessages.value = loadSkillDebugMsgs(freshSkill.id)
+  showAllDebugMsgs.value = false
   reloadSkillHistories(freshSkill.id)
   debugInput.value = ''
   debugStreaming.value = false
@@ -3626,6 +3647,12 @@ onActivated(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.debug-show-more {
+  text-align: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 4px;
 }
 
 .debug-empty {

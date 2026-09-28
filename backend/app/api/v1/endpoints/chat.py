@@ -1306,7 +1306,8 @@ async def stream_response(
                 try:
                     # 判断三路是否需要匹配
                     _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_data_name"))
-                    _need_target = _msg_type == "processing" and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
+                    _is_source_virtual = _session_ctx.get("source_datasource_name") == _VIRTUAL_DS_NAME
+                    _need_target = _msg_type == "processing" and not _is_source_virtual and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
                     _need_skill = not _keep_skill or not bool(_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id"))
 
                     # ===== 段5：匹配阶段（独立 session，闭包共用，匹配完释放）=====

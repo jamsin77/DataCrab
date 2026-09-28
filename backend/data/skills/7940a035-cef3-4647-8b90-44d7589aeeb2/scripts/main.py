@@ -396,7 +396,7 @@ def main(input_data=None, **kwargs):
 
     # 确定名称列（用于匹配目标记录，优先 name/名称）
     name_col = None
-    for candidate in ['name', '名称', '标题', 'title', '文物名称', 'Name']:
+    for candidate in ['name', '名称', '标题', 'title', 'Name']:
         if candidate in target_df.columns:
             name_col = candidate
             break
@@ -455,22 +455,22 @@ def main(input_data=None, **kwargs):
 
         def _llm_generate_descriptions(chunk):
             items_text = "\n".join([
-                f'{i + 1}. 被合并文物名称: "{p[2]}", 主要信息: {p[1]}'
+                f'{i + 1}. 被合并记录名称: "{p[2]}", 主要信息: {p[1]}'
                 for i, p in enumerate(chunk)
             ])
-            prompt = f"""请将以下每条被合并文物的主要信息，组织成通顺、完整的中文描述文字。
+            prompt = f"""请将以下每条被合并记录的主要信息，组织成通顺、完整的中文描述文字。
 
 要求：
-1. 每条描述应包含该文物的名称、年代、地址、分类等所有可用信息
+1. 每条描述应包含该记录的所有可用字段信息（名称、年代、地址、分类等）
 2. 语言通顺自然，像一段完整的说明文字
 3. 信息尽量全面，不要遗漏任何字段
-4. 每条描述以"该文物原为"开头，说明其原始信息
+4. 每条描述以"该记录原为"开头，说明其原始信息
 
 数据：
 {items_text}
 
 请以 JSON 格式返回：
-{{"results": [{{"index": 1, "description": "该文物原为XXX，年代为XXX，位于XXX..."}}, ...]}}
+{{"results": [{{"index": 1, "description": "该记录原为XXX，包含XXX等信息..."}}, ...]}}
 
 只返回 JSON，不要其他内容。"""
             try:

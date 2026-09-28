@@ -246,7 +246,7 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
                 "3. 只能使用提供的类别名称，不要创造新类别\n"
                 "4. 返回纯JSON，不要包含任何其他文字或解释\n\n"
                 '请以JSON格式返回结果，格式为 {"序号": "类别"}，例如：\n'
-                '{"1": "古建筑", "2": "古遗址", "3": "古建筑"}'
+                '{"1": "类别A", "2": "类别B", "3": "类别A"}'
             )
     else:
         system_prompt = (
@@ -259,7 +259,7 @@ def _classify_batch(values: List[str], categories: Optional[str] = None, max_ret
             "5. 相似内容应归入同一类别\n"
             "6. 返回纯JSON，不要包含任何其他文字或解释\n\n"
             '请以JSON格式返回结果，格式为 {"序号": "类别"}，例如：\n'
-            '{"1": "古建筑", "2": "古遗址", "3": "古建筑"}'
+            '{"1": "类别A", "2": "类别B", "3": "类别A"}'
         )
 
     if is_extraction_target:
@@ -693,12 +693,13 @@ def _classify_all_values(
                 return value_to_category
 
     # ── 自适应批次大小：提取任务每条结果较长，保持较小批次避免JSON截断 ──
-    if len(unique_values) > 500 and batch_size < 150:
+    # 批次大小上限100，防止LLM返回结果被截断
+    if len(unique_values) > 500 and batch_size < 100:
         old_batch_size = batch_size
         if is_extraction:
             batch_size = min(50, len(unique_values))
         else:
-            batch_size = min(120, len(unique_values))
+            batch_size = min(100, len(unique_values))
         print(f"唯一值较多（{len(unique_values)}），批次大小从 {old_batch_size} 调整为 {batch_size}")
 
     # ── 分批 ──

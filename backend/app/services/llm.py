@@ -1,6 +1,6 @@
-"""LLM管理器（支持多模型降级 + 瞬态重试 + ModelRouter 断路器）
+"""LLM管理器（支持多模型降级 + 瞬态重试 + 断路器）
 
-设计借鉴 DeepAnalyze 的 ModelRouter：
+设计：
 - 默认用深度模型（主模型），失败自动降级到快速模型
 - 断路器：连续 3 次失败的模型熔断 60 秒，之后 half-open 试探恢复
 - 系统内部任务（参数推断等）直接用快速模型，不走断路器
@@ -352,7 +352,7 @@ def refresh_provider(provider_name: str, info: Dict[str, Any]):
 
 
 class CircuitBreaker:
-    """断路器（借鉴 DeepAnalyze ModelRouter）。
+    """断路器。
     
     状态：closed（正常）→ open（熔断，连续 3 次失败）→ half-open（60s 后试探）
     """
@@ -566,7 +566,7 @@ class LLMManager:
     async def _acreate_with_retry(self, cfg: Dict[str, str], **kwargs):
         """带瞬态重试的 API 调用（C）。
 
-        借鉴 DeepAnalyze 的四级错误恢复链第一层：
+        四级错误恢复链第一层：
         对 429/超时/网络错误/500 做最多 2 次指数退避重试，
         重试耗尽再由上层 model-chain fallback 换模型。
         """
@@ -861,7 +861,8 @@ class LLMManager:
                 logger.warning(f"[降级链] 跳过 {cfg.get('provider','')}/{actual_model}（断路器熔断中，60s 后自动恢复）")
                 continue
             try:
-                logger.info(f"LLM stream+tools: provider={cfg['provider']}, model={actual_model}, tools={[t['function']['name'] for t in tools]}")
+                _msg_chars = sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+                logger.info(f"[run] LLM stream+tools 开始: provider={cfg['provider']}, model={actual_model}, msgs={len(messages)}, chars={_msg_chars}, tools={[t['function']['name'] for t in tools]}")
                 stream = await self._acreate(
                     cfg,
                     model=actual_model,
@@ -916,6 +917,7 @@ class LLMManager:
                         finish_reason = choice.finish_reason
 
                 _circuit.record_success(actual_model)
+                logger.info(f"[run] LLM stream+tools 完成: model={actual_model}, finish={finish_reason}, tool_calls={len(accumulated_tc)}")
 
                 tc_list = [accumulated_tc[i] for i in sorted(accumulated_tc.keys())]
                 if tc_list:

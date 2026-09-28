@@ -169,8 +169,11 @@
             <div v-if="opMessages.length === 0" class="debug-empty">
               <p>{{ t('operator.debugEmptyHint') }}</p>
             </div>
+            <div v-if="opMessages.length > OP_VISIBLE_COUNT && !showAllOpMsgs" class="debug-show-more">
+              <el-button text size="small" @click="showAllOpMsgs = true">{{ t('operator.showMoreHistory', { count: opMessages.length - OP_VISIBLE_COUNT }) }}</el-button>
+            </div>
             <div
-              v-for="(msg, idx) in opMessages"
+              v-for="(msg, idx) in visibleOpMessages"
               :key="idx"
               class="debug-message"
               :class="msg.role"
@@ -202,7 +205,7 @@
                         <span class="collapse-label">{{ t('operator.aiReply') }}</span>
                         <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
-                      <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                      <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
                     </el-collapse-item>
                   </el-collapse>
                   <div class="debug-msg-time" v-if="msg.created_at">{{ formatMsgTime(msg.created_at) }}</div>
@@ -259,7 +262,7 @@
                           <span class="collapse-label">{{ t('operator.inspectionReport') }}</span>
                           <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                         </template>
-                        <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                        <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.inspectionReport)"></div>
                       </el-collapse-item>
                     </el-collapse>
                   </div>
@@ -340,7 +343,7 @@
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
-              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
               <div v-if="generating && idx === genMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
             </div>
           </div>
@@ -427,7 +430,7 @@
                 </div>
                 <div v-show="msg.thinkingOpen" class="thinking-body">{{ msg.thinking }}</div>
               </div>
-              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.content" class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
               <div v-if="modifying && idx === modifyMessages.length - 1 && !msg.content && !msg.thinking" class="typing-indicator"><span></span><span></span><span></span></div>
             </div>
           </div>
@@ -487,6 +490,18 @@ const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string) {
   return md.render(text || '')
 }
+
+// Markdown 渲染缓存：避免输入框打字时组件 re-render 导致所有消息重新 md.render()
+const _mdRenderCache = new Map<string, string>()
+function getCachedMd(content: string): string {
+  if (!content) return ''
+  const cached = _mdRenderCache.get(content)
+  if (cached !== undefined) return cached
+  const html = renderMarkdown(content)
+  _mdRenderCache.set(content, html)
+  return html
+}
+
 function formatMsgTime(ts?: string): string {
   return formatTime(ts)
 }
@@ -597,6 +612,12 @@ interface OpChatMessage {
   created_at?: string
 }
 const opMessages = ref<OpChatMessage[]>([])
+const showAllOpMsgs = ref(false)
+const OP_VISIBLE_COUNT = 6
+const visibleOpMessages = computed(() => {
+  if (showAllOpMsgs.value || opMessages.value.length <= OP_VISIBLE_COUNT) return opMessages.value
+  return opMessages.value.slice(opMessages.value.length - OP_VISIBLE_COUNT)
+})
 const opInput = ref('')
 const opStreaming = ref(false)
 let opAbortController: AbortController | null = null
@@ -725,6 +746,7 @@ function openDebug(op: any, restore?: Partial<OpDebugSession>) {
   }
 
   opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m, thinkingOpen: false })) : []
+  showAllOpMsgs.value = false
   opInput.value = ''
   opStreaming.value = false
   debugDrawer.value = true
@@ -1925,6 +1947,12 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.debug-show-more {
+  text-align: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 4px;
 }
 
 .debug-empty {

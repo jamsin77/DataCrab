@@ -437,9 +437,8 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
 {schema_block}【表格复原要求】
 1. 转置表格还原为每行一个规则，字段名作为 applicable_fields
 2. 同一语义被分页拆散的行必须按语义合并
-3. 有序号的表格相同序号合并为一行
-4. 表头与单元格内容逐字保留，数值阈值不得改写
-5. 续表行并入同一张表
+3. 表头与单元格内容逐字保留，数值阈值不得改写
+4. 续表行并入同一张表
 
 要求：
 - 正文每个章节条款（X 标题 / X.Y 标题）必须至少提取为一条规则，不得因篇幅跳过
@@ -848,14 +847,12 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
 3. 数值阈值逐字保留
 4. 忽略水印/页眉/页脚
 5. 垂直合并单元格的值每行重复输出，尤其是表格第一列的分组列，绝不允许留空导致后续各列整体左移
-6. 同序号多档内容用分号合并到同一行
-7. 直接输出 Markdown，不要代码围栏
-8. 单元格内容必须完整输出，禁止截断
-9. 不要使用子序号，同一项目的多个档位保持相同序号
-10. 每一列的语义必须与其表头一致，严禁列与列之间串行或错位
-11. 同一项目含多个子列时，各列必须按子列顺序一一对应，数量必须相等，不得丢失或错位
-12. 合并单元格的父级分组值必须按区段正确回填到分组列，不得把其他列内容填进分组列
-13. 行×列交叉的矩阵表保持原结构输出，严禁把行表头/列名混填或整列左移"""
+6. 直接输出 Markdown，不要代码围栏
+7. 单元格内容必须完整输出，禁止截断
+8. 每一列的语义必须与其表头一致，严禁列与列之间串行或错位
+9. 同一项目含多个子列时，各列必须按子列顺序一一对应，数量必须相等，不得丢失或错位
+10. 合并单元格的父级分组值必须按区段正确回填到分组列，不得把其他列内容填进分组列
+11. 行×列交叉的矩阵表保持原结构输出，严禁把行表头/列名混填或整列左移"""
 
     md_by_number: Dict[str, List[str]] = {num: [] for num in table_numbers}
     batch_size = 5
@@ -891,7 +888,7 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
                 dst = src
             page_imgs[page_no] = str(dst)
 
-        with ThreadPoolExecutor(max_workers=min(5, len(page_imgs))) as ex:
+        with ThreadPoolExecutor(max_workers=min(3, len(page_imgs))) as ex:
             futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
             for fut in as_completed(futs):
                 pg, raw = fut.result()
@@ -899,8 +896,10 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
                     for num in table_numbers:
                         target = _filter_md_by_table_number(raw, num)
                         if target:
+                            _target_rows = _count_md_data_rows(target)
                             md_by_number[num].append(f"== 第 {pg} 页 ==\n{target}")
-                print(f"  [OCR] 第 {pg} 页完成")
+                            print(f"  [OCR] 第 {pg} 页 表{num} 提取 {_target_rows} 行数据", flush=True)
+                print(f"  [OCR] 第 {pg} 页完成", flush=True)
 
     return {num: "\n\n".join(parts) for num, parts in md_by_number.items() if parts}
 
@@ -1000,125 +999,92 @@ def _detect_truncated_cells(rows: List[List[str]], md_text: str) -> bool:
     return False
 
 
-def _merge_md_once(title: str, number: str, md_text: str) -> Dict[str, Any]:
-    base_prompt = f"""你是表格归并专家。下面是表格（表{number} {title}）的 Markdown 分段。请归并为一张最终表格，只输出 Markdown 表格（| 分隔），不要 JSON、不要代码围栏。
-
-要求：
-1. 每个序号只保留一行，多档内容用分号并列。合并单元格的子行不要分配新序号，保持原序号
-2. 跨页续表：去掉重复表头，数据行续接
-3. 合并单元格：父项列连续为空时用上方最近非空值回填
-4. 按序号升序，每行必须有实质内容
-5. 去掉页眉页脚水印碎片
-6. 数值阈值逐字保留，清除 HTML 标签
-7. 各列不得互换混填
-8. 所有数据行的列数必须与表头列数完全一致，不得多出或少列
-9. 保留所有序号的数据行，不得遗漏首行和末行。序号必须连续，不得跳号
-10. 如果某行单元格内容比表头多，将多余内容合并到该行最后一列（用分号分隔），不得新增列
-11. 单元格内容必须完整输出，禁止截断，不得在中间省略
-12. 不要使用子序号，同一项目的多个档位保持相同序号
-13. 多级表头必须展平为单行表头，每个子列都有独立列名，不得留空
-14. 矩阵型表格保持原结构输出，不要展平为长表
-15. 禁止输出推理过程、思考草稿、ID编号等非表格内容。只输出纯表格数据行
-16. 禁止在单元格中写入推测内容，如果原文不完整则照原文输出
-17. 分组列必须保留合并单元格的父级分组值，不得把其他列内容填入分组列；分组列与其他列必须语义区分，不得重复
-18. 各列只保留与该列表头语义一致的值，不得把其他列的内容混入
-19. 同一项目的多个档位必须归并为一行：各档值用分号一一对应（数量必须相等），不得按档拆成多行
-
-输出格式：表头行 + 分隔线 + 数据行，直接输出，禁止代码围栏。
-
-分段原文：
----
-{md_text}
----"""
-    for attempt in range(3):
-        try:
-            extra_warning = ""
-            if attempt > 0:
-                extra_warning = "\n\n【重要警告】上一次输出存在单元格内容被截断的问题！请确保每个单元格内容完整输出，不得省略或截断任何文字。不要输出推理过程或ID编号。"
-            response = call_tool("llm_generate", prompt=base_prompt + extra_warning, temperature=0.0, max_tokens=32000)
-            if not isinstance(response, dict) or "error" in response:
-                raise RuntimeError(str(response))
-            raw = str(response.get("content") or "").strip()
-            if not raw:
-                raise RuntimeError("空 content")
-            parsed = _parse_markdown_table(raw)
-            if parsed:
-                data = parsed[0]
-                if data.get("headers") and data.get("rows"):
-                    # 检测截断
-                    if _detect_truncated_cells(data["rows"], md_text):
-                        if attempt < 2:
-                            print(f"    [截断检测] 第 {attempt + 1}/3 次输出疑似截断，重试")
-                            continue
-                        else:
-                            print(f"    [截断检测] 3次重试后仍有截断，使用最后一次结果")
-                    return {"headers": data["headers"], "rows": data["rows"]}
-            raise RuntimeError(f"归并无有效表格: {raw[:200]!r}")
-        except Exception as e:
-            if attempt < 2:
-                print(f"    [归并重试] 第 {attempt + 1}/3: {e}")
-            else:
-                raise
-    return {"headers": [], "rows": []}
+def _count_md_data_rows(md_text: str) -> int:
+    """统计 Markdown 表格中的数据行数（去掉表头行和分隔线行）。"""
+    if not md_text:
+        return 0
+    lines = [ln.strip() for ln in md_text.splitlines() if ln.strip()]
+    tbl_lines = [ln for ln in lines if "|" in ln]
+    if not tbl_lines:
+        return 0
+    sep_idx = None
+    for i, ln in enumerate(tbl_lines):
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if all(re.fullmatch(r"[-=: ]+", c) for c in cells if c):
+            sep_idx = i
+            break
+    if sep_idx is not None:
+        return len(tbl_lines) - sep_idx - 1
+    return max(len(tbl_lines) - 1, 0)
 
 
 def _merge_md_tables(title: str, number: str, md_parts: List[str]) -> Dict[str, Any]:
+    """确定性归并：用 _parse_markdown_table 解析 + 去重复表头 + 合并多段。
+
+    不调 LLM——OCR 返回的 Markdown 表格本身就是结构化的（| 分隔），
+    确定性操作即可归并，LLM 归并会丢行/改写/不稳定。
+    """
     all_md = "\n\n".join(p for p in md_parts if p and p.strip())
     if not all_md.strip():
         return {"headers": [], "rows": []}
-    # 大表分段归并：如果输入超过 8000 字符，按页标记分段，先逐段归并再合并
-    if len(all_md) > 8000:
-        return _merge_large_md(title, number, all_md)
-    return _merge_md_once(title, number, all_md)
 
-
-def _merge_large_md(title: str, number: str, all_md: str) -> Dict[str, Any]:
-    """大表分段归并：按页标记（== 第 N 页 ==）拆分，逐段归并，再合并结果。"""
-    # 按 == 第 N 页 == 拆分
+    # 按 == 第 N 页 == 拆分多段
     page_parts = re.split(r"(?=== 第 \d+ 页 ==)", all_md)
     page_parts = [p.strip() for p in page_parts if p.strip()]
-    if len(page_parts) <= 1:
-        return _merge_md_once(title, number, all_md)
-    print(f"  [大表分段] 表{number} 输入 {len(all_md)} 字符，拆分为 {len(page_parts)} 段")
 
-    # 逐段归并
-    merged_results = []
-    for i, part in enumerate(page_parts):
-        if not part.strip():
+    all_headers = None
+    all_rows = []
+    for part in page_parts:
+        parsed = _parse_markdown_table(part)
+        if not parsed:
             continue
-        print(f"    [大表分段] 归并第 {i+1}/{len(page_parts)} 段（{len(part)} 字符）...")
-        result = _merge_md_once(title, number, part)
-        if result.get("headers") and result.get("rows"):
-            merged_results.append(result)
+        data = parsed[0]
+        headers = data.get("headers") or []
+        rows = data.get("rows") or []
+        if not headers or not rows:
+            continue
+        if all_headers is None:
+            all_headers = headers
+        else:
+            # 去掉续表重复表头（第一行与表头一致时跳过）
+            if rows and len(rows[0]) == len(all_headers):
+                _first_row = [str(c).strip().lower() for c in rows[0]]
+                _header_cmp = [str(h).strip().lower() for h in all_headers]
+                if _first_row == _header_cmp:
+                    rows = rows[1:]
+            # 列数对齐到第一段表头
+            for row in rows:
+                while len(row) < len(all_headers):
+                    row.append("")
+                if len(row) > len(all_headers):
+                    overflow = [str(c).strip() for c in row[len(all_headers):] if str(c).strip()]
+                    if overflow:
+                        row[len(all_headers) - 1] = str(row[len(all_headers) - 1]) + "；" + "；".join(overflow)
+                    row[:] = row[:len(all_headers)]
+        all_rows.extend(rows)
 
-    if not merged_results:
+    if all_headers is None:
+        # 没有页标记拆分，直接解析整段
+        parsed = _parse_markdown_table(all_md)
+        if parsed and parsed[0].get("headers") and parsed[0].get("rows"):
+            return {"headers": parsed[0]["headers"], "rows": parsed[0]["rows"]}
         return {"headers": [], "rows": []}
-    if len(merged_results) == 1:
-        return merged_results[0]
 
-    # 合并多段结果：取第一段表头，后续段去掉表头续接
-    final_headers = merged_results[0]["headers"]
-    final_rows = list(merged_results[0]["rows"])
-    for seg in merged_results[1:]:
-        seg_rows = seg.get("rows", [])
-        for row in seg_rows:
-            # 列数对齐
-            while len(row) < len(final_headers):
-                row.append("")
-            if len(row) > len(final_headers):
-                overflow = [str(c).strip() for c in row[len(final_headers):] if str(c).strip()]
-                if overflow:
-                    row[len(final_headers) - 1] = str(row[len(final_headers) - 1]) + "；" + "；".join(overflow)
-                row = row[:len(final_headers)]
-            final_rows.append(row[:len(final_headers)])
-    print(f"  [大表分段] 合并完成：{len(final_rows)} 行")
-    return {"headers": final_headers, "rows": final_rows}
+    print(f"  [确定性归并] 表{number} {len(all_rows)} 行 × {len(all_headers)} 列（{len(page_parts)} 段）", flush=True)
+    return {"headers": all_headers, "rows": all_rows}
 
 
 def _extract_table_from_ocr(block: Dict[str, str], ocr_md: str) -> Dict[str, Any]:
     title = block.get("title") or "未命名表"
     number = block.get("number") or ""
+    _ocr_rows = _count_md_data_rows(ocr_md)
+    print(f"  [阶段日志] 表{number} OCR输入: {_ocr_rows} 行数据", flush=True)
     merged = _merge_md_tables(title, number, [ocr_md])
+    _merged_rows = len(merged.get("rows") or [])
+    _merged_cols = len(merged.get("headers") or [])
+    print(f"  [阶段日志] 表{number} 确定性归并输出: {_merged_rows} 行 × {_merged_cols} 列", flush=True)
+    if _ocr_rows > 0 and _merged_rows < _ocr_rows:
+        print(f"  [阶段日志] 表{number} ⚠️ 归并丢行: OCR {_ocr_rows} 行 → 归并 {_merged_rows} 行", flush=True)
     table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
     if merged.get("headers") and merged.get("rows"):
         headers = [str(h).strip() for h in merged["headers"]]
@@ -1140,7 +1106,14 @@ def _extract_table_literal(block: Dict[str, str]) -> Dict[str, Any]:
     title = block.get("title") or "未命名表"
     number = block.get("number") or ""
     content = block.get("content") or ""
+    _lit_rows = _count_md_data_rows(content)
+    print(f"  [阶段日志] 表{number} 文本层输入: {_lit_rows} 行数据", flush=True)
     merged = _merge_md_tables(title, number, [content])
+    _merged_rows = len(merged.get("rows") or [])
+    _merged_cols = len(merged.get("headers") or [])
+    print(f"  [阶段日志] 表{number} 确定性归并输出: {_merged_rows} 行 × {_merged_cols} 列", flush=True)
+    if _lit_rows > 0 and _merged_rows < _lit_rows:
+        print(f"  [阶段日志] 表{number} ⚠️ 归并丢行: 文本层 {_lit_rows} 行 → 归并 {_merged_rows} 行", flush=True)
     table_name = _sanitize_table_name(f"表{number} {title}".strip() if number and title and title != f"表{number}" else (f"表{number}" if number else title))
     if merged.get("headers") and merged.get("rows"):
         headers = [str(h).strip() for h in merged["headers"]]
@@ -1156,83 +1129,6 @@ def _extract_table_literal(block: Dict[str, str]) -> Dict[str, Any]:
             result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
             return result
     raise RuntimeError(f"表{number} 文本归并失败")
-
-
-def _merge_rows_by_seq(ti: Dict[str, Any]) -> Dict[str, Any]:
-    """如果表格第一列是序号列，按序号进行确定性语义归并：
-    - 相同序号的多行合并为一行
-    - 子序号（3.1→3）归并到父序号
-    - float 序号归一化（3.0→3）
-    - 连续同关键列值的行归并（处理LLM给合并单元格子行分配新序号的情况）
-    各列差异内容用分号拼接。
-    """
-    headers = ti.get("headers") or []
-    rows = ti.get("rows") or []
-    if not headers or not rows or len(headers) < 2:
-        return ti
-
-    first_header = str(headers[0]).strip()
-    # 判断第一列是否为序号列：表头含"序号"/"编号"或大部分首单元格为纯数字
-    is_seq_col = "序号" in first_header or "编号" in first_header
-    if not is_seq_col:
-        num_count = sum(1 for r in rows if r and re.match(r"^\d{1,4}(\.\d+)?$", str(r[0]).strip()))
-        if num_count < len(rows) * 0.5:
-            return ti
-        is_seq_col = True
-
-    # 归一化序号值：float "3.0" → "3"
-    def _norm_seq(val):
-        s = str(val).strip()
-        if re.match(r"^\d+\.0+$", s):
-            return str(int(float(s)))
-        return s
-
-    # 提取父序号： "3.1" → "3", "3" → "3"
-    def _parent_seq(val):
-        s = _norm_seq(val)
-        m = re.match(r"^(\d+)\.\d+$", s)
-        return m.group(1) if m else s
-
-    def _merge_into(existing, row):
-        """将 row 的内容合并到 existing 行，差异内容用分号拼接"""
-        for ci in range(1, len(headers)):
-            new_val = str(row[ci]).strip() if ci < len(row) else ""
-            old_val = str(existing[ci]).strip() if ci < len(existing) else ""
-            if new_val and new_val != old_val:
-                if old_val:
-                    # 按分号（中英文）拆段去重后拼接，避免同段重复粘贴
-                    parts = [p.strip() for p in re.split(r"[；;]", old_val) if p.strip()]
-                    for piece in re.split(r"[；;]", new_val):
-                        piece = piece.strip()
-                        if piece and piece not in parts:
-                            parts.append(piece)
-                    existing[ci] = "；".join(parts)
-                else:
-                    existing[ci] = new_val
-
-    # 步骤1: 按父序号分组归并（处理子序号 3.1→3 和完全相同序号）
-    merged_rows = []
-    seq_map = {}  # parent_seq -> index in merged_rows
-    for row in rows:
-        raw_seq = str(row[0]).strip() if row else ""
-        parent = _parent_seq(raw_seq)
-        if parent not in seq_map:
-            new_row = list(row)
-            new_row[0] = parent  # 归一化序号
-            merged_rows.append(new_row)
-            seq_map[parent] = len(merged_rows) - 1
-        else:
-            idx = seq_map[parent]
-            _merge_into(merged_rows[idx], row)
-
-    original_count = len(rows)
-
-    if len(merged_rows) < original_count:
-        print(f"  [序号归并] {original_count} 行 → {len(merged_rows)} 行（按序号合并）")
-
-    result = dict(ti)
-    result["rows"] = merged_rows
-    return result
 
 
 def _filter_polluted_rows(ti: Dict[str, Any]) -> Dict[str, Any]:
@@ -1354,6 +1250,67 @@ def _forward_fill_merged_cells(ti: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _split_stuck_headers(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """拆分多级表头展平时粘连的相邻列。
+
+    LLM 展平两级表头时，经常把「序号」+「分类」黏成「序号分类」一列，
+    或把「状态量」+「状态量名称」黏成「状态量状态量名称」一列。
+    这些粘连列导致列错位，派生大量 DQ-001/004/005/006 报错。
+
+    本函数只做表头结构修复：
+    1. 表头「状态量状态量名称」→ 归一为「状态量名称」（去掉重复词）
+    2. 表头「序号分类」→ 拆为「序号」+「分类」两列：
+       - 数值形如 "1运行" / "1 SF6压力表…" 拆为 序号=数字、分类=剩余文本
+       - 纯数字原样保留为序号，分类复用「状态量名称」列（分类与状态量一致）
+    """
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers or not rows:
+        return ti
+
+    # 1) 去重粘连词：状态量状态量名称 → 状态量名称
+    for ci, h in enumerate(headers):
+        hc = str(h).strip()
+        if re.fullmatch(r"(?:状态量){2,}名称", hc):
+            headers[ci] = "状态量名称"
+
+    # 2) 序号分类 → 序号 + 分类
+    stuck_idx = next((i for i, h in enumerate(headers) if str(h).strip() == "序号分类"), None)
+    if stuck_idx is None:
+        result = dict(ti)
+        result["headers"] = headers
+        result["rows"] = rows
+        return result
+
+    headers[stuck_idx] = "序号"
+    headers.insert(stuck_idx + 1, "分类")
+
+    new_rows = []
+    for row in rows:
+        row = list(row) if row else []
+        while len(row) < len(headers) - 1:
+            row.append("")
+        cell = str(row[stuck_idx]).strip() if stuck_idx < len(row) else ""
+        m = re.match(r"^(\d{1,4})(?:[\s.．、]*(.+))?$", cell)
+        seq_val = cell
+        cat_val = ""
+        if m:
+            seq_val = m.group(1)
+            cat_val = (m.group(2) or "").strip()
+        # 未拆出分类词时，用原「状态量名称」列（旧行中紧随序号分类之后的列）作为分类，
+        # 分类与状态量语义一致（如「振动和异常声响」既是分类也是状态量名称）
+        if not cat_val and stuck_idx + 1 < len(row):
+            cat_val = str(row[stuck_idx + 1]).strip()
+        new_row = row[:stuck_idx] + [seq_val] + [cat_val] + row[stuck_idx + 1:]
+        new_rows.append(new_row)
+
+    print(f"  [表头拆分] 「序号分类」拆为「序号」+「分类」（{len(new_rows)} 行）")
+    result = dict(ti)
+    result["headers"] = headers
+    result["rows"] = new_rows
+    return result
+
+
 def _merge_duplicate_headers(ti: Dict[str, Any]) -> Dict[str, Any]:
     """合并重复列名：当多个列名相同时（多级表头展平不彻底），将对应列内容按行拼接。"""
     headers = ti.get("headers") or []
@@ -1415,12 +1372,19 @@ def _normalize_column_count(ti: Dict[str, Any]) -> Dict[str, Any]:
             row.append("")
             adjusted += 1
         if len(row) > ncols and ncols > 0:
-            overflow = [str(c).strip() for c in row[ncols:] if str(c).strip()]
-            if overflow:
-                last_val = str(row[ncols - 1]).strip() if row[ncols - 1] else ""
-                merged = last_val + "；" + "；".join(overflow) if last_val else "；".join(overflow)
-                row[ncols - 1] = merged
+            # 右移检测：前导空列 → 左移（子列被拆成两列，前面多出空列导致后续整体右移）
+            while len(row) > ncols and not str(row[0]).strip():
+                row = row[1:]
+                while len(row) < ncols:
+                    row.append("")
                 adjusted += 1
+            if len(row) > ncols:
+                overflow = [str(c).strip() for c in row[ncols:] if str(c).strip()]
+                if overflow:
+                    last_val = str(row[ncols - 1]).strip() if row[ncols - 1] else ""
+                    merged = last_val + "；" + "；".join(overflow) if last_val else "；".join(overflow)
+                    row[ncols - 1] = merged
+                    adjusted += 1
             row = row[:ncols]
         normalized.append(row)
     if adjusted > 0:
@@ -1431,11 +1395,22 @@ def _normalize_column_count(ti: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _table_rows_to_records(ti: Dict[str, Any], source_document: str) -> List[Dict[str, Any]]:
+    _in_rows = len(ti.get("rows") or [])
+    _in_cols = len(ti.get("headers") or [])
+    _tbl_num = ti.get("table_number") or ""
+    print(f"  [阶段日志] 表{_tbl_num} 后处理输入: {_in_rows} 行 × {_in_cols} 列", flush=True)
     ti = _filter_polluted_rows(ti)
+    _after_filter = len(ti.get("rows") or [])
+    if _after_filter < _in_rows:
+        print(f"  [阶段日志] 表{_tbl_num} ⚠️ _filter_polluted_rows 丢行: {_in_rows} → {_after_filter}", flush=True)
     ti = _clean_placeholder_cells(ti)
     ti = _forward_fill_merged_cells(ti)
-    ti = _merge_rows_by_seq(ti)
+    ti = _split_stuck_headers(ti)
     ti = _merge_duplicate_headers(ti)
+    _after_merge = len(ti.get("rows") or [])
+    _after_merge_cols = len(ti.get("headers") or [])
+    if _after_merge != _after_filter or _after_merge_cols != _in_cols:
+        print(f"  [阶段日志] 表{_tbl_num} 前填充/表头拆分/子列合并后: {_after_merge} 行 × {_after_merge_cols} 列", flush=True)
     ti = _normalize_column_count(ti)
     # 表头归一化：去除字间空格（如「劣 化 情 况」→「劣化情况」），统一跨表列名
     ti["headers"] = [re.sub(r"\s+", "", str(h)) for h in (ti.get("headers") or [])]
@@ -1467,12 +1442,10 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
     """按行/列修复 check_skill_rules 发现的问题（不整表重写）。
 
     根据 rule_id 和 issue 描述定位问题行列，只修有问题的单元格：
-    - SKILL-DQ-001 表名问题：用原始表标题替换
-    - SKILL-DQ-002 列错位/列数不一致：对齐列数（补空/合并多余列）
-    - SKILL-DQ-003 序号未归并：重新执行序号归并
-    - SKILL-DQ-004 合并单元格未补全：重新执行前向填充
-    - SKILL-DQ-005 子列未拼接：重新执行重复列名合并
-    - 内容截断/OCR漏行等确定性修复不了的问题：调 LLM 按行修复（不整表重写）
+    - SKILL-DQ-001 不得丢失行和列：列数归一（补空/合并多余列）+ LLM 补丢失列
+    - SKILL-DQ-003 合并单元格补全：重新执行前向填充
+    - SKILL-DQ-004 子列拼接：重新执行重复列名合并
+    - SKILL-DQ-005 列值与表头语义一致：调 LLM 按行修复
     返回修复计数。
     """
     fixed_count = 0
@@ -1491,33 +1464,11 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
         headers = list(recs[0].keys())
         rule_ids = {iss.get("rule_id", "") for iss in tbl_issues}
 
-        # SKILL-DQ-001: 表名问题 → 用原始表标题替换
+        # SKILL-DQ-001: 不得丢失行和列 → 列数归一（补空/合并多余列）+ LLM 补丢失列
         if "SKILL-DQ-001" in rule_ids:
-            original_title = table_original_titles.get(tbl, "")
-            if original_title and original_title != tbl:
-                # 保留 _records_map 的 key 一致性
-                old_key = tbl
-                new_key = original_title
-                # 避免 key 冲突
-                if new_key not in grouped:
-                    grouped[new_key] = grouped.pop(old_key)
-                    if old_key in table_original_titles:
-                        table_original_titles[new_key] = table_original_titles.pop(old_key)
-                    print(f"  [修复] 表名「{old_key}」→「{new_key}」（原始表标题）")
-                    fixed_count += 1
-                else:
-                    print(f"  [修复] 表名「{old_key}」原始标题「{new_key}」已存在，跳过")
-            else:
-                for iss in tbl_issues:
-                    if iss.get("rule_id") == "SKILL-DQ-001":
-                        print(f"  [修复] 表名「{tbl}」无原始标题可用，描述: {str(iss.get('description',''))[:80]}")
-
-        # SKILL-DQ-002: 列数不一致 → 补空/合并多余列
-        if "SKILL-DQ-002" in rule_ids:
             _adjusted = 0
             ncols = len(headers)
             for rec in recs:
-                # 按headers遍历，确保列数与headers一致
                 while len(list(rec.keys())) < ncols:
                     rec[f"col_{len(rec)}"] = ""
                     _adjusted += 1
@@ -1533,29 +1484,12 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
                         del rec[k]
                     _adjusted += 1
             if _adjusted:
-                print(f"  [修复] 表「{tbl}」SKILL-DQ-002 列数对齐 {_adjusted} 行")
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-001 列数归一 {_adjusted} 行")
                 fixed_count += _adjusted
+            # 列数归一处理不了"丢失整列"的情况，统一在循环末尾调 LLM 修复（每表每轮仅一次）
 
-        # SKILL-DQ-003: 序号未归并 → 重新执行序号归并
+        # SKILL-DQ-003: 合并单元格补全 → 重新执行前向填充
         if "SKILL-DQ-003" in rule_ids:
-            ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
-            ti = _merge_rows_by_seq(ti)
-            new_rows = ti.get("rows", [])
-            if len(new_rows) < len(recs):
-                new_recs = []
-                for row in new_rows:
-                    rec = {}
-                    for ci, h in enumerate(headers):
-                        rec[h] = row[ci] if ci < len(row) else ""
-                    rec["source_document"] = recs[0].get("source_document", "")
-                    rec["updated_at"] = recs[0].get("updated_at", "")
-                    new_recs.append(rec)
-                grouped[tbl] = new_recs
-                print(f"  [修复] 表「{tbl}」SKILL-DQ-003 序号归并 {len(recs)}→{len(new_recs)} 行")
-                fixed_count += abs(len(recs) - len(new_recs))
-
-        # SKILL-DQ-004: 合并单元格未补全 → 重新执行前向填充
-        if "SKILL-DQ-004" in rule_ids:
             recs = grouped.get(tbl, recs)
             ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
             ti = _forward_fill_merged_cells(ti)
@@ -1568,11 +1502,11 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
                         rec[h] = new_val
                         filled += 1
             if filled:
-                print(f"  [修复] 表「{tbl}」SKILL-DQ-004 前向填充 {filled} 个空值")
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-003 前向填充 {filled} 个空值")
                 fixed_count += filled
 
-        # SKILL-DQ-005: 子列未拼接 → 重新执行重复列名合并
-        if "SKILL-DQ-005" in rule_ids:
+        # SKILL-DQ-004: 子列拼接 → 重新执行重复列名合并
+        if "SKILL-DQ-004" in rule_ids:
             recs = grouped.get(tbl, recs)
             ti = {"headers": headers, "rows": [[r.get(h, "") for h in headers] for r in recs]}
             ti = _merge_duplicate_headers(ti)
@@ -1588,13 +1522,15 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
                     rec["updated_at"] = recs[0].get("updated_at", "")
                     new_recs.append(rec)
                 grouped[tbl] = new_recs
-                print(f"  [修复] 表「{tbl}」SKILL-DQ-005 子列合并 {len(headers)}→{len(new_headers)} 列")
+                print(f"  [修复] 表「{tbl}」SKILL-DQ-004 子列合并 {len(headers)}→{len(new_headers)} 列")
                 fixed_count += abs(len(headers) - len(new_headers))
 
-        # 内容截断/OCR漏行等 → 调 LLM 按行修复（不整表重写）
-        _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text)
-        if _llm_fixed:
-            fixed_count += _llm_fixed
+        # SKILL-DQ-005（列错位/分类与序号混列）与 SKILL-DQ-001（丢整列）都调 LLM 按行修复，
+        # 但每表每轮统一只调一次，避免同一批问题行被反复喂给 LLM 造成空转。
+        if "SKILL-DQ-005" in rule_ids or "SKILL-DQ-001" in rule_ids:
+            _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text)
+            if _llm_fixed:
+                fixed_count += _llm_fixed
 
     return fixed_count
 
@@ -1604,6 +1540,7 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
 
     把有问题的行 + 上下文行 + 源文档片段给 LLM，让它输出修复后的行。
     LLM 可以输出比原来更多的行（补回丢失的行），按序号插入到正确位置。
+    为控制单次 LLM 调用规模（避免单次超时），问题行按小批（每批3行）分多次调用。
     """
     if not recs:
         return 0
@@ -1625,22 +1562,9 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
                 if g:
                     target_rows.add(int(g) - 1)
     if not target_rows:
-        target_rows = set(range(min(5, len(recs))))
+        target_rows = set(range(min(3, len(recs))))
 
-    # 准备 LLM 输入：有问题的行 + 上下文（前后各1行）
-    _rows_for_llm = []
-    for ri in sorted(target_rows):
-        if ri < 0 or ri >= len(recs):
-            continue
-        context = []
-        if ri > 0:
-            context.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:200] for h in headers}})
-        context.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:200] for h in headers}})
-        if ri + 1 < len(recs):
-            context.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:200] for h in headers}})
-        _rows_for_llm.extend(context)
-
-    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))[:200]}" for i in _llm_issues)
+    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))}" for i in _llm_issues)
 
     # 找到序号列（如果有）
     seq_col = -1
@@ -1649,79 +1573,24 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
             seq_col = ci
             break
 
-    prompt = f"""请修复以下表格中有问题的行。可以输出比原来更多的行（补回丢失的数据行）。
-
-表名: {tbl}
-列: {" | ".join(headers)}
-
-问题:
-{issue_descs}
-
-有问题的行及上下文:
-"""
-    prompt += "| " + " | ".join(headers) + " |\n"
-    prompt += "| " + " | ".join("---" for _ in headers) + " |\n"
-    for r in _rows_for_llm:
-        vals = r.get("values", {})
-        cells = [str(vals.get(h, ""))[:200] for h in headers]
-        tag = "←问题行" if r.get("issue") else ""
-        prompt += f"| {' | '.join(cells)} | {tag}\n"
-
-    prompt += f"""
-
-源文档片段（供参考）:
-{source_text[:6000]}
-
-请输出修复后的行（Markdown 表格行格式，含表头行和分隔行）。
-- 如果需要补行，直接在正确位置插入新行
-- 如果需要修改已有行，输出修改后的完整行
-- 不要输出没有问题的行
-- 不要输出解释"""
-
-    try:
-        _resp = call_tool("llm_generate", prompt=prompt, temperature=0.0, max_tokens=8000)
-        content = _resp.get("content", "") if isinstance(_resp, dict) else ""
-        if not content:
-            return 0
-        parsed = _parse_markdown_table(content)
-        if not parsed:
-            return 0
-        fixed_data = parsed[0]
-        fixed_rows = fixed_data.get("rows", [])
-        if not fixed_rows:
-            return 0
-
-        # 把 LLM 输出的行转成 dict
-        fixed_recs = []
-        for row in fixed_rows:
-            rec = {}
-            for ci, h in enumerate(headers):
-                rec[h] = str(row[ci])[:200] if ci < len(row) else ""
-            rec["source_document"] = source_doc
-            rec["updated_at"] = updated_at
-            fixed_recs.append(rec)
-
-        # 合并修复后的行到原数据
-        # 策略：按序号匹配替换，没有匹配的按位置插入
+    def _merge_fixed(fixed_recs: List[Dict], target_row_indices: List[int]):
+        """把 LLM 输出的修复行合并回 recs，返回 (改行数, 补行数)。"""
         _fixed_count = 0
         _added_count = 0
-
         if seq_col >= 0:
-            # 有序号列：按序号匹配
+            # 有序号列：按序号匹配（每批合并前基于最新 recs 重建映射）
             existing_seqs = {}
             for ri, rec in enumerate(recs):
                 seq = str(rec.get(headers[seq_col], "")).strip()
                 if seq:
                     existing_seqs[seq] = ri
-
-            used_indices = set()
             for fr in fixed_recs:
                 seq = str(fr.get(headers[seq_col], "")).strip()
                 if seq and seq in existing_seqs:
                     # 替换已有行
                     ri = existing_seqs[seq]
                     _changed = False
-                    for h in headers:
+                    for h in fr.keys():
                         new_val = str(fr.get(h, ""))
                         old_val = str(recs[ri].get(h, ""))
                         if new_val and new_val != old_val:
@@ -1729,12 +1598,10 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
                             _changed = True
                     if _changed:
                         _fixed_count += 1
-                    used_indices.add(ri)
                 else:
                     # 新行——按序号插入到正确位置
                     insert_pos = len(recs)
                     if seq:
-                        # 找到比它大的最小序号位置
                         for ri, rec in enumerate(recs):
                             cur_seq = str(rec.get(headers[seq_col], "")).strip()
                             try:
@@ -1747,12 +1614,11 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
                     _added_count += 1
         else:
             # 无序号列：按行号替换
-            sorted_targets = sorted(target_rows)
             for idx, fr in enumerate(fixed_recs):
-                if idx < len(sorted_targets) and sorted_targets[idx] < len(recs):
-                    ri = sorted_targets[idx]
+                if idx < len(target_row_indices) and target_row_indices[idx] < len(recs):
+                    ri = target_row_indices[idx]
                     _changed = False
-                    for h in headers:
+                    for h in fr.keys():
                         new_val = str(fr.get(h, ""))
                         old_val = str(recs[ri].get(h, ""))
                         if new_val and new_val != old_val:
@@ -1764,13 +1630,91 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
                     # 多出的行追加到末尾
                     recs.append(fr)
                     _added_count += 1
+        return _fixed_count, _added_count
 
-        if _fixed_count or _added_count:
-            print(f"  [修复] 表「{tbl}」LLM 修复 {_fixed_count} 行 + 补 {_added_count} 行")
-        return _fixed_count + _added_count
-    except Exception as e:
-        print(f"  [修复] 表「{tbl}」LLM 按行修复失败: {e}")
-        return 0
+    sorted_targets = sorted(ri for ri in target_rows if 0 <= ri < len(recs))
+    BATCH = 3
+    total_fixed = 0
+    n_batches = max(1, (len(sorted_targets) + BATCH - 1) // BATCH)
+
+    for bi in range(0, len(sorted_targets), BATCH):
+        batch = sorted_targets[bi:bi + BATCH]
+        batch_no = bi // BATCH + 1
+        print(f"  [修复] 表「{tbl}」LLM 按行修复 第{batch_no}/{n_batches}批（行 {[r + 1 for r in batch]}）...")
+        # 准备 LLM 输入：有问题的行 + 上下文（前后各1行）
+        _rows_for_llm = []
+        for ri in batch:
+            if ri > 0:
+                _rows_for_llm.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:150] for h in headers}})
+            _rows_for_llm.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:150] for h in headers}})
+            if ri + 1 < len(recs):
+                _rows_for_llm.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:150] for h in headers}})
+
+        prompt = f"""请修复以下表格中有问题的行。可以输出比原来更多的行（补回丢失的数据行）。
+
+表名: {tbl}
+列: {" | ".join(headers)}
+
+问题:
+{issue_descs}
+
+有问题的行及上下文:
+"""
+        prompt += "| " + " | ".join(headers) + " |\n"
+        prompt += "| " + " | ".join("---" for _ in headers) + " |\n"
+        for r in _rows_for_llm:
+            vals = r.get("values", {})
+            cells = [str(vals.get(h, ""))[:150] for h in headers]
+            tag = "←问题行" if r.get("issue") else ""
+            prompt += f"| {' | '.join(cells)} | {tag}\n"
+
+        prompt += f"""
+
+源文档片段（供参考）:
+{source_text[:1500]}
+
+请输出修复后的行（Markdown 表格行格式，含表头行和分隔行）。
+- 如果需要补行，直接在正确位置插入新行
+- 如果需要补列（源文档中有但提取结果缺失的列），在表头加上新列名，每行补上对应值
+- 如果需要修改已有行，输出修改后的完整行
+- 不要输出没有问题的行
+- 不要输出解释"""
+
+        try:
+            _resp = call_tool("llm_generate", prompt=prompt, temperature=0.0, max_tokens=8000)
+            content = _resp.get("content", "") if isinstance(_resp, dict) else ""
+            if not content:
+                continue
+            parsed = _parse_markdown_table(content)
+            if not parsed:
+                continue
+            fixed_data = parsed[0]
+            fixed_rows = fixed_data.get("rows", [])
+            if not fixed_rows:
+                continue
+
+            # 把 LLM 输出的行转成 dict（用 LLM 的表头，可能比原始多列——补丢失列）
+            llm_headers = fixed_data.get("headers") or headers
+            if len(llm_headers) > len(headers):
+                print(f"  [修复] 表「{tbl}」LLM 补了 {len(llm_headers) - len(headers)} 列: {set(llm_headers) - set(headers)}")
+            fixed_recs = []
+            for row in fixed_rows:
+                rec = {}
+                for ci, h in enumerate(llm_headers):
+                    rec[h] = str(row[ci]) if ci < len(row) else ""
+                rec["source_document"] = source_doc
+                rec["updated_at"] = updated_at
+                fixed_recs.append(rec)
+
+            _fc, _ac = _merge_fixed(fixed_recs, batch)
+            total_fixed += _fc + _ac
+        except Exception as e:
+            print(f"  [修复] 表「{tbl}」LLM 按行修复失败(第{batch_no}批): {e}")
+            continue
+
+    if total_fixed:
+        print(f"  [修复] 表「{tbl}」LLM 修复 {total_fixed} 处（{len(sorted_targets)} 个问题行分 {n_batches} 批）")
+    return total_fixed
 
 
 def _to_rule_records(entries: List[Dict[str, Any]], source_document: str) -> List[Dict[str, Any]]:
@@ -1847,7 +1791,62 @@ def _translate_table_name(table: str) -> str:
     raise RuntimeError(f"表名翻译失败: {table}")
 
 
+_TIME_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
+
+
+def _cleanup_records(records: List[Dict]) -> List[Dict]:
+    """写入前的确定性格式归一化（不做内容级修复）。
+
+    - 去重：LLM 行级修复可能对同一 rule_code+rule_name 产生冗余副本，保留内容最完整的一行；
+    - category 众数归一：组内 category 不一致时取出现最多的值（剔除 LLM 幻觉引入的少数派值）；
+    - 时间戳串列清理：format_regex/category/applicable_fields 中的纯时间戳值清空，
+      check_logic 中的时间戳子串删除（防止 updated_at 串入内容列）。
+    """
+    if not records:
+        return records
+    headers = list(records[0].keys())
+    key_cols = [h for h in ("rule_code", "rule_name") if h in headers]
+    if not key_cols:
+        return records
+
+    groups = {}
+    order = []
+    for rec in records:
+        key = tuple(str(rec.get(c, "")).strip() for c in key_cols)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(rec)
+
+    cleaned = []
+    for key in order:
+        cands = groups[key]
+        if "check_logic" in headers:
+            best = max(cands, key=lambda r: len(str(r.get("check_logic", ""))))
+        else:
+            best = max(cands, key=lambda r: len(json.dumps(r, ensure_ascii=False, default=str)))
+        rec = {k: best.get(k, "") for k in headers}
+        if "category" in headers:
+            cats = [str(r.get("category", "")).strip() for r in cands if str(r.get("category", "")).strip()]
+            if cats:
+                rec["category"] = max(set(cats), key=cats.count)
+        for h in headers:
+            val = str(rec.get(h, ""))
+            if not val:
+                continue
+            if h in ("format_regex", "category", "applicable_fields"):
+                if _TIME_TS_RE.fullmatch(val.strip()):
+                    rec[h] = ""
+            elif h == "check_logic":
+                rec[h] = _TIME_TS_RE.sub("", val).strip()
+        cleaned.append(rec)
+    if len(cleaned) != len(records):
+        print(f"  [清理] 去重 {len(records)} → {len(cleaned)} 行")
+    return cleaned
+
+
 def _write_records(ds_id: str, table_name: str, records: List[Dict], if_table_exists: str = "replace") -> int:
+    records = _cleanup_records(records)
     if not records:
         return 0
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1996,7 +1995,7 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
             from concurrent.futures import ThreadPoolExecutor, as_completed
             print(f"  [表格] 并发还原 {len(table_blocks)} 张表...")
             results_by_idx = {}
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 futs = {executor.submit(_process_table, b): i for i, b in enumerate(table_blocks)}
                 for fut in as_completed(futs):
                     i = futs[fut]
@@ -2005,7 +2004,34 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
                     print(f"  [表格] 完成 {len(results_by_idx)}/{len(table_blocks)}: 「{r['table_name']}」{len(r['records'])} 行")
             for i in range(len(table_blocks)):
                 r = results_by_idx[i]
-                table_records_map.setdefault(r["table_name"], []).extend(r["records"])
+                _tbl_name = r["table_name"]
+                _new_recs = r["records"]
+                if _tbl_name in table_records_map:
+                    _existing = table_records_map[_tbl_name]
+                    # 去重：用 (序号, 劣化程度, 劣化情况) 组合判断是否重复行
+                    _seen_keys = set()
+                    for rec in _existing:
+                        _key = (
+                            str(rec.get("序号") or rec.get("rule_code") or ""),
+                            str(rec.get("劣化程度") or rec.get("severity") or ""),
+                            str(rec.get("劣化情况") or rec.get("check_logic") or "")[:100],
+                        )
+                        _seen_keys.add(_key)
+                    _deduped = []
+                    for rec in _new_recs:
+                        _key = (
+                            str(rec.get("序号") or rec.get("rule_code") or ""),
+                            str(rec.get("劣化程度") or rec.get("severity") or ""),
+                            str(rec.get("劣化情况") or rec.get("check_logic") or "")[:100],
+                        )
+                        if _key not in _seen_keys:
+                            _seen_keys.add(_key)
+                            _deduped.append(rec)
+                    if _deduped:
+                        _existing.extend(_deduped)
+                        print(f"  [去重] 表「{_tbl_name}」续表合并：已有 {len(_existing) - len(_deduped)} 行，新增 {len(_deduped)} 行（去重 {len(_new_recs) - len(_deduped)} 行）")
+                else:
+                    table_records_map[_tbl_name] = _new_recs
                 # 记录原始表标题（供自检修复表名用）
                 _orig_title = ""
                 if r.get("number") and r.get("title"):
@@ -2103,44 +2129,60 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         written_total += n
         print(f"  [完成] 表「{tbl}」写入 {n} 条")
 
-    # 写入后自检：最多 5 轮，每轮修复后重新写入修改过的表
+    # 写入后自检：最多 5 轮，每轮修复后重新写入修改过的表。
+    # 增量重检策略：第 1 轮检查全部表；之后每轮只重检上一轮实际修改过的表，
+    # 避免反复调用 check_skill_rules（内部含 LLM）检查无问题表导致超时。
+    # check_skill_rules 内部对自然语言规则调 LLM 对比源文本，传入完整 PDF 全文
+    # 会导致单次调用 token 爆炸、13 表累计超时。自检只需覆盖规则判定上下文，
+    # 故截断到 4000 字符；修复阶段 _apply_row_col_fixes 仍使用完整 _src_text。
+    _src_text_check = (_src_text or "")[:4000]
     _check_round = 0
     _all_check_issues = []
-    while _check_round < 5:
+    _tables_to_check = set(grouped.keys())
+    _prev_issue_keys = None
+    while _check_round < 5 and _tables_to_check:
         _check_round += 1
         _all_check_issues = []
-        for tbl, recs in list(grouped.items()):
+        for tbl in list(_tables_to_check):
+            recs = grouped.get(tbl, [])
             if not recs:
                 continue
             headers = list(recs[0].keys())
             rows = [[r.get(h, "") for h in headers] for r in recs]
-            _result = call_tool("check_skill_rules", headers=headers, rows=rows, source_text=_src_text, table_name=tbl)
+            _result = call_tool("check_skill_rules", headers=headers, rows=rows, source_text=_src_text_check, table_name=tbl)
             if isinstance(_result, dict) and _result.get("issues"):
                 for _iss in _result["issues"]:
-                    if _iss.get("rule_id") == "SKILL-DQ-001":
-                        continue
                     if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
                         continue
                     _all_check_issues.append((tbl, _iss))
         if not _all_check_issues:
             print(f"[自检] 第{_check_round}轮检查通过")
             break
+        # 收敛检测：若本轮问题与上轮完全一致（修复无效），停止迭代，避免空转超时
+        _cur_issue_keys = sorted({(tbl, iss.get("rule_id", ""), str(iss.get("description", ""))) for tbl, iss in _all_check_issues})
+        if _cur_issue_keys == _prev_issue_keys:
+            print(f"[自检] 第{_check_round}轮问题与上轮完全一致，修复无效，停止迭代（避免空转）")
+            break
+        _prev_issue_keys = _cur_issue_keys
         print(f"[自检] 第{_check_round}轮发现 {len(_all_check_issues)} 个问题")
         for tbl, iss in _all_check_issues:
-            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')[:80]}")
+            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
         # 按行/列修复
+        _modified_tables = {tbl for tbl, _ in _all_check_issues}
         _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles)
         print(f"[自检] 按行/列修复 {_fixed_count} 处")
+        # 无实际修复进展则停止，避免空转
+        if _fixed_count <= 0:
+            print("[自检] 本轮无修复进展，停止迭代")
+            break
         # 修复后重新写入修改过的表
-        _modified_tables = set()
-        for tbl, _ in _all_check_issues:
-            _modified_tables.add(tbl)
-        if _modified_tables:
-            for tbl in _modified_tables:
-                recs = grouped.get(tbl, [])
-                if recs:
-                    print(f"[自检] 重新写入表「{tbl}」({len(recs)} 条)")
-                    _write_records(target_ds_id, tbl, recs, "overwrite")
+        for tbl in _modified_tables:
+            recs = grouped.get(tbl, [])
+            if recs:
+                print(f"[自检] 重新写入表「{tbl}」({len(recs)} 条)")
+                _write_records(target_ds_id, tbl, recs, "overwrite")
+        # 下一轮只重检本轮修改过的表
+        _tables_to_check = _modified_tables
     else:
         print(f"[自检] {_check_round}轮修复后仍有 {len(_all_check_issues)} 个问题，停止")
 
@@ -2148,8 +2190,8 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
     if _all_check_issues:
         print(f"[自检] 发现 {len(_all_check_issues)} 个问题，请手动检查：")
         for tbl, iss in _all_check_issues:
-            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')[:100]}")
-        _issue_summary = "; ".join(f"[{iss.get('rule_id','')}] 表「{tbl}」: {iss.get('description','')[:60]}" for tbl, iss in _all_check_issues[:10])
+            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
+        _issue_summary = "; ".join(f"[{iss.get('rule_id','')}] 表「{tbl}」: {iss.get('description','')}" for tbl, iss in _all_check_issues[:10])
         return {"success": False, "error": f"自检发现 {len(_all_check_issues)} 个问题，数据已写入但未通过质量检查。请查看数据源中的实际数据并手动修复。问题：{_issue_summary}", "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
 
     print("[自检] 检查通过")

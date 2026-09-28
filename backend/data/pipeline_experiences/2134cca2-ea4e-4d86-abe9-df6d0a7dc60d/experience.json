@@ -189,6 +189,66 @@
       "parameters": {},
       "stdout_preview": "",
       "context_summary": "工具: run_script\nAI输出: 直接执行脚本验证结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-21T16:00:31.274351",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7q0sj3cc.py\", line 715, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7q0sj3cc.py\", line 701, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7q0sj3cc.py\", line 538, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp7q0sj3cc.py\", line 273, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix']\n所有非下划线开头的全局名称:\n  Any\n  ArithmeticError\n  AssertionError\n  AttributeError\n  BaseException\n  BaseExceptionGroup\n  BlockingIOError\n  BrokenPipeError\n  BufferError\n  BytesWarning\n  COLUMN_REMARKS\n  ChildProcessError\n  ConnectionAbortedError\n  ConnectionError\n  ConnectionRefusedError\n  ConnectionResetError\n  DeprecationWarning\n  Dict\n  EOFError\n  Ellipsis\n  EncodingWarning\n  EnvironmentError\n  Exc",
+      "context_summary": "工具: run_script\nAI输出: 我先直接执行脚本验证结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-21T16:05:15.222972",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpxcxf5888.py\", line 784, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpxcxf5888.py\", line 770, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpxcxf5888.py\", line 632, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpxcxf5888.py\", line 564, in extract_image_info\n    _log(\"info\", f\"处理完成: 共 {len(processed_records)} 条数据已写入 {target_table_name}\")\n    ^^^^\nNameError: name '_log' is not defined. Did you mean: 'log'?",
+      "parameters": {},
+      "stdout_preview": "[INFO] 获取源数据源 ID: 凭证库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 获取目标数据源 ID: 凭证检索库\n[SkillRunner] call_tool: list_user_datasources\n[INFO] 读取源表数据: 所有的图片\n[SkillRunner] call_tool: iter_table_data\n  已读取 4 条...\n源数据读取成功: 4 条, 列: ['file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'parent_dir']\n[INFO] 从文件名提取凭证类型...\n  凭证类型: 已知 3 种, 未知 1 种\n[INFO] 使用 LLM 翻译 1 个未知拼音前缀...\n[SkillRunner] call_tool: llm_generate\n  LLM 翻译完成: 成功 1 个\n[INFO] 开始数据加工: 生成ID、时间戳、凭证类型、OCR提取关键信",
+      "context_summary": "工具: run_script\nAI输出: 工具返回存在缓存不一致（edit 报成功但 read 显示旧内容）。我直接 run_script 验证真实执行结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-22T16:00:11.241215",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe2trd7ae.py\", line 840, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe2trd7ae.py\", line 826, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe2trd7ae.py\", line 663, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpe2trd7ae.py\", line 398, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix']\n所有非下划线开头的全局名称:\n  Any\n  ArithmeticError\n  AssertionError\n  AttributeError\n  BaseException\n  BaseExceptionGroup\n  BlockingIOError\n  BrokenPipeError\n  BufferError\n  BytesWarning\n  COLUMN_REMARKS\n  ChildProcessError\n  ConnectionAbortedError\n  ConnectionError\n  ConnectionRefusedError\n  ConnectionResetError\n  DeprecationWarning\n  Dict\n  EOFError\n  Ellipsis\n  EncodingWarning\n  EnvironmentError\n  Exc",
+      "context_summary": "工具: run_script\nAI输出: 直接执行脚本，入口函数 `_pipeline_entry` 参数已固化，直接运行。"
+    },
+    {
+      "timestamp": "2026-09-23T16:00:10.184804",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpitx52gjb.py\", line 715, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpitx52gjb.py\", line 701, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpitx52gjb.py\", line 538, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpitx52gjb.py\", line 273, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix']\n所有非下划线开头的全局名称:\n  Any\n  ArithmeticError\n  AssertionError\n  AttributeError\n  BaseException\n  BaseExceptionGroup\n  BlockingIOError\n  BrokenPipeError\n  BufferError\n  BytesWarning\n  COLUMN_REMARKS\n  ChildProcessError\n  ConnectionAbortedError\n  ConnectionError\n  ConnectionRefusedError\n  ConnectionResetError\n  DeprecationWarning\n  Dict\n  EOFError\n  Ellipsis\n  EncodingWarning\n  EnvironmentError\n  Exc",
+      "context_summary": "工具: run_script\nAI输出: 我先直接执行脚本看运行结果。\n\n"
+    },
+    {
+      "timestamp": "2026-09-26T16:04:16.516562",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpday83hsm.py\", line 715, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpday83hsm.py\", line 701, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpday83hsm.py\", line 538, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpday83hsm.py\", line 273, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix']\n所有非下划线开头的全局名称:\n  Any\n  ArithmeticError\n  AssertionError\n  AttributeError\n  BaseException\n  BaseExceptionGroup\n  BlockingIOError\n  BrokenPipeError\n  BufferError\n  BytesWarning\n  COLUMN_REMARKS\n  ChildProcessError\n  ConnectionAbortedError\n  ConnectionError\n  ConnectionRefusedError\n  ConnectionResetError\n  DeprecationWarning\n  Dict\n  EOFError\n  Ellipsis\n  EncodingWarning\n  EnvironmentError\n  Exc",
+      "context_summary": "工具: run_script\nAI输出: "
+    },
+    {
+      "timestamp": "2026-09-28T08:58:09.452637",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptvzbh5qp.py\", line 715, in <module>\n    result = _pipeline_entry(input_data, **params) if input_data is not None else _pipeline_entry(**params)\n                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptvzbh5qp.py\", line 701, in _pipeline_entry\n    return main(**{'source_datasource_name': '凭证库', 'source_table_name': '*', 'target_datasource_name': '凭证检索库', 'target_table_name': '*', 'image_column': '所有图片', 'if_table_exists': 'truncate', 'batch_size': 500, 'enable_vectorization': False, 'vector_datasource_name': '', 'vector_table_name': '', 'enable_translation': False, 'translation_target_lang': ''})\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptvzbh5qp.py\", line 538, in main\n    return extract_image_info(**resolved)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmptvzbh5qp.py\", line 273, in extract_image_info\n    log(\"info\", f\"获取源数据源 ID: {source_datasource_name}\")\n    ^^^\nNameError: name 'log' is not defined",
+      "parameters": {},
+      "stdout_preview": "OCR/视觉相关函数: ['ZeroDivisionError', '_probe_ocr_functions', 'extract_image_info', 'extract_pinyin_prefix']\n所有非下划线开头的全局名称:\n  Any\n  ArithmeticError\n  AssertionError\n  AttributeError\n  BaseException\n  BaseExceptionGroup\n  BlockingIOError\n  BrokenPipeError\n  BufferError\n  BytesWarning\n  COLUMN_REMARKS\n  ChildProcessError\n  ConnectionAbortedError\n  ConnectionError\n  ConnectionRefusedError\n  ConnectionResetError\n  DeprecationWarning\n  Dict\n  EOFError\n  Ellipsis\n  EncodingWarning\n  EnvironmentError\n  Exc",
+      "context_summary": "工具: run_script\nAI输出: "
     }
   ],
   "positive": [
@@ -366,6 +426,55 @@
       "script_name": "_pipeline_entry",
       "parameters": {},
       "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260914_161451', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-21T16:09:24.556303",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260921_160819', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-21T16:20:51.151958",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260921_161909', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-22T16:01:39.451501",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260922_160029', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-23T16:11:25.606102",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260923_161014', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-25T20:36:31.420427",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260925_203450', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-26T16:06:17.405147",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260926_160502', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
+    },
+    {
+      "timestamp": "2026-09-28T09:09:13.844855",
+      "source": "debug-chat",
+      "script_name": "_pipeline_entry",
+      "parameters": {},
+      "result_summary": "{'success': True, 'total_rows': 4, 'target_table': 'credential_ocr_results_20260928_090713', 'columns': ['id', 'file_name', 'file_path', 'extension', 'size_bytes', 'size_human', 'modified_time', 'pare"
     }
   ],
   "lessons": ""

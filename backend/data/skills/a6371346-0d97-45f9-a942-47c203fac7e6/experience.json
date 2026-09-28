@@ -368,6 +368,13 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'videos_total': 1, 'videos_processed': 1, 'videos_failed': 0, 'processed_videos': [{'video_name': '2026-08-31 105342 银行培训.mp4', 'video_path': 'D:\\\\Data\\\\video\\\\2026-08-31 105342 银行培训"
+    },
+    {
+      "timestamp": "2026-09-22T18:54:34.471679",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'videos_total': 1, 'videos_processed': 1, 'videos_failed': 0, 'processed_videos': [{'video_name': '2026-08-31 105342 银行培训.mp4', 'video_path': 'D:\\\\Data\\\\video\\\\2026-08-31 105342 银行培训"
     }
   ],
   "lessons": ""

@@ -38,7 +38,7 @@ from app.services.agent_utils import (
     build_tool_action_event,
 )
 from app.services.tool_guidance import get_tool_guidance
-from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC
+from app.services.prompt_docs import PLATFORM_CONVENTIONS_DOC, SKILL_RULES_DOC
 
 # 分析场景更大的截断阈值（需要看更多数据做分析）
 ANALYSIS_MAX_TOOL_RESULT_CHARS = 30000
@@ -225,7 +225,7 @@ class DataAnalystAgent(BaseAgent):
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
                 messages=local_messages, tools=self.tools,
                 temperature=0.1 if _is_debug else 0.3,
-                model=llm_manager._flash, tool_choice="auto",
+                model=llm_manager._default, tool_choice="auto",
             ):
                 t = event["type"]
                 if t == "model":
@@ -491,6 +491,7 @@ class DataAnalystAgent(BaseAgent):
             return DataAnalystAgent._DEBUG_PROMPT_CACHE
         max_exec_failures = context.get("debug_max_exec_failures", 3)
         prompt = self.ANALYSIS_DEBUG_INSTRUCTIONS.replace("{max_exec_failures}", str(max_exec_failures))
+        prompt += "\n\n" + SKILL_RULES_DOC
         prompt += "\n\n" + PLATFORM_CONVENTIONS_DOC
         DataAnalystAgent._DEBUG_PROMPT_CACHE = prompt
         return prompt

@@ -1108,8 +1108,8 @@ async def debug_skill_chat(
     from app.services.multi_agent import ensure_agent_runtime, build_debug_context, build_debug_message, stream_agent_events_sse
     runtime = ensure_agent_runtime()
 
-    # history 已由前端净化（llmContent 只含 LLM 输出），直接透传，不再截断/挑选
-    history = request.history or []
+    # history 已由前端净化（llmContent 只含 LLM 输出），只保留最近 10 条避免上下文过大触发压缩
+    history = (request.history or [])[-10:]
 
     context = build_debug_context(
         db=db,

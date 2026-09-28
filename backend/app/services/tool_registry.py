@@ -2333,6 +2333,52 @@ async def _delete_llm_adapter_handler(args, db, user_id, context):
     return _json.dumps({"success": True, "message": f"Provider '{display_name}' ({provider_name}) 已删除"}, ensure_ascii=False)
 
 
+def _extract_table_source_snippet(source_text: str, table_name: str, headers: list, max_len: int = 3000) -> str:
+    """从源文档全文中提取与目标表对应的片段。
+
+    策略：
+    1. 用表名/表号在全文中定位，取表标题前后 3000 字符
+    2. 找不到表名时，用表头列名关键词在全文中搜索，取匹配位置附近片段
+    3. 都找不到时回退到全文前 2000 字符
+    """
+    import re as _re
+    if not source_text:
+        return ""
+    text = source_text
+
+    # 1. 用表名定位
+    tn = str(table_name or "").strip()
+    if tn:
+        for pattern in [tn, _re.sub(r'[/\\|:*?"<>]+', "_", tn)]:
+            idx = text.find(pattern)
+            if idx >= 0:
+                start = max(0, idx - 200)
+                end = min(len(text), idx + max_len)
+                return text[start:end]
+
+    # 2. 用表号定位（表名中的"表A.1"等前缀）
+    m = _re.match(r'^(表\s*[A-Za-z]?\d+(?:\.\d+)?)', tn)
+    if m:
+        idx = text.find(m.group(1))
+        if idx >= 0:
+            start = max(0, idx - 200)
+            end = min(len(text), idx + max_len)
+            return text[start:end]
+
+    # 3. 用表头列名关键词定位
+    if headers:
+        keywords = [str(h).strip() for h in headers if len(str(h).strip()) >= 2]
+        for kw in keywords[:3]:
+            idx = text.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 500)
+                end = min(len(text), idx + max_len)
+                return text[start:end]
+
+    # 4. 回退
+    return text[:2000]
+
+
 async def _check_skill_rules_handler(args, db, user_id, context):
     """检查提取结果是否符合技能 rules.md 定义的规则。
 
@@ -2432,21 +2478,63 @@ async def _check_skill_rules_handler(args, db, user_id, context):
         if not regex and not legal:
             _subjective_rules.append(rule)
 
+    # DQ-001 确定性行数对比：从 source_text 中定位该表的数据行数，与提取结果行数对比
+    has_dq001 = any((r.get("id") or r.get("rule_id") or "") == "SKILL-DQ-001" for r in all_rules)
+    if has_dq001 and source_text and rows and table_name:
+        source_snippet = _extract_table_source_snippet(source_text, table_name, headers)
+        if source_snippet:
+            _src_rows = 0
+            for ln in source_snippet.splitlines():
+                s = ln.strip()
+                if s and ("|" in s or "\t" in s or _re.search(r"\s{2,}", s)):
+                    if _re.fullmatch(r"[-=: |]+", s):
+                        continue
+                    if s.startswith("|") and _re.fullmatch(r"[-=: |]+", s.strip("|")):
+                        continue
+                    _src_rows += 1
+            _src_rows = max(0, _src_rows - 1)
+            _extracted_rows = len(rows)
+            if _src_rows > 5 and _extracted_rows < _src_rows * 0.8:
+                issues.append({
+                    "rule_id": "SKILL-DQ-001",
+                    "severity": "error",
+                    "column": "",
+                    "row": 0,
+                    "description": f"提取结果 {_extracted_rows} 行，源文档约 {_src_rows} 行，疑似丢失 {_src_rows - _extracted_rows} 行数据",
+                    "suggestion": "检查 OCR/LLM 归并是否截断，或源文档表格是否跨页未完整提取",
+                })
+                logger.info(f"[check_skill_rules] DQ-001 行数对比: 源≈{_src_rows}, 提取={_extracted_rows}, 判定丢行")
+
+    # DQ-001 确定性列数检查：每行列数必须与表头一致
+    if has_dq001 and headers and rows:
+        _ncols = len(headers)
+        for _ri, _row in enumerate(rows):
+            _row_len = len(_row)
+            if _row_len != _ncols:
+                issues.append({
+                    "rule_id": "SKILL-DQ-001",
+                    "severity": "error",
+                    "column": "",
+                    "row": _ri + 1,
+                    "description": f"第 {_ri + 1} 行列数 {_row_len} 与表头列数 {_ncols} 不一致，疑似子列未拼接导致列错位",
+                    "suggestion": "检查该行是否有多余或缺失的子列，按分号拼接到正确列",
+                })
+
     if _subjective_rules and rows:
         rule_descs = []
         for r in _subjective_rules:
             rid = r.get("id") or r.get("rule_id") or ""
-            desc = r.get("description") or r.get("name") or ""
+            desc = r.get("logic") or r.get("detection_logic") or r.get("description") or r.get("name") or ""
             rule_descs.append(f"- {rid}: {desc}")
 
         md_lines = ["| " + " | ".join(str(h) for h in headers) + " |"]
         md_lines.append("| " + " | ".join("---" for _ in headers) + " |")
         for row in rows:
-            cells = [str(row[ci])[:50] if ci < len(row) else "" for ci in range(len(headers))]
+            cells = [str(row[ci])[:200] if ci < len(row) else "" for ci in range(len(headers))]
             md_lines.append("| " + " | ".join(cells) + " |")
         table_md = "\n".join(md_lines)
 
-        source_snippet = (source_text or "")[:2000]
+        source_snippet = _extract_table_source_snippet(source_text, table_name, headers)
 
         rule_descs_text = "\n".join(rule_descs)
         prompt = "请检查以下提取的表格数据是否符合技能规则。\n\n"
@@ -2462,7 +2550,7 @@ async def _check_skill_rules_handler(args, db, user_id, context):
             if user_id:
                 await init_user_llm_context(user_id)
             await llm_manager.initialize()
-            resp = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=2000, enable_thinking=False)
+            resp = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=8000, enable_thinking=False)
             content = resp or ""
             _start = content.find("{")
             if _start >= 0:

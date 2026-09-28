@@ -463,17 +463,47 @@ def extract_image_info(
         review_note = ""
 
         try:
-            ocr_prompt = f"提取这张{doc_type_cn}图片中的所有文字信息，以JSON格式返回。"
-            ocr_result = llm_vision(file_path, ocr_prompt, max_tokens=1000)
+            ocr_prompt = (
+                f"提取这张{doc_type_cn}图片中的所有文字信息，以紧凑的JSON格式返回。"
+                "要求：JSON必须完整闭合、不得截断；表格类凭证必须逐行完整列出所有条目，"
+                "禁止省略任何条目、禁止使用省略号；内容过长时压缩键名但保留全部数据。"
+            )
+            retry_prompt = (
+                "上次输出被截断，JSON未闭合。请重新提取图片中所有文字信息，"
+                "输出完整闭合的紧凑JSON；表格类凭证必须完整列出全部条目，一个都不能少，"
+                "禁止截断、禁止省略。"
+            )
+            ocr_result = llm_vision(file_path, ocr_prompt)
             extracted_info = str(ocr_result).strip() if ocr_result else ""
 
-            if extracted_info:
-                extraction_status = "已提取"
-                ocr_success_count += 1
-            else:
+            if not extracted_info:
                 extraction_status = "提取失败"
                 review_note = "OCR返回空结果"
                 ocr_fail_count += 1
+            else:
+                extracted_info = _sanitize_pii(extracted_info)
+                is_valid, integrity_note = _validate_json_integrity(extracted_info)
+                if not is_valid:
+                    # 截断/非法 JSON：用更紧凑的 prompt 重试一次补全
+                    log("warn", f"OCR输出JSON截断/非法，重试补全: {file_name}")
+                    retry_result = llm_vision(file_path, retry_prompt)
+                    retry_info = str(retry_result).strip() if retry_result else ""
+                    retry_valid = False
+                    if retry_info:
+                        retry_info = _sanitize_pii(retry_info)
+                        retry_valid, _ = _validate_json_integrity(retry_info)
+                    if retry_valid:
+                        extracted_info = retry_info
+                        extraction_status = "已提取"
+                        ocr_success_count += 1
+                    else:
+                        extraction_status = "提取失败"
+                        review_note = integrity_note or "OCR输出非法JSON（截断），重试后仍无法完整解析"
+                        extracted_info = ""
+                        ocr_fail_count += 1
+                else:
+                    extraction_status = "已提取"
+                    ocr_success_count += 1
         except Exception as e:
             extraction_status = "提取失败"
             err_str = str(e)
@@ -485,10 +515,6 @@ def extract_image_info(
                 review_note = f"OCR异常: {err_str[:100]}"
             extracted_info = ""
             ocr_fail_count += 1
-
-        # ---- PII 脱敏处理 ----
-        if extracted_info:
-            extracted_info = _sanitize_pii(extracted_info)
 
         # ---- 数据质量验证与修复 ----
         if extracted_info:
@@ -662,6 +688,47 @@ def _sanitize_pii(text: str) -> str:
     text = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', _mask_email, text)
 
     return text
+
+
+def _validate_json_integrity(extracted_info: str) -> tuple:
+    """校验 OCR 结果中的 JSON 是否完整合法，防止被截断的非法 JSON 落库。
+
+    视觉模型对长表格输出可能因 token 上限被截断，产生未闭合的 JSON。
+    本函数检测 JSON 形态的提取结果是否可被 json.loads 完整解析。
+
+    返回 (is_valid: bool, note: str)：
+    - 提取结果为纯文本（非 JSON 形态）时不做强制校验，返回 (True, "")。
+    - 提取结果为 JSON 形态但解析失败时返回 (False, "截断/非法原因说明")。
+    """
+    if not extracted_info:
+        return True, ""
+
+    candidate = extracted_info.strip()
+
+    # 剥离 Markdown 代码块围栏（```json ... ```）
+    fence = re.search(r'```(?:json)?\s*([\s\S]*?)```', candidate)
+    if fence:
+        candidate = fence.group(1).strip()
+
+    # 以 { 或 [ 开头的 JSON 形态
+    if candidate.startswith('{') or candidate.startswith('['):
+        try:
+            json.loads(candidate)
+            return True, ""
+        except json.JSONDecodeError as e:
+            return False, f"JSON截断或非法（{e.msg}），已置为提取失败，待人工复核"
+
+    # 内嵌 JSON：提取最外层 {..} 或 [..]
+    inner = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', candidate)
+    if inner:
+        try:
+            json.loads(inner.group())
+            return True, ""
+        except json.JSONDecodeError as e:
+            return False, f"JSON截断或非法（{e.msg}），已置为提取失败，待人工复核"
+
+    # 纯文本（非 JSON 形态），不做强制校验
+    return True, ""
 
 
 def _validate_extracted_data(extracted_info: str) -> tuple:

@@ -31,7 +31,7 @@ def _get_builtin_func(name: str):
 
 
 # ============================================================
-# 常用中文→英文翻译词典（用于自动生成英文列名/表名）
+# 通用中文→英文翻译词典（跨领域通用词汇，用于自动生成英文列名/表名）
 # ============================================================
 COMMON_CN_EN = {
     "编号": "code", "序号": "serial_no", "名称": "name", "名字": "name",
@@ -55,15 +55,20 @@ COMMON_CN_EN = {
     "操作": "operation", "管理": "management", "负责": "responsible",
     "联系": "contact", "电话": "phone", "邮箱": "email",
     "网站": "website", "链接": "link", "网址": "url",
+    "材质": "material", "尺寸": "size", "重量": "weight", "颜色": "color",
+    "用途": "purpose", "功能": "function",
+    "记录时间戳": "record_timestamp", "时间戳": "timestamp",
+}
+
+# 领域扩展词汇（文物/保护类，按需合并到 COMMON_CN_EN 使用）
+_DOMAIN_CN_EN = {
     "文物": "relic", "保护": "protection", "单位": "unit",
     "全国": "national", "重点": "key", "省级": "provincial",
     "市级": "municipal", "县级": "county", "公布": "published",
-    "批次": "batch", "所属": "belonging", "材质": "material",
-    "尺寸": "size", "重量": "weight", "颜色": "color",
-    "用途": "purpose", "功能": "function", "发现": "discovery",
-    "发掘": "excavation", "出土": "unearthed", "收藏": "collection",
-    "展览": "exhibition", "修复": "restoration", "保存": "preservation",
-    "现状": "condition", "建成": "construction",
+    "批次": "batch", "所属": "belonging",
+    "发现": "discovery", "发掘": "excavation", "出土": "unearthed",
+    "收藏": "collection", "展览": "exhibition", "修复": "restoration",
+    "保存": "preservation", "现状": "condition", "建成": "construction",
     "文物名称": "relic_name", "文物编号": "relic_code",
     "文物类型": "relic_type", "文物级别": "relic_level",
     "保护单位": "protection_unit", "公布批次": "published_batch",
@@ -72,15 +77,16 @@ COMMON_CN_EN = {
     "建成年代": "construction_era", "所属朝代": "dynasty",
     "全国重点": "national_key", "文物保护单位": "cultural_relic_protection_unit",
     "全国重点文物保护单位": "national_key_cultural_relic_protection_units",
-    "记录时间戳": "record_timestamp", "时间戳": "timestamp",
 }
 
 
 def _smart_translate(text: str) -> str:
-    """智能翻译中文为英文列名/表名"""
+    """智能翻译中文为英文列名/表名（合并通用词典+领域扩展词典）"""
+    _ALL_CN_EN = dict(COMMON_CN_EN)
+    _ALL_CN_EN.update(_DOMAIN_CN_EN)
     text = str(text).strip()
-    if text in COMMON_CN_EN:
-        return COMMON_CN_EN[text]
+    if text in _ALL_CN_EN:
+        return _ALL_CN_EN[text]
 
     result_parts = []
     remaining = text
@@ -89,8 +95,8 @@ def _smart_translate(text: str) -> str:
         matched = False
         for length in range(len(remaining), 0, -1):
             substr = remaining[:length]
-            if substr in COMMON_CN_EN:
-                result_parts.append(COMMON_CN_EN[substr])
+            if substr in _ALL_CN_EN:
+                result_parts.append(_ALL_CN_EN[substr])
                 remaining = remaining[length:]
                 matched = True
                 has_translation = True
@@ -1029,8 +1035,10 @@ def _extract_province(address: str) -> str:
 
 
 
-# ===== 英文→中文反向翻译字典 =====
-COMMON_EN_CN = {v: k for k, v in COMMON_CN_EN.items()}
+# ===== 英文→中文反向翻译字典（通用+领域合并） =====
+_ALL_CN_EN_FOR_REVERSE = dict(COMMON_CN_EN)
+_ALL_CN_EN_FOR_REVERSE.update(_DOMAIN_CN_EN)
+COMMON_EN_CN = {v: k for k, v in _ALL_CN_EN_FOR_REVERSE.items()}
 
 def _smart_translate_en_to_cn(text: str) -> str:
     """智能翻译英文列名/表名为中文。
@@ -1081,7 +1089,7 @@ def fix_empty_required_fields(df):
     """修复必填字段「名称」空值：尝试从备注中提取名称，无法提取则标记为待补录。
 
     针对 name/名称 字段为空但 remark/备注 中包含"更名为XXX"模式的记录，
-    从备注中提取名称填入。无法提取的标记为"未知文物名称（待补录）"。
+    从备注中提取名称填入。无法提取的标记为"未知名称（待补录）"。
     """
     name_col = None
     remark_col = None
@@ -1117,7 +1125,7 @@ def fix_empty_required_fields(df):
             fixed_from_remark += 1
             print(f"    ✅ 行 {idx}: 从备注提取名称 → '{extracted_name}'")
         else:
-            placeholder = "未知文物名称（待补录）"
+            placeholder = "未知名称（待补录）"
             df.at[idx, name_col] = placeholder
             fixed_placeholder += 1
             print(f"    ⚠️ 行 {idx}: 无法从备注提取名称，标记为 '{placeholder}' (备注: {remark_val})")
@@ -1130,7 +1138,7 @@ def repair_existing_data(datasource_name, table_name):
 
     1. 查询表中 name 为空的记录
     2. 尝试从 remark 备注中提取名称（匹配"更名为XXX"模式）
-    3. 无法提取的标记为"未知文物名称（待补录）"
+    3. 无法提取的标记为"未知名称（待补录）"
     4. 使用 write_table_data upsert 写回修复后的记录
     """
     print(f"\n🔧 数据质量修复: 检查表 '{table_name}' 中的必填字段空值...")
@@ -1166,7 +1174,7 @@ def repair_existing_data(datasource_name, table_name):
             record["name"] = extracted_name
             print(f"  ✅ ID={record_id}: 从备注提取名称 → '{extracted_name}'")
         else:
-            placeholder = "未知文物名称（待补录）"
+            placeholder = "未知名称（待补录）"
             record["name"] = placeholder
             print(f"  ⚠️ ID={record_id}: 无法从备注提取，标记为 '{placeholder}'")
 

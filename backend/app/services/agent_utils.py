@@ -1,6 +1,6 @@
 """Agent 工程工具函数
 
-借鉴 DeepAnalyze 的工程设计：
+工程设计：
 - CJK 感知的 token 估算
 - 工具结果截断保护
 - 卡死检测器（StuckDetector）
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def estimate_tokens(text: str) -> int:
     """CJK 感知的 token 估算。
 
-    借鉴 DeepAnalyze 的 CJK 字符级估算：
+    CJK 字符级估算：
     - CJK 字符（中日韩）≈ 1.5 token/字
     - 非 ASCII 字符 ≈ 0.5 token/字
     - ASCII 字符 ≈ 0.25 token/字
@@ -166,7 +166,7 @@ _IDENTIFIER_PATTERNS = [
 def extract_identifiers(text: str) -> Set[str]:
     """从文本中机械抽取标识符（UUID、表名、数据源 ID 等）。
 
-    借鉴 DeepAnalyze 的标识符保护原则：压缩时机械抽取并保留标识符，
+    标识符保护原则：压缩时机械抽取并保留标识符，
     防止压缩后 Agent 忘了之前查过什么表又重复搜索。
     """
     identifiers: Set[str] = set()
@@ -214,7 +214,7 @@ def has_data_claims(text: str) -> bool:
 def should_warn_ungrounded_claim(output_text: str, had_tool_calls_this_turn: bool) -> Optional[str]:
     """检查 agent 输出中是否有无工具支撑的数据声明。
 
-    借鉴 DeepAnalyze 的反幻觉检查：如果输出包含数据声明但本轮没有工具调用，
+    反幻觉检查：如果输出包含数据声明但本轮没有工具调用，
     返回警告提示。
     """
     if not output_text:
@@ -405,7 +405,12 @@ async def compact_messages(
     summary = ""
     if llm_manager:
         try:
-            summary = await llm_manager.generate(compact_prompt, temperature=0.1)
+            summary = await llm_manager.chat_with_messages(
+                [{"role": "user", "content": compact_prompt}],
+                model=llm_manager._flash,
+                temperature=0.1,
+                enable_thinking=False,
+            )
             summary = summary.strip()[:1000]
         except Exception as e:
             logger.warning(f"上下文压缩 LLM 调用失败，使用机械摘要: {e}")
@@ -464,7 +469,7 @@ _ANTI_HALLUCINATION_SECTIONS: Dict[str, str] = {
 def get_anti_hallucination_section(level: str = "basic") -> str:
     """获取指定级别的反幻觉约束文本，用于注入 system prompt。
 
-    借鉴 DeepAnalyze 的三级反幻觉注入：
+    三级反幻觉注入：
     - basic：通用对话（General Agent）
     - standard：检索分析（Explore/Compile Agent / DataProcessor）
     - strict：事实核查（Verify Agent / DataInspector）
@@ -567,7 +572,7 @@ def build_tool_action_event(tool_calls: list) -> Dict[str, Any]:
 class SearchSaturationDetector:
     """检测重复搜索是否不再产生新信息。
 
-    借鉴 DeepAnalyze 的 SearchSaturationDetector：
+    SearchSaturationDetector：
     跟踪最近搜索结果的关键内容，用 Jaccard 重叠度判断是否饱和。
     """
 
@@ -617,7 +622,7 @@ from collections import OrderedDict
 class ToolResultCache:
     """只读工具的会话内 LRU 去重缓存。
 
-    借鉴 DeepAnalyze 的 ToolResultCache：
+    ToolResultCache：
     - key = toolName + sorted(args)
     - 只缓存只读工具（查询类）
     - 默认 30 分钟 TTL、50 条上限

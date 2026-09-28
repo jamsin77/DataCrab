@@ -192,6 +192,7 @@ def test_skill_runner_template_generates_valid_python():
         function_name="main",
         uses_argparse=False,
         user_id="None",
+        injected_skill_rules="{}",
     )
     # 替换脚本内容占位符
     formatted = formatted.replace("# __SCRIPT_CONTENT__", "def main(**params):\n    return {'success': True}")

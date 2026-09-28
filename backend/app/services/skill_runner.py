@@ -165,7 +165,8 @@ def call_tool(tool_name, **args):
     '''统一工具调用入口：通过 HTTP 调 /internal/execute-tool 端点。
     所有数据操作（查询/写入/SQL/LLM/文件/视频）都通过此函数调用。
     返回 dict，具体格式见各工具的 JSON Schema。'''
-    _payload = json.dumps({{"tool_name": tool_name, "args": args, "user_id": INJECTED_USER_ID}}, ensure_ascii=False, default=str).encode("utf-8")
+    _skill_path = _os_mod.environ.get("DATACRAB_SKILL_PATH", "")
+    _payload = json.dumps({{"tool_name": tool_name, "args": args, "user_id": INJECTED_USER_ID, "skill_path": _skill_path}}, ensure_ascii=False, default=str).encode("utf-8")
     _req = _urllib_req.Request(
         f"{{_API_BASE}}/api/v1/datasources/internal/execute-tool",
         data=_payload,
@@ -184,8 +185,6 @@ def call_tool(tool_name, **args):
     except Exception as e:
         print(f"[SkillRunner] call_tool({{tool_name}}) failed: {{e}}")
         raise
-
-# ==================== 沙箱安全：__import__ hook + open() 限制 ====================
 
 import builtins as _builtins
 
@@ -720,10 +719,10 @@ def run_skill_script_streaming(
     import tempfile as _tempfile_mod
     sandbox_cwd = _tempfile_mod.mkdtemp(prefix="dc_sandbox_")
     # 收集授权目录传给子进程（供 open() 沙箱化使用）
-    # 异步收集太重，这里用简化版：只传 skill_path 和 DATACRAB_API_BASE 所在目录
     _allowed_dirs = []
     if skill_path:
         _allowed_dirs.append(str(skill_path.resolve()))
+        sandbox_env["DATACRAB_SKILL_PATH"] = str(skill_path.resolve())
     sandbox_env["SANDBOX_ALLOWED_DIRS"] = json.dumps(_allowed_dirs, ensure_ascii=False)
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
@@ -847,6 +846,7 @@ def run_skill_script_by_content(
     timeout: int = None,
     cwd: str = None,
     entry_function: str = None,
+    skill_path: Path = None,
 ) -> Dict[str, Any]:
     """在沙箱中执行脚本内容字符串（委托给流式版本，丢弃进度，只返回结果）。"""
     for item in run_skill_script_streaming(
@@ -857,6 +857,7 @@ def run_skill_script_by_content(
         timeout=timeout,
         cwd=cwd,
         entry_function=entry_function,
+        skill_path=skill_path,
     ):
         if item.get("type") == "result":
             return item["result"]

@@ -7,8 +7,13 @@ from typing import Dict, Any, List, Optional, Iterator
 # ============================================================
 # 平台工具封装（脚本内通过 call_tool 调用平台能力）
 # ============================================================
-def log(level: str, msg: str) -> None:
+def _log(level: str, msg: str) -> None:
     """统一日志输出。"""
+    print(f"[{level.upper()}] {msg}", flush=True)
+
+
+def log(level: str, msg: str) -> None:
+    """日志输出函数（多处使用 log(...) 调用）。"""
     print(f"[{level.upper()}] {msg}", flush=True)
 
 
@@ -256,14 +261,16 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         except Exception as we:
             raise RuntimeError(f"write_table_data 异常 (批次 {batch_num}): {we}")
 
-        write_failed = not (
+        _write_ok = (
             isinstance(write_result, dict)
             and write_result.get("success") is not False
-            and "error" not in write_result
+            and not ("error" in write_result and "success" not in write_result)
         )
-        if write_failed:
-            _w = write_result if isinstance(write_result, dict) else {}
-            err_msg = _w.get("error") or _w.get("message") or str(write_result)
+        if not _write_ok:
+            if isinstance(write_result, dict):
+                err_msg = write_result.get("error", write_result.get("message", str(write_result)))
+            else:
+                err_msg = str(write_result)
             # 如果 fail 策略因表已存在失败，自动重试 truncate
             err_str = str(err_msg)
             if current_strategy == "fail" and any(kw in err_str for kw in ["已存在", "already exists", "exists", "表已存在", "table"]):

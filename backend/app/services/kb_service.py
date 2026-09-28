@@ -65,7 +65,8 @@ def extract_text(file_path: str, file_type: str) -> str:
         except ImportError:
             raise ValueError("DOCX 解析需要安装 python-docx")
     if ft == "doc":
-        raise ValueError("旧版 .doc 暂不支持，请转换为 .docx 或 .txt")
+        from app.services.tool_registry import _extract_doc_text
+        return _extract_doc_text(file_path)
     # 兜底：按文本读
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:

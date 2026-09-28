@@ -212,7 +212,7 @@ def experience_stats(base: Path) -> Dict[str, int]:
 
 
 # ==================== 跨算子经验聚合（N）====================
-# 借鉴 DeepAnalyze AutoDream 的跨会话经验整合思想，
+# 跨会话经验整合思想，
 # 将多个算子/技能的经验 lessons 做一次 LLM 整合，提炼通用数据处理模式。
 
 GLOBAL_LESSONS_FILE = "global_lessons.md"
@@ -235,7 +235,7 @@ def read_global_lessons() -> str:
 async def distill_cross_patterns(db, user_id) -> str:
     """跨算子经验聚合：收集所有算子+技能的 lessons，用 LLM 提炼通用模式（N）。
 
-    借鉴 DeepAnalyze 的 AutoDream 思路，但适合 DataCrab 的粒度：
+    AutoDream 思路，但适合 DataCrab 的粒度：
     - DataCrab 按 算子/skill 积累经验（experience.json → lessons）
     - 本函数把多个 lessons 做一次跨算子整合，发现通用数据处理经验
     - 结果存到 global_lessons.md，在生成/修改算子时注入

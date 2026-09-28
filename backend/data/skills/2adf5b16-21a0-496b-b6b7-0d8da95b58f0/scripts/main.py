@@ -45,17 +45,9 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
 
     1. 剥离引号：视觉模型复述分页内容时常给单元格加首尾引号（垃圾副本行的典型特征）。
     2. 右移行：首列空、后续列整体右移 -> 左移对齐。
-    3. 错位行：策略列被数字/百分数侵占（整行右移错位）-> 直接丢弃，正常策略列必是文字。
-    4. 串行重复：按首列（基金简称）评分制去重，优先保留「无引号、策略合法、非空列多」的完整行。
+    3. 串行重复：按首列评分制去重，优先保留「无引号、非空列多」的完整行。
     """
     cols = list(df.columns)
-
-    # 定位"策略"列（用模糊匹配，避免列名微调漏配）
-    strat_idx = None
-    for i, c in enumerate(cols):
-        if "策略" in str(c) or "类型" in str(c):
-            strat_idx = i
-            break
 
     _QUOTES = "\"'“”‘’「」"
 
@@ -73,19 +65,13 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
         s = _strip_quotes(v)
         return "" if s.lower() in ("", "-", "--", "---", "nan", "none", "null", "/", "—", "–", "·") else s
 
-    def _is_strategy_ok(s):
-        if not s:
-            return True
-        # 策略列是数字/百分数/负百分数开头 => 整行右移错位，标记不合法
-        return not re.match(r"^[+-]?\d", s)
-
     repaired = []
     for _, r in df.iterrows():
         raw_vals = [r[c] for c in cols]
         vals = [_clean(v) for v in raw_vals]
         if all(v == "" for v in vals):
             continue
-        # 表头重复行过滤：首列等于任一列名（如"基金简称"）即视为表头行，删除
+        # 表头重复行过滤：首列等于任一列名即视为表头行，删除
         if vals[0] and vals[0] in set(cols):
             continue
         # 右移修复：首列为空时，找到第一个非空列并整体左移（最多移2列，避免过度修正）
@@ -95,10 +81,7 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
                 vals = vals[nz:] + [""] * nz
         if all(v == "" for v in vals):
             continue
-        # 错位行过滤：策略列被数字/百分数侵占 -> 丢弃
-        if strat_idx is not None and strat_idx < len(vals) and not _is_strategy_ok(vals[strat_idx]):
-            continue
-        # 剥离首列（基金简称）前导分隔符，使副本行/正常行可归并为同一键
+        # 剥离首列前导分隔符，使副本行/正常行可归并为同一键
         vals[0] = re.sub(r"^[\s\-–—•·]+", "", vals[0]).strip()
         if not vals[0]:
             continue
@@ -111,8 +94,7 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
             if len(s) >= 2 and s[0] in _QUOTES and s[-1] in _QUOTES:
                 quoted += 1
         filled = sum(1 for v in vals if v != "")
-        strategy_bonus = 10 if (strat_idx is not None and strat_idx < len(vals) and vals[strat_idx] and _is_strategy_ok(vals[strat_idx])) else 0
-        score = filled + strategy_bonus - quoted
+        score = filled - quoted
         repaired.append({"key": vals[0], "vals": vals, "score": score})
 
     # 按首列去重，保留得分最高的行
@@ -125,14 +107,15 @@ def _repair_misaligned_rows(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame([v for _s, v in best.values()], columns=cols)
 
 
-def _extract_first_column_ground_truth(image_path: str) -> List[str]:
+def _extract_first_column_ground_truth(image_path: str, first_col_name: str = "") -> List[str]:
     """两次独立提取第一列并合并去重，弥补视觉模型单次整图提取的随机漏行。
 
     单次整图提取第一列偶发漏 1~2 行（导致总行数从 48 变成 47）；
     两次独立调用各自漏不同行的概率低，合并后更接近完整 48 行。
     """
-    prompt = ("这是一张基金数据表格图片。表格从表头下一行开始共有 48 行数据。\n"
-              "请把每一行数据第一列（基金简称）的值从上到下逐行完整抄录出来，每行一个，\n"
+    col_label = first_col_name or "第一列"
+    prompt = (f"这是一张数据表格图片。表格从表头下一行开始共有若干行数据。\n"
+              f"请把每一行数据第一列（{col_label}）的值从上到下逐行完整抄录出来，每行一个，\n"
               "不要省略任何一行、不要合并、不要输出表头、不要输出其他列、不要加编号、不要输出任何解释文字。")
     round_names = []  # 每一轮提取的名单（分轮存放，便于以第一轮为基准做模糊去重）
     for attempt in (1, 2):
@@ -219,8 +202,8 @@ def _extract_headers(image_path: str) -> List[str]:
     return []
 
 
-def _extract_col_group(image_path: str, names: List[str], cols: List[str], retries: int = 2) -> List[List[str]]:
-    """用「基金简称」名单做行锚，提取一组列的值。
+def _extract_col_group(image_path: str, names: List[str], first_col_name: str, cols: List[str], retries: int = 2) -> List[List[str]]:
+    """用第一列名单做行锚，提取一组列的值。
 
     对长图而言，视觉模型按行号定位中间行不可靠（漏行/错位/幻觉），
     但单独按列顺序抄录第一列是可靠的。本函数把第一列完整名单喂给模型，
@@ -232,12 +215,12 @@ def _extract_col_group(image_path: str, names: List[str], cols: List[str], retri
     cols_str = "、".join(cols)
     n = len(names)
     prompt = (
-        f"这张图片是一个基金数据表格，表头列从左到右为：基金简称、{cols_str}。\n"
-        f"下面是第一列「基金简称」从表格第一行到最后一行共 {n} 行的完整值（顺序已固定）：\n"
+        f"这张图片是一个数据表格，表头列从左到右为：{first_col_name}、{cols_str}。\n"
+        f"下面是第一列「{first_col_name}」从表格第一行到最后一行共 {n} 行的完整值（顺序已固定）：\n"
         f"{names_block}\n\n"
         f"请严格按上面这 {n} 行的顺序，为每一行在图片中定位它对应的「{cols_str}」列的值，"
         f"用竖线 | 分隔 {len(cols)} 个值，每行输出一个，共输出 {n} 行；空单元格输出为空（即连续两个 | 或行尾留空）。\n"
-        f"不要输出表头、不要输出「基金简称」列、不要输出行号、不要输出任何解释，只输出 {cols_str} 的值。\n"
+        f"不要输出表头、不要输出「{first_col_name}」列、不要输出行号、不要输出任何解释，只输出 {cols_str} 的值。\n"
         f"示例：\n值1|值2|值3"
     )
     last_err = None
@@ -324,8 +307,8 @@ def _write_to_datasource(
 
 def main(
     image_path: str = "",
-    target_datasource_name: str = "交易数据",
-    target_table_name: str = "parsed_image_table",
+    target_datasource_name: str = "",
+    target_table_name: str = "",
     if_table_exists: str = "replace",
     max_retries: int = 1,
     page_size: int = 12,
@@ -367,31 +350,28 @@ def main(
     # 第一步：识别表头列名
     print("[1/3] 识别表头列名...")
     headers = _extract_headers(image_path)
-    _default_headers = ["基金简称", "管理人", "管理规模", "策略", "近3年", "近2年", "近1年",
-                        "今年", "2025年", "2024年", "2023年", "2022年", "2021年", "2020年", "2019年"]
     if not headers:
-        headers = _default_headers
-        print(f"[1/3] 表头识别失败，使用默认列名（{len(headers)} 列）")
-    else:
-        print(f"[1/3] 表头识别成功: {len(headers)} 列 -> {headers}")
+        return {"success": False, "error": "无法识别图片中的表头列名，请确保图片包含清晰的表格表头"}
+    print(f"[1/3] 表头识别成功: {len(headers)} 列 -> {headers}")
 
-    # 第二步：提取第一列「基金简称」完整名单作为行锚（两次提取合并去重，降低随机漏行）
-    print("[1/3] 提取第一列「基金简称」完整名单（行锚）...")
-    names = _extract_first_column_ground_truth(image_path)
+    # 第二步：提取第一列完整名单作为行锚（两次提取合并去重，降低随机漏行）
+    first_col_name = headers[0] if headers else "第一列"
+    print(f"[1/3] 提取第一列「{first_col_name}」完整名单（行锚）...")
+    names = _extract_first_column_ground_truth(image_path, first_col_name)
     print(f"[1/3] 第一列名单: {len(names)} 条")
     if not names:
         return {"success": False, "error": "未能提取第一列名单，停止解析"}
 
     rest_cols = headers[1:] if len(headers) > 1 else []
 
-    # 第三步：其余列按「基金简称」名单做行锚，分组逐组提取
+    # 第三步：其余列按第一列名单做行锚，分组逐组提取
     print("[2/3] 按行锚分列组提取其余列...")
     group_size = 3
     col_groups = [rest_cols[i:i + group_size] for i in range(0, len(rest_cols), group_size)]
     matrices = []
     for gi, g in enumerate(col_groups):
         print(f"[2/3] 提取列组 {gi + 1}/{len(col_groups)}: {g}")
-        mat = _extract_col_group(image_path, names, g, retries=2)
+        mat = _extract_col_group(image_path, names, first_col_name, g, retries=2)
         matrices.append(mat)
         print(f"[2/3] 列组 {gi + 1} 提取完成: {len(mat)} 行")
 
@@ -416,7 +396,7 @@ def main(
                 row[col_name] = _clean_cell(vals[j]) if j < len(vals) else ""
         records.append(row)
 
-    # 仅在所有数据列（除基金简称外）都为空时才剔除该行
+    # 仅在所有数据列（除第一列外）都为空时才剔除该行
     df = pd.DataFrame(records, columns=norm_headers)
     if len(df.columns) > 1:
         data_cols = list(df.columns[1:])
@@ -429,8 +409,12 @@ def main(
     # 2.6：表名带时间戳（若用户未显式指定）
     if not target_table_name or target_table_name == "parsed_image_table":
         ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-        target_table_name = f"交易数据_{ts}"
+        target_table_name = f"image_table_{ts}"
         print(f"[2/3] 目标表名未指定，自动生成带时间戳表名: {target_table_name}")
+
+    # 必填参数校验
+    if not target_datasource_name:
+        return {"success": False, "error": "缺少必填参数 target_datasource_name", "message": "请指定目标数据源名称"}
 
     # 第三步：写入目标数据源
     if not if_table_exists or if_table_exists == "fail":

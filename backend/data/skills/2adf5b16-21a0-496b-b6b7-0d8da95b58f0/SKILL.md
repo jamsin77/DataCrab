@@ -34,8 +34,8 @@ tags:
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `image_path` | str | ❌ | - | 待解析的表格图片文件路径（留空则自动从源表 file_path 字段获取） |
-| `target_datasource_name` | str | ❌ | 交易数据 | 目标数据源名称（例如：交易数据、文物列表、聊天上传数据） |
-| `target_table_name` | str | ❌ | parsed_image_table | 目标表名，默认 `parsed_image_table` |
+| `target_datasource_name` | str | ✅ | - | 目标数据源名称 |
+| `target_table_name` | str | ❌ | image_table_{时间戳} | 目标表名，未指定时自动生成 |
 | `if_table_exists` | str | ❌ | fail | 写入策略：fail/append/replace/overwrite/truncate/upsert |
 | `max_retries` | int | ❌ | 2 | 视觉识别失败重试次数，默认 2 次 |
 

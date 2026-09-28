@@ -128,3 +128,10 @@ openclaw_*.html
 start_hermes*.py
 package_skill*.py
 scrape_*.py
+
+# Temporary debug scripts
+extract_inspector.py
+query_skill.py
+
+# Vite timestamp temp files
+vite.config.ts.timestamp-*

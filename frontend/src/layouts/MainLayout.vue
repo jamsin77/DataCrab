@@ -16,10 +16,12 @@
           <el-icon><ChatDotRound /></el-icon>
           <template #title>{{ t('layout.menu.chat') }}</template>
         </el-menu-item>
+        <!-- 算子菜单暂时隐藏
         <el-menu-item index="/operator">
           <el-icon><Operation /></el-icon>
           <template #title>{{ t('layout.menu.operator') }}</template>
         </el-menu-item>
+        -->
         <el-menu-item index="/skill">
           <el-icon><MagicStick /></el-icon>
           <template #title>{{ t('layout.menu.skill') }}</template>

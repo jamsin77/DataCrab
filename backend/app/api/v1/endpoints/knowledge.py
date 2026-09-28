@@ -57,7 +57,7 @@ async def upload_document(
     if not file.filename:
         raise HTTPException(status_code=400, detail=t("filename_required"))
     file_type = os.path.splitext(file.filename)[1].lower().lstrip(".")
-    supported = {"txt", "md", "markdown", "csv", "json", "log", "py", "js", "ts", "html", "xml", "yml", "yaml", "xlsx", "xls", "pdf", "docx"}
+    supported = {"txt", "md", "markdown", "csv", "json", "log", "py", "js", "ts", "html", "xml", "yml", "yaml", "xlsx", "xls", "pdf", "docx", "doc"}
     if file_type not in supported:
         raise HTTPException(status_code=400, detail=t("format_not_supported", file_type=file_type))
 

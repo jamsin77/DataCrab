@@ -181,12 +181,24 @@ async def execute_pipeline(
         else:
             from app.services.skill_runner import run_skill_script_by_content
 
+            # 从 source_skill_id 反查 skill_path（供 check_skill_rules 自检）
+            _skill_path = None
+            if pipeline.source_skill_id:
+                from app.models.skill import Skill
+                from sqlalchemy import select as _select
+                _skill_result = await db.execute(_select(Skill).where(Skill.id == pipeline.source_skill_id))
+                _skill = _skill_result.scalar_one_or_none()
+                if _skill and _skill.skill_path:
+                    from pathlib import Path as _Path
+                    _skill_path = _Path(_skill.skill_path)
+
             result = await asyncio.to_thread(
                 run_skill_script_by_content,
                 script_content=pipeline.main_code,
                 parameters=inputs,
                 user_id=str(user_id) if user_id else None,
                 entry_function=pipeline.entry_function,
+                skill_path=_skill_path,
             )
 
         if result.get("success"):

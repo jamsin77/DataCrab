@@ -553,9 +553,9 @@ def _delete_existing_knowledge(
         return 0
 
     _ds, cfg = _get_datasource_connection_config(datasource_name)
-    persist_dir = cfg.get("persist_directory") or cfg.get("path") or "d:/chroma-data"
+    persist_dir = cfg.get("persist_directory") or cfg.get("path") or ""
     if not persist_dir or not os.path.isdir(persist_dir):
-        print(f"[覆盖历史] chroma 数据目录不存在，跳过删除: {persist_dir}")
+        print(f"[覆盖历史] chroma 数据目录不存在或未配置，跳过删除: {persist_dir}")
         return 0
 
     client = chromadb.PersistentClient(path=persist_dir)
@@ -808,9 +808,9 @@ def _process_single_video(
 
 def extract_training_knowledge(
     video_path: str = None,
-    video_datasource: str = "培训视频",
-    datasource_name: str = "培训知识库",
-    table_name: str = "bank_training_knowledge",
+    video_datasource: str = "",
+    datasource_name: str = "",
+    table_name: str = "training_knowledge",
     max_frames: int = 8,
     if_table_exists: str = "replace",
     max_workers: int = 6,
@@ -821,8 +821,8 @@ def extract_training_knowledge(
 
     参数:
         video_path: 视频文件路径（可选；未提供时从 video_datasource 数据源中发现）
-        video_datasource: 视频来源数据源名称（generic_file，默认“培训视频”）
-        datasource_name: 输出知识库数据源名称（chroma，默认“培训知识库”）
+        video_datasource: 视频来源数据源名称（generic_file，必填或提供 video_path）
+        datasource_name: 输出知识库数据源名称（chroma，必填）
         table_name: 知识库集合名（chroma collection）
         max_frames: 每个视频最大抽取帧数
         if_table_exists: 写入策略（chroma 恒为 upsert，此参数保留兼容）
@@ -856,6 +856,10 @@ def extract_training_knowledge(
     max_frames = int(resolved["max_frames"])
     if_table_exists = resolved["if_table_exists"]
     max_workers = int(resolved["max_workers"])
+
+    # ---- 必填参数校验 ----
+    if not datasource_name:
+        return {"success": False, "error": "缺少必填参数 datasource_name", "message": "请指定输出知识库数据源名称"}
 
     # ---- 视频来源解析：优先显式路径，否则从数据源发现 ----
     # video_path 可能是完整路径、纯文件名（关键词）或 None；

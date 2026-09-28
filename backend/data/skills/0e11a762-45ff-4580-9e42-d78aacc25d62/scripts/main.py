@@ -232,22 +232,22 @@ def extract_image_info(
         if kwargs.get("target_table") and kwargs["target_table"] != "*":
             target_table_name = kwargs["target_table"]
 
-    # 兜底默认值（防止 main() 未被调用时参数为空，* 表示自动生成）
+    # 必填参数校验（不猜测数据源名，缺失直接报错）
     if not source_datasource_name or source_datasource_name == "*":
-        source_datasource_name = "凭证库"
+        return {"success": False, "error": "缺少必填参数 source_datasource_name", "message": "请指定源数据源名称"}
     if not source_table_name or source_table_name == "*":
-        source_table_name = "所有的图片"
+        return {"success": False, "error": "缺少必填参数 source_table_name", "message": "请指定源表名"}
     if not target_datasource_name or target_datasource_name == "*":
-        target_datasource_name = "凭证检索库"
+        return {"success": False, "error": "缺少必填参数 target_datasource_name", "message": "请指定目标数据源名称"}
     # 目标表名自动生成：根据处理时间生成唯一表名，避免与源表同名
     if not target_table_name or target_table_name == "*":
-        target_table_name = "credential_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    # 安全检查：目标表名不能与源表名相同（即使源表名是通配符或自动值也要避免冲突）
+        target_table_name = "image_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 安全检查：目标表名不能与源表名相同
     if target_table_name == source_table_name:
-        target_table_name = "credential_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_table_name = "image_ocr_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     if not image_column or image_column == "*":
         image_column = "file_path"
-    """从凭证库读取图片文件列表，使用OCR提取关键信息，写入凭证检索库。
+    """从源数据源读取图片文件列表，使用OCR提取关键信息，写入目标数据源。
 
     从文件名中提取凭证类型（拼音→中文），使用 llm_vision 对每张图片进行OCR识别，
     提取关键信息。写入目标表时自动生成英文列名和中文备注，
@@ -606,12 +606,12 @@ def main(**kwargs):
                 resolved[canonical] = kwargs[alias]
                 break
     
-    # 默认值（空字符串也视为缺失，使用默认值；* 表示自动生成）
+    # 默认值（空字符串也视为缺失；* 表示自动生成；数据源名不猜，缺失报错）
     defaults = {
-        'source_datasource_name': '凭证库',
-        'source_table_name': '所有的图片',
-        'target_datasource_name': '凭证检索库',
-        'target_table_name': 'credential_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S"),
+        'source_datasource_name': '',
+        'source_table_name': '',
+        'target_datasource_name': '',
+        'target_table_name': 'image_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S"),
         'image_column': 'file_path',
         'doc_type': 'auto',
         'if_table_exists': 'replace',
@@ -628,7 +628,7 @@ def main(**kwargs):
 
     # 安全检查：目标表名不能与源表名相同
     if resolved.get('target_table_name') == resolved.get('source_table_name'):
-        resolved['target_table_name'] = 'credential_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S")
+        resolved['target_table_name'] = 'image_ocr_results_' + datetime.now().strftime("%Y%m%d_%H%M%S")
 
     return extract_image_info(**resolved)
 

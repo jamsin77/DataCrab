@@ -214,8 +214,11 @@
             <div v-if="debugMessages.length === 0 && !plStreaming" class="debug-empty">
               <p>{{ t('pipeline.debugEmptyHint') }}</p>
             </div>
+            <div v-if="debugMessages.length > DEBUG_VISIBLE_COUNT && !showAllDebugMsgs" class="debug-show-more">
+              <el-button text size="small" @click="showAllDebugMsgs = true">{{ t('pipeline.showMoreHistory', { count: debugMessages.length - DEBUG_VISIBLE_COUNT }) }}</el-button>
+            </div>
             <div
-              v-for="(msg, idx) in debugMessages"
+              v-for="(msg, idx) in visibleDebugMessages"
               :key="idx"
               class="debug-message"
               :class="msg.role"
@@ -247,7 +250,7 @@
                         <span class="collapse-label">{{ t('pipeline.aiReply') }}</span>
                         <el-button text size="small" @click.stop="copyText(msg.content)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                       </template>
-                      <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
+                      <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.content)"></div>
                     </el-collapse-item>
                   </el-collapse>
                   <div v-if="msg.executingMsg" class="debug-msg-executing">
@@ -304,7 +307,7 @@
                           <span class="collapse-label">{{ t('pipeline.inspectionReport') }}</span>
                           <el-button text size="small" @click.stop="copyText(msg.inspectionReport)" class="collapse-copy-btn"><el-icon><CopyDocument /></el-icon> {{ t('common.copy') }}</el-button>
                         </template>
-                        <div class="debug-msg-content markdown-body" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                        <div class="debug-msg-content markdown-body" v-html="getCachedMd(msg.inspectionReport)"></div>
                       </el-collapse-item>
                     </el-collapse>
                   </div>
@@ -541,6 +544,18 @@ const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string): string {
   return md.render(text || '')
 }
+
+// Markdown 渲染缓存：避免输入框打字时组件 re-render 导致所有消息重新 md.render()
+const _mdRenderCache = new Map<string, string>()
+function getCachedMd(content: string): string {
+  if (!content) return ''
+  const cached = _mdRenderCache.get(content)
+  if (cached !== undefined) return cached
+  const html = renderMarkdown(content)
+  _mdRenderCache.set(content, html)
+  return html
+}
+
 function formatMsgTime(ts?: string): string {
   return formatTime(ts)
 }
@@ -889,6 +904,12 @@ watch(debugDrawer, (newVal, oldVal) => {
   }
 })
 const debugMessages = ref<DebugMessage[]>([])
+const showAllDebugMsgs = ref(false)
+const DEBUG_VISIBLE_COUNT = 6
+const visibleDebugMessages = computed(() => {
+  if (showAllDebugMsgs.value || debugMessages.value.length <= DEBUG_VISIBLE_COUNT) return debugMessages.value
+  return debugMessages.value.slice(debugMessages.value.length - DEBUG_VISIBLE_COUNT)
+})
 const debugInput = ref('')
 const debugInputs = ref('{}')
 const debugRunning = ref(false)
@@ -1019,6 +1040,7 @@ function openDebug(pl: Pipeline) {
   flushPipelineDebugSave()
   debugPipeline.value = { ...pl }
   debugMessages.value = loadPipelineDebugMsgs((pl as any).id)
+  showAllDebugMsgs.value = false
   reloadPlHistories((pl as any).id)
   debugInput.value = ''
 
@@ -1922,6 +1944,12 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.debug-show-more {
+  text-align: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 4px;
 }
 
 .debug-empty {

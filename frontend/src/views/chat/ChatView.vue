@@ -63,8 +63,11 @@
         </div>
         <!-- 消息流 -->
         <div class="message-list" ref="messageListRef">
+          <div v-if="chatStore.messages.length > VISIBLE_MSG_COUNT && !showAllMessages" class="msg-show-more">
+            <el-button text size="small" @click="showAllMessages = true">{{ t('chat.showMoreHistory', { count: chatStore.messages.length - VISIBLE_MSG_COUNT }) }}</el-button>
+          </div>
           <div
-            v-for="msg in chatStore.messages"
+            v-for="msg in visibleMessages"
             :key="msg.id"
             class="message-item"
             :class="msg.role"
@@ -82,7 +85,7 @@
                   <el-tag v-if="msg.model" size="small" type="info">{{ msg.model }}</el-tag>
                 </div>
                 <div v-show="reasoningExpanded[msg.id]" class="reasoning-content">
-                  <div class="reasoning-text" v-html="renderMarkdown(msg.reasoning)"></div>
+                  <div class="reasoning-text" v-html="getRendered(msg.id, 'reasoning', msg.reasoning)"></div>
                 </div>
               </div>
               <!-- 执行进度（可折叠，默认展开） -->
@@ -211,7 +214,7 @@
               </div>
               </template>
                 <!-- 主要内容 -->
-              <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.role === 'assistant' && msg.content" class="markdown-content" v-html="getRendered(msg.id, 'content', msg.content)"></div>
               <div v-else-if="msg.role === 'assistant' && chatStore.isStreaming && (!msg.executingMsgs || !msg.executingMsgs.length) && !msg.inspectionReport" class="typing-indicator">
                 <span></span><span></span><span></span>
               </div>
@@ -223,7 +226,7 @@
                       <el-icon style="margin-right: 4px;"><CircleCheck /></el-icon>
                       <span class="collapse-label">{{ t('chat.inspectionReport') }}</span>
                     </template>
-                    <div class="markdown-content" v-html="renderMarkdown(msg.inspectionReport)"></div>
+                    <div class="markdown-content" v-html="getRendered(msg.id, 'inspectionReport', msg.inspectionReport)"></div>
                   </el-collapse-item>
                 </el-collapse>
               </div>
@@ -354,6 +357,15 @@ const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
 
+// 消息列表虚拟分页：默认只显示最近6条，点击展开历史
+const showAllMessages = ref(false)
+const VISIBLE_MSG_COUNT = 6
+const visibleMessages = computed(() => {
+  const msgs = chatStore.messages
+  if (showAllMessages.value || msgs.length <= VISIBLE_MSG_COUNT) return msgs
+  return msgs.slice(msgs.length - VISIBLE_MSG_COUNT)
+})
+
 // 聊天附件：所有上传的文件归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
 const uploading = ref(false)
 
@@ -436,6 +448,18 @@ function renderMarkdown(content: string): string {
     `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${msg}</div>`)
   html = html.replace(/@@CHART_ERROR@@(.+?)@@/g, (_, msg) =>
     `<div class="echart-error">⚠️ ${t('chat.chartParseError')}: ${msg}</div>`)
+  return html
+}
+
+// Markdown 渲染缓存：避免输入框打字时组件 re-render 导致所有消息重新 md.render()
+const _mdRenderCache = new Map<string, { content: string; html: string }>()
+function getRendered(msgId: string, field: string, content: string): string {
+  if (!content) return ''
+  const key = `${msgId}:${field}`
+  const cached = _mdRenderCache.get(key)
+  if (cached && cached.content === content) return cached.html
+  const html = renderMarkdown(content)
+  _mdRenderCache.set(key, { content, html })
   return html
 }
 
@@ -623,6 +647,7 @@ watch(
 watch(
   () => chatStore.currentSessionId,
   (newId) => {
+    showAllMessages.value = false
     loadInputHistory(newId)
     nextTick(() => {
       scrollToBottom(false)
@@ -1329,6 +1354,13 @@ async function handleExportCurrent() {
   padding: 20px;
   scroll-behavior: smooth;
   font-size: 13px;
+}
+
+.msg-show-more {
+  text-align: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 12px;
 }
 
 .message-item {

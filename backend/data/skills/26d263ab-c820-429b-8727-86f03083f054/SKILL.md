@@ -1,7 +1,7 @@
 ---
 name: semantic-classify
 description: 对数据列进行AI语义分类/标注/提取，支持自动检测分类类别或使用预定义类别，可选择新增列或更新已有列，适合从地址提取省市、文本分类、数据打标、语义标注等场景
-version: "1.0.0"
+version: "1.1.0"
 skill_type: processing
 tags:
   - 语义分类
@@ -37,9 +37,15 @@ tags:
 | target_column | output_column, result_column, new_column_name | str | 否 | {column}_分类 | 分类结果写入的列名 |
 | mode | write_mode, column_mode | str | 否 | add | add=新增列 / update=更新已有列 |
 | categories | category_list, predefined_categories | str | 否 | "" | 预定义类别（逗号分隔），留空则AI自动检测 |
-| batch_size | llm_batch_size | int | 否 | 50 | LLM每批处理的唯一值数量 |
+| batch_size | llm_batch_size | int | 否 | 50 | LLM每批处理的唯一值数量，最大不超过100 |
 | if_table_exists | write_strategy, table_exists_strategy | str | 否 | replace | 写入策略: fail/append/replace/overwrite/truncate/delete_rows/upsert |
 | extract_column | extract_from_column | str | 否 | - | 用于语音解析或提取的列名，留空则不进行提取 |
+
+## 数据检查
+本技能在写入数据后会对分类结果进行数据质量检查，包括：
+- 分类结果非空检查：分类结果列不能为空值或空字符串
+- 分类结果有效性检查：使用预定义类别时，结果必须在预定义类别范围内；未使用预定义类别时，结果不能为"分类失败"
+- 批次大小限制：LLM每批处理的唯一值数量最大不超过100，超过时自动截断为100
 
 ## 输出
 返回包含以下字段的字典：
