@@ -70,16 +70,18 @@ DataCrab 只能处理用户数据，绝不能修改平台自身。
 """
 
 # 工具列表声明（schema + 实现统一在 tool_registry.py 注册中心管理）
-# 不分主对话/调试模式——一套工具集，LLM 按任务自主选
+# 主对话工具集（不含脚本调试工具——主对话 LLM 不应调 edit_script/read_script/grep_script）
+# 调试模式在 run() 中动态追加脚本调试工具
 MAIN_TOOLS = [
     "web_fetch", "kb_search", "list_user_datasources",
     "query_table_data", "get_table_schema", "execute_sql",
     "list_user_file_links", "save_file_to_link", "llm_vision",
     "write_table_data", "iter_table_data", "read_file", "write_file",
     "llm_generate", "extract_video_info", "extract_keyframes",
-    "edit_script", "run_script", "read_script", "grep_script",
     "check_skill_rules",
 ]
+# 调试模式追加的脚本调试工具
+DEBUG_TOOL_NAMES = ["edit_script", "run_script", "read_script", "grep_script"]
 
 
 DEBUG_INSTRUCTIONS = """你是 DataCrab 调试助手。用 read_script/grep_script 读代码定位问题，用 edit_script 修改，用 run_script 执行验证。
@@ -303,6 +305,9 @@ class DataProcessorAgent(BaseAgent):
     tools = get_tool_schemas(MAIN_TOOLS)
     capabilities = ["data_processing", "data_query", "operator_generation"]
 
+    # 调试模式工具集（主对话 tools + 脚本调试工具）
+    _debug_tools_cache = None
+
     async def run(
         self,
         message: AgentMessage,
@@ -392,7 +397,7 @@ class DataProcessorAgent(BaseAgent):
                 yield {"type": "done", "result": {"error": "空消息"}}
                 return
 
-        stuck_detector = StuckDetector(max_total_rounds=100 if _is_debug else 30)
+        stuck_detector = StuckDetector(max_total_rounds=100 if _is_debug else 50)
         saturation_detector = SearchSaturationDetector()
 
         # 动态轮次预算（Q）
@@ -409,6 +414,7 @@ class DataProcessorAgent(BaseAgent):
 
         for i in range(max_iterations):
             logger.info(f"[run] 第{i+1}轮开始, budget={max_iterations}")
+            stuck_detector.start_round()
 
             # 已消费工具结果清理：上一轮调了 edit_script/run_script → 更早的 read/grep 结果已过时
             if _last_round_had_fix:
@@ -429,11 +435,19 @@ class DataProcessorAgent(BaseAgent):
             if _should:
                 local_messages = await compact_messages(local_messages, llm_manager)
 
+            # 调试模式动态追加脚本调试工具（主对话不暴露 edit_script/run_script/read_script/grep_script）
+            if _is_debug:
+                if self._debug_tools_cache is None:
+                    self._debug_tools_cache = get_tool_schemas(MAIN_TOOLS + DEBUG_TOOL_NAMES)
+                _tools = self._debug_tools_cache
+            else:
+                _tools = self.tools
+
             # 流式调用（实时推送 thinking/content/tool_calls）
             tool_calls = []
             content = ""
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools,
+                messages=local_messages, tools=_tools,
                 model=llm_manager._default,
                 temperature=0.1 if _is_debug else 0.3, tool_choice="auto",
             ):

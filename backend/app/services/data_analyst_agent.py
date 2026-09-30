@@ -123,12 +123,16 @@ class DataAnalystAgent(BaseAgent):
     display_name = "数据分析智能体"
     description = "只读数据查询、统计分析、分布洞察"
     instructions = DATA_ANALYST_INSTRUCTIONS
-    tools = get_tool_schemas([
+    # 主对话只暴露只读数据工具（不暴露脚本调试工具，避免 LLM 去调 grep_script/read_script）
+    # 调试模式在 run() 中动态追加 edit_script/run_script/read_script/grep_script
+    _ANALYSIS_TOOL_NAMES = [
         "web_fetch", "kb_search", "list_user_datasources",
         "query_table_data", "get_table_schema", "execute_sql", "llm_vision",
         "iter_table_data", "read_file", "llm_generate",
-        "edit_script", "run_script", "read_script", "grep_script",
-    ])
+        "extract_video_info", "extract_keyframes",
+    ]
+    _DEBUG_TOOL_NAMES = ["edit_script", "run_script", "read_script", "grep_script"]
+    tools = get_tool_schemas(_ANALYSIS_TOOL_NAMES)
     capabilities = ["data_query", "data_analysis"]
 
     async def run(
@@ -183,7 +187,7 @@ class DataAnalystAgent(BaseAgent):
             yield {"type": "done", "result": {"error": "空消息"}}
             return
 
-        stuck_detector = StuckDetector(max_total_rounds=15)
+        stuck_detector = StuckDetector(max_total_rounds=100 if _is_debug else 30)
 
         user_msg = message.payload.get("user_message", message.payload.get("content", ""))
         complexity = estimate_complexity(user_msg)
@@ -216,14 +220,20 @@ class DataAnalystAgent(BaseAgent):
                 return {"tool_call_id": tc["id"], "content": json.dumps({"error": f"工具执行失败: {e}"}, ensure_ascii=False)}
 
         for i in range(max_iterations):
+            stuck_detector.start_round()
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 
             content = ""
             tool_calls = []
 
+            # 调试模式动态追加脚本调试工具
+            _tools = self.tools
+            if _is_debug:
+                _tools = get_tool_schemas(self._ANALYSIS_TOOL_NAMES + self._DEBUG_TOOL_NAMES)
+
             async for event in llm_manager.chat_stream_with_tools_and_thinking(
-                messages=local_messages, tools=self.tools,
+                messages=local_messages, tools=_tools,
                 temperature=0.1 if _is_debug else 0.3,
                 model=llm_manager._default, tool_choice="auto",
             ):

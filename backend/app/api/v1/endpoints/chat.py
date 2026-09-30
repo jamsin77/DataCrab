@@ -1156,7 +1156,9 @@ async def stream_response(
                                 ))
                                 _sess = await save_session.get(ChatSession, request.session_id)
                                 if _sess:
-                                    _sess.context = dict(_session_ctx)
+                                    _latest_de_ctx = dict(_sess.context or {})
+                                    _latest_de_ctx.update(_session_ctx)
+                                    _sess.context = _latest_de_ctx
                                 await save_session.commit()
                             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                             return
@@ -1180,6 +1182,7 @@ async def stream_response(
                 logger.info(f"[classify] session={session_id} msg_type={_msg_type} keep_source={_keep_source} keep_target={_keep_target} keep_skill={_keep_skill} content={request.content[:50]!r}")
 
                 # keep=change → 清 context 对应项（keep=true 不清，保留已有参数）
+                # 不立即写回 DB——减少多终端并发竞态窗口，统一在最终（Agent 执行完/匹配完）写回
                 _ctx_changed = False
                 if not _keep_source:
                     _session_ctx.pop("source_datasource_id", None)
@@ -1197,12 +1200,6 @@ async def stream_response(
                     _session_ctx.pop("last_pipeline_id", None)
                     _session_ctx.pop("last_pipeline_name", None)
                     _ctx_changed = True
-                if _ctx_changed:
-                    async with _new_session() as _ctx_sess:
-                        _ctx_obj = await _ctx_sess.get(ChatSession, request.session_id)
-                        if _ctx_obj:
-                            _ctx_obj.context = dict(_session_ctx)
-                        await _ctx_sess.commit()
 
                 # 记住 msg_type，供 direct_execute 复用
                 _session_ctx["last_msg_type"] = _msg_type
@@ -1248,11 +1245,27 @@ async def stream_response(
             if _msg_type == "chat" and not request.direct_execute:
                 from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, stream_agent_events_sse
                 _runtime = ensure_agent_runtime()
+                # 构建数据上下文提示（让 ChatAgent 知道用户已选了什么数据，能在闲聊中引用/补全）
+                _data_ctx_lines = []
+                if _session_ctx.get("source_datasource_name"):
+                    _data_ctx_lines.append(f"当前源数据源: {_session_ctx['source_datasource_name']}")
+                if _session_ctx.get("source_data_name"):
+                    _data_ctx_lines.append(f"当前源数据表: {_session_ctx['source_data_name']}")
+                if _session_ctx.get("target_datasource_name"):
+                    _data_ctx_lines.append(f"当前目标数据源: {_session_ctx['target_datasource_name']}")
+                if _session_ctx.get("target_data_name"):
+                    _data_ctx_lines.append(f"当前目标数据表: {_session_ctx['target_data_name']}")
+                if _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name"):
+                    _data_ctx_lines.append(f"当前技能/流程: {_session_ctx.get('last_skill_name') or _session_ctx.get('last_pipeline_name')}")
+                _data_ctx_hint = ""
+                if _data_ctx_lines:
+                    _data_ctx_hint = "\n".join(_data_ctx_lines) + "\n\n用户在闲聊/咨询时可能提到这些已选数据，你可以引用。但若用户要求切换/补全数据源或表，请告知用户在数据分析或数据处理模式下操作（chat 类型不修改数据上下文）。"
                 _chat_context = {
                     "user_id": current_user.id,
                     "history": compressed_history,
                     "has_preinjected_data": False,
                     "last_config_target": _session_ctx.get("last_config_target", ""),
+                    "data_context_hint": _data_ctx_hint,
                 }
                 _chat_msg = AgentMessage(
                     from_agent="user",
@@ -1286,7 +1299,9 @@ async def stream_response(
                     ))
                     _sess = await save_session.get(ChatSession, request.session_id)
                     if _sess:
-                        _sess.context = dict(_session_ctx)
+                        _latest_chat_ctx = dict(_sess.context or {})
+                        _latest_chat_ctx.update(_session_ctx)
+                        _sess.context = _latest_chat_ctx
                     await save_session.commit()
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 return
@@ -1590,7 +1605,9 @@ async def stream_response(
                         ))
                         _sess = await save_session.get(ChatSession, request.session_id)
                         if _sess:
-                            _sess.context = dict(_session_ctx)
+                            _latest_match_ctx = dict(_sess.context or {})
+                            _latest_match_ctx.update(_session_ctx)
+                            _sess.context = _latest_match_ctx
                         await save_session.commit()
 
                     # 逐路 yield 事件——匹配到的发 suggestion，没匹配到的发 no_match 类型
@@ -1805,7 +1822,7 @@ async def stream_response(
                 else:
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
-            # 用新 session 保存 AI 消息（避免长流式期间锁住 DB）
+            # 用新 session 保存 AI 消息 + 合并写回 session_ctx（防止并发覆盖）
             from app.core.database import async_session as _new_session
             async with _new_session() as save_session:
                 ai_message = ChatMessage(
@@ -1814,6 +1831,12 @@ async def stream_response(
                     content=full_response,
                 )
                 save_session.add(ai_message)
+                # 合并写回 session_ctx：重新读 DB 最新值，用当前内存值覆盖（防止多终端并发覆盖未修改字段）
+                _latest_sess = await save_session.get(ChatSession, request.session_id)
+                if _latest_sess:
+                    _latest_ctx = dict(_latest_sess.context or {})
+                    _latest_ctx.update(_session_ctx)
+                    _latest_sess.context = _latest_ctx
                 await save_session.commit()
 
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

@@ -415,6 +415,7 @@ class DataInspectorAgent(BaseAgent):
         pressure_warned = False
 
         for i in range(max_iterations):
+            stuck_detector.start_round()
             # 上下文压缩（对齐 OpenCode compaction）
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)

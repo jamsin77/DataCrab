@@ -136,6 +136,11 @@ class ChatAgent(BaseAgent):
         if _last_target:
             local_messages.append({"role": "system", "content": f"提示：用户上次操作的配置对象是「{_last_target}」。当用户说改回来或刷新一下时，默认指这个对象，除非用户明确指定其他对象。"})
 
+        # 注入已选数据上下文（让 LLM 知道用户当前选了什么数据，能在闲聊中引用）
+        _data_ctx_hint = context.get("data_context_hint", "")
+        if _data_ctx_hint:
+            local_messages.append({"role": "system", "content": _data_ctx_hint})
+
         if message.payload:
             user_msg = message.payload.get("user_message", message.payload.get("content", ""))
             if user_msg:
@@ -147,6 +152,7 @@ class ChatAgent(BaseAgent):
         stuck_detector = StuckDetector(max_total_rounds=10)
 
         for i in range(10):
+            stuck_detector.start_round()
             if should_compact(local_messages):
                 local_messages = await compact_messages(local_messages, llm_manager)
 

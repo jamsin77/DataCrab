@@ -338,7 +338,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useChatStore } from '@/stores/chat'
@@ -595,7 +595,11 @@ onMounted(async () => {
       }, 200)
     })
   })
+  _startPolling()
 })
+
+onDeactivated(() => { _stopPolling() })
+onUnmounted(() => { _stopPolling() })
 
 // keep-alive 后退回来时，onMounted 不触发，用 onActivated 滚到底部
 onActivated(() => {
@@ -605,7 +609,23 @@ onActivated(() => {
     setTimeout(() => scrollToBottom(false), 50)
     nextTick(() => renderPendingChartBlocks())
   })
+  _startPolling()
 })
+
+// 多终端并发：定时刷新当前会话消息（检测其他终端发的新消息）
+let _pollTimer: ReturnType<typeof setInterval> | null = null
+function _startPolling() {
+  _stopPolling()
+  _pollTimer = setInterval(async () => {
+    await chatStore.refreshCurrentSession()
+  }, 5000)
+}
+function _stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer)
+    _pollTimer = null
+  }
+}
 
 // 监听消息变化，自动滚动到底部 + 渲染 chart 块
 watch(
@@ -1073,6 +1093,10 @@ async function handleUpload(opt: any) {
     // el-upload 的手动模式，返回 false 即可中止
     return
   }
+  // 确保有会话（没有会话则先创建，否则后端无法持久化 session context）
+  if (!chatStore.currentSessionId) {
+    await chatStore.createSession()
+  }
   uploading.value = true
   try {
     const res = await chatApi.uploadAttachment(file, chatStore.currentSessionId || undefined)
@@ -1085,6 +1109,14 @@ async function handleUpload(opt: any) {
       filename: res.filename,
       is_image: _isImage,
     } as any
+    // 同步 session context 到 sessions 数组（刷新/切会话可恢复 selectedData）
+    if (chatStore.currentSessionId) {
+      try {
+        const sess = await chatApi.getSession(chatStore.currentSessionId)
+        const idx = chatStore.sessions.findIndex((s) => s.id === chatStore.currentSessionId)
+        if (idx >= 0) chatStore.sessions[idx] = sess
+      } catch { /* 静默 */ }
+    }
     if (_isImage) {
       ElMessage.success(t('chat.imageUploaded', { name: res.filename }))
     } else {

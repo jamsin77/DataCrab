@@ -67,9 +67,19 @@ export const useChatStore = defineStore('chat', () => {
     currentSessionId.value = sessionId
     messages.value = await chatApi.listMessages(sessionId)
     _restoreMetadata(messages.value)
-    // 从会话 context 恢复已选数据源/表（刷新/重开不丢）
-    const _sess = sessions.value.find((s) => s.id === sessionId)
-    const _ctx = _sess?.context
+    // 从 DB 重新拉最新 session context（不用内存 sessions 数组——多终端并发时内存可能过期）
+    let _ctx: Record<string, any> | undefined
+    try {
+      const _fresh = await chatApi.getSession(sessionId)
+      _ctx = _fresh?.context
+      // 同步到 sessions 数组（保持内存一致）
+      const idx = sessions.value.findIndex((s) => s.id === sessionId)
+      if (idx >= 0 && _fresh) sessions.value[idx] = _fresh
+    } catch { /* 降级：用内存 sessions 数组 */ }
+    if (!_ctx) {
+      const _sess = sessions.value.find((s) => s.id === sessionId)
+      _ctx = _sess?.context
+    }
     if (_ctx && _ctx.source_datasource_id && _ctx.source_datasource_name) {
       selectedData.value = {
         datasource_id: _ctx.source_datasource_id,
@@ -133,6 +143,38 @@ export const useChatStore = defineStore('chat', () => {
     if (!currentSessionId.value) return
     await chatApi.clearMessages(currentSessionId.value)
     messages.value = []
+  }
+
+  async function refreshCurrentSession() {
+    // 刷新当前会话消息 + selectedData（多终端并发：拉最新 DB 状态，不覆盖正在流式生成的内容）
+    if (!currentSessionId.value || isStreaming.value) return
+    try {
+      messages.value = await chatApi.listMessages(currentSessionId.value)
+      _restoreMetadata(messages.value)
+      // 同步 session context 到 sessions 数组 + 恢复 selectedData
+      const _fresh = await chatApi.getSession(currentSessionId.value)
+      const idx = sessions.value.findIndex((s) => s.id === currentSessionId.value)
+      if (idx >= 0 && _fresh) sessions.value[idx] = _fresh
+      const _ctx = _fresh?.context
+      if (_ctx && _ctx.source_datasource_id && _ctx.source_datasource_name) {
+        selectedData.value = {
+          datasource_id: _ctx.source_datasource_id,
+          datasource_name: _ctx.source_datasource_name,
+          table_name: _ctx.source_data_name || _ctx.source_table_name || '',
+          filename: _ctx.source_filename || _ctx.source_data_name || _ctx.source_table_name || '',
+          target_datasource_id: _ctx.target_datasource_id || undefined,
+          target_datasource_name: _ctx.target_datasource_name || undefined,
+          target_table_name: _ctx.target_data_name || _ctx.target_table_name || undefined,
+          target_write_mode: _ctx.target_write_mode || undefined,
+          skill_id: _ctx.last_skill_id || undefined,
+          skill_name: _ctx.last_skill_name || undefined,
+          skill_type: _ctx.last_skill_type || undefined,
+        }
+      } else if (selectedData.value && !selectedData.value.is_image) {
+        // 只在没有 DB context 且当前 selectedData 非图片时才清空
+        // 图片/文件 selectedData 可能还没写 DB，不清空
+      }
+    } catch { /* 静默 */ }
   }
 
   async function sendMessage(content: string, directExecute = false, reuseLastMessage = false, useSkill = false) {
@@ -462,6 +504,7 @@ export const useChatStore = defineStore('chat', () => {
     switchSession,
     deleteSession,
     clearMessages,
+    refreshCurrentSession,
     sendMessage,
     sendDirectly,
     stopGeneration,

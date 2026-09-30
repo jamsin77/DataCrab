@@ -106,6 +106,19 @@ class StuckDetector:
         self._call_history: List[str] = []
         self._idle_count: int = 0
         self._total_rounds: int = 0
+        self._round_counted: bool = False  # 本轮是否已计入总轮次
+
+    def start_round(self) -> None:
+        """每轮循环开始时调用，重置本轮计数标记。
+
+        一轮内可能有多个并行工具调用，但只算一轮总轮次。
+        """
+        self._round_counted = False
+
+    def _ensure_round_counted(self) -> None:
+        if not self._round_counted:
+            self._total_rounds += 1
+            self._round_counted = True
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> Optional[str]:
         """记录一次工具调用，返回干预提示（如果检测到卡死）或 None。"""
@@ -113,13 +126,13 @@ class StuckDetector:
         signature = hashlib.md5(f"{tool_name}:{args_str}".encode()).hexdigest()
         self._call_history.append(signature)
         self._idle_count = 0
-        self._total_rounds += 1
+        self._ensure_round_counted()  # 一轮多个工具调用只计一次
 
         # 检测总轮次上限
         if self._total_rounds >= self.max_total_rounds:
             return (
-                f"已达到总轮次上限（{self.max_total_rounds} 轮），无法继续修复。"
-                "如果这是可修复的问题，请总结已调查的信息，给出修复建议后结束。"
+                f"已达到总轮次上限（{self.max_total_rounds} 轮）。"
+                "请总结已调查的信息和当前进展，给出后续建议后结束。"
             )
 
         # 检测重复调用
@@ -137,6 +150,7 @@ class StuckDetector:
     def record_idle(self) -> Optional[str]:
         """记录一轮无工具调用的输出，返回干预提示或 None。"""
         self._idle_count += 1
+        self._ensure_round_counted()
         if self._idle_count >= self.idle_threshold:
             self._idle_count = 0
             return (
@@ -149,6 +163,7 @@ class StuckDetector:
         self._call_history.clear()
         self._idle_count = 0
         self._total_rounds = 0
+        self._round_counted = False
 
 
 
