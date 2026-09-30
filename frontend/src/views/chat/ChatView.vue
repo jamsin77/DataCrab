@@ -63,8 +63,8 @@
         </div>
         <!-- 消息流 -->
         <div class="message-list" ref="messageListRef">
-          <div v-if="chatStore.messages.length > VISIBLE_MSG_COUNT && !showAllMessages" class="msg-show-more">
-            <el-button text size="small" @click="showAllMessages = true">{{ t('chat.showMoreHistory', { count: chatStore.messages.length - VISIBLE_MSG_COUNT }) }}</el-button>
+          <div v-if="chatStore.messages.length > VISIBLE_MSG_COUNT + extraMsgCount" class="msg-show-more">
+            <el-button text size="small" @click="extraMsgCount += VISIBLE_MSG_COUNT">{{ t('chat.showMoreHistory', { count: chatStore.messages.length - VISIBLE_MSG_COUNT - extraMsgCount }) }}</el-button>
           </div>
           <div
             v-for="msg in visibleMessages"
@@ -357,13 +357,14 @@ const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
 
-// 消息列表虚拟分页：默认只显示最近6条，点击展开历史
-const showAllMessages = ref(false)
+// 消息列表虚拟分页：默认只显示最近6条，每点一次「查看更多」往前多显示6条
+const extraMsgCount = ref(0)
 const VISIBLE_MSG_COUNT = 6
 const visibleMessages = computed(() => {
   const msgs = chatStore.messages
-  if (showAllMessages.value || msgs.length <= VISIBLE_MSG_COUNT) return msgs
-  return msgs.slice(msgs.length - VISIBLE_MSG_COUNT)
+  const visible = VISIBLE_MSG_COUNT + extraMsgCount.value
+  if (msgs.length <= visible) return msgs
+  return msgs.slice(msgs.length - visible)
 })
 
 // 聊天附件：所有上传的文件归一到「聊天上传」虚拟数据源，发送消息时把文件名列表传给后端
@@ -667,7 +668,7 @@ watch(
 watch(
   () => chatStore.currentSessionId,
   (newId) => {
-    showAllMessages.value = false
+    extraMsgCount.value = 0
     loadInputHistory(newId)
     nextTick(() => {
       scrollToBottom(false)

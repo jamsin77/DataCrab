@@ -8,6 +8,7 @@ handler 签名统一：async def handler(args, db, user_id, context) -> str
 import asyncio
 import json
 import os
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -1090,8 +1091,12 @@ async def _read_file_handler(args, db, user_id, context):
             if page_images:
                 result = await asyncio.to_thread(_render_pdf_pages, str(p), page_images, int(args.get("dpi", 200)))
                 return json.dumps({"format": "images", **result}, ensure_ascii=False)
-            text, total_pages = await asyncio.to_thread(_extract_pdf_text, str(p))
-            return json.dumps({"format": "text", "content": text, "total_pages": total_pages}, ensure_ascii=False)
+            # extract_tables 参数：用 pdfplumber 提取结构化表格（行列结构保留）
+            if args.get("extract_tables"):
+                text, tables, page_texts, total_pages, image_pages = await asyncio.to_thread(_extract_pdf_tables, str(p))
+                return json.dumps({"format": "tables", "content": text, "tables": tables, "page_texts": page_texts, "total_pages": total_pages, "image_pages": image_pages}, ensure_ascii=False, default=str)
+            text, total_pages, image_pages = await asyncio.to_thread(_extract_pdf_text, str(p))
+            return json.dumps({"format": "text", "content": text, "total_pages": total_pages, "image_pages": image_pages}, ensure_ascii=False)
         elif ext == ".docx":
             text = await asyncio.to_thread(_extract_docx_text, str(p))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
@@ -1111,7 +1116,8 @@ def _extract_pdf_text(file_path: str) -> tuple:
     旋转页自动转正后提取：pdfplumber page.rotation 检测旋转角度，
     用 page.rotate(-rotation) 转正后再 extract_text()，避免旋转页文本乱序。
 
-    返回 (text, total_pages)。
+    返回 (text, total_pages, image_pages)：
+    - image_pages: List[int] 含嵌入图片的页号（1-based）——图片型表格所在页，供 OCR 判断用。
     """
     errors = []
     try:
@@ -1120,17 +1126,55 @@ def _extract_pdf_text(file_path: str) -> tuple:
             total_pages = len(pdf.pages)
             pages = []
             rotated = []
+            image_pages = []
             for i, page in enumerate(pdf.pages, 1):
                 rotation = getattr(page, "rotation", 0) or 0
                 if rotation != 0:
                     rotated.append(i)
                     page = page.rotate(-rotation)
-                pages.append(page.extract_text() or "")
+                page_text = page.extract_text() or ""
+                pages.append(page_text)
+                # 图片型表格页判定（三层，防漏防误）：
+                # 1. 大图（>10% 页面）且文本贫乏（<100字符）→ 纯表格图片页（p7+ 续表页）
+                # 2. 大图且文本含"表X.Y"标题但标题后无表格数据行 → 正文页里嵌的图片表格（如 p6 表1）
+                # 3. 大图但文本丰富且无表标题 → 封面/目录/前言（p1-p5），跳过——
+                #    全纳入会多扫 6 页 × 40s 慢模型 = 4-8 分钟，曾导致写入前超时被杀
+                try:
+                    page_area = (page.width or 0) * (page.height or 0)
+                    has_big_img = False
+                    for img in (getattr(page, "images", None) or []):
+                        img_w = float(img.get("width", 0) or 0)
+                        img_h = float(img.get("height", 0) or 0)
+                        src_w = float(img.get("srcsize", (0, 0))[0] or 0)
+                        src_h = float(img.get("srcsize", (0, 0))[1] or 0)
+                        if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
+                            has_big_img = True
+                            break
+                    if has_big_img:
+                        if len(page_text) < 100:
+                            image_pages.append(i)
+                        else:
+                            # 文本含表标题（表X.Y）且无表格数据行特征（|/制表符/多空格对齐）→ 图片表格页
+                            _has_table_title = bool(re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", page_text))
+                            _table_data_lines = 0
+                            for _ln in page_text.split("\n"):
+                                _s = _ln.strip()
+                                if not _s:
+                                    continue
+                                if "|" in _s or "\t" in _s:
+                                    _table_data_lines += 1
+                                elif len(_s) < 80 and "  " in _ln:
+                                    _table_data_lines += 1
+                            if _has_table_title and _table_data_lines < 2:
+                                image_pages.append(i)
+                except Exception:
+                    pass
                 if i % 10 == 0:
                     logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
             if rotated:
                 logger.info(f"检测到旋转页 {len(rotated)} 页: {rotated[:10]}")
-            return "\n".join(pages), total_pages
+            logger.info(f"含图片页: {image_pages[:20]}{'...' if len(image_pages) > 20 else ''}（共 {len(image_pages)} 页）")
+            return "\n".join(pages), total_pages, image_pages
     except ImportError:
         errors.append("pdfplumber 未安装")
     except Exception as e:
@@ -1141,11 +1185,19 @@ def _extract_pdf_text(file_path: str) -> tuple:
         try:
             total_pages = len(doc)
             pages = []
+            image_pages = []
             for i, page in enumerate(doc, 1):
                 pages.append(page.get_text() or "")
+                # fitz: page.get_images() 检测嵌入图片
+                try:
+                    if page.get_images():
+                        image_pages.append(i)
+                except Exception:
+                    pass
                 if i % 10 == 0:
                     logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
-            return "\n".join(pages), total_pages
+            logger.info(f"含图片页: {image_pages[:20]}{'...' if len(image_pages) > 20 else ''}（共 {len(image_pages)} 页）")
+            return "\n".join(pages), total_pages, image_pages
         finally:
             doc.close()
     except ImportError:
@@ -1153,6 +1205,73 @@ def _extract_pdf_text(file_path: str) -> tuple:
     except Exception as e:
         errors.append(f"fitz: {e}")
     raise RuntimeError(f"PDF 解析失败（主进程缺少 pdfplumber/fitz）: {'; '.join(errors)}")
+
+
+def _extract_pdf_tables(file_path: str) -> tuple:
+    """用 pdfplumber 提取 PDF 中的结构化表格（借鉴 MinerU 版面分析思路）。
+
+    pdfplumber.find_tables() 基于线条规则+文本对齐检测表格区域，
+    extract() 返回 rows×columns 结构化数据——天然保留行列关系。
+
+    返回 (full_text, tables, page_texts, total_pages, image_pages):
+    - full_text: 全文纯文本（正文）
+    - tables: List[Dict] 每个含 page/headers/rows/at_bottom/ncols
+    - page_texts: List[str] 每页文本（供技能脚本匹配表名）
+    - total_pages: 总页数
+    - image_pages: List[int] 含嵌入图片的页号（供 OCR 判断用）
+    """
+    try:
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            total_pages = len(pdf.pages)
+            page_texts = []
+            all_tables = []
+            image_pages = []
+            for i, page in enumerate(pdf.pages, 1):
+                rotation = getattr(page, "rotation", 0) or 0
+                if rotation != 0:
+                    page = page.rotate(-rotation)
+                page_text = page.extract_text() or ""
+                page_texts.append(page_text)
+                # 检测该页是否有嵌入图片（图片型表格所在页）
+                try:
+                    if getattr(page, "images", None):
+                        image_pages.append(i)
+                except Exception:
+                    pass
+                page_height = page.height or 0
+                found = page.find_tables()
+                for tbl_obj in found:
+                    raw = tbl_obj.extract()
+                    if not raw or len(raw) < 2:
+                        continue
+                    rows = []
+                    for row in raw:
+                        rows.append(["" if cell is None else str(cell).strip() for cell in row])
+                    headers = rows[0]
+                    data_rows = rows[1:]
+                    bbox = getattr(tbl_obj, "bbox", None)
+                    at_bottom = False
+                    if bbox and page_height:
+                        at_bottom = bbox[3] > page_height * 0.75
+                    all_tables.append({
+                        "page": i,
+                        "headers": headers,
+                        "rows": data_rows,
+                        "at_bottom": at_bottom,
+                        "ncols": len(headers),
+                    })
+                if i % 10 == 0:
+                    logger.info(f"PDF 表格提取进度: {i}/{total_pages} 页, 累计 {len(all_tables)} 张表")
+            full_text = "\n".join(page_texts)
+            logger.info(f"PDF 表格提取完成: {total_pages} 页, {len(all_tables)} 张结构化表格")
+            return full_text, all_tables, page_texts, total_pages, image_pages
+    except ImportError:
+        logger.warning("pdfplumber 未安装，回退到纯文本提取")
+    except Exception as e:
+        logger.warning(f"pdfplumber 表格提取失败: {e}，回退到纯文本提取")
+    text, total_pages, image_pages = _extract_pdf_text(file_path)
+    return text, [], [], total_pages, image_pages
 
 
 def _render_pdf_pages(file_path: str, page_indices: list, dpi: int = 200) -> dict:
@@ -2479,10 +2598,13 @@ async def _check_skill_rules_handler(args, db, user_id, context):
             _subjective_rules.append(rule)
 
     # DQ-001 确定性行数对比：从 source_text 中定位该表的数据行数，与提取结果行数对比
+    # 仅当源片段含表格结构行（| 或制表符）时才对比——扫描件源文本是纯正文没有表格行，
+    # 数出来的行数是正文行不是表格行，对比必然误判
     has_dq001 = any((r.get("id") or r.get("rule_id") or "") == "SKILL-DQ-001" for r in all_rules)
     if has_dq001 and source_text and rows and table_name:
         source_snippet = _extract_table_source_snippet(source_text, table_name, headers)
-        if source_snippet:
+        _snippet_pipe_rows = sum(1 for ln in (source_snippet or "").splitlines() if "|" in ln)
+        if source_snippet and _snippet_pipe_rows >= 3:
             _src_rows = 0
             for ln in source_snippet.splitlines():
                 s = ln.strip()
@@ -2538,12 +2660,17 @@ async def _check_skill_rules_handler(args, db, user_id, context):
 
         rule_descs_text = "\n".join(rule_descs)
         prompt = "请检查以下提取的表格数据是否符合技能规则。\n\n"
+        prompt += "检查原则（必须遵守）：\n"
+        prompt += "- 只做结构性检查：行列数一致、内容无截断、源文档中有的内容是否被提取到\n"
+        prompt += "- 禁止语义推测：不要判断某列的值'应该'是什么、某个内容'属于'哪张表或哪个部件——源文档里是什么就提取什么，与常识不符不算错误\n"
+        prompt += "- 多级表头合并列名（如'父表头 子表头'拼接）和子列值与父级拼接（如'设备名称子项'）是预期格式，不是错误\n"
+        prompt += "- 只有在源文档片段中能找到明确依据时才报问题；源文档片段中没有的内容不做判断\n\n"
         prompt += "技能规则：\n" + rule_descs_text + "\n\n"
         prompt += "表名: " + str(table_name) + "\n\n"
         prompt += f"提取的表格数据（共{len(rows)}行）：\n" + table_md + "\n\n"
         prompt += "源文档片段：\n" + source_snippet + "\n\n"
         prompt += '请逐条检查上述规则，输出 JSON：\n```json\n{"issues": [\n  {"rule_id": "规则ID", "severity": "error/warning/pass", "column": "列名或空", "description": "问题描述", "suggestion": "修复建议"}\n]}\n```\n'
-        prompt += "severity 为 error 或 warning 表示有问题，pass 表示通过。无问题则 issues 为空数组。"
+        prompt += "severity 为 error 或 warning 表示有问题，pass 表示通过。无问题则 issues 为空数组。拿不准的一律 pass。"
 
         try:
             from app.services.llm import llm_manager, init_user_llm_context

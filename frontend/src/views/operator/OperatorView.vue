@@ -169,8 +169,8 @@
             <div v-if="opMessages.length === 0" class="debug-empty">
               <p>{{ t('operator.debugEmptyHint') }}</p>
             </div>
-            <div v-if="opMessages.length > OP_VISIBLE_COUNT && !showAllOpMsgs" class="debug-show-more">
-              <el-button text size="small" @click="showAllOpMsgs = true">{{ t('operator.showMoreHistory', { count: opMessages.length - OP_VISIBLE_COUNT }) }}</el-button>
+            <div v-if="opMessages.length > OP_VISIBLE_COUNT + extraOpMsgCount" class="debug-show-more">
+              <el-button text size="small" @click="extraOpMsgCount += OP_VISIBLE_COUNT">{{ t('operator.showMoreHistory', { count: opMessages.length - OP_VISIBLE_COUNT - extraOpMsgCount }) }}</el-button>
             </div>
             <div
               v-for="(msg, idx) in visibleOpMessages"
@@ -612,11 +612,13 @@ interface OpChatMessage {
   created_at?: string
 }
 const opMessages = ref<OpChatMessage[]>([])
-const showAllOpMsgs = ref(false)
+// 调试消息虚拟分页：默认只显示最近6条，每点一次「查看更多」往前多显示6条
+const extraOpMsgCount = ref(0)
 const OP_VISIBLE_COUNT = 6
 const visibleOpMessages = computed(() => {
-  if (showAllOpMsgs.value || opMessages.value.length <= OP_VISIBLE_COUNT) return opMessages.value
-  return opMessages.value.slice(opMessages.value.length - OP_VISIBLE_COUNT)
+  const visible = OP_VISIBLE_COUNT + extraOpMsgCount.value
+  if (opMessages.value.length <= visible) return opMessages.value
+  return opMessages.value.slice(opMessages.value.length - visible)
 })
 const opInput = ref('')
 const opStreaming = ref(false)
@@ -746,7 +748,7 @@ function openDebug(op: any, restore?: Partial<OpDebugSession>) {
   }
 
   opMessages.value = restore?.messages ? restore.messages.map(m => ({ ...m, thinkingOpen: false })) : []
-  showAllOpMsgs.value = false
+  extraOpMsgCount.value = 0
   opInput.value = ''
   opStreaming.value = false
   debugDrawer.value = true

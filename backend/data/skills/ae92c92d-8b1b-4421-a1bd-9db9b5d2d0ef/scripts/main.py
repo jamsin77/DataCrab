@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import json
+import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -395,12 +396,18 @@ def _analyze_document_structure(text: str) -> Dict[str, Any]:
 def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optional[Dict] = None) -> List[Dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    probe = call_tool("llm_generate", prompt="只回复两个字：正常", temperature=0.0, max_tokens=50)
-    if not (isinstance(probe, dict) and str(probe.get("content") or "").strip()):
-        raise RuntimeError("LLM 不可用：探测返回空 content")
-    print("  [探测] llm_generate 正常")
-
     chunks = _split_by_tables(text)
+    # 正文大块按字符数细切（防单次 llm_generate 过长触发超时）；_process 内有进度 print 保活
+    _MAX_BLOCK = 6000
+    _flat_chunks = []
+    for b in chunks:
+        content = b.get("content") or ""
+        if len(content) <= _MAX_BLOCK:
+            _flat_chunks.append(b)
+        else:
+            for i, sub in enumerate(_split_text(content, _MAX_BLOCK, 300), 1):
+                _flat_chunks.append({"title": (b.get("title") or "正文") + f"(分段{i})", "number": b.get("number") or "", "content": sub})
+    chunks = _flat_chunks
     total = len(chunks)
     print(f"  [LLM提取] 切分为 {total} 块，并发 {max_workers} 路提取...")
 
@@ -478,7 +485,9 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
     def _process(idx, block):
         title = block.get("title") or "正文"
         content = block["content"]
+        print(f"    [提取] 开始第 {idx} 段（{title}，{len(content)} 字符）", flush=True)
         for attempt, cfg in enumerate(RETRY_CONFIGS, 1):
+            print(f"    [提取] 第 {idx} 段 第{attempt}次调用 llm_generate...", flush=True)
             status, parsed = _call_once(block, cfg)
             if status == "ok":
                 return idx, parsed
@@ -486,9 +495,11 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
                 break
         sub_chunks = _split_text(content, 2400, 0)
         all_parsed = []
+        print(f"    [提取] 第 {idx} 段 整块失败，细切为 {len(sub_chunks)} 块", flush=True)
         for s_idx, sub in enumerate(sub_chunks, 1):
             sub_block = {"title": title, "content": sub}
             for cfg in RETRY_CONFIGS:
+                print(f"    [提取] 第 {idx} 段 细切{s_idx}/{len(sub_chunks)} 调用...", flush=True)
                 status, parsed = _call_once(sub_block, cfg)
                 if status == "ok":
                     all_parsed.extend(parsed)
@@ -688,7 +699,7 @@ def _block_is_body_not_table(block: Dict[str, str]) -> bool:
     """判断一个「表X」块是否实为正文（表标题后无真实表格数据，紧跟章节正文）。
 
     通用判据（不依赖具体文档/业务词）：
-    1. 块内存在章节标题行（如「6 检修内容」「7 检修类别」，形如 X 标题 / X.Y 标题）；
+    1. 块内存在章节标题行（如「6 XX内容」「7 XX类别」，形如 X 标题 / X.Y 标题）；
     2. 且不存在真实表格数据行（制表符分隔、多空格对齐、或短序号开头）。
     满足两者 → 该表标题后实为正文，应归入正文而非表格。
     """
@@ -822,8 +833,107 @@ def _parse_markdown_table(text: str) -> List[Dict[str, Any]]:
 
 # ==================== OCR 通道（仅在文本层无数据时使用） ====================
 
+_OCR_PROMPT = """你是表格 OCR 专家。请把页面上**实际存在的**表格识别输出为 Markdown。
+不要编造页面上不存在的表格。如果页面上没有表格，直接输出空内容。
+
+## 输出格式
+每个表格前一行标题（表号 + 名称），紧跟 Markdown 表格：
+表X.Y 表格名称
+| 列1 | 列2 | 列3 |
+| --- | --- | --- |
+| 数据 | 数据 | 数据 |
+
+## 核心要求
+
+### 1. 多级表头应该合并
+多级表头应该按照子表头分开，父表头内容拼接入子表头。
+
+合并前：
+| 序号 |    状态量         |
+|      | 分类 | 状态量名称 |
+| --- | --- | --- |
+| 1运行 | 红外测温 |
+
+合并后：
+| 序号 | 状态量 分类 | 状态量 状态量名称 |
+| --- | --- | --- |
+| 1 | 运行 | 红外测温 |
+
+### 2. 合并单元格必须回填
+垂直合并单元格的值，每一行都要重复输出，绝不能留空。
+
+处理前：
+| 序号 | 状态量 分类 | 状态量 状态量名称 | 劣化状态 |
+| --- | --- | --- | --- |
+| 1 |      | SF6压力表 | I~II |
+|  | 运行 |           | II~IV |
+| 2 |      | SF6压力器 | I~II |
+|  |      |           | II~IV |
+| 3 | 检修 | 锈蚀 | I~II |
+
+处理后：
+| 序号 | 状态量 分类 | 状态量 状态量名称 | 劣化状态 |
+| --- | --- | --- | --- |
+| 1 | 运行 | SF6压力表 | I~II |
+| 1 | 运行 | SF6压力表 | II~IV |
+| 2 | 运行 | SF6压力器 | I~II |
+| 2 | 运行 | SF6压力器 | II~IV |
+| 3 | 检修 | 锈蚀 | I~II |
+
+### 3. 子列要进行拼接
+表头列下嵌套的子列，子列值要与父级值拼接为一个单元格（父级值+子列值）。
+父级值跨行合并时，每一行都要拼接并重复输出，不得留空。
+**特别注意：状态量名称下的子项绝不能填进"分类"列——分类列只放"运行/检修试验/其他"这类大分类。**
+
+处理前（子列嵌套在状态量名称下；常见错误：第一个子项"外观/压力表"被错填进分类列）：
+| 序号 | 状态量 分类 | 状态量 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 检修试验 | SF6气体分解物 | H2S含量 | II~III | 不小于1μL/L，但小于2μL/L | 情况一：未明确... |
+|  |  |  | SO2含量 | II~III | 不小于1μL/L，但小于2μL/L | 情况二：... |
+| 8 | 检修试验 | 汇控柜或机构箱 | 密封 | I | 密封不良 | D类检修：... |
+|  |  |  | 锈蚀 | II | 加热器装置损坏 |  |
+|  |  |  | 损坏 | II | 接触器锈蚀 | B类检修：... |
+| 20 | 外观 | SF6压力表及密度继电器 | III | 外观有破损 | D类检修：更换 |
+|  | 压力表 |  | IV | 压力表指示异常 | B类检修：更换 |
+|  | 密封 |  | IV | 表有渗漏油 | B类检修：处理漏气 |
+
+处理后（父级值+子列值拼接成完整状态量名称；分类列保持"运行/检修试验"这类大分类，子项留在名称里拼接）：
+| 序号 | 状态量 分类 | 状态量 状态量名称 | 劣化程度 | 劣化情况 | 检修内容和类别 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 检修试验 | SF6气体分解物H2S含量 | II~III | 不小于1μL/L，但小于2μL/L | 情况一：未明确... |
+| 1 | 检修试验 | SF6气体分解物SO2含量 | II~III | 不小于1μL/L，但小于2μL/L | 情况二：... |
+| 8 | 检修试验 | 汇控柜或机构箱密封 | I | 密封不良 | D类检修：... |
+| 8 | 检修试验 | 汇控柜或机构箱锈蚀 | II | 加热器装置损坏 |  |
+| 8 | 检修试验 | 汇控柜或机构箱损坏 | II | 接触器锈蚀 | B类检修：... |
+| 20 | 运行 | SF6压力表及密度继电器外观 | III | 外观有破损 | D类检修：更换 |
+| 20 | 运行 | SF6压力表及密度继电器压力表 | IV | 压力表指示异常 | B类检修：更换 |
+| 20 | 运行 | SF6压力表及密度继电器密封 | IV | 表有渗漏油 | B类检修：处理漏气 |
+
+### 4. 矩阵表保持原结构
+行×列交叉的决策表，行表头在第一列，列表头各占一列，不要混填。
+
+处理前：
+| 设备状态 | 推荐检修时间 |
+| --- | --- |
+| 推荐检修时间 | 正常周期 |
+
+处理后：
+| 设备状态 | 正常状态 | 注意状态 | 异常状态 | 严重状态 |
+| --- | --- | --- | --- | --- |
+| 推荐检修时间 | 正常周期或延长一年 | 不大于正常周期 | 适时安排 | 尽快安排 |
+
+### 5. 其他要求
+- 只识别页面上实际存在的表格，不要编造不存在的表格
+- 数值阈值逐字保留，不得改写
+- 每行列数必须与表头一致
+- 单元格内容完整输出，禁止截断
+- 忽略水印/页眉/页脚/封面信息
+- 直接输出 Markdown，不要代码围栏
+- 不要输出解释文字"""
+
+
 def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
-    """只在文本层无数据时才走 OCR。"""
+    """只在含图片的页（图片型表格所在页）才走 OCR，无图片的页直接跳过。"""
     from pathlib import Path as _Path
     text_res = call_tool("read_file", path=pdf_path)
     if not isinstance(text_res, dict) or "content" not in text_res:
@@ -832,33 +942,79 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
     if not total_pages:
         probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
         total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
-    max_pages = min(total_pages or 20, 30)
-    print(f"  [OCR] 扫描 {max_pages} 页（总 {total_pages} 页）")
+    # 只对含嵌入图片的页做 OCR（图片型表格在图片里，纯文本页没有表格图片）
+    image_pages = text_res.get("image_pages") or []
+    if image_pages:
+        ocr_pages = [p for p in image_pages if start_page <= p]
+        print(f"  [OCR] 含图片页 {len(ocr_pages)} 页（总 {total_pages} 页，跳过 {total_pages - len(ocr_pages)} 个纯文本页）: {ocr_pages}")
+    else:
+        ocr_pages = list(range(start_page, min(total_pages or 20, 30) + 1))
+        print(f"  [OCR] 未检测到图片页信息，回退扫描全部 {len(ocr_pages)} 页")
 
-    ocr_prompt = """你是表格 OCR 专家。请把页面上所有表格识别输出，格式：
-表X.Y 表格名称
-| 列1 | 列2 |
-| --- | --- |
-| 数据行 |
-
-要求：
-1. 每个表格前一行标题（表号 + 名称）
-2. 表头列数与数据行一致
-3. 数值阈值逐字保留
-4. 忽略水印/页眉/页脚
-5. 垂直合并单元格的值每行重复输出，尤其是表格第一列的分组列，绝不允许留空导致后续各列整体左移
-6. 直接输出 Markdown，不要代码围栏
-7. 单元格内容必须完整输出，禁止截断
-8. 每一列的语义必须与其表头一致，严禁列与列之间串行或错位
-9. 同一项目含多个子列时，各列必须按子列顺序一一对应，数量必须相等，不得丢失或错位
-10. 合并单元格的父级分组值必须按区段正确回填到分组列，不得把其他列内容填进分组列
-11. 行×列交叉的矩阵表保持原结构输出，严禁把行表头/列名混填或整列左移"""
+    ocr_prompt = _OCR_PROMPT
 
     md_by_number: Dict[str, List[str]] = {num: [] for num in table_numbers}
+
+    # ===== OCR 页级落盘缓存 =====
+    # 每页 OCR 成功（匹配到至少一个表号）立即落盘 _ocr_cache_p{N}.md；
+    # 重跑（超时被杀/迭代调试）直接复用缓存页，不再重新 OCR——
+    # 全页 OCR 一次 10-27 分钟，缓存命中后秒级恢复进度。
+    _pdf_p = _Path(pdf_path)
+    try:
+        _size_tag = _pdf_p.stat().st_size
+    except Exception:
+        _size_tag = 0
+    _cache_dir = _pdf_p.parent / "_ocr_cache"
+    try:
+        _cache_dir.mkdir(exist_ok=True)
+    except Exception:
+        _cache_dir = _pdf_p.parent  # 目录创建失败退回 PDF 同目录（散放）
+
+    def _cache_path(pg: int) -> _Path:
+        return _cache_dir / f"{_pdf_p.stem}[_{_size_tag}]_p{pg}.md"
+
+    def _cache_write(pg: int, raw: str):
+        try:
+            _cache_path(pg).write_text(raw, encoding="utf-8")
+        except Exception as _e:
+            print(f"  [OCR] 第 {pg} 页缓存写入失败(不影响): {_e}", flush=True)
+
+    def _cache_load(pg: int) -> str:
+        try:
+            _f = _cache_path(pg)
+            if _f.exists():
+                _c = _f.read_text(encoding="utf-8").strip()
+                if _c:
+                    return _c
+        except Exception:
+            pass
+        return ""
+
+    # 先吃缓存：已缓存的页直接用，未缓存的进 OCR 队列
+    _pages_to_ocr = []
+    _cache_hit = 0
+    for _pg in ocr_pages:
+        _cached = _cache_load(_pg)
+        if _cached:
+            _cache_hit += 1
+            _matched_any = False
+            for num in table_numbers:
+                target = _filter_md_by_table_number(_cached, num)
+                if target:
+                    _target_rows = _count_md_data_rows(target)
+                    md_by_number[num].append(f"== 第 {_pg} 页 ==\n{target}")
+                    _TABLE_PAGE_MAP.setdefault(num, []).append(_pg)
+                    print(f"  [OCR] 第 {_pg} 页 表{num} 提取 {_target_rows} 行数据（缓存）", flush=True)
+                    _matched_any = True
+            if _matched_any:
+                continue  # 缓存有效，跳过 OCR
+        _pages_to_ocr.append(_pg)
+    print(f"  [OCR] 缓存命中 {_cache_hit}/{len(ocr_pages)} 页，需 OCR {_pages_to_ocr} 页", flush=True)
+
     batch_size = 5
-    for batch_start in range(start_page, max_pages + 1, batch_size):
-        batch_pages = list(range(batch_start, min(batch_start + batch_size, max_pages + 1)))
-        print(f"  [OCR] 渲染第 {batch_pages[0]}-{batch_pages[-1]} 页…")
+    for bi in range(0, len(_pages_to_ocr), batch_size):
+        batch_pages = _pages_to_ocr[bi:bi + batch_size]
+        print(f"  [OCR] 渲染第 {batch_pages} 页…", flush=True)
         img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
         if not isinstance(img_res, dict) or not img_res.get("success"):
             continue
@@ -888,18 +1044,58 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
                 dst = src
             page_imgs[page_no] = str(dst)
 
-        with ThreadPoolExecutor(max_workers=min(3, len(page_imgs))) as ex:
+        # Vision OCR 并发：2 路折中（1 路太慢触发超时，4 路并发下 API 降智导致丢页——
+        # 每批第 3+ 个请求排队降级，返回内容格式异常匹配不到表号）
+        _ocr_done = 0
+        with ThreadPoolExecutor(max_workers=2) as ex:
             futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
             for fut in as_completed(futs):
                 pg, raw = fut.result()
+                _ocr_done += 1
+                _page_matched = False
                 if raw:
                     for num in table_numbers:
                         target = _filter_md_by_table_number(raw, num)
                         if target:
                             _target_rows = _count_md_data_rows(target)
                             md_by_number[num].append(f"== 第 {pg} 页 ==\n{target}")
+                            # 记录表号→页码映射（供修复阶段收窄重扫范围）
+                            _TABLE_PAGE_MAP.setdefault(num, []).append(pg)
                             print(f"  [OCR] 第 {pg} 页 表{num} 提取 {_target_rows} 行数据", flush=True)
-                print(f"  [OCR] 第 {pg} 页完成", flush=True)
+                            _page_matched = True
+                # 匹配成功的页立即落盘缓存（超时被杀后重跑从这页恢复）
+                if _page_matched and raw:
+                    _cache_write(pg, raw)
+                # 丢页防护（两级）：
+                # 1. 返回非空且含 | 行但没匹配到任何表号 → 输出格式异常，重试
+                # 2. 本页虽无表格特征，但前后相邻页提取到了同一续表（如 p19/p21 都有表A.6，p20 夹中间必有数据）→ 漏识别，重试
+                _retry_reason = ""
+                if raw and not _page_matched and "|" in raw:
+                    _retry_reason = "输出格式异常"
+                elif not _page_matched and raw:
+                    _prev_pg, _next_pg = pg - 1, pg + 1
+                    _neighbor_tables = set(_TABLE_PAGE_MAP.keys())
+                    _sandwiched = any(
+                        _prev_pg in _TABLE_PAGE_MAP.get(num, []) and _next_pg in _TABLE_PAGE_MAP.get(num, [])
+                        for num in _neighbor_tables
+                    )
+                    if _sandwiched:
+                        _retry_reason = f"前后页（p{_prev_pg}/p{_next_pg}）有同一续表，本页应也有数据"
+                if _retry_reason:
+                    print(f"  [OCR] 第 {pg} 页疑似丢页（{_retry_reason}），串行重试...", flush=True)
+                    _pg2, _raw2 = _ocr_one(pg, page_imgs.get(pg, ""))
+                    if _raw2:
+                        for num in table_numbers:
+                            target2 = _filter_md_by_table_number(_raw2, num)
+                            if target2:
+                                _t_rows2 = _count_md_data_rows(target2)
+                                md_by_number[num].append(f"== 第 {pg} 页 ==\n{target2}")
+                                _TABLE_PAGE_MAP.setdefault(num, []).append(pg)
+                                print(f"  [OCR] 第 {pg} 页重试成功 表{num} 提取 {_t_rows2} 行数据", flush=True)
+                        # 重试后匹配成功的也落盘
+                        if any(_filter_md_by_table_number(_raw2, num) for num in table_numbers):
+                            _cache_write(pg, _raw2)
+                print(f"  [OCR] 第 {pg} 页完成（{_ocr_done}/{len(page_imgs)}）", flush=True)
 
     return {num: "\n\n".join(parts) for num, parts in md_by_number.items() if parts}
 
@@ -964,10 +1160,8 @@ def _filter_md_by_table_number(md_text: str, table_number: str) -> str:
                     break
             return "\n".join(segments)
 
-    # 3. 兜底：没有标题行但有 | 行 → 返回全部
-    pipe_lines = [ln for ln in lines if ln.strip().startswith("|")]
-    if len(pipe_lines) >= 2 and not non_pipe_lines:
-        return md_text
+    # 3. 兜底：没有标题行但有 | 行 → 不返回（避免编造数据匹配到错误表号）
+    # 旧版兜底返回全部 | 行，但新版 prompt 带例子后 Vision 模型可能在无表页面也输出 | 行
 
     return ""
 
@@ -1100,6 +1294,85 @@ def _extract_table_from_ocr(block: Dict[str, str], ocr_md: str) -> Dict[str, Any
             result = {"table_name": table_name, "table_number": number, "headers": headers, "rows": rows}
             return result
     raise RuntimeError(f"表{number} OCR 归并失败")
+
+
+# ==================== 结构化表格通道（pdfplumber extract_tables） ====================
+
+def _merge_structured_tables(tables: List[Dict]) -> List[Dict]:
+    """合并跨页续表：前表 at_bottom=True + 后表在前表下一页 + 列数相同 → 合并。
+
+    借鉴 MinerU 跨页表格合并思路：版面模型检测表格在页面底部 → 标记为待续，
+    下一页同列数表格自动合并到前表，去重复表头。
+    """
+    if len(tables) <= 1:
+        return tables
+    merged = [dict(t) for t in tables]
+    result = [merged[0]]
+    for t in merged[1:]:
+        prev = result[-1]
+        if (prev.get("at_bottom") and t.get("page") == prev.get("page", 0) + 1
+                and t.get("ncols") == prev.get("ncols")):
+            first_row = t["rows"][0] if t.get("rows") else []
+            if first_row and first_row == prev.get("headers"):
+                prev["rows"].extend(t["rows"][1:])
+            else:
+                prev["rows"].extend(t.get("rows", []))
+            prev["at_bottom"] = t.get("at_bottom", False)
+        else:
+            result.append(t)
+    if len(result) < len(merged):
+        print(f"  [结构化表格] 跨页合并: {len(merged)} → {len(result)} 张表")
+    return result
+
+
+def _find_table_title_from_page_text(page_texts: List[str], tbl_page: int, tbl_idx_on_page: int) -> str:
+    """从页面文本中查找表格标题。
+
+    在表格所在页及前后页搜索"表X.Y 表名"格式的标题行。
+    同一页有多张表时按出现顺序匹配。
+    """
+    _title_re = re.compile(r"表\s*([A-Za-z]?\s*\.?\s*\d+(?:[.．]\d+)?)\s*[:：]?\s*(.+)")
+    # 收集该页所有表标题
+    for offset in [0, -1, 1]:
+        idx = tbl_page - 1 + offset
+        if 0 <= idx < len(page_texts):
+            titles = []
+            for line in page_texts[idx].split("\n"):
+                s = line.strip()
+                if not s:
+                    continue
+                m = _title_re.match(s)
+                if m:
+                    number = m.group(1).strip()
+                    desc = m.group(2).strip()
+                    titles.append((number, desc))
+            if titles:
+                if tbl_idx_on_page < len(titles):
+                    number, desc = titles[tbl_idx_on_page]
+                    return _sanitize_table_name(f"表{number} {desc}".strip())
+                else:
+                    number, desc = titles[-1]
+                    return _sanitize_table_name(f"表{number} {desc}".strip())
+    return ""
+
+
+def _structured_table_to_records(tbl: Dict, source_document: str) -> List[Dict[str, Any]]:
+    """把 pdfplumber 结构化表格转为记录列表。
+
+    与 OCR/文本通道一致，走完整后处理管线：
+    合并单元格回填、粘连表头拆分（如「序号分类」）、重复列合并（子列拼接）、列数归一。
+    结构化提取若不经过这些后处理，多级表头展平、垂直合并单元格会留下大量 DQ 问题。
+    """
+    headers = [("" if h is None else str(h)).strip() for h in tbl.get("headers", [])]
+    raw_rows = tbl.get("rows", [])
+    rows = [[("" if c is None else str(c)) for c in r] for r in raw_rows]
+    ti = {
+        "headers": headers,
+        "rows": rows,
+        "table_name": tbl.get("table_name", ""),
+        "table_number": tbl.get("table_number", ""),
+    }
+    return _table_rows_to_records(ti, source_document)
 
 
 def _extract_table_literal(block: Dict[str, str]) -> Dict[str, Any]:
@@ -1251,62 +1524,132 @@ def _forward_fill_merged_cells(ti: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _split_stuck_headers(ti: Dict[str, Any]) -> Dict[str, Any]:
-    """拆分多级表头展平时粘连的相邻列。
+    """通用拆分多级表头展平时粘连的相邻列。
 
-    LLM 展平两级表头时，经常把「序号」+「分类」黏成「序号分类」一列，
-    或把「状态量」+「状态量名称」黏成「状态量状态量名称」一列。
-    这些粘连列导致列错位，派生大量 DQ-001/004/005/006 报错。
+    LLM 展平两级表头时，经常把相邻列名黏成一列（如「AB」「CD」
+    拼成「ABCD」）。这些粘连列导致列错位。
 
-    本函数只做表头结构修复：
-    1. 表头「状态量状态量名称」→ 归一为「状态量名称」（去掉重复词）
-    2. 表头「序号分类」→ 拆为「序号」+「分类」两列：
-       - 数值形如 "1运行" / "1 SF6压力表…" 拆为 序号=数字、分类=剩余文本
-       - 纯数字原样保留为序号，分类复用「状态量名称」列（分类与状态量一致）
+    本函数用通用算法检测并拆分粘连表头，不依赖具体业务词：
+    1. 重复词粘连：表头含重复子串（如"ABABC"→去掉重复得到"ABC"）
+    2. 数字+中文粘连：单元格值形如"1运行""3 某某"→拆为序号列+名称列
+    3. 中文边界分割：连续中文中按已知表头片段匹配拆分
     """
     headers = ti.get("headers") or []
     rows = ti.get("rows") or []
     if not headers or not rows:
         return ti
 
-    # 1) 去重粘连词：状态量状态量名称 → 状态量名称
-    for ci, h in enumerate(headers):
-        hc = str(h).strip()
-        if re.fullmatch(r"(?:状态量){2,}名称", hc):
-            headers[ci] = "状态量名称"
+    def _dedup_repeated(h: str) -> str:
+        """去掉表头中的重复子串：如"ABABC"→"ABC"。"""
+        h = h.strip()
+        if len(h) < 4:
+            return h
+        for prefix_len in range(2, len(h) // 2 + 1):
+            prefix = h[:prefix_len]
+            rest = h[prefix_len:]
+            if rest.startswith(prefix):
+                return prefix + rest[len(prefix):]
+        return h
 
-    # 2) 序号分类 → 序号 + 分类
-    stuck_idx = next((i for i, h in enumerate(headers) if str(h).strip() == "序号分类"), None)
-    if stuck_idx is None:
-        result = dict(ti)
-        result["headers"] = headers
-        result["rows"] = rows
-        return result
+    def _find_stuck_pair(h: str, other_headers: list) -> list:
+        """检测粘连表头能否拆为两个已知列名。
 
-    headers[stuck_idx] = "序号"
-    headers.insert(stuck_idx + 1, "分类")
+        在 other_headers 中找两个相邻列名拼起来等于 h 的情况。
+        返回 [left, right] 或 None。
+        """
+        h = h.strip()
+        for left in other_headers:
+            left = str(left).strip()
+            if not left or left == h:
+                continue
+            for right in other_headers:
+                right = str(right).strip()
+                if not right or right == left or right == h:
+                    continue
+                if left + right == h:
+                    return [left, right]
+        return None
 
-    new_rows = []
-    for row in rows:
-        row = list(row) if row else []
-        while len(row) < len(headers) - 1:
-            row.append("")
-        cell = str(row[stuck_idx]).strip() if stuck_idx < len(row) else ""
-        m = re.match(r"^(\d{1,4})(?:[\s.．、]*(.+))?$", cell)
-        seq_val = cell
-        cat_val = ""
-        if m:
-            seq_val = m.group(1)
-            cat_val = (m.group(2) or "").strip()
-        # 未拆出分类词时，用原「状态量名称」列（旧行中紧随序号分类之后的列）作为分类，
-        # 分类与状态量语义一致（如「振动和异常声响」既是分类也是状态量名称）
-        if not cat_val and stuck_idx + 1 < len(row):
-            cat_val = str(row[stuck_idx + 1]).strip()
-        new_row = row[:stuck_idx] + [seq_val] + [cat_val] + row[stuck_idx + 1:]
-        new_rows.append(new_row)
+    def _detect_number_prefix(cell: str) -> tuple:
+        """检测单元格值是否以数字开头：如"1运行"→("1","运行")，"3 某某"→("3","某某")。"""
+        cell = str(cell).strip()
+        m = re.match(r"^(\d{1,4})[\s.．、]*([^.]*)$", cell)
+        if m and m.group(2) and m.group(2).strip():
+            return m.group(1), m.group(2).strip()
+        return None
 
-    print(f"  [表头拆分] 「序号分类」拆为「序号」+「分类」（{len(new_rows)} 行）")
+    new_headers = list(headers)
+    new_rows = [list(r) for r in rows]
+    split_count = 0
+
+    for ci in range(len(new_headers) - 1, -1, -1):
+        h = str(new_headers[ci]).strip()
+        if not h or len(h) < 3:
+            continue
+
+        # 1) 去重复词粘连
+        deduped = _dedup_repeated(h)
+        if deduped != h:
+            new_headers[ci] = deduped
+            continue
+
+        # 2) 检测数字+中文粘连：看数据行该列是否大量以数字开头
+        if ci < len(new_rows) and new_rows:
+            num_prefix_count = 0
+            samples = []
+            for row in new_rows[:min(10, len(new_rows))]:
+                cell = str(row[ci]).strip() if ci < len(row) else ""
+                result = _detect_number_prefix(cell)
+                if result:
+                    num_prefix_count += 1
+                    samples.append(result)
+            if num_prefix_count >= min(3, len(new_rows)):
+                # 多数行以数字开头 → 拆为 序号列 + 名称列
+                seq_name = "序号"
+                name_name = h
+                if h.startswith("序号") or h.startswith("编号"):
+                    name_part = re.sub(r"^(序号|编号)", "", h)
+                    name_name = name_part if name_part else "名称"
+                    seq_name = h[:2] if h[:2] in ("序号", "编号") else "序号"
+                elif h.startswith("编号"):
+                    name_name = h[2:]
+                    seq_name = "编号"
+                new_headers[ci] = seq_name
+                new_headers.insert(ci + 1, name_name)
+                for row in new_rows:
+                    while len(row) < ci:
+                        row.append("")
+                    cell = str(row[ci]).strip() if ci < len(row) else ""
+                    result = _detect_number_prefix(cell)
+                    if result:
+                        seq_val, name_val = result
+                        row[ci] = seq_val
+                        row.insert(ci + 1, name_val)
+                    else:
+                        row.insert(ci + 1, "")
+                split_count += 1
+                continue
+
+        # 3) 在其他表头中找配对拆分
+        other_headers = [str(x).strip() for j, x in enumerate(new_headers) if j != ci]
+        pair = _find_stuck_pair(h, other_headers)
+        if pair:
+            left, right = pair
+            new_headers[ci] = left
+            new_headers.insert(ci + 1, right)
+            for row in new_rows:
+                cell = str(row[ci]).strip() if ci < len(row) else ""
+                if left and cell.startswith(left):
+                    row[ci] = left
+                    row.insert(ci + 1, cell[len(left):].strip())
+                else:
+                    row.insert(ci + 1, "")
+            split_count += 1
+
+    if split_count > 0:
+        print(f"  [表头拆分] 通用检测拆分 {split_count} 个粘连列（{len(new_rows)} 行）")
     result = dict(ti)
-    result["headers"] = headers
+    result["headers"] = new_headers
     result["rows"] = new_rows
     return result
 
@@ -1438,14 +1781,14 @@ def _table_rows_to_records(ti: Dict[str, Any], source_document: str) -> List[Dic
     return records
 
 
-def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], source_text: str, table_original_titles: Dict[str, str] = None) -> int:
+def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], source_text: str, table_original_titles: Dict[str, str] = None, pdf_path: str = "") -> int:
     """按行/列修复 check_skill_rules 发现的问题（不整表重写）。
 
     根据 rule_id 和 issue 描述定位问题行列，只修有问题的单元格：
-    - SKILL-DQ-001 不得丢失行和列：列数归一（补空/合并多余列）+ LLM 补丢失列
+    - SKILL-DQ-001 不得丢失行和列：列数归一（补空/合并多余列）+ Vision 重新 OCR 补行
     - SKILL-DQ-003 合并单元格补全：重新执行前向填充
     - SKILL-DQ-004 子列拼接：重新执行重复列名合并
-    - SKILL-DQ-005 列值与表头语义一致：调 LLM 按行修复
+    - SKILL-DQ-005 列值与表头语义一致：Vision 重新 OCR 整页后按行回填
     返回修复计数。
     """
     fixed_count = 0
@@ -1525,46 +1868,78 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
                 print(f"  [修复] 表「{tbl}」SKILL-DQ-004 子列合并 {len(headers)}→{len(new_headers)} 列")
                 fixed_count += abs(len(headers) - len(new_headers))
 
-        # SKILL-DQ-005（列错位/分类与序号混列）与 SKILL-DQ-001（丢整列）都调 LLM 按行修复，
-        # 但每表每轮统一只调一次，避免同一批问题行被反复喂给 LLM 造成空转。
+        # SKILL-DQ-005（列错位）与 SKILL-DQ-001（丢行）调 Vision 重新 OCR 整页后按行回填。
         if "SKILL-DQ-005" in rule_ids or "SKILL-DQ-001" in rule_ids:
-            _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text)
+            _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text, pdf_path)
             if _llm_fixed:
                 fixed_count += _llm_fixed
 
     return fixed_count
 
 
-def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_text: str) -> int:
-    """调 LLM 按行修复确定性处理不了的问题（截断/内容错误/漏行/列错位）。
+def _locate_source_snippet(source_text: str, table_name: str, headers: list, max_len: int = 4000) -> str:
+    """从源文档全文中提取与目标表对应的片段（供 LLM 按行修复时参考）。
 
-    把有问题的行 + 上下文行 + 源文档片段给 LLM，让它输出修复后的行。
-    LLM 可以输出比原来更多的行（补回丢失的行），按序号插入到正确位置。
-    为控制单次 LLM 调用规模（避免单次超时），问题行按小批（每批3行）分多次调用。
+    策略：
+    1. 用表名在全文中定位，取表标题前后片段
+    2. 找不到表名时，用表头列名关键词在全文中搜索
+    3. 都找不到时回退到全文前 3000 字符
     """
-    if not recs:
+    if not source_text:
+        return ""
+    text = source_text
+
+    tn = str(table_name or "").strip()
+    if tn:
+        for pattern in [tn, re.sub(r'[/\\|:*?"<>]+', "_", tn)]:
+            idx = text.find(pattern)
+            if idx >= 0:
+                start = max(0, idx - 200)
+                end = min(len(text), idx + max_len)
+                return text[start:end]
+
+    if headers:
+        keywords = [str(h).strip() for h in headers if len(str(h).strip()) >= 2]
+        for kw in keywords[:3]:
+            idx = text.find(kw)
+            if idx >= 0:
+                start = max(0, idx - 500)
+                end = min(len(text), idx + max_len)
+                return text[start:end]
+
+    return text[:3000]
+
+
+# Vision 重扫结果缓存：同一次运行内多张问题表共享一轮重扫的原始 OCR 结果
+_RESUME_OCR_CACHE = {"pdf_path": "", "pages": None, "raw_by_page": {}}
+
+# 表号→页码映射（提取阶段记录，修复阶段用它收窄重扫范围：表A.2 问题只扫 p11-13，不扫全部 17 页）
+_TABLE_PAGE_MAP: Dict[str, List[int]] = {}
+
+
+def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_text: str, pdf_path: str = "") -> int:
+    """Vision 重新 OCR 整页后按序号对比回填有问题的行。
+
+    方案 1：重新 OCR 表格所在页 → 得到完整正确的 Markdown 表格 →
+    按序号/行号逐行对比 → 只替换有差异的单元格，不整表替换。
+
+    比给 LLM 文字描述让它猜准确得多——Vision 直接看图片重新识别。
+    """
+    if not recs or not pdf_path:
         return 0
     headers = list(recs[0].keys())
     source_doc = recs[0].get("source_document", "")
     updated_at = recs[0].get("updated_at", "")
 
-    # 所有 error/critical 的 issue 都交给 LLM 修复
     _llm_issues = [iss for iss in tbl_issues if str(iss.get("severity", "")).strip().lower() in ("error", "critical")]
     if not _llm_issues:
         return 0
 
-    # 从 issue 描述中提取行号/序号
-    target_rows = set()
-    for iss in _llm_issues:
-        desc = str(iss.get("description", ""))
-        for m in re.finditer(r"第(\d+)行|序号(\d+)|(\d+)行", desc):
-            for g in m.groups():
-                if g:
-                    target_rows.add(int(g) - 1)
-    if not target_rows:
-        target_rows = set(range(min(3, len(recs))))
-
-    issue_descs = "\n".join(f"- [{i.get('rule_id','')}] {str(i.get('description',''))}" for i in _llm_issues)
+    # 只有"表X.Y"格式的文档表格才做 Vision 重扫；正文规则表（LLM 从正文提取，无对应图片）
+    # 重扫全部图片页也匹配不到内容，纯浪费几分钟——直接跳过。
+    if not re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", tbl):
+        print(f"  [修复] 表「{tbl}」非文档表格（正文规则表），跳过 Vision 重扫")
+        return 0
 
     # 找到序号列（如果有）
     seq_col = -1
@@ -1573,147 +1948,207 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
             seq_col = ci
             break
 
-    def _merge_fixed(fixed_recs: List[Dict], target_row_indices: List[int]):
-        """把 LLM 输出的修复行合并回 recs，返回 (改行数, 补行数)。"""
-        _fixed_count = 0
-        _added_count = 0
-        if seq_col >= 0:
-            # 有序号列：按序号匹配（每批合并前基于最新 recs 重建映射）
-            existing_seqs = {}
-            for ri, rec in enumerate(recs):
-                seq = str(rec.get(headers[seq_col], "")).strip()
-                if seq:
-                    existing_seqs[seq] = ri
-            for fr in fixed_recs:
-                seq = str(fr.get(headers[seq_col], "")).strip()
-                if seq and seq in existing_seqs:
-                    # 替换已有行
-                    ri = existing_seqs[seq]
-                    _changed = False
-                    for h in fr.keys():
-                        new_val = str(fr.get(h, ""))
-                        old_val = str(recs[ri].get(h, ""))
-                        if new_val and new_val != old_val:
-                            recs[ri][h] = new_val
-                            _changed = True
-                    if _changed:
-                        _fixed_count += 1
-                else:
-                    # 新行——按序号插入到正确位置
-                    insert_pos = len(recs)
-                    if seq:
-                        for ri, rec in enumerate(recs):
-                            cur_seq = str(rec.get(headers[seq_col], "")).strip()
-                            try:
-                                if cur_seq and float(cur_seq) > float(seq):
-                                    insert_pos = ri
-                                    break
-                            except (ValueError, TypeError):
-                                continue
-                    recs.insert(insert_pos, fr)
-                    _added_count += 1
+    # 确定表格在 PDF 哪些页：只对含图片的页重新 OCR
+    try:
+        text_res = call_tool("read_file", path=pdf_path)
+        if not isinstance(text_res, dict) or "content" not in text_res:
+            return 0
+        total_pages = text_res.get("total_pages") or 0
+        image_pages = text_res.get("image_pages") or []
+        if not total_pages:
+            probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
+            total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
+    except Exception:
+        return 0
+
+    if not total_pages:
+        return 0
+
+    # 只对含图片的页做 OCR；无图片页信息时回退全部页
+    if image_pages:
+        _all_img_pages = image_pages[:30]
+    else:
+        _all_img_pages = list(range(1, min(total_pages, 30) + 1))
+
+    # 从表名中提取表号（如"表A.1"）
+    tbl_number = ""
+    m = re.search(r"表\s*([A-Za-z]?\s*\.?\s*\d+(?:[.．]\d+)?)", tbl)
+    if m:
+        tbl_number = m.group(1).strip()
+
+    # 重扫范围收窄：用提取阶段记录的表号→页码映射，只扫该表所在的页（±1 页含续表）。
+    # 全部图片页重扫 10-15 分钟，收窄后 2-4 页 1-3 分钟——总时长超时的主因就是这里。
+    ocr_pages = []
+    if tbl_number:
+        _known = _TABLE_PAGE_MAP.get(tbl_number) or []
+        if _known:
+            _min_p, _max_p = min(_known), max(_known)
+            ocr_pages = [p for p in _all_img_pages if _min_p - 1 <= p <= _max_p + 1]
+    if not ocr_pages:
+        ocr_pages = _all_img_pages
+
+    # 重新 OCR（复用 _OCR_PROMPT）
+    print(f"  [修复] 表「{tbl}」Vision 重新 OCR（{len(ocr_pages)} 页：{ocr_pages[:10]}）...", flush=True)
+    ocr_prompt = _OCR_PROMPT
+
+    # 逐批 OCR——模块级缓存：同一次运行内多张问题表共享一轮重扫的原始结果，不重复扫
+    global _RESUME_OCR_CACHE
+    if _RESUME_OCR_CACHE.get("pdf_path") == pdf_path and _RESUME_OCR_CACHE.get("pages") == ocr_pages:
+        page_raw_map = _RESUME_OCR_CACHE["raw_by_page"]
+        print(f"  [修复] 表「{tbl}」复用已有重扫结果（{len(page_raw_map)} 页有内容）", flush=True)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        batch_size = 5
+        page_raw_map = {}
+        _ocr_total = len(ocr_pages)
+        _ocr_done = 0
+        for bi in range(0, len(ocr_pages), batch_size):
+            batch_pages = ocr_pages[bi:bi + batch_size]
+            print(f"  [修复] OCR 渲染第 {batch_pages} 页...", flush=True)
+            try:
+                img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
+                if not isinstance(img_res, dict) or not img_res.get("success"):
+                    continue
+                image_paths = img_res.get("image_paths") or []
+            except Exception:
+                continue
+
+            def _ocr_one(pg, img_p):
+                for _ in range(3):
+                    try:
+                        vres = call_tool("llm_vision", image_path=img_p, prompt=ocr_prompt)
+                        if isinstance(vres, dict) and "error" not in vres:
+                            raw = str(vres.get("result") or "").strip()
+                            if raw:
+                                return pg, raw
+                    except Exception:
+                        pass
+                return pg, ""
+
+            page_imgs = {}
+            for i, img_path in enumerate(image_paths):
+                page_no = batch_pages[i] if i < len(batch_pages) else 0
+                page_imgs[page_no] = str(img_path)
+
+            # 2 路并发（与提取阶段一致；4 路会降智丢页）
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
+                for fut in as_completed(futs):
+                    pg, raw = fut.result()
+                    _ocr_done += 1
+                    if raw:
+                        page_raw_map[pg] = raw
+                    print(f"  [修复] OCR 第 {pg} 页完成（{_ocr_done}/{_ocr_total}）", flush=True)
+        _RESUME_OCR_CACHE = {"pdf_path": pdf_path, "pages": ocr_pages, "raw_by_page": page_raw_map}
+
+    # 按本表表号从缓存的原始结果中过滤
+    all_ocr_md = []
+    for pg in sorted(page_raw_map.keys()):
+        raw = page_raw_map[pg]
+        if tbl_number:
+            target = _filter_md_by_table_number(raw, tbl_number)
+            if target:
+                all_ocr_md.append(f"== 第 {pg} 页 ==\n{target}")
         else:
-            # 无序号列：按行号替换
-            for idx, fr in enumerate(fixed_recs):
-                if idx < len(target_row_indices) and target_row_indices[idx] < len(recs):
-                    ri = target_row_indices[idx]
-                    _changed = False
-                    for h in fr.keys():
-                        new_val = str(fr.get(h, ""))
-                        old_val = str(recs[ri].get(h, ""))
-                        if new_val and new_val != old_val:
-                            recs[ri][h] = new_val
-                            _changed = True
-                    if _changed:
-                        _fixed_count += 1
-                else:
-                    # 多出的行追加到末尾
-                    recs.append(fr)
-                    _added_count += 1
-        return _fixed_count, _added_count
+            all_ocr_md.append(f"== 第 {pg} 页 ==\n{raw}")
 
-    sorted_targets = sorted(ri for ri in target_rows if 0 <= ri < len(recs))
-    BATCH = 3
+    if not all_ocr_md:
+        print(f"  [修复] 表「{tbl}」重新 OCR 未提取到表格数据")
+        return 0
+
+    # 确定性归并多页 OCR 结果
+    merged = _merge_md_tables(tbl, tbl_number, all_ocr_md)
+    new_headers = merged.get("headers") or []
+    new_rows = merged.get("rows") or []
+    if not new_headers or not new_rows:
+        print(f"  [修复] 表「{tbl}」重新 OCR 归并失败")
+        return 0
+
+    print(f"  [修复] 表「{tbl}」重新 OCR 得到 {len(new_rows)} 行 × {len(new_headers)} 列")
+
+    # 后处理：前向填充 + 表头拆分 + 子列合并
+    ti = {"headers": new_headers, "rows": new_rows}
+    ti = _filter_polluted_rows(ti)
+    ti = _clean_placeholder_cells(ti)
+    ti = _forward_fill_merged_cells(ti)
+    ti = _split_stuck_headers(ti)
+    ti = _merge_duplicate_headers(ti)
+    new_headers = ti.get("headers") or []
+    new_rows = ti.get("rows") or []
+
+    # 把新 OCR 结果转成 records
+    new_recs = []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for row in new_rows:
+        rec = {}
+        for ci, h in enumerate(new_headers):
+            rec[str(h)] = str(row[ci]) if ci < len(row) else ""
+        rec["source_document"] = source_doc
+        rec["updated_at"] = now
+        new_recs.append(rec)
+
+    # 按序号/行号对比回填：只替换有差异的单元格
     total_fixed = 0
-    n_batches = max(1, (len(sorted_targets) + BATCH - 1) // BATCH)
-
-    for bi in range(0, len(sorted_targets), BATCH):
-        batch = sorted_targets[bi:bi + BATCH]
-        batch_no = bi // BATCH + 1
-        print(f"  [修复] 表「{tbl}」LLM 按行修复 第{batch_no}/{n_batches}批（行 {[r + 1 for r in batch]}）...")
-        # 准备 LLM 输入：有问题的行 + 上下文（前后各1行）
-        _rows_for_llm = []
-        for ri in batch:
-            if ri > 0:
-                _rows_for_llm.append({"row": ri, "context": True, "values": {h: str(recs[ri - 1].get(h, ""))[:150] for h in headers}})
-            _rows_for_llm.append({"row": ri + 1, "issue": True, "values": {h: str(recs[ri].get(h, ""))[:150] for h in headers}})
-            if ri + 1 < len(recs):
-                _rows_for_llm.append({"row": ri + 2, "context": True, "values": {h: str(recs[ri + 1].get(h, ""))[:150] for h in headers}})
-
-        prompt = f"""请修复以下表格中有问题的行。可以输出比原来更多的行（补回丢失的数据行）。
-
-表名: {tbl}
-列: {" | ".join(headers)}
-
-问题:
-{issue_descs}
-
-有问题的行及上下文:
-"""
-        prompt += "| " + " | ".join(headers) + " |\n"
-        prompt += "| " + " | ".join("---" for _ in headers) + " |\n"
-        for r in _rows_for_llm:
-            vals = r.get("values", {})
-            cells = [str(vals.get(h, ""))[:150] for h in headers]
-            tag = "←问题行" if r.get("issue") else ""
-            prompt += f"| {' | '.join(cells)} | {tag}\n"
-
-        prompt += f"""
-
-源文档片段（供参考）:
-{source_text[:1500]}
-
-请输出修复后的行（Markdown 表格行格式，含表头行和分隔行）。
-- 如果需要补行，直接在正确位置插入新行
-- 如果需要补列（源文档中有但提取结果缺失的列），在表头加上新列名，每行补上对应值
-- 如果需要修改已有行，输出修改后的完整行
-- 不要输出没有问题的行
-- 不要输出解释"""
-
-        try:
-            _resp = call_tool("llm_generate", prompt=prompt, temperature=0.0, max_tokens=8000)
-            content = _resp.get("content", "") if isinstance(_resp, dict) else ""
-            if not content:
+    if seq_col >= 0 and new_headers:
+        # 找新数据中的序号列
+        new_seq_col = -1
+        for ci, h in enumerate(new_headers):
+            if str(h) == str(headers[seq_col]):
+                new_seq_col = ci
+                break
+        if new_seq_col >= 0:
+            new_by_seq = {}
+            for rec in new_recs:
+                seq = str(rec.get(new_headers[new_seq_col], "")).strip()
+                if seq:
+                    new_by_seq[seq] = rec
+            for rec in recs:
+                seq = str(rec.get(headers[seq_col], "")).strip()
+                if seq and seq in new_by_seq:
+                    new_rec = new_by_seq[seq]
+                    for h in headers:
+                        if h in ("source_document", "updated_at"):
+                            continue
+                        old_val = str(rec.get(h, "")).strip()
+                        # 在新数据中找对应列
+                        new_val = ""
+                        if h in new_rec:
+                            new_val = str(new_rec.get(h, "")).strip()
+                        elif str(h) in [str(nh) for nh in new_headers]:
+                            # 模糊匹配列名
+                            for nh in new_headers:
+                                if str(nh) == str(h):
+                                    new_val = str(new_rec.get(nh, "")).strip()
+                                    break
+                        if new_val and new_val != old_val:
+                            rec[h] = new_val
+                            total_fixed += 1
+    else:
+        # 无序号列：按行号对比
+        for ri, new_rec in enumerate(new_recs):
+            if ri >= len(recs):
+                # 新行，追加
+                recs.append(new_rec)
+                total_fixed += 1
                 continue
-            parsed = _parse_markdown_table(content)
-            if not parsed:
-                continue
-            fixed_data = parsed[0]
-            fixed_rows = fixed_data.get("rows", [])
-            if not fixed_rows:
-                continue
-
-            # 把 LLM 输出的行转成 dict（用 LLM 的表头，可能比原始多列——补丢失列）
-            llm_headers = fixed_data.get("headers") or headers
-            if len(llm_headers) > len(headers):
-                print(f"  [修复] 表「{tbl}」LLM 补了 {len(llm_headers) - len(headers)} 列: {set(llm_headers) - set(headers)}")
-            fixed_recs = []
-            for row in fixed_rows:
-                rec = {}
-                for ci, h in enumerate(llm_headers):
-                    rec[h] = str(row[ci]) if ci < len(row) else ""
-                rec["source_document"] = source_doc
-                rec["updated_at"] = updated_at
-                fixed_recs.append(rec)
-
-            _fc, _ac = _merge_fixed(fixed_recs, batch)
-            total_fixed += _fc + _ac
-        except Exception as e:
-            print(f"  [修复] 表「{tbl}」LLM 按行修复失败(第{batch_no}批): {e}")
-            continue
+            for h in headers:
+                if h in ("source_document", "updated_at"):
+                    continue
+                old_val = str(recs[ri].get(h, "")).strip()
+                new_val = str(new_rec.get(h, "")).strip() if h in new_rec else ""
+                if new_val and new_val != old_val:
+                    recs[ri][h] = new_val
+                    total_fixed += 1
+        # 新 OCR 有更多行 → 追加
+        if len(new_recs) > len(recs):
+            for ri in range(len(recs), len(new_recs)):
+                recs.append(new_recs[ri])
+                total_fixed += 1
 
     if total_fixed:
-        print(f"  [修复] 表「{tbl}」LLM 修复 {total_fixed} 处（{len(sorted_targets)} 个问题行分 {n_batches} 批）")
+        print(f"  [修复] 表「{tbl}」Vision 重新 OCR 后回填 {total_fixed} 处")
+    else:
+        print(f"  [修复] 表「{tbl}」Vision 重新 OCR 后无差异")
     return total_fixed
 
 
@@ -1899,6 +2334,13 @@ def _partition_records(records: List[Dict], main_table: str, schema_plan: Option
 # ==================== 主函数 ====================
 
 def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target_table_name: str, if_table_exists: str = "replace") -> Dict[str, Any]:
+    # 总耗时硬保护：沙箱硬上限 1800s，预留 120s 写结果，剩余时间不够跑完一轮自检+修复就提前收尾
+    _t0 = time.time()
+    _TIME_BUDGET = 1680  # 1800 - 120s 余量
+
+    def _elapsed() -> int:
+        return int(time.time() - _t0)
+
     if isinstance(document_paths, (list, tuple)):
         paths = [str(p).strip() for p in document_paths if str(p).strip()]
     elif isinstance(document_paths, str):
@@ -1946,7 +2388,45 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
 
     for idx, path in enumerate(paths, 1):
         print(f"[{idx}/{len(paths)}] 处理文档: {path}")
-        text = _extract_text_from_file(path)
+
+        # 优先用 pdfplumber 结构化表格提取（保留行列结构，借鉴 MinerU 版面分析思路）
+        _pdf_res = call_tool("read_file", path=path, extract_tables=True)
+        if not isinstance(_pdf_res, dict):
+            _pdf_res = {}
+        text = str(_pdf_res.get("content") or "")
+        pdf_tables = _pdf_res.get("tables") or []
+        page_texts = _pdf_res.get("page_texts") or []
+        source_text_by_path[path] = text
+        print(f"  文档文本总长 {len(text)} 字符，pdfplumber 检测到 {len(pdf_tables)} 张结构化表格")
+
+        if pdf_tables:
+            # 结构化表格通道：pdfplumber 已保留行列结构，直接用，不走 OCR
+            merged_tables = _merge_structured_tables(pdf_tables)
+            # 按页统计同页表索引，用于匹配表名
+            _page_tbl_count = {}
+            for tbl in merged_tables:
+                p = tbl.get("page", 0)
+                tbl_idx = _page_tbl_count.get(p, 0)
+                _page_tbl_count[p] = tbl_idx + 1
+                # 从页面文本匹配表名
+                tbl_name = _find_table_title_from_page_text(page_texts, p, tbl_idx)
+                if not tbl_name:
+                    tbl_name = _sanitize_table_name(f"表_p{p}_{'_'.join(str(h)[:8] for h in tbl.get('headers', [])[:3])}")
+                recs = _structured_table_to_records(tbl, Path(path).name)
+                if tbl_name in table_records_map:
+                    table_records_map[tbl_name].extend(recs)
+                else:
+                    table_records_map[tbl_name] = recs
+                print(f"  [结构化表格] 「{tbl_name}」: {len(recs)} 行 × {len(tbl.get('headers', []))} 列 (p{p})")
+
+            # 正文规则提取统一放到下方 OCR 补充通道末尾（只提取一次），
+            # 避免结构化通道与 OCR 通道各提取一遍导致规则重复。
+
+        # OCR 补充通道：结构化表格提取后，仍需对文本层无数据的图片型表格走 OCR 补充，
+        # 否则 pdfplumber 只覆盖文本型表格（如表A.2/A.3），其余图片型表格会全部丢失。
+        print(f"  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充")
+        if not text:
+            text = _extract_text_from_file(path)
         source_text_by_path[path] = text
         print(f"  文档文本总长 {len(text)} 字符")
 
@@ -2008,22 +2488,14 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
                 _new_recs = r["records"]
                 if _tbl_name in table_records_map:
                     _existing = table_records_map[_tbl_name]
-                    # 去重：用 (序号, 劣化程度, 劣化情况) 组合判断是否重复行
+                    # 通用去重：用整行所有列值拼接做 key，不硬编码列名
                     _seen_keys = set()
                     for rec in _existing:
-                        _key = (
-                            str(rec.get("序号") or rec.get("rule_code") or ""),
-                            str(rec.get("劣化程度") or rec.get("severity") or ""),
-                            str(rec.get("劣化情况") or rec.get("check_logic") or "")[:100],
-                        )
+                        _key = tuple(str(v or "") for v in rec.values())
                         _seen_keys.add(_key)
                     _deduped = []
                     for rec in _new_recs:
-                        _key = (
-                            str(rec.get("序号") or rec.get("rule_code") or ""),
-                            str(rec.get("劣化程度") or rec.get("severity") or ""),
-                            str(rec.get("劣化情况") or rec.get("check_logic") or "")[:100],
-                        )
+                        _key = tuple(str(v or "") for v in rec.values())
                         if _key not in _seen_keys:
                             _seen_keys.add(_key)
                             _deduped.append(rec)
@@ -2042,15 +2514,23 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
                     _table_original_titles[r["table_name"]] = _orig_title
 
         body_text = "\n".join(p for p in body_parts if p.strip()).strip()
-        if body_text:
+        if body_text and _elapsed() <= _TIME_BUDGET - 600:
             schema_plan = _analyze_document_structure(body_text)
             main_tbl = schema_plan.get("main_table") or "正文规则"
             print(f"  [表结构] 主表「{main_tbl}」+ {len(schema_plan.get('tables') or [])} 张子表")
-            entries = _extract_rules_from_text(body_text, schema_plan=schema_plan)
+            try:
+                entries = _extract_rules_from_text(body_text, schema_plan=schema_plan)
+            except Exception as _e:
+                # 正文 LLM 提取超时/失败不阻塞核心结果（附录表格）落盘，
+                # 保留空正文规则，正文规则可后续单独补齐。
+                print(f"  [警告] 正文规则提取失败，跳过（附录表格不受影响）: {_e}", flush=True)
+                entries = []
             for e in entries:
                 e["source_document"] = Path(path).name
             all_entries.extend(entries)
             print(f"  从 {Path(path).name} 正文提取到 {len(entries)} 条规则")
+        elif body_text:
+            print(f"  [跳过正文提取] 已用时 {_elapsed()}s，剩余时间不足 600s，优先落盘附录表格", flush=True)
 
     if not all_entries and not table_records_map:
         raise RuntimeError("未提取到任何规则或表格数据")
@@ -2129,49 +2609,98 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         written_total += n
         print(f"  [完成] 表「{tbl}」写入 {n} 条")
 
-    # 写入后自检：最多 5 轮，每轮修复后重新写入修改过的表。
-    # 增量重检策略：第 1 轮检查全部表；之后每轮只重检上一轮实际修改过的表，
-    # 避免反复调用 check_skill_rules（内部含 LLM）检查无问题表导致超时。
-    # check_skill_rules 内部对自然语言规则调 LLM 对比源文本，传入完整 PDF 全文
-    # 会导致单次调用 token 爆炸、13 表累计超时。自检只需覆盖规则判定上下文，
-    # 故截断到 4000 字符；修复阶段 _apply_row_col_fixes 仍使用完整 _src_text。
-    _src_text_check = (_src_text or "")[:4000]
+    # 写入后自检：最多 3 轮，每轮修复后重新写入修改过的表。
+    # 增量重检策略：第 1 轮检查全部表；之后每轮只重检上一轮实际修改过的表。
+    # 不截断源文本：_extract_table_source_snippet 需要完整源文本才能定位到正确的表片段。
+    _src_text_check = _src_text or ""
     _check_round = 0
     _all_check_issues = []
-    _tables_to_check = set(grouped.keys())
-    _prev_issue_keys = None
-    while _check_round < 5 and _tables_to_check:
+    # 只自检文档表格（表X.Y 格式）——正文规则表是 LLM 从正文提取的，再让 LLM 检查意义不大且耗时
+    _tables_to_check = {t for t in grouped.keys() if re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", t)}
+    print(f"[自检] 待检查 {len(_tables_to_check)} 张文档表格（跳过 {len(grouped) - len(_tables_to_check)} 张正文规则表）")
+    _prev_issue_count = -1
+    _prev_row_counts = {}
+    while _check_round < 3 and _tables_to_check:
         _check_round += 1
+        # 时间预算：每轮自检+修复约需 3-8 分钟，剩余不足 300s 直接收尾（保证脚本完整返回而不是被沙箱杀掉）
+        if _elapsed() > _TIME_BUDGET - 300:
+            print(f"[自检] 剩余时间不足（已用 {_elapsed()}s / 预算 {_TIME_BUDGET}s），跳过第{_check_round}轮检查直接收尾", flush=True)
+            break
         _all_check_issues = []
-        for tbl in list(_tables_to_check):
+        _check_list = list(_tables_to_check)
+
+        # 自检并发：纯 LLM 文本检查（无 OCR 无降智风险），表间独立可安全并发。
+        # 串行 10 表 × 20-60s = 8-10 分钟是总时长超时的主因之一；4 路并发砍到 2-3 分钟。
+        def _check_one(tbl):
             recs = grouped.get(tbl, [])
             if not recs:
-                continue
+                return tbl, []
             headers = list(recs[0].keys())
             rows = [[r.get(h, "") for h in headers] for r in recs]
-            _result = call_tool("check_skill_rules", headers=headers, rows=rows, source_text=_src_text_check, table_name=tbl)
-            if isinstance(_result, dict) and _result.get("issues"):
-                for _iss in _result["issues"]:
-                    if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
-                        continue
-                    _all_check_issues.append((tbl, _iss))
+            print(f"[自检] 第{_check_round}轮 开始检查「{tbl}」({len(recs)} 行)...", flush=True)
+            _full_src_snippet = _locate_source_snippet(_src_text_check, tbl, headers) if _src_text_check else ""
+            # 分批送检（每批 30 行）：全量行都过检查（列数一致性/丢行在长表尾部最常见），
+            # 同时控制单次 LLM prompt 规模避免超时
+            _issues = []
+            _BATCH = 30
+            _batches = [rows[i:i + _BATCH] for i in range(0, len(rows), _BATCH)]
+            # 丢行检测需要"全表数据"与源片段对比；分批时若给部分行配上完整源片段，
+            # LLM 会把跨批的后续分项误判为"缺失"（如表2 的 D.3/D.4 落在第 2 批被误报丢行）。
+            # 因此只在单批覆盖全表时才传 source_text，分批时传空字符串只做列级/确定性检查。
+            for _bi, _check_rows in enumerate(_batches, 1):
+                if len(_batches) > 1:
+                    print(f"[自检] 第{_check_round}轮 「{tbl}」批次 {_bi}/{len(_batches)}...", flush=True)
+                _batch_src = _full_src_snippet if len(_batches) == 1 else ""
+                try:
+                    _result = call_tool("check_skill_rules", headers=headers, rows=_check_rows, source_text=_batch_src, table_name=tbl)
+                except Exception as _ce:
+                    # check_skill_rules 平台侧对自然语言规则会调 LLM，可能超时；
+                    # 超时/异常不阻塞收尾，按"无 error 问题"处理（数据已写入，Inspector 后续可接管复查）
+                    print(f"[自检] 第{_check_round}轮 「{tbl}」批次 {_bi} 检查调用超时/异常，跳过: {_ce}", flush=True)
+                    continue
+                if isinstance(_result, dict) and _result.get("issues"):
+                    for _iss in _result["issues"]:
+                        if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
+                            continue
+                        _issues.append((tbl, _iss))
+            print(f"[自检] 第{_check_round}轮 「{tbl}」检查完成：{len(_issues)} 个问题", flush=True)
+            return tbl, _issues
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        _check_done = 0
+        with ThreadPoolExecutor(max_workers=4) as _cex:
+            _cfuts = {_cex.submit(_check_one, t): t for t in _check_list}
+            for _cfut in as_completed(_cfuts):
+                _tbl_checked, _tbl_issues = _cfut.result()
+                _check_done += 1
+                _all_check_issues.extend(_tbl_issues)
+                print(f"[自检] 第{_check_round}轮 进度 {_check_done}/{len(_check_list)}", flush=True)
         if not _all_check_issues:
             print(f"[自检] 第{_check_round}轮检查通过")
             break
-        # 收敛检测：若本轮问题与上轮完全一致（修复无效），停止迭代，避免空转超时
-        _cur_issue_keys = sorted({(tbl, iss.get("rule_id", ""), str(iss.get("description", ""))) for tbl, iss in _all_check_issues})
-        if _cur_issue_keys == _prev_issue_keys:
-            print(f"[自检] 第{_check_round}轮问题与上轮完全一致，修复无效，停止迭代（避免空转）")
-            break
-        _prev_issue_keys = _cur_issue_keys
-        print(f"[自检] 第{_check_round}轮发现 {len(_all_check_issues)} 个问题")
+        # 收敛检测：问题数量未减少且行数无变化 → 修复无效，停止
+        _cur_issue_count = len(_all_check_issues)
+        _cur_row_counts = {tbl: len(grouped.get(tbl, [])) for tbl in _tables_to_check}
+        if _prev_issue_count >= 0:
+            _rows_changed = any(_cur_row_counts.get(t, 0) != _prev_row_counts.get(t, 0) for t in _tables_to_check)
+            if _cur_issue_count >= _prev_issue_count and not _rows_changed:
+                print(f"[自检] 第{_check_round}轮问题数 {_cur_issue_count} ≥ 上轮 {_prev_issue_count}，行数无变化，停止")
+                break
+        _prev_issue_count = _cur_issue_count
+        _prev_row_counts = _cur_row_counts
+        print(f"[自检] 第{_check_round}轮发现 {_cur_issue_count} 个问题")
         for tbl, iss in _all_check_issues:
             print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
-        # 按行/列修复
+        # 确定性修复（列数归一/前向填充/子列合并，不调 LLM）
         _modified_tables = {tbl for tbl, _ in _all_check_issues}
-        _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles)
-        print(f"[自检] 按行/列修复 {_fixed_count} 处")
-        # 无实际修复进展则停止，避免空转
+        # 时间预算：Vision 重扫耗时大（每表 1-3 分钟），剩余不足 240s 只跑确定性修复（秒级）
+        if _elapsed() > _TIME_BUDGET - 240:
+            print(f"[自检] 剩余时间不足（已用 {_elapsed()}s），只跑确定性修复跳过 Vision 重扫", flush=True)
+            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, "")
+        else:
+            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, paths[0] if paths else "")
+        print(f"[自检] 确定性修复 {_fixed_count} 处")
+        # 无实际修复进展则停止
         if _fixed_count <= 0:
             print("[自检] 本轮无修复进展，停止迭代")
             break

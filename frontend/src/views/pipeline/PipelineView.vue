@@ -214,8 +214,8 @@
             <div v-if="debugMessages.length === 0 && !plStreaming" class="debug-empty">
               <p>{{ t('pipeline.debugEmptyHint') }}</p>
             </div>
-            <div v-if="debugMessages.length > DEBUG_VISIBLE_COUNT && !showAllDebugMsgs" class="debug-show-more">
-              <el-button text size="small" @click="showAllDebugMsgs = true">{{ t('pipeline.showMoreHistory', { count: debugMessages.length - DEBUG_VISIBLE_COUNT }) }}</el-button>
+            <div v-if="debugMessages.length > DEBUG_VISIBLE_COUNT + extraDebugMsgCount" class="debug-show-more">
+              <el-button text size="small" @click="extraDebugMsgCount += DEBUG_VISIBLE_COUNT">{{ t('pipeline.showMoreHistory', { count: debugMessages.length - DEBUG_VISIBLE_COUNT - extraDebugMsgCount }) }}</el-button>
             </div>
             <div
               v-for="(msg, idx) in visibleDebugMessages"
@@ -904,11 +904,13 @@ watch(debugDrawer, (newVal, oldVal) => {
   }
 })
 const debugMessages = ref<DebugMessage[]>([])
-const showAllDebugMsgs = ref(false)
+// 调试消息虚拟分页：默认只显示最近6条，每点一次「查看更多」往前多显示6条
+const extraDebugMsgCount = ref(0)
 const DEBUG_VISIBLE_COUNT = 6
 const visibleDebugMessages = computed(() => {
-  if (showAllDebugMsgs.value || debugMessages.value.length <= DEBUG_VISIBLE_COUNT) return debugMessages.value
-  return debugMessages.value.slice(debugMessages.value.length - DEBUG_VISIBLE_COUNT)
+  const visible = DEBUG_VISIBLE_COUNT + extraDebugMsgCount.value
+  if (debugMessages.value.length <= visible) return debugMessages.value
+  return debugMessages.value.slice(debugMessages.value.length - visible)
 })
 const debugInput = ref('')
 const debugInputs = ref('{}')
@@ -1040,7 +1042,7 @@ function openDebug(pl: Pipeline) {
   flushPipelineDebugSave()
   debugPipeline.value = { ...pl }
   debugMessages.value = loadPipelineDebugMsgs((pl as any).id)
-  showAllDebugMsgs.value = false
+  extraDebugMsgCount.value = 0
   reloadPlHistories((pl as any).id)
   debugInput.value = ''
 

@@ -48,7 +48,7 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
             "1. 类型：analysis / processing / chat\n"
             "   - analysis：用户想分析数据内容，不改变数据本身\n"
             "   - processing：用户想对数据进行加工处理，使其发生变化\n"
-            "   - chat：用户没有要对数据做任何操作的意图\n"
+            "   - chat：其他一切——闲聊提问、平台配置管理（查看/修改/添加 Provider、模型、API Key、数据源连接器、备注说明）、系统操作咨询等。注意：'刷新列表''加备注''改配置'这类针对平台设置的操作不算 processing\n"
             "2. 源数据表：keep 或 change（当前数据表不适合当前需求时 change，继续用才 keep）\n"
             "3. 目标数据表：keep 或 change（当前目标表不适合当前需求时 change）\n"
             "4. 技能：keep 或 change（当前技能不适合当前需求时 change）\n"

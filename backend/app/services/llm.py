@@ -644,13 +644,18 @@ class LLMManager:
                 extra_kwargs = {}
                 if not enable_thinking:
                     extra_kwargs["extra_body"] = {"enable_thinking": False}
-                response = await self._acreate_with_retry(
-                    cfg,
-                    model=actual_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **extra_kwargs,
+                # 200s 硬超时：client 180s + 瞬态重试会让单模型尝试拖到 540s，
+                # 沙箱 call_tool 240s / idle 300s 都等不到——先到这里掐断换下一模型
+                response = await asyncio.wait_for(
+                    self._acreate_with_retry(
+                        cfg,
+                        model=actual_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **extra_kwargs,
+                    ),
+                    timeout=200.0,
                 )
                 _msg = response.choices[0].message
                 _content = _msg.content or ""

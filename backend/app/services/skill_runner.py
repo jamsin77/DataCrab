@@ -175,7 +175,9 @@ def call_tool(tool_name, **args):
     )
     print(f"[SkillRunner] call_tool: {{tool_name}}")
     try:
-        with _urllib_req.urlopen(_req, timeout=300) as resp:
+        # 240s < 沙箱 idle 300s：单次工具调用超时先于 idle 判定返回，
+        # 脚本能走重试/细切分支并 print 保活，而不是整个进程被 idle 杀掉
+        with _urllib_req.urlopen(_req, timeout=240) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return data
     except _urllib_err.HTTPError as e:
