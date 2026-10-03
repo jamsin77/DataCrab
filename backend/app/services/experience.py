@@ -10,12 +10,15 @@ Phase 1：反例库（negative）+ 经验归纳（lessons）。正例（positive
 """
 import json
 import os
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
+
 EXPERIENCE_FILE = "experience.json"
-MAX_NEGATIVE = 200
+MAX_NEGATIVE = 30
 
 
 def operator_experience_dir(operator_id) -> Path:
@@ -32,26 +35,60 @@ def pipeline_experience_dir(pipeline_id) -> Path:
     return base
 
 
+def _trim_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """裁剪经验数据到上限，并移除已废弃的 debug_history 字段。"""
+    data.pop("debug_history", None)
+    if len(data.get("negative", [])) > MAX_NEGATIVE:
+        data["negative"] = data["negative"][-MAX_NEGATIVE:]
+    if len(data.get("positive", [])) > MAX_NEGATIVE:
+        data["positive"] = data["positive"][-MAX_NEGATIVE:]
+    return data
+
+
 def read_experience(base: Path) -> Dict[str, Any]:
-    """读取统一经验。base 为技能目录或算子经验目录。"""
+    """读取统一经验。base 为技能目录或算子经验目录。
+
+    JSON 损坏时备份原文件（.corrupted 后缀）并返回空数据，避免静默丢失。
+    每次读取时自动裁剪到上限并清理废弃字段。
+    """
     p = base / EXPERIENCE_FILE
     if not p.exists():
         return {"negative": [], "positive": [], "lessons": ""}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"experience.json 损坏，已备份并重置: {p} ({e})")
+        try:
+            p.rename(p.with_suffix(".json.corrupted"))
+        except OSError:
+            pass
+        return {"negative": [], "positive": [], "lessons": ""}
+    if not isinstance(data, dict):
+        logger.warning(f"experience.json 内容非 dict，已重置: {p}")
         return {"negative": [], "positive": [], "lessons": ""}
     data.setdefault("negative", [])
     data.setdefault("positive", [])
     data.setdefault("lessons", "")
+    _trim_data(data)
     return data
 
 
 def _write(base: Path, data: Dict[str, Any]) -> None:
+    """原子写入：先写临时文件再 os.replace，防止进程被杀导致半写损坏。"""
     base.mkdir(parents=True, exist_ok=True)
-    (base / EXPERIENCE_FILE).write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    target = base / EXPERIENCE_FILE
+    fd, tmp = tempfile.mkstemp(dir=str(base), suffix=".tmp", prefix=".exp_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, str(target))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def append_negative(
