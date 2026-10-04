@@ -44,6 +44,7 @@ export const useChatStore = defineStore('chat', () => {
       if (msg.meta.suggestionConsumed) msg._suggestionConsumed = true
       if (msg.meta.inspectionReport) msg.inspectionReport = msg.meta.inspectionReport
       if (msg.meta.noMatch) msg.noMatch = true
+      if ((msg.meta as any)._execCollapsed) (msg as any)._execCollapsed = true
     }
   }
 
@@ -149,8 +150,16 @@ export const useChatStore = defineStore('chat', () => {
     // 刷新当前会话消息 + selectedData（多终端并发：拉最新 DB 状态，不覆盖正在流式生成的内容）
     if (!currentSessionId.value || isStreaming.value) return
     try {
+      // 轮询整体替换 messages 会丢纯前端 UI 状态（如进度折叠），按消息 id 捕获后回填
+      const _collapsedIds: Record<string, boolean> = {}
+      for (const m of messages.value) {
+        if ((m as any)._execCollapsed) _collapsedIds[m.id] = true
+      }
       messages.value = await chatApi.listMessages(currentSessionId.value)
       _restoreMetadata(messages.value)
+      for (const m of messages.value) {
+        if (_collapsedIds[m.id]) (m as any)._execCollapsed = true
+      }
       // 同步 session context 到 sessions 数组 + 恢复 selectedData
       const _fresh = await chatApi.getSession(currentSessionId.value)
       const idx = sessions.value.findIndex((s) => s.id === currentSessionId.value)
@@ -188,15 +197,14 @@ export const useChatStore = defineStore('chat', () => {
       const lastIdx = messages.value.length - 1
       const lastMsg = messages.value[lastIdx]
       if (lastMsg && lastMsg.role === 'assistant') {
-        // 清空旧内容，准备接收新流式数据
+        // 清空旧内容，准备接收新流式数据。
+        // 不清 suggestions——卡片是用户的操作入口（使用技能/直接处理），执行失败后还能重试
         lastMsg.content = ''
         lastMsg.reasoning = ''
         lastMsg.model = ''
         lastMsg.executingMsgs = []
         lastMsg.agentName = ''
         lastMsg.inspectionReport = ''
-        lastMsg.suggestions = undefined
-        lastMsg.suggestion = undefined
         lastMsg._newTableName = undefined
         lastMsg._selectedTarget = undefined
         lastMsg._writeMode = undefined
@@ -271,6 +279,7 @@ export const useChatStore = defineStore('chat', () => {
       const _savedAgentName = msg.agentName
       const _savedSuggestion = msg.suggestion
       const _savedSuggestions = msg.suggestions
+      const _savedExecCollapsed = msg._execCollapsed  // 折叠状态存对象上，DB 刷新换新对象会丢
       console.log('[chat] _syncFromDB saving suggestions:', _savedSuggestions?.length, _savedSuggestions?.map((s:any)=>s.type))
       const _savedConsumedSuggestions = msg._consumedSuggestions
       const _savedSuggestionConsumed = msg._suggestionConsumed
@@ -287,6 +296,7 @@ export const useChatStore = defineStore('chat', () => {
           if (_savedAgentName) _lastAssistant.agentName = _savedAgentName
           if (_savedSuggestion) _lastAssistant.suggestion = _savedSuggestion
           if (_savedSuggestions) _lastAssistant.suggestions = _savedSuggestions
+          if (_savedExecCollapsed !== undefined) _lastAssistant._execCollapsed = _savedExecCollapsed
           if (_savedConsumedSuggestions) _lastAssistant._consumedSuggestions = _savedConsumedSuggestions
           console.log('[chat] _syncFromDB restored suggestions:', _lastAssistant.suggestions?.length, _lastAssistant.suggestions?.map((s:any)=>s.type))
           if (_savedSuggestionConsumed) _lastAssistant._suggestionConsumed = true
@@ -301,6 +311,7 @@ export const useChatStore = defineStore('chat', () => {
         if (_savedSuggestionConsumed) _meta.suggestionConsumed = true
         if (_savedReport) _meta.inspectionReport = _savedReport
           if (_savedNoMatch) _meta.noMatch = true
+          if (_savedExecCollapsed) (_meta as any)._execCollapsed = true
           if (Object.keys(_meta).length > 0) {
             chatApi.updateMessageMetadata(_lastAssistant.id, _meta).catch(() => {})
           }

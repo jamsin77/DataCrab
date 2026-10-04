@@ -446,6 +446,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "missing_target_table": {"zh": "目标数据表", "en": "Target table"},
     "params_confirmed_label": {"zh": "✅ 已确定参数：", "en": "✅ Confirmed parameters: "},
     "params_missing_label": {"zh": "⚠️ 还缺：{missing}，请补充", "en": "⚠️ Missing: {missing}, please provide"},
+    "params_extracted_msg": {"zh": "已从消息中提取参数：{params}", "en": "Extracted parameters from message: {params}"},
 }
 
 

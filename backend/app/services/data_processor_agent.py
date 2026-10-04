@@ -373,9 +373,17 @@ class DataProcessorAgent(BaseAgent):
                 if issue.get('column'):
                     fix_prompt += f" (列: {issue['column']})"
                 if issue.get('suggestion'):
-                    fix_prompt += f" → 建议: {issue['suggestion']}"
+                    fix_prompt += f" → 建议: {issue.get('suggestion')}"
                 fix_prompt += "\n"
-            fix_prompt += "\n请分析问题根源，修改脚本修复，修复后重新执行。"
+            fix_prompt += (
+                "\n修复策略（先判断问题类型再动手）：\n"
+                "1. 数据级问题（单元格内容截断/个别值错误/空值/重复行）：直接用数据工具修复——"
+                "query_table_data 定位问题行，从源文档或上下文找到正确内容，"
+                "write_table_data 或 execute_sql 更新该单元格。禁止为此重跑整个脚本。\n"
+                "2. 结构级问题（整表丢行/列错位/表结构错）：才考虑修改脚本并重新执行。\n"
+                "3. 修复后用 query_table_data 验证修复结果。\n"
+                "优先选 1——多数检查问题是数据级小问题，改数据比改脚本重跑快得多。"
+            )
             _dynamic_hints = self.build_debug_dynamic_hints(context, "") if _is_debug else ""
             if _dynamic_hints:
                 fix_prompt = fix_prompt + "\n\n" + _dynamic_hints

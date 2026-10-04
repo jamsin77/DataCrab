@@ -599,7 +599,9 @@ async def update_message_metadata(
     msg = result.scalar_one_or_none()
     if not msg:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t('message_not_found_or_no_access'))
-    msg.meta = body
+    # 合并而非整体替换：前端多次 PATCH 只带部分字段（一次 suggestions、一次 executingMsgs），
+    # 替换会把之前存的字段抹掉（曾导致匹配卡片刷新后消失）
+    msg.meta = {**(msg.meta or {}), **body}
     await db.commit()
     return {"success": True}
 
@@ -930,6 +932,7 @@ async def stream_response(
                     else:
                         _session_ctx["last_skill_id"] = request.selected_skill_id
                         _session_ctx["last_skill_name"] = request.selected_skill_name or ""
+                    _session_ctx["skill_confirmed"] = True  # 用户点击确认（区别于匹配暂存的候选）
 
                 # 附件处理：用户上传文件后 selectedData 设了虚拟数据源
                 if request.selected_datasource_id and not _attachment_matched:
@@ -1109,21 +1112,28 @@ async def stream_response(
                             _is_analysis = _sk_type == "analysis"
                             _agent_name = "data_analyst" if _is_analysis else "data_processor"
                             logger.info(f"[direct_execute] 走调试模式调用技能: {_sk_name} agent={_agent_name}")
-                            # SSE 保活：20 秒无事件则发 ping，防止长时间执行导致 network error
+                            # SSE 保活：每 20 秒无事件发 ping；单事件静默上限 15 分钟。
+                            # 不能用短硬超时（旧 20+120s）：技能沙箱自己有 300s 硬预算 + 视觉识别 429 重试，
+                            # 外层比内层先死会把正常执行中的技能误杀。
                             _agen = _runtime.run(_agent_name, _debug_msg, _debug_context).__aiter__()
                             _exec_failed = False
+                            _loop = asyncio.get_running_loop()
                             while True:
                                 _fut = asyncio.ensure_future(_agen.__anext__())
-                                done, pending = await asyncio.wait({_fut}, timeout=20)
-                                if not done:
-                                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                                    done, pending = await asyncio.wait({_fut}, timeout=120)
-                                    if not done:
+                                _silent_deadline = _loop.time() + 900
+                                while True:
+                                    done, pending = await asyncio.wait({_fut}, timeout=20)
+                                    if done:
+                                        break
+                                    if _loop.time() > _silent_deadline:
                                         _fut.cancel()
                                         logger.error(f"[direct_execute] 技能执行超时: {_sk.name}")
                                         yield f"data: {json.dumps({'type': 'error', 'content': t('skill_timeout')}, ensure_ascii=False)}\n\n"
                                         _exec_failed = True
                                         break
+                                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                                if _exec_failed:
+                                    break
                                 try:
                                     _agent_event = _fut.result()
                                 except StopAsyncIteration:
@@ -1319,14 +1329,54 @@ async def stream_response(
                 _all_suggestions = []
 
                 try:
-                    # 判断三路是否需要匹配
-                    _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_data_name"))
-                    _is_source_virtual = _session_ctx.get("source_datasource_name") == _VIRTUAL_DS_NAME
-                    _need_target = _msg_type == "processing" and not _is_source_virtual and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
-                    _need_skill = not _keep_skill or not bool(_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id"))
+                    # 上一轮缺参数 → 本轮用户消息可能是补充说明，先提取参数再匹配
+                    _awaiting_params = _session_ctx.pop("awaiting_params", False)
 
                     # ===== 段5：匹配阶段（独立 session，闭包共用，匹配完释放）=====
                     async with _new_session() as db:
+                        # ===== 参数补充提取：把"目标跟源相同""表名你定"这类文本转成参数，不当新任务 =====
+                        if _awaiting_params and _msg_type == "processing":
+                            from app.services.chat_router import extract_params
+                            _ext = await extract_params(request.content, _session_ctx)
+                            _extracted_labels = []
+                            _tds = _ext.get("target_datasource", "")
+                            if _tds == "same_as_source" and _session_ctx.get("source_datasource_id"):
+                                _session_ctx["target_datasource_id"] = _session_ctx["source_datasource_id"]
+                                _session_ctx["target_datasource_name"] = _session_ctx.get("source_datasource_name", "")
+                                _extracted_labels.append(t('param_target_ds', name=_session_ctx["target_datasource_name"]))
+                            elif _tds:
+                                _tds_res = await db.execute(select(DataSource).where(DataSource.name == _tds, DataSource.is_active == True))
+                                _tds_obj = _tds_res.scalars().first()
+                                if _tds_obj and (_tds_obj.created_by == current_user.id or current_user.is_superuser or _tds_obj.is_virtual):
+                                    _session_ctx["target_datasource_id"] = str(_tds_obj.id)
+                                    _session_ctx["target_datasource_name"] = _tds_obj.name
+                                    _extracted_labels.append(t('param_target_ds', name=_tds_obj.name))
+                                else:
+                                    logger.info(f"[extract_params] 提取到的目标数据源不存在或无权限: {_tds!r}，忽略")
+                            _ttbl = _ext.get("target_table", "")
+                            if _ttbl == "auto":
+                                _stem = (_session_ctx.get("source_data_name") or "output").rsplit(".", 1)[0]
+                                _auto_tbl = f"{_stem}_{datetime.now().strftime('%m%d_%H%M%S')}"
+                                _session_ctx["target_data_name"] = _auto_tbl
+                                _extracted_labels.append(t('param_target_table', name=_auto_tbl))
+                                if not _session_ctx.get("target_write_mode"):
+                                    _session_ctx["target_write_mode"] = "create"
+                            elif _ttbl:
+                                _session_ctx["target_data_name"] = _ttbl
+                                _extracted_labels.append(t('param_target_table', name=_ttbl))
+                            _wm = _ext.get("write_mode", "")
+                            if _wm in ("overwrite", "append", "create", "direct"):
+                                _session_ctx["target_write_mode"] = _wm
+                                _wm_label = {"overwrite": t('write_mode_overwrite'), "append": t('write_mode_append'), "direct": t('write_mode_direct'), "create": t('write_mode_create')}.get(_wm, _wm)
+                                _extracted_labels.append(t('write_strategy', label=_wm_label, mode=_wm))
+                            if _extracted_labels:
+                                yield f"data: {json.dumps({'type': 'executing', 'message': t('params_extracted_msg', params='，'.join(_extracted_labels))}, ensure_ascii=False)}\n\n"
+
+                        # 判断三路是否需要匹配（参数可能刚被提取补齐，需先算完提取）
+                        _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_data_name"))
+                        _is_source_virtual = _session_ctx.get("source_datasource_name") == _VIRTUAL_DS_NAME
+                        _need_target = _msg_type == "processing" and not _is_source_virtual and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
+                        _need_skill = not _keep_skill or not bool(_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id"))
                         # 预查数据源（当前用户的 + 虚拟数据源，排除其他用户的私有数据源）
                         _all_ds = [ds for ds in (await db.execute(select(DataSource).where(DataSource.is_active == True))).scalars().all()
                                    if ds.name and (ds.created_by == current_user.id or current_user.is_superuser or ds.is_virtual)]
@@ -1555,6 +1605,31 @@ async def stream_response(
                         if _res:
                             _all_suggestions.append(_res)
 
+                    # 技能候选暂存：本轮匹配到的最优技能记为当前候选（skill_confirmed=False 未点击确认）。
+                    # 用户追问补参数时 keep_skill=True 跳过重匹配，避免正确技能被参数文本顶掉；
+                    # 无匹配时清掉旧候选，防止过期技能注入后续任务。
+                    if _need_skill:
+                        _skill_sug = next((s for s in _all_suggestions if s["type"] == "skill_suggestion"), None)
+                        if _skill_sug and _skill_sug.get("matches"):
+                            _top = _skill_sug["matches"][0]
+                            if _top.get("type") == "pipeline":
+                                _session_ctx["last_pipeline_id"] = _top["id"]
+                                _session_ctx["last_pipeline_name"] = _top.get("name", "")
+                                _session_ctx.pop("last_skill_id", None)
+                                _session_ctx.pop("last_skill_name", None)
+                            else:
+                                _session_ctx["last_skill_id"] = _top["id"]
+                                _session_ctx["last_skill_name"] = _top.get("name", "")
+                                _session_ctx.pop("last_pipeline_id", None)
+                                _session_ctx.pop("last_pipeline_name", None)
+                            _session_ctx["skill_confirmed"] = False
+                        else:
+                            _session_ctx.pop("last_skill_id", None)
+                            _session_ctx.pop("last_skill_name", None)
+                            _session_ctx.pop("last_pipeline_id", None)
+                            _session_ctx.pop("last_pipeline_name", None)
+                            _session_ctx.pop("skill_confirmed", None)
+
                     # keep_skill 跳过匹配但已有技能 → 把已选技能作为卡片展示
                     if not _need_skill and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
                         _sk_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
@@ -1594,6 +1669,12 @@ async def stream_response(
 
                     # 保存消息 + yield 所有匹配结果事件（每路独立，不复杂判断）
                     # 展示已确定的参数和缺失的参数
+                    # 缺参数 → 记 awaiting_params 标志：下一轮用户消息先走参数提取而非重新匹配
+                    _missing_final = _get_missing_params(_session_ctx, _msg_type)
+                    if _missing_final:
+                        _session_ctx["awaiting_params"] = True
+                    else:
+                        _session_ctx.pop("awaiting_params", None)
                     _params_hint = _build_params_hint(_session_ctx, _msg_type)
                     _match_msg = t('match_result_select')
                     if _params_hint:
@@ -1627,10 +1708,8 @@ async def stream_response(
                             yield f"data: {json.dumps({'type': 'skill_no_match', 'msg_type': _msg_type}, ensure_ascii=False)}\n\n"
 
                     # 兜底：没有任何 suggestion 时才检查参数是否齐全
-                    if not _all_suggestions:
-                        _missing = _get_missing_params(_session_ctx, _msg_type)
-                        if _missing:
-                            yield f"data: {json.dumps({'type': 'content', 'content': _build_params_hint(_session_ctx, _msg_type)}, ensure_ascii=False)}\n\n"
+                    if not _all_suggestions and _missing_final:
+                        yield f"data: {json.dumps({'type': 'content', 'content': _build_params_hint(_session_ctx, _msg_type)}, ensure_ascii=False)}\n\n"
 
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                     return
@@ -1657,7 +1736,8 @@ async def stream_response(
 
             # 如果有已选技能且指令未在 direct_execute 生成过，生成技能调用指令替换 _user_msg
             # 注意：direct_execute + use_skill=false（用户点「直接分析/直接处理」）时不注入技能
-            if not _skill_instruction_generated and not request.direct_execute and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")):
+            # skill_confirmed=False 是匹配暂存的候选（用户没点过卡片），不注入——防止追问参数时误注入
+            if not _skill_instruction_generated and not request.direct_execute and (_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")) and _session_ctx.get("skill_confirmed", True):
                 _skill_id = _session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id")
                 _skill_name = _session_ctx.get("last_skill_name") or _session_ctx.get("last_pipeline_name") or ""
                 yield f"data: {json.dumps({'type': 'executing', 'message': t('generating_skill_instruction')}, ensure_ascii=False)}\n\n"
@@ -1724,7 +1804,8 @@ async def stream_response(
 
             # 如果有已选技能，把技能信息注入 context，并在 user_msg 里提示 Agent 调用技能
             # 注意：direct_execute + use_skill=false（用户点「直接分析/直接处理」）时不注入技能
-            if (_skill_instruction_generated or (_session_ctx.get("last_skill_id") and not _skill_instruction_generated)) and not (request.direct_execute and not request.use_skill):
+            # skill_confirmed=False 是匹配暂存的候选（用户没点过卡片），不注入
+            if (_skill_instruction_generated or (_session_ctx.get("last_skill_id") and _session_ctx.get("skill_confirmed", True))) and not (request.direct_execute and not request.use_skill):
                 try:
                     from app.models.skill import Skill as _SkillModel
                     from app.services.skill_parser import read_skill_md, read_skill_script
@@ -1782,16 +1863,23 @@ async def stream_response(
                     yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
                     return
 
-                # SSE 保活：20 秒无事件则发 ping，防止 network error
+                # SSE 保活：每 20 秒无事件发 ping；单事件静默上限 15 分钟。
+                # 旧 20+120s 硬超时比技能沙箱 300s 预算先死，会把正常执行中的技能误杀。
                 fut = asyncio.ensure_future(agen.__anext__())
-                done, pending = await asyncio.wait({fut}, timeout=20)
-                if not done:
-                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
-                    done, pending = await asyncio.wait({fut}, timeout=120)
-                    if not done:
+                _silent_deadline = asyncio.get_running_loop().time() + 900
+                _evt_timeout = False
+                while True:
+                    done, pending = await asyncio.wait({fut}, timeout=20)
+                    if done:
+                        break
+                    if asyncio.get_running_loop().time() > _silent_deadline:
                         fut.cancel()
                         yield f"data: {json.dumps({'type': 'error', 'content': t('agent_timeout')}, ensure_ascii=False)}\n\n"
-                        return
+                        _evt_timeout = True
+                        break
+                    yield f"data: {json.dumps({'type': 'ping'}, ensure_ascii=False)}\n\n"
+                if _evt_timeout:
+                    return
                 try:
                     event = fut.result()
                 except StopAsyncIteration:

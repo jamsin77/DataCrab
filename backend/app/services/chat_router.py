@@ -96,3 +96,65 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
         logger.error(f"[classify] LLM 调用失败: {e}")
         events = [{"type": "error", "content": f"❌ 路由判断失败: {e}"}]
         return "chat", False, False, False, events
+
+
+async def extract_params(user_message: str, session_ctx: dict | None = None) -> dict:
+    """从用户补充消息中提取数据任务缺失参数（目标数据源/目标表/写入策略）。
+
+    仅在上一轮提示缺参数后调用——用户的补充说明（如"目标跟源相同""表名你定"）
+    不该当成新任务重新匹配技能，而应提取为参数。
+
+    Returns:
+        {"target_datasource": str, "target_table": str, "write_mode": str}
+        - target_datasource: 数据源名 / "same_as_source"（目标与源相同）/ 空（未提及）
+        - target_table: 表名 / "auto"（用户让自动定义）/ 空（未提及）
+        - write_mode: overwrite/append/create/direct / 空（未提及）
+        用户在描述全新任务时全字段为空。
+    """
+    _empty = {"target_datasource": "", "target_table": "", "write_mode": ""}
+    if not user_message:
+        return _empty
+    try:
+        from app.services.llm import llm_manager
+
+        _ctx_lines = []
+        if session_ctx:
+            if session_ctx.get("source_datasource_name") and session_ctx.get("source_data_name"):
+                _ctx_lines.append(f"源数据源：{session_ctx['source_datasource_name']}，源表：{session_ctx['source_data_name']}")
+            if session_ctx.get("target_datasource_name"):
+                _ctx_lines.append(f"目标数据源：{session_ctx['target_datasource_name']}")
+            if session_ctx.get("target_data_name"):
+                _ctx_lines.append(f"目标表：{session_ctx['target_data_name']}")
+        _ctx_block = "；".join(_ctx_lines) if _ctx_lines else "（无）"
+
+        prompt = (
+            "用户上一个数据任务缺少参数，现在发来的消息可能是参数补充说明。从消息中提取参数信息。\n"
+            f"当前任务已选参数：{_ctx_block}\n\n"
+            f"用户消息：{user_message}\n\n"
+            "输出 JSON（不要解释，不要推理）：\n"
+            '{"target_datasource": "数据源名称；用户说目标与源相同/同一个/写回源里则输出 same_as_source；未提及输出空字符串", '
+            '"target_table": "表名；用户说你自己定/随便取/自动生成则输出 auto；未提及输出空字符串", '
+            '"write_mode": "覆盖=overwrite/追加=append/新建表=create/直接使用=direct；未提及输出空字符串"}\n'
+            "注意：如果用户在描述一个全新的任务（换数据换需求）而不是给当前任务补参数，所有字段输出空字符串。"
+        )
+        resp = await llm_manager.chat_with_messages(
+            messages=[{"role": "user", "content": prompt}],
+            model=llm_manager._flash, temperature=0.0, enable_thinking=False,
+        )
+        logger.info(f"[extract_params] msg={user_message[:80]!r}")
+        logger.info(f"[extract_params] LLM raw resp={resp!r}")
+
+        import json as _json
+        import re as _re
+        m = _re.search(r"\{.*\}", resp, _re.DOTALL)
+        if not m:
+            return _empty
+        data = _json.loads(m.group(0))
+        return {
+            "target_datasource": str(data.get("target_datasource", "") or "").strip(),
+            "target_table": str(data.get("target_table", "") or "").strip(),
+            "write_mode": str(data.get("write_mode", "") or "").strip(),
+        }
+    except Exception as e:
+        logger.error(f"[extract_params] LLM 调用失败: {e}")
+        return _empty

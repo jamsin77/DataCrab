@@ -196,6 +196,33 @@ def _split_text(text: str, max_chunk: int = 6000, overlap: int = 1500) -> List[s
     return chunks
 
 
+def _normalize_pdf_text(text: str) -> str:
+    """合并 PDF 文本提取产生的行内软换行，避免句子被换行拆散后被下游截断。
+
+    只合并「上一行末字符和下一行首字符都是中文」且「上一行行末无句末标点」的软换行；
+    空行和句末标点结尾的行保留换行，段落/条款分隔不受影响。
+    """
+    if not text:
+        return text
+    _sentence_enders = "。！？；：…"
+    lines = text.split("\n")
+    out = []
+    for line in lines:
+        s = line.rstrip()
+        if not s:
+            out.append("")
+            continue
+        if out and out[-1]:
+            prev = out[-1]
+            if (prev[-1] not in _sentence_enders
+                    and "\u4e00" <= prev[-1] <= "\u9fff"
+                    and "\u4e00" <= s[0] <= "\u9fff"):
+                out[-1] = prev + s
+                continue
+        out.append(s)
+    return "\n".join(out)
+
+
 _TABLE_TITLE_PATTERN = re.compile(
     r"^表\s*([A-Za-zÀ-ÿ]?\s*\.?\s*\d+(?:[.．]\d+)?)\s*(?:[（(]\s*续\s*[)）])?\s*[:：]?\s*(.*)$"
 )
@@ -436,9 +463,9 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
 - category: 标准或质量或安全
 - applicable_fields: 适用字段（逗号分隔）
 - format_regex: 格式正则（无则留空）
-- check_logic: 检查逻辑（逐条独立成行，不得合并去重）
+- check_logic: 检查逻辑（逐条独立成行，不得合并去重；**完整复制原文条款内容，禁止截断、禁止省略号、禁止概括压缩——长条款也要一字不落全部放入**）
 - severity: info/warn/error/critical
-- description: 规则详细解释
+- description: 规则详细解释（同样完整保留原文，不得截断）
 - table: 归属表名（从下方结构中选择；无法判断填「{main_table}」）
 
 {schema_block}【表格复原要求】
@@ -482,6 +509,17 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
 
     RETRY_CONFIGS = [{"temperature": 0.0, "max_tokens": 8192}, {"temperature": 0.1, "max_tokens": 8192}, {"temperature": 0.2, "max_tokens": 12000}]
 
+    # 截断检测：长文本字段以非终结词结尾（逗号/顿号/"的"/"和"等）→ 句子不完整，内容被截断
+    _TRUNC_ENDINGS = ("，", "、", "；", "：", "的", "和", "与", "或", "及", "等", "中", "在", "由", "被", "...", "…")
+
+    def _has_truncated_field(entries: List[Dict[str, Any]]) -> bool:
+        for e in entries:
+            for field in ("check_logic", "description"):
+                val = str(e.get(field) or "").strip()
+                if len(val) >= 30 and val.endswith(_TRUNC_ENDINGS):
+                    return True
+        return False
+
     def _process(idx, block):
         title = block.get("title") or "正文"
         content = block["content"]
@@ -490,6 +528,10 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
             print(f"    [提取] 第 {idx} 段 第{attempt}次调用 llm_generate...", flush=True)
             status, parsed = _call_once(block, cfg)
             if status == "ok":
+                # 截断检测：字段以非终结词结尾 → 视为失败重试（不把截断数据当成功）
+                if _has_truncated_field(parsed):
+                    print(f"    [提取] 第 {idx} 段 第{attempt}次输出存在截断字段（句子不完整），重试...", flush=True)
+                    continue
                 return idx, parsed
             if status == "timeout":
                 break
@@ -645,7 +687,7 @@ def _chapter_based_extract(text: str) -> List[Dict[str, Any]]:
             if current_title:
                 content = "\n".join(current_lines).strip()
                 if len(content) >= 15:
-                    entries.append({"rule_code": m.group(1), "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content[:500], "severity": "warn", "description": content})
+                    entries.append({"rule_code": m.group(1), "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content, "severity": "warn", "description": content})
             current_title = f"{m.group(1)} {m.group(2)}".strip()
             current_lines = []
         elif current_title:
@@ -653,7 +695,7 @@ def _chapter_based_extract(text: str) -> List[Dict[str, Any]]:
     if current_title:
         content = "\n".join(current_lines).strip()
         if len(content) >= 15:
-            entries.append({"rule_code": "", "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content[:500], "severity": "warn", "description": content})
+            entries.append({"rule_code": "", "rule_name": current_title, "category": "标准", "applicable_fields": "", "format_regex": "", "check_logic": content, "severity": "warn", "description": content})
     return entries
 
 
@@ -2514,6 +2556,8 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
                     _table_original_titles[r["table_name"]] = _orig_title
 
         body_text = "\n".join(p for p in body_parts if p.strip()).strip()
+        # 合并 PDF 提取产生的行内软换行，避免句末被换行拆散导致提取内容截断
+        body_text = _normalize_pdf_text(body_text)
         if body_text and _elapsed() <= _TIME_BUDGET - 600:
             schema_plan = _analyze_document_structure(body_text)
             main_tbl = schema_plan.get("main_table") or "正文规则"
@@ -2609,122 +2653,80 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         written_total += n
         print(f"  [完成] 表「{tbl}」写入 {n} 条")
 
-    # 写入后自检：最多 3 轮，每轮修复后重新写入修改过的表。
-    # 增量重检策略：第 1 轮检查全部表；之后每轮只重检上一轮实际修改过的表。
-    # 不截断源文本：_extract_table_source_snippet 需要完整源文本才能定位到正确的表片段。
+    # ===== 写入后自检（单轮终态：检查 → 确定性修复 → 重写修过的表 → 返回，不再循环重跑） =====
+    # 设计变更：不再做「自检→修复→再自检」多轮循环和 Vision 重扫修复——
+    # 1) 多轮重检 + Vision 重扫（豆包 3-4 分钟/页）在 1800s 沙箱预算内跑不完
+    # 2) 脚本返回 success=False 会让 Agent 外层把整个 main 再跑一遍（反复执行打转的根源）
+    # 3) OCR 质量提升后结构性错误已少，确定性修复（秒级）足够处理列数/前向填充类问题
+    # 残留问题以 warnings 带出，success=True 终态返回。
     _src_text_check = _src_text or ""
-    _check_round = 0
     _all_check_issues = []
-    # 只自检文档表格（表X.Y 格式）——正文规则表是 LLM 从正文提取的，再让 LLM 检查意义不大且耗时
     _tables_to_check = {t for t in grouped.keys() if re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", t)}
     print(f"[自检] 待检查 {len(_tables_to_check)} 张文档表格（跳过 {len(grouped) - len(_tables_to_check)} 张正文规则表）")
-    _prev_issue_count = -1
-    _prev_row_counts = {}
-    while _check_round < 3 and _tables_to_check:
-        _check_round += 1
-        # 时间预算：每轮自检+修复约需 3-8 分钟，剩余不足 300s 直接收尾（保证脚本完整返回而不是被沙箱杀掉）
-        if _elapsed() > _TIME_BUDGET - 300:
-            print(f"[自检] 剩余时间不足（已用 {_elapsed()}s / 预算 {_TIME_BUDGET}s），跳过第{_check_round}轮检查直接收尾", flush=True)
-            break
-        _all_check_issues = []
-        _check_list = list(_tables_to_check)
 
-        # 自检并发：纯 LLM 文本检查（无 OCR 无降智风险），表间独立可安全并发。
-        # 串行 10 表 × 20-60s = 8-10 分钟是总时长超时的主因之一；4 路并发砍到 2-3 分钟。
-        def _check_one(tbl):
-            recs = grouped.get(tbl, [])
-            if not recs:
-                return tbl, []
-            headers = list(recs[0].keys())
-            rows = [[r.get(h, "") for h in headers] for r in recs]
-            print(f"[自检] 第{_check_round}轮 开始检查「{tbl}」({len(recs)} 行)...", flush=True)
-            _full_src_snippet = _locate_source_snippet(_src_text_check, tbl, headers) if _src_text_check else ""
-            # 分批送检（每批 30 行）：全量行都过检查（列数一致性/丢行在长表尾部最常见），
-            # 同时控制单次 LLM prompt 规模避免超时
-            _issues = []
-            _BATCH = 30
-            _batches = [rows[i:i + _BATCH] for i in range(0, len(rows), _BATCH)]
-            # 丢行检测需要"全表数据"与源片段对比；分批时若给部分行配上完整源片段，
-            # LLM 会把跨批的后续分项误判为"缺失"（如表2 的 D.3/D.4 落在第 2 批被误报丢行）。
-            # 因此只在单批覆盖全表时才传 source_text，分批时传空字符串只做列级/确定性检查。
-            for _bi, _check_rows in enumerate(_batches, 1):
-                if len(_batches) > 1:
-                    print(f"[自检] 第{_check_round}轮 「{tbl}」批次 {_bi}/{len(_batches)}...", flush=True)
-                _batch_src = _full_src_snippet if len(_batches) == 1 else ""
-                try:
-                    _result = call_tool("check_skill_rules", headers=headers, rows=_check_rows, source_text=_batch_src, table_name=tbl)
-                except Exception as _ce:
-                    # check_skill_rules 平台侧对自然语言规则会调 LLM，可能超时；
-                    # 超时/异常不阻塞收尾，按"无 error 问题"处理（数据已写入，Inspector 后续可接管复查）
-                    print(f"[自检] 第{_check_round}轮 「{tbl}」批次 {_bi} 检查调用超时/异常，跳过: {_ce}", flush=True)
-                    continue
-                if isinstance(_result, dict) and _result.get("issues"):
-                    for _iss in _result["issues"]:
-                        if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
-                            continue
-                        _issues.append((tbl, _iss))
-            print(f"[自检] 第{_check_round}轮 「{tbl}」检查完成：{len(_issues)} 个问题", flush=True)
-            return tbl, _issues
+    def _check_one(tbl):
+        recs = grouped.get(tbl, [])
+        if not recs:
+            return tbl, []
+        headers = list(recs[0].keys())
+        rows = [[r.get(h, "") for h in headers] for r in recs]
+        print(f"[自检] 开始检查「{tbl}」({len(recs)} 行)...", flush=True)
+        _src_snippet = _locate_source_snippet(_src_text_check, tbl, headers) if _src_text_check else ""
+        _issues = []
+        _BATCH = 30
+        _batches = [rows[i:i + _BATCH] for i in range(0, len(rows), _BATCH)]
+        for _bi, _check_rows in enumerate(_batches, 1):
+            if len(_batches) > 1:
+                print(f"[自检] 「{tbl}」批次 {_bi}/{len(_batches)}...", flush=True)
+            _batch_src = _src_snippet if len(_batches) == 1 else ""
+            try:
+                _result = call_tool("check_skill_rules", headers=headers, rows=_check_rows, source_text=_batch_src, table_name=tbl)
+            except Exception as _ce:
+                print(f"[自检] 「{tbl}」批次 {_bi} 检查调用超时/异常，跳过: {_ce}", flush=True)
+                continue
+            if isinstance(_result, dict) and _result.get("issues"):
+                for _iss in _result["issues"]:
+                    if str(_iss.get("severity", "")).strip().lower() not in ("error", "critical"):
+                        continue
+                    _issues.append((tbl, _iss))
+        print(f"[自检] 「{tbl}」检查完成：{len(_issues)} 个问题", flush=True)
+        return tbl, _issues
 
+    if _tables_to_check and _elapsed() <= _TIME_BUDGET - 300:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         _check_done = 0
         with ThreadPoolExecutor(max_workers=4) as _cex:
-            _cfuts = {_cex.submit(_check_one, t): t for t in _check_list}
+            _cfuts = {_cex.submit(_check_one, t): t for t in _tables_to_check}
             for _cfut in as_completed(_cfuts):
                 _tbl_checked, _tbl_issues = _cfut.result()
                 _check_done += 1
                 _all_check_issues.extend(_tbl_issues)
-                print(f"[自检] 第{_check_round}轮 进度 {_check_done}/{len(_check_list)}", flush=True)
-        if not _all_check_issues:
-            print(f"[自检] 第{_check_round}轮检查通过")
-            break
-        # 收敛检测：问题数量未减少且行数无变化 → 修复无效，停止
-        _cur_issue_count = len(_all_check_issues)
-        _cur_row_counts = {tbl: len(grouped.get(tbl, [])) for tbl in _tables_to_check}
-        if _prev_issue_count >= 0:
-            _rows_changed = any(_cur_row_counts.get(t, 0) != _prev_row_counts.get(t, 0) for t in _tables_to_check)
-            if _cur_issue_count >= _prev_issue_count and not _rows_changed:
-                print(f"[自检] 第{_check_round}轮问题数 {_cur_issue_count} ≥ 上轮 {_prev_issue_count}，行数无变化，停止")
-                break
-        _prev_issue_count = _cur_issue_count
-        _prev_row_counts = _cur_row_counts
-        print(f"[自检] 第{_check_round}轮发现 {_cur_issue_count} 个问题")
-        for tbl, iss in _all_check_issues:
-            print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
-        # 确定性修复（列数归一/前向填充/子列合并，不调 LLM）
-        _modified_tables = {tbl for tbl, _ in _all_check_issues}
-        # 时间预算：Vision 重扫耗时大（每表 1-3 分钟），剩余不足 240s 只跑确定性修复（秒级）
-        if _elapsed() > _TIME_BUDGET - 240:
-            print(f"[自检] 剩余时间不足（已用 {_elapsed()}s），只跑确定性修复跳过 Vision 重扫", flush=True)
-            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, "")
-        else:
-            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, paths[0] if paths else "")
-        print(f"[自检] 确定性修复 {_fixed_count} 处")
-        # 无实际修复进展则停止
-        if _fixed_count <= 0:
-            print("[自检] 本轮无修复进展，停止迭代")
-            break
-        # 修复后重新写入修改过的表
-        for tbl in _modified_tables:
-            recs = grouped.get(tbl, [])
-            if recs:
-                print(f"[自检] 重新写入表「{tbl}」({len(recs)} 条)")
-                _write_records(target_ds_id, tbl, recs, "overwrite")
-        # 下一轮只重检本轮修改过的表
-        _tables_to_check = _modified_tables
-    else:
-        print(f"[自检] {_check_round}轮修复后仍有 {len(_all_check_issues)} 个问题，停止")
+                print(f"[自检] 进度 {_check_done}/{len(_tables_to_check)}", flush=True)
+    elif _tables_to_check:
+        print(f"[自检] 剩余时间不足（已用 {_elapsed()}s / 预算 {_TIME_BUDGET}s），跳过自检直接收尾", flush=True)
 
-    # 自检未通过则报错，Inspector 不会接管
+    _warnings = []
     if _all_check_issues:
-        print(f"[自检] 发现 {len(_all_check_issues)} 个问题，请手动检查：")
+        print(f"[自检] 发现 {len(_all_check_issues)} 个问题：")
         for tbl, iss in _all_check_issues:
             print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
-        _issue_summary = "; ".join(f"[{iss.get('rule_id','')}] 表「{tbl}」: {iss.get('description','')}" for tbl, iss in _all_check_issues[:10])
-        return {"success": False, "error": f"自检发现 {len(_all_check_issues)} 个问题，数据已写入但未通过质量检查。请查看数据源中的实际数据并手动修复。问题：{_issue_summary}", "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
+        # 确定性修复（列数归一/前向填充/子列合并，秒级）
+        # + Vision 重扫修复（表级收窄到目标表所在页，豆包约 70s/页，5 页 ≈ 6 分钟）
+        _modified_tables = {tbl for tbl, _ in _all_check_issues}
+        _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, paths[0] if paths else "")
+        print(f"[自检] 修复 {_fixed_count} 处")
+        # 修复后只重写修过的表（一次，不再重新检查）
+        if _fixed_count > 0:
+            for tbl in _modified_tables:
+                recs = grouped.get(tbl, [])
+                if recs:
+                    print(f"[自检] 重新写入表「{tbl}」({len(recs)} 条)")
+                    _write_records(target_ds_id, tbl, recs, "overwrite")
+        # 残留问题 → warnings（不再作为 success=False 触发外层 Agent 重跑）
+        _warnings = [f"[{iss.get('rule_id','')}] 表「{tbl}」: {iss.get('description','')}" for tbl, iss in _all_check_issues[:10]]
 
-    print("[自检] 检查通过")
-    return {"success": True, "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
+    print("[自检] 完成")
+    return {"success": True, "warnings": _warnings, "extracted_rules": len(all_entries), "total_rules_written": written_total, "target_table": target_table_name, "target_datasource": target_datasource_name, "tables_written": {tbl: len(recs) for tbl, recs in grouped.items()}}
 
 
 def main(**params: Any) -> Dict[str, Any]:

@@ -47,6 +47,7 @@ backend/data/operator_experiences/
 backend/data/match_chroma/
 backend/data/pipeline_experiences/
 backend/data/uploads/
+backend/app/data/
 
 # Environment
 .env
