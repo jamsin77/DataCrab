@@ -17,8 +17,8 @@
 ## 1. 克隆项目
 
 ```bash
-git clone https://gitee.com/sui-qi/data-crab.git
-cd data-crab
+git clone https://gitee.com/DataCrab/DataCrab.git
+cd DataCrab
 ```
 
 ## 2. 安装依赖
