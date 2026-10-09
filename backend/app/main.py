@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
     await _load_custom_extensions()
     await _backfill_related_skill_ids()
     await start_scheduler()
+    from app.services.working_copy import cleanup_expired as _cleanup_wc
+    _cleaned = _cleanup_wc()
+    if _cleaned:
+        logger.info(f"清理过期调试工作副本: {_cleaned} 个")
     yield
     await stop_scheduler()
     logger.info("应用关闭")

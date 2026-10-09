@@ -11,6 +11,7 @@ Phase 1：反例库（negative）+ 经验归纳（lessons）。正例（positive
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,17 @@ from loguru import logger
 
 EXPERIENCE_FILE = "experience.json"
 MAX_NEGATIVE = 30
+
+_DIR_LOCKS: Dict[str, threading.Lock] = {}
+_DIR_LOCKS_GUARD = threading.Lock()
+
+
+def _get_dir_lock(base: Path) -> threading.Lock:
+    key = str(base)
+    with _DIR_LOCKS_GUARD:
+        if key not in _DIR_LOCKS:
+            _DIR_LOCKS[key] = threading.Lock()
+        return _DIR_LOCKS[key]
 
 
 def operator_experience_dir(operator_id) -> Path:
@@ -103,21 +115,23 @@ def append_negative(
     context_summary: str = "",
 ) -> None:
     """追加一条反例（失败记录）。context_summary 记录推理过程中的关键信息。"""
-    data = read_experience(base)
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "source": source,  # run / debug / nl
-        "script_name": script_name,
-        "error_type": error_type,
-        "error_message": (error_message or "")[:2000],
-        "parameters": parameters or {},
-        "stdout_preview": (stdout or "")[:500],
-        "context_summary": (context_summary or "")[:800],
-    }
-    data["negative"].append(entry)
-    if len(data["negative"]) > MAX_NEGATIVE:
-        data["negative"] = data["negative"][-MAX_NEGATIVE:]
-    _write(base, data)
+    lock = _get_dir_lock(base)
+    with lock:
+        data = read_experience(base)
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "script_name": script_name,
+            "error_type": error_type,
+            "error_message": (error_message or "")[:2000],
+            "parameters": parameters or {},
+            "stdout_preview": (stdout or "")[:500],
+            "context_summary": (context_summary or "")[:800],
+        }
+        data["negative"].append(entry)
+        if len(data["negative"]) > MAX_NEGATIVE:
+            data["negative"] = data["negative"][-MAX_NEGATIVE:]
+        _write(base, data)
 
 
 def read_negative(base: Path) -> List[Dict[str, Any]]:
@@ -133,18 +147,20 @@ def append_positive(
     script_name: str = "",
 ) -> None:
     """追加一条正例（成功模式，尤其修错后成功的模式）。"""
-    data = read_experience(base)
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "source": source,
-        "script_name": script_name,
-        "parameters": parameters or {},
-        "result_summary": (result_summary or "")[:300],
-    }
-    data["positive"].append(entry)
-    if len(data["positive"]) > MAX_NEGATIVE:
-        data["positive"] = data["positive"][-MAX_NEGATIVE:]
-    _write(base, data)
+    lock = _get_dir_lock(base)
+    with lock:
+        data = read_experience(base)
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "script_name": script_name,
+            "parameters": parameters or {},
+            "result_summary": (result_summary or "")[:300],
+        }
+        data["positive"].append(entry)
+        if len(data["positive"]) > MAX_NEGATIVE:
+            data["positive"] = data["positive"][-MAX_NEGATIVE:]
+        _write(base, data)
 
 
 def read_positive(base: Path) -> List[Dict[str, Any]]:
@@ -167,9 +183,11 @@ def read_lessons(base: Path) -> str:
 
 
 def write_lessons(base: Path, lessons: str) -> None:
-    data = read_experience(base)
-    data["lessons"] = (lessons or "").strip()
-    _write(base, data)
+    lock = _get_dir_lock(base)
+    with lock:
+        data = read_experience(base)
+        data["lessons"] = (lessons or "").strip()
+        _write(base, data)
 
 
 # ==================== 调试历史（Agent 长期记忆）====================

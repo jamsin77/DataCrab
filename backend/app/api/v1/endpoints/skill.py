@@ -654,9 +654,41 @@ async def update_skill_script(
         raise HTTPException(status_code=404, detail=t('skill_not_found'))
     await assert_resource_access(db, current_user, "skill", skill, "manage")
 
-    folder = _resolve_skill_folder(skill)
-    folder.mkdir(parents=True, exist_ok=True)
-    write_skill_script(folder, script_name, request.content)
+    original_folder = _resolve_skill_folder(skill)
+    original_folder.mkdir(parents=True, exist_ok=True)
+    mine_code = request.content
+
+    if request.working_copy_id:
+        from app.services.working_copy import get_working_copy, read_base_snapshot
+        wc = get_working_copy(request.working_copy_id, original_folder)
+        if wc:
+            write_skill_script(wc, script_name, mine_code)
+        theirs_code = ""
+        script_path = original_folder / "scripts" / script_name
+        if script_path.exists():
+            theirs_code = script_path.read_text(encoding="utf-8")
+        else:
+            theirs_code = ""
+        base_snapshot = read_base_snapshot(wc) if wc else {}
+        base_code = base_snapshot.get(f"scripts{chr(92)}{script_name}") or base_snapshot.get(f"scripts/{script_name}", "")
+        if mine_code == theirs_code:
+            final_code = mine_code
+        elif mine_code == base_code:
+            final_code = theirs_code
+        elif theirs_code == base_code:
+            final_code = mine_code
+        else:
+            from app.services.code_merge import merge_scripts
+            final_code, conflicts = await merge_scripts(base_code, mine_code, theirs_code)
+            if conflicts:
+                logger.warning(f"[save] 3-way merge 有未解决冲突: {conflicts}（已用冲突标记写入）")
+        write_skill_script(original_folder, script_name, final_code)
+        if wc:
+            base_snapshot[f"scripts/{script_name}"] = final_code
+            from app.services.working_copy import _write_base_snapshot
+            _write_base_snapshot(wc, original_folder)
+    else:
+        write_skill_script(original_folder, script_name, mine_code)
     return {"name": script_name, "ok": True}
 
 
@@ -1037,7 +1069,16 @@ async def debug_skill_chat(
         raise HTTPException(status_code=404, detail=t('skill_not_found'))
     await assert_resource_access(db, current_user, "skill", skill, "use")
 
-    folder = _resolve_skill_folder(skill)
+    original_folder = _resolve_skill_folder(skill)
+    from app.services.working_copy import create_working_copy, get_working_copy
+    _wc = None
+    if request.working_copy_id:
+        _wc = get_working_copy(request.working_copy_id, original_folder)
+    if not _wc:
+        _wc = create_working_copy(original_folder)
+    folder = _wc
+    _wc_id = _wc.name.rsplit("_", 1)[-1] if "_" in _wc.name else ""
+
     skill_md = read_skill_md(folder) or ""
     script_content = read_skill_script(folder, request.script_name) or ""
 
@@ -1052,6 +1093,25 @@ async def debug_skill_chat(
     src_table = request.source_data_name or request.table_name
     tgt_ds_id = request.target_datasource_id
     tgt_table = request.target_data_name
+
+    # 聊天会话上下文回传：从 chat session 读取目标/源/技能信息（调试技能跳转回传）
+    _chat_ctx = {}
+    if request.chat_session_id:
+        try:
+            from app.models.chat import ChatSession as _CS
+            _cs_result = await db.execute(select(_CS).where(_CS.id == UUID(request.chat_session_id)))
+            _cs = _cs_result.scalar_one_or_none()
+            if _cs and _cs.context:
+                _chat_ctx = dict(_cs.context or {})
+        except Exception:
+            pass
+    # 目标/源信息：请求参数优先，缺失时从 chat session 补充
+    if not tgt_ds_id and _chat_ctx.get("target_datasource_id"):
+        tgt_ds_id = str(_chat_ctx.get("target_datasource_id"))
+        tgt_table = _chat_ctx.get("target_data_name") or tgt_table
+    if not src_ds_id and _chat_ctx.get("source_datasource_id"):
+        src_ds_id = str(_chat_ctx.get("source_datasource_id"))
+        src_table = _chat_ctx.get("source_data_name") or src_table
 
     src_ds_name = None
     tgt_ds_name = None
@@ -1147,8 +1207,70 @@ async def debug_skill_chat(
     _is_analysis = skill.skill_type == "analysis"
     _agent_name = "data_analyst" if _is_analysis else "data_processor"
 
+    # 包裹 SSE 流：跟踪执行结果，流结束后回传聊天会话（消费目标 + 记血缘）
+    async def _stream_with_callback():
+        # 首个事件：回传 working_copy_id，前端后续请求带上
+        yield f"data: {json_mod.dumps({'type': 'working_copy', 'working_copy_id': _wc_id}, ensure_ascii=False)}\n\n"
+        _run_ok = False
+        _last_result = None
+        async for _s in stream_agent_events_sse(runtime, message, context, user_id=current_user.id, agent_name=_agent_name):
+            # 跟踪执行状态（最后一次 run_result 为准，give_up 置 False）
+            if _s.startswith("data: "):
+                try:
+                    _e = json_mod.loads(_s[6:])
+                    if _e.get("type") == "run_result":
+                        _rr = _e.get("result") or {}
+                        _run_ok = bool(_rr.get("success"))
+                        _last_result = _rr if _run_ok else None
+                    elif _e.get("type") == "give_up":
+                        _run_ok = False
+                        _last_result = None
+                except Exception:
+                    pass
+            yield _s
+        # 流结束 → 回传：消费目标 + 记血缘（仅处理类技能 + 成功 + 有 chat_session_id 时）
+        if _run_ok and not _is_analysis and request.chat_session_id:
+            try:
+                from app.models.chat import ChatSession as _CS2
+                from app.core.database import async_session as _cb_sess
+                from app.models.datasource import TableLineage
+                async with _cb_sess() as _cb_s:
+                    _sess = await _cb_s.get(_CS2, UUID(request.chat_session_id))
+                    if _sess:
+                        _ctx = dict(_sess.context or {})
+                        # 血缘记录：源表 → 技能 → 目标表
+                        _targets = []
+                        _seen = set()
+                        for _tc in (_last_result.get("tool_calls") or []) if _last_result else []:
+                            if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
+                                _key = (_tc.get("datasource_id", ""), _tc["table_name"])
+                                if _key not in _seen:
+                                    _seen.add(_key)
+                                    _targets.append((_key[0], _key[1], _tc.get("rows_written")))
+                        for _tds, _tbl, _rows in _targets:
+                            _cb_s.add(TableLineage(
+                                target_datasource_id=UUID(str(_tds)) if _tds else None,
+                                target_table_name=_tbl,
+                                source_datasource_id=UUID(str(_ctx.get("source_datasource_id", ""))) if _ctx.get("source_datasource_id") else None,
+                                source_table_name=_ctx.get("source_data_name") or "",
+                                skill_id=skill.id,
+                                skill_name=skill.name,
+                                user_id=current_user.id,
+                                session_id=UUID(request.chat_session_id),
+                                rows_written=_rows,
+                            ))
+                        # 消费目标：设 None（dict.update 只覆盖不删除，None 才能写回 DB）
+                        for _k in ("target_datasource_id", "target_datasource_name", "target_data_name", "target_filename", "target_write_mode", "target_pending"):
+                            _ctx[_k] = None
+                        _ctx["awaiting_params"] = None
+                        _sess.context = _ctx
+                        await _cb_s.commit()
+                    logger.info(f"[debug-chat 回传] chat_session={request.chat_session_id} 技能={skill.name} 血缘={len(_targets)}条 目标已消费")
+            except Exception as e:
+                logger.warning(f"[debug-chat 回传] 失败（不影响调试）: {e}")
+
     return StreamingResponse(
-        stream_agent_events_sse(runtime, message, context, user_id=current_user.id, agent_name=_agent_name),
+        _stream_with_callback(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

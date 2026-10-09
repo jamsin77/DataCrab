@@ -1648,6 +1648,7 @@ async function saveScriptContent(name: string) {
   try {
     await api.put(`/skills/${detailSkill.value.id}/scripts/${name}`, {
       content: scriptContents[name],
+      working_copy_id: debugWorkingCopyId.value || undefined,
     })
     ElMessage.success(t('skill.scriptSaved', { name }))
     detailSkill.value.scripts = await api.get(`/skills/${detailSkill.value.id}/scripts`)
@@ -1683,7 +1684,9 @@ async function saveSkillMd() {
 // ==================== 调试技能 ====================
 const debugDrawer = ref(false)
 const debugSkill = ref<any>(null)
+const debugChatSessionId = ref('')  // 聊天跳转时传入的会话ID（执行成功后后端回传消费目标+记血缘）
 const debugScriptName = ref('main.py')
+const debugWorkingCopyId = ref('')  // 工作副本ID（后端返回，后续请求传入复用同一副本）
 
 // 息屏防护：页面不可见时阻止对话框关闭
 watch(debugDrawer, (newVal, oldVal) => {
@@ -1927,6 +1930,9 @@ function processDebugSSEEvent(
   switch (data.type) {
     case 'model':
       msg.model = data.content
+      break
+    case 'working_copy':
+      if (data.working_copy_id) debugWorkingCopyId.value = data.working_copy_id
       break
     case 'ping':
       break
@@ -2524,6 +2530,8 @@ async function openDebug(skill: any, scriptName?: string) {
 
   debugSkill.value = freshSkill
   debugScriptName.value = scriptName || (freshSkill.scripts?.[0]?.name || 'main.py')
+  debugChatSessionId.value = ''
+  debugWorkingCopyId.value = ''
   execResult.value = null
   execThinking.value = ''
   execPhase.value = 'idle'
@@ -2663,6 +2671,8 @@ async function handleRunSkillNL() {
             ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
             : undefined),
         table_name: cmdExampleTableName.value || undefined,
+        chat_session_id: debugChatSessionId.value || undefined,
+        working_copy_id: debugWorkingCopyId.value || undefined,
         context: {
           exec_tab: 'nl',
           nl_query: userQuery,
@@ -2790,6 +2800,8 @@ async function handleRunCmd() {
         script_name: debugScriptName.value,
         datasource_id: dsId,
         table_name: tableName || undefined,
+        chat_session_id: debugChatSessionId.value || undefined,
+        working_copy_id: debugWorkingCopyId.value || undefined,
         context: {
           exec_tab: 'cmd',
           cmd_str: cmd,
@@ -2932,6 +2944,8 @@ async function handleDebugSend() {
           ? datasources.value.find((d: any) => d.name === cmdExampleDsName.value)?.id
           : undefined,
         table_name: cmdExampleTableName.value || undefined,
+        chat_session_id: debugChatSessionId.value || undefined,
+        working_copy_id: debugWorkingCopyId.value || undefined,
         context: {
           exec_tab: execTab.value,
           nl_query: execNLQuery.value || '',
@@ -3014,6 +3028,7 @@ onMounted(async () => {
     const tgtDsName = route.query.target_ds_name as string || ''
     const tgtTblName = route.query.target_table_name as string || ''
     const chatSessionId = route.query.chat_session_id as string || ''
+    debugChatSessionId.value = chatSessionId
     router.replace({ query: {} })
     if (skill) {
       await openDebug(skill)

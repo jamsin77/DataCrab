@@ -94,6 +94,7 @@ class SkillDocUpdate(BaseModel):
 
 class SkillScriptUpdate(BaseModel):
     content: str = Field(..., description="脚本内容")
+    working_copy_id: Optional[str] = Field(None, description="工作副本ID（从调试会话保存时传入，触发 3-way merge）")
 
 
 class SkillModifyRequest(BaseModel):
@@ -120,6 +121,8 @@ class SkillDebugChatRequest(BaseModel):
     target_datasource_id: Optional[str] = Field(None, description="目标数据源ID")
     target_data_name: Optional[str] = Field(None, description="目标表名")
     context: Optional[dict] = Field(None, description="左侧执行面板上下文")
+    chat_session_id: Optional[str] = Field(None, description="聊天会话ID（调试技能跳转时传入，执行成功后回传——消费目标+记血缘）")
+    working_copy_id: Optional[str] = Field(None, description="工作副本ID（首次调试不传，后端返回后后续请求传入复用同一副本）")
 
 
 class SkillScriptInfo(BaseModel):

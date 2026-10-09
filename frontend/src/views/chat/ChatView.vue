@@ -185,6 +185,7 @@
                     <div class="suggestion-item-meta">
                       <span v-if="m.row_count != null" class="meta-row">{{ t('chat.rowCount') }}: {{ m.row_count?.toLocaleString() }}</span>
                       <span v-if="m.column_count != null" class="meta-col">{{ t('chat.columnCount') }}: {{ m.column_count }}</span>
+                      <span v-if="m.data_updated_at" class="meta-col">{{ m.data_updated_at.slice(0, 16) }}</span>
                     </div>
                     <div class="suggestion-actions">
                       <el-button v-if="m.can_use" type="primary" size="small" @click="selectTargetTable(msg, m, sugIdx)">{{ t('chat.selectThisData') }}</el-button>
@@ -199,6 +200,12 @@
                       </el-radio-group>
                       <el-button v-if="msg._writeMode" type="primary" size="small" style="margin-left: 8px;" @click="confirmTargetTable(msg, m)">{{ msg._writeMode === 'direct' ? t('chat.confirmUse') : t('common.confirm') }}</el-button>
                     </div>
+                  </div>
+                  <!-- 分页器（和 data_suggestion 一致） -->
+                  <div v-if="sug.matches.length > 3" class="suggestion-pager">
+                    <el-button size="small" :disabled="suggestionPageIdxFor(sugIdx) === 0" @click="suggestionPrevFor(sugIdx)">{{ t('chat.prevPage') }}</el-button>
+                    <span class="pager-info">{{ suggestionPageIdxFor(sugIdx) + 1 }}/{{ Math.ceil(sug.matches.length / 3) }}</span>
+                    <el-button size="small" :disabled="(suggestionPageIdxFor(sugIdx) + 1) * 3 >= sug.matches.length" @click="suggestionNextFor(sugIdx)">{{ t('chat.nextPage') }}</el-button>
                   </div>
                   <!-- 不选择：新建目标表 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
