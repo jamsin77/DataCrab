@@ -37,7 +37,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        timeout: 180000,
+        timeout: 0,
         configure: (proxy) => {
           proxy.on('error', (err) => {
             console.error('[vite proxy]', err.message)

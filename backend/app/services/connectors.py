@@ -45,6 +45,39 @@ def _validate_identifier(name: str) -> str:
     return name
 
 
+def _sort_df(df, sort):
+    """pandas 排序共享 helper：sort={"column": str, "order": "asc"/"desc"}。
+
+    列不存在或排序失败时原样返回（浏览默认时间倒序用，不硬性要求成功）。
+    """
+    if not sort or df is None or df.empty:
+        return df
+    col = sort.get("column", "")
+    if not col or col not in df.columns:
+        return df
+    try:
+        ascending = sort.get("order", "desc") == "asc"
+        return df.sort_values(by=col, ascending=ascending, na_position="last").reset_index(drop=True)
+    except Exception:
+        return df
+
+
+def _order_clause(sort, quote: str = '"', nulls_last: bool = True) -> str:
+    """SQL ORDER BY 子句生成（DB 连接器用）。列名做标识符校验防注入，非法时返回空串。
+
+    quote: 列名引号风格（PG/SQLite 用 " ，MySQL 用 `）
+    """
+    if not sort or not sort.get("column"):
+        return ""
+    try:
+        _validate_identifier(str(sort["column"]))
+    except Exception:
+        return ""
+    _dir = "ASC" if sort.get("order") == "asc" else "DESC"
+    _nulls = " NULLS LAST" if nulls_last else ""
+    return f" ORDER BY {quote}{sort['column']}{quote} {_dir}{_nulls}"
+
+
 class PostgreSQLConnector(BaseConnector):
     """PostgreSQL连接器"""
 
@@ -105,8 +138,9 @@ class PostgreSQLConnector(BaseConnector):
             await self.connect()
         _validate_identifier(table)
         offset = (page - 1) * page_size
+        _order = _order_clause(sort)
         rows = await self._connection.fetch(
-            f'SELECT * FROM "{table}" LIMIT $1 OFFSET $2', page_size, offset
+            f'SELECT * FROM "{table}"{_order} LIMIT $1 OFFSET $2', page_size, offset
         )
         return pd.DataFrame([dict(r) for r in rows])
 
@@ -301,8 +335,9 @@ class MySQLConnector(BaseConnector):
             raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         offset = (page - 1) * page_size
+        _order = _order_clause(sort, quote="`", nulls_last=False)  # MySQL 无 NULLS LAST；DESC 时 NULL 天然排尾
         async with self._connection.cursor() as cur:
-            await cur.execute(f"SELECT * FROM `{table}` LIMIT %s OFFSET %s", (page_size, offset))
+            await cur.execute(f"SELECT * FROM `{table}`{_order} LIMIT %s OFFSET %s", (page_size, offset))
             rows = await cur.fetchall()
             cols = [desc[0] for desc in cur.description]
         return pd.DataFrame(rows, columns=cols)
@@ -442,6 +477,7 @@ class CSVConnector(BaseConnector):
         import pandas as pd
         file_path = self.config.get("file_path", "")
         df = pd.read_csv(file_path)
+        df = _sort_df(df, sort)
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
@@ -670,6 +706,7 @@ class ExcelConnector(BaseConnector):
                     df = pd.read_excel(files[0], sheet_name=0)
                 else:
                     return pd.DataFrame()
+        df = _sort_df(df, sort)
         offset = (page - 1) * page_size
         return df.iloc[offset:offset + page_size]
 
@@ -919,6 +956,7 @@ class OBSConnector(BaseConnector):
             else:
                 df = pd.DataFrame({"content": [content.decode("utf-8", errors="replace")]})
 
+            df = _sort_df(df, sort)
             offset = (page - 1) * page_size
             return df.iloc[offset:offset + page_size]
         except Exception as e:
@@ -1110,6 +1148,7 @@ class HadoopHDFSConnector(BaseConnector):
             else:
                 return pd.DataFrame({"raw_content": [content.decode("utf-8", errors="replace")]})
 
+            df = _sort_df(df, sort)
             offset = (page - 1) * page_size
             return df.iloc[offset:offset + page_size]
         except Exception as e:
@@ -1251,7 +1290,7 @@ class ChromaConnector(BaseConnector):
                 f"把以下中文表名翻译成英文短横线命名（snake-kebab case），"
                 f"只输出翻译后的英文名，不要任何解释：\n{table}"
             )
-            en_name = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=200)
+            en_name = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, enable_thinking=False)
             logger.info(f"[ChromaDB] LLM翻译原始返回: {repr(en_name)}")
             en_name = en_name.strip().strip("`'\"").strip()
             # 确保合法
@@ -1514,8 +1553,9 @@ class SQLiteConnector(BaseConnector):
             raise ConnectionError("数据库连接失败，无法执行查询")
         _validate_identifier(table)
         offset = (page - 1) * page_size
+        _order = _order_clause(sort)
         async with self._connection.execute(
-            f'SELECT * FROM "{table}" LIMIT ? OFFSET ?', (page_size, offset)
+            f'SELECT * FROM "{table}"{_order} LIMIT ? OFFSET ?', (page_size, offset)
         ) as cursor:
             rows = await cursor.fetchall()
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -1708,6 +1748,7 @@ class GenericFileConnector(BaseConnector):
             try:
                 if ext == "csv":
                     df = pd.read_csv(target)
+                    df = _sort_df(df, sort)
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
                 elif ext in ("xlsx", "xls"):
@@ -1727,14 +1768,17 @@ class GenericFileConnector(BaseConnector):
                                     pass
                                 break
                     df = pd.read_excel(target, sheet_name=sheet_name)
+                    df = _sort_df(df, sort)
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
                 elif ext == "json":
                     df = pd.read_json(target)
+                    df = _sort_df(df, sort)
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
                 elif ext == "parquet":
                     df = pd.read_parquet(target)
+                    df = _sort_df(df, sort)
                     offset = (page - 1) * page_size
                     return df.iloc[offset:offset + page_size]
             except Exception:

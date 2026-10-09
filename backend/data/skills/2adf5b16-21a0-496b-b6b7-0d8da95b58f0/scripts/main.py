@@ -327,6 +327,7 @@ def main(
     # 如果没有显式传 image_path，从源表数据中查找图片文件路径
     if not image_path and source_ds_id and source_table:
         print(f"[1/3] 从源表 {source_ds_name}.{source_table} 查找图片文件路径...")
+        # 先尝试 query_table_data，超时则 fallback 到 get_table_schema
         try:
             res = call_tool("query_table_data", datasource_id=source_ds_id, table_name=source_table)
             if isinstance(res, dict) and res.get("data"):
@@ -337,7 +338,19 @@ def main(
                     if image_path:
                         print(f"[1/3] 从源表获取图片路径: {image_path}")
         except Exception as e:
-            print(f"[1/3] 查询源表失败: {e}")
+            print(f"[1/3] query_table_data 失败: {e}，尝试 get_table_schema fallback...")
+        # fallback: get_table_schema 的 columns sample 中也含 file_path
+        if not image_path:
+            try:
+                schema = call_tool("get_table_schema", datasource_id=source_ds_id, table_name=source_table)
+                if isinstance(schema, dict) and schema.get("columns"):
+                    for col in schema["columns"]:
+                        if col.get("name") == "file_path" and col.get("sample"):
+                            image_path = col["sample"][0]
+                            print(f"[1/3] 从 schema 获取图片路径: {image_path}")
+                            break
+            except Exception as e2:
+                print(f"[1/3] get_table_schema 也失败: {e2}")
 
     # 兼容直接传 file_path
     if not image_path:
@@ -364,16 +377,24 @@ def main(
 
     rest_cols = headers[1:] if len(headers) > 1 else []
 
-    # 第三步：其余列按第一列名单做行锚，分组逐组提取
-    print("[2/3] 按行锚分列组提取其余列...")
+    # 第三步：其余列按第一列名单做行锚，分组并发提取（避免串行超时）
+    print("[2/3] 按行锚分列组并发提取其余列...")
     group_size = 3
     col_groups = [rest_cols[i:i + group_size] for i in range(0, len(rest_cols), group_size)]
-    matrices = []
-    for gi, g in enumerate(col_groups):
+    matrices = [None] * len(col_groups)
+
+    def _extract_one_group(gi, g):
         print(f"[2/3] 提取列组 {gi + 1}/{len(col_groups)}: {g}")
-        mat = _extract_col_group(image_path, names, first_col_name, g, retries=2)
-        matrices.append(mat)
+        mat = _extract_col_group(image_path, names, first_col_name, g, retries=1)
         print(f"[2/3] 列组 {gi + 1} 提取完成: {len(mat)} 行")
+        return gi, mat
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_extract_one_group, gi, g): gi for gi, g in enumerate(col_groups)}
+        for fut in as_completed(futures):
+            gi, mat = fut.result()
+            matrices[gi] = mat
 
     # 第四步：清理单元格值 + 组装 DataFrame
     def _clean_cell(v):

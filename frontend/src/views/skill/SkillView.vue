@@ -772,7 +772,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="680px" @opened="scrollExperienceToBottom">
+    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="min(1100px, 92%)" top="5vh" @opened="scrollExperienceToBottom">
       <div v-loading="expLoading">
         <el-tabs @tab-change="scrollExperienceToBottom">
           <el-tab-pane :label="t('skill.inductReasons')">
@@ -780,7 +780,7 @@
             <el-empty v-else :description="t('skill.noInductedExperience')" :image-size="80" />
           </el-tab-pane>
           <el-tab-pane :label="t('skill.historyErrors') + ' (' + (experienceData.negative || []).length + ')'">
-            <div v-if="(experienceData.negative || []).length" ref="expNegativeRef" style="max-height:400px;overflow-y:auto">
+            <div v-if="(experienceData.negative || []).length" ref="expNegativeRef" style="max-height:65vh;overflow-y:auto">
               <div v-for="(err, i) in experienceData.negative" :key="i" class="exp-error-item">
                 <div class="exp-error-time">{{ formatTime(err.timestamp) }}</div>
                 <div class="exp-error-msg"><pre>{{ err.error_message }}</pre></div>
@@ -790,7 +790,7 @@
             <el-empty v-else :description="t('skill.noErrorRecords')" :image-size="80" />
           </el-tab-pane>
           <el-tab-pane :label="t('skill.successRecords') + ' (' + (experienceData.positive || []).length + ')'">
-            <div v-if="(experienceData.positive || []).length" ref="expPositiveRef" style="max-height:400px;overflow-y:auto">
+            <div v-if="(experienceData.positive || []).length" ref="expPositiveRef" style="max-height:65vh;overflow-y:auto">
               <div v-for="(pos, i) in experienceData.positive" :key="i" class="exp-positive-item">
                 <div class="exp-error-time">{{ formatTime(pos.timestamp) }}</div>
                 <div class="exp-error-msg">{{ pos.result_summary }}</div>

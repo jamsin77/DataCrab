@@ -193,9 +193,10 @@ export const chatApi = {
       }
     }
 
-    // 流结束但没收到 done/error 事件 → 后端异常断开
+    // 流结束但没收到 done/error 事件 → 后端异常断开（如 Vite proxy 超时、网络中断）
     if (!gotDone) {
-      throw new Error('服务端连接异常断开，未收到完整响应')
+      onEvent({ type: 'error', content: '服务连接中断（后端可能仍在处理，请稍后刷新查看结果）' })
+      return
     }
   },
 }

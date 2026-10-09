@@ -1110,16 +1110,112 @@ async def _read_file_handler(args, db, user_id, context):
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+def _scan_pdf_images(file_path: str) -> tuple:
+    """fitz 预扫描图片布局：每页 >10% 面积的非水印图片 xref + 水印 xref + 旋转页文本。
+
+    水印/背景图三类判定（都不能误伤扫描件——扫描页文本贫乏，整页图是内容不是装饰）：
+    1. 同一图片对象（xref）出现在 ≥80% 页面 → 对象复用水印（按对象身份判，不按尺寸——
+       扫描件每页整页图尺寸一致但 xref 各异）
+    2. 同像素尺寸的大图组覆盖 ≥80% 页面 且 这些页面文本丰富（中位数 ≥100 字符）→
+       逐页独立编码的同尺寸背景图
+    3. 近全页图（≥90% 面积）+ 页面文本丰富（≥200 字符）→ 整页背景/底纹
+       （如带防伪底纹的标准文档：600dpi 整页背景图 + 完整文本层 + 矢量表格线）
+
+    fitz 不可用返回 None（调用方退回 pdfplumber 面积检测，不识别水印，保持旧行为）。
+
+    返回 ({page_no: set(>10%面积非水印图片xref)}, 水印xref集合, {旋转页号: fitz文本})
+    """
+    try:
+        import fitz
+        doc = fitz.open(file_path)
+        try:
+            n = len(doc)
+            if not n:
+                return {}, set(), {}
+            xref_pages: dict = {}
+            xref_dims: dict = {}
+            page_big: dict = {}
+            page_text_len: dict = {}
+            dim_pages: dict = {}
+            rot_texts: dict = {}
+            for pno, page in enumerate(doc, 1):
+                if getattr(page, "rotation", 0):
+                    rot_texts[pno] = page.get_text() or ""
+                page_area = (page.rect.width or 0) * (page.rect.height or 0)
+                page_imgs: list = []  # (xref, 面积占比)
+                try:
+                    for im in page.get_images(full=True):
+                        xref = im[0]
+                        try:
+                            rects = page.get_image_rects(xref)
+                        except Exception:
+                            continue
+                        if not rects:
+                            continue  # 资源引用但未实际放置的不算
+                        xref_pages[xref] = xref_pages.get(xref, 0) + 1
+                        xref_dims[xref] = (im[2], im[3])
+                        if page_area <= 0:
+                            continue
+                        for r in rects:
+                            _ar = (r.width or 0) * (r.height or 0) / page_area
+                            if _ar > 0.1:
+                                page_imgs.append((xref, _ar))
+                                break
+                except Exception:
+                    pass
+                if page_imgs:
+                    _tlen = len(page.get_text() or "")
+                    page_text_len[pno] = _tlen
+                    for x, _ar in page_imgs:
+                        # 规则B：近全页图（≥90% 面积）+ 页面文本丰富（≥200 字符）→ 背景图/底纹
+                        # （内容在文本层，图是装饰；扫描件文本贫乏不受此规则影响）
+                        if _ar >= 0.9 and _tlen >= 200:
+                            continue
+                        page_big.setdefault(pno, set()).add(x)
+                        dim_pages.setdefault(xref_dims.get(x, (0, 0)), set()).add(pno)
+            # 水印判定 1：对象复用
+            wm = {x for x, c in xref_pages.items() if c >= max(2, n * 0.8)}
+            # 水印判定 2：同尺寸大图组覆盖 ≥80% 页面 + 文本丰富（排除扫描件）
+            for dim, pset in dim_pages.items():
+                if len(pset) >= max(2, n * 0.8):
+                    _lens = sorted(page_text_len.get(p, 0) for p in pset)
+                    if _lens[len(_lens) // 2] >= 100:
+                        wm |= {x for x, d in xref_dims.items() if d == dim}
+            if wm:
+                for pno in list(page_big.keys()):
+                    _keep = page_big[pno] - wm
+                    if _keep:
+                        page_big[pno] = _keep
+                    else:
+                        del page_big[pno]
+                logger.info(f"水印识别: {len(wm)} 个图片对象判定为水印（对象复用/同尺寸组），不计入大图信号")
+            return page_big, wm, rot_texts
+        finally:
+            doc.close()
+    except Exception as e:
+        logger.warning(f"fitz 图片预扫描失败（退回 pdfplumber 检测，不识别水印）: {e}")
+        return None
+
+
 def _extract_pdf_text(file_path: str) -> tuple:
     """在主进程解析 PDF 文本（不受沙箱 import 限制）。
 
-    旋转页自动转正后提取：pdfplumber page.rotation 检测旋转角度，
-    用 page.rotate(-rotation) 转正后再 extract_text()，避免旋转页文本乱序。
+    旋转页文本用 fitz 提取（pdfplumber 0.11 无 page.rotate() 且旋转页字符按视觉序排列会乱序）；
+    含水印识别（xref 复用 / 同尺寸组覆盖 ≥80% 页面且文本丰富）——水印不计入大图信号，
+    防止文本型 PDF 因背景水印被全页误判 OCR。
 
     返回 (text, total_pages, image_pages)：
-    - image_pages: List[int] 含嵌入图片的页号（1-based）——图片型表格所在页，供 OCR 判断用。
+    - image_pages: List[int] 疑似图片型表格所在页号（1-based），供 OCR 判断用。
     """
     errors = []
+    # 水印预扫描（fitz）：结果供 pdfplumber 主路径和 fitz 兜底路径共用
+    _scan = _scan_pdf_images(file_path)
+    if _scan is None:
+        _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = {}, set(), {}
+        _scan_ok = False
+    else:
+        _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = _scan
+        _scan_ok = True
     try:
         import pdfplumber
         with pdfplumber.open(file_path) as pdf:
@@ -1131,42 +1227,62 @@ def _extract_pdf_text(file_path: str) -> tuple:
                 rotation = getattr(page, "rotation", 0) or 0
                 if rotation != 0:
                     rotated.append(i)
-                    page = page.rotate(-rotation)
-                page_text = page.extract_text() or ""
+                    # pdfplumber 0.11 无 page.rotate()（旧代码调用即 AttributeError 静默崩到 fitz 兜底，
+                    # 曾致整份 PDF 全页 OCR）。旋转页文本改用 fitz 提取（阅读顺序正确）；
+                    # find_tables 的线条几何检测不受旋转影响。
+                page_text = _fitz_rot_texts.get(i) or (page.extract_text() or "")
                 pages.append(page_text)
-                # 图片型表格页判定（三层，防漏防误）：
-                # 1. 大图（>10% 页面）且文本贫乏（<100字符）→ 纯表格图片页（p7+ 续表页）
-                # 2. 大图且文本含"表X.Y"标题但标题后无表格数据行 → 正文页里嵌的图片表格（如 p6 表1）
-                # 3. 大图但文本丰富且无表标题 → 封面/目录/前言（p1-p5），跳过——
-                #    全纳入会多扫 6 页 × 40s 慢模型 = 4-8 分钟，曾导致写入前超时被杀
+                # 图片型表格页判定（水印修复版，四层）：
+                # 0. 水印/底纹（同一图片对象复用在 ≥80% 页面）不算大图——标准文档水印曾导致
+                #    文本型 PDF 全页满足"有大图"前提，配合弱启发式误判 5 页去 OCR
+                # 1. 大图（>10% 页面）且文本贫乏（<100字符）→ 纯表格图片页
+                # 2. 大图但 find_tables 能提取 ≥2 行结构化表格 → 表格在文本层，跳过 OCR（硬信号）
+                # 3. 大图且文本含"表X.Y"标题但无表格数据行特征 → 疑似图片表格（弱信号兜底）
+                # 4. 大图但文本丰富且无表标题 → 封面/目录/前言，跳过
                 try:
-                    page_area = (page.width or 0) * (page.height or 0)
-                    has_big_img = False
-                    for img in (getattr(page, "images", None) or []):
-                        img_w = float(img.get("width", 0) or 0)
-                        img_h = float(img.get("height", 0) or 0)
-                        src_w = float(img.get("srcsize", (0, 0))[0] or 0)
-                        src_h = float(img.get("srcsize", (0, 0))[1] or 0)
-                        if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
-                            has_big_img = True
-                            break
+                    if _scan_ok:
+                        # fitz 预扫描可用：非水印大图判定（xref 级，含水印组过滤）
+                        has_big_img = bool(_page_big_xrefs.get(i, set()) - _wm_xrefs)
+                    else:
+                        # fitz 不可用 → pdfplumber 面积检测（无法识别水印，保持旧行为）
+                        page_area = (page.width or 0) * (page.height or 0)
+                        has_big_img = False
+                        for img in (getattr(page, "images", None) or []):
+                            img_w = float(img.get("width", 0) or 0)
+                            img_h = float(img.get("height", 0) or 0)
+                            src_w = float(img.get("srcsize", (0, 0))[0] or 0)
+                            src_h = float(img.get("srcsize", (0, 0))[1] or 0)
+                            if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
+                                has_big_img = True
+                                break
                     if has_big_img:
                         if len(page_text) < 100:
                             image_pages.append(i)
                         else:
-                            # 文本含表标题（表X.Y）且无表格数据行特征（|/制表符/多空格对齐）→ 图片表格页
-                            _has_table_title = bool(re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", page_text))
-                            _table_data_lines = 0
-                            for _ln in page_text.split("\n"):
-                                _s = _ln.strip()
-                                if not _s:
-                                    continue
-                                if "|" in _s or "\t" in _s:
-                                    _table_data_lines += 1
-                                elif len(_s) < 80 and "  " in _ln:
-                                    _table_data_lines += 1
-                            if _has_table_title and _table_data_lines < 2:
-                                image_pages.append(i)
+                            # 硬信号：find_tables 提取到 ≥2 行结构化表格 → 表格是文本型，无需 OCR
+                            _struct_table = False
+                            try:
+                                for _t in page.find_tables():
+                                    _ext = _t.extract() or []
+                                    if len(_ext) >= 2:
+                                        _struct_table = True
+                                        break
+                            except Exception:
+                                pass
+                            if not _struct_table:
+                                # 弱信号兜底：文本含表标题（表X.Y）且无表格数据行特征（|/制表符/多空格对齐）
+                                _has_table_title = bool(re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", page_text))
+                                _table_data_lines = 0
+                                for _ln in page_text.split("\n"):
+                                    _s = _ln.strip()
+                                    if not _s:
+                                        continue
+                                    if "|" in _s or "\t" in _s:
+                                        _table_data_lines += 1
+                                    elif len(_s) < 80 and "  " in _ln:
+                                        _table_data_lines += 1
+                                if _has_table_title and _table_data_lines < 2:
+                                    image_pages.append(i)
                 except Exception:
                     pass
                 if i % 10 == 0:
@@ -1179,6 +1295,7 @@ def _extract_pdf_text(file_path: str) -> tuple:
         errors.append("pdfplumber 未安装")
     except Exception as e:
         errors.append(f"pdfplumber: {e}")
+        logger.warning(f"pdfplumber 主路径解析失败，回退 fitz: {e}")
     try:
         import fitz
         doc = fitz.open(file_path)
@@ -1188,9 +1305,9 @@ def _extract_pdf_text(file_path: str) -> tuple:
             image_pages = []
             for i, page in enumerate(doc, 1):
                 pages.append(page.get_text() or "")
-                # fitz: page.get_images() 检测嵌入图片
+                # fitz: 有非水印大图（>10% 面积）→ 图片页（与主路径判定一致；扫描结果已含水印过滤）
                 try:
-                    if page.get_images():
+                    if _page_big_xrefs.get(i, set()) - _wm_xrefs:
                         image_pages.append(i)
                 except Exception:
                     pass
@@ -1222,6 +1339,14 @@ def _extract_pdf_tables(file_path: str) -> tuple:
     """
     try:
         import pdfplumber
+        # 水印预扫描：同一图片对象/同尺寸组出现在 ≥80% 页面 → 水印，不算图片页信号
+        _scan = _scan_pdf_images(file_path)
+        if _scan is None:
+            _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = {}, set(), {}
+            _scan_ok = False
+        else:
+            _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = _scan
+            _scan_ok = True
         with pdfplumber.open(file_path) as pdf:
             total_pages = len(pdf.pages)
             page_texts = []
@@ -1230,21 +1355,36 @@ def _extract_pdf_tables(file_path: str) -> tuple:
             for i, page in enumerate(pdf.pages, 1):
                 rotation = getattr(page, "rotation", 0) or 0
                 if rotation != 0:
-                    page = page.rotate(-rotation)
-                page_text = page.extract_text() or ""
+                    # pdfplumber 0.11 无 page.rotate()；旋转页文本用 fitz（阅读顺序正确）
+                    page_text = _fitz_rot_texts.get(i) or (page.extract_text() or "")
+                else:
+                    page_text = page.extract_text() or ""
                 page_texts.append(page_text)
-                # 检测该页是否有嵌入图片（图片型表格所在页）
+                # 图片页判定：有非水印大图（>10% 面积）→ 表格可能不在文本层，标记供 OCR 判断
                 try:
-                    if getattr(page, "images", None):
-                        image_pages.append(i)
+                    if _scan_ok:
+                        has_big_img = bool(_page_big_xrefs.get(i, set()) - _wm_xrefs)
+                    else:
+                        page_area = (page.width or 0) * (page.height or 0)
+                        has_big_img = False
+                        for img in (getattr(page, "images", None) or []):
+                            img_w = float(img.get("width", 0) or 0)
+                            img_h = float(img.get("height", 0) or 0)
+                            src_w = float(img.get("srcsize", (0, 0))[0] or 0)
+                            src_h = float(img.get("srcsize", (0, 0))[1] or 0)
+                            if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
+                                has_big_img = True
+                                break
                 except Exception:
-                    pass
+                    has_big_img = False
                 page_height = page.height or 0
                 found = page.find_tables()
+                _has_real_table = False
                 for tbl_obj in found:
                     raw = tbl_obj.extract()
                     if not raw or len(raw) < 2:
                         continue
+                    _has_real_table = True
                     rows = []
                     for row in raw:
                         rows.append(["" if cell is None else str(cell).strip() for cell in row])
@@ -1261,6 +1401,9 @@ def _extract_pdf_tables(file_path: str) -> tuple:
                         "at_bottom": at_bottom,
                         "ncols": len(headers),
                     })
+                # 有非水印大图但该页没提取到结构化表格 → 表格可能是图片，标记供 OCR 判断
+                if has_big_img and not _has_real_table:
+                    image_pages.append(i)
                 if i % 10 == 0:
                     logger.info(f"PDF 表格提取进度: {i}/{total_pages} 页, 累计 {len(all_tables)} 张表")
             full_text = "\n".join(page_texts)
@@ -1767,6 +1910,8 @@ async def _run_script_handler(args, db, user_id, context):
     parameters = args.get("parameters", {})
     for key in ["datasource_id", "source_datasource_id", "target_datasource_id"]:
         parameters.pop(key, None)
+    # 记录本次实际执行参数（供经验正反例记录读取——工具调用原始字符串解析可能失败）
+    context["debug_last_run_params"] = dict(parameters)
     try:
         if context.get("debug_type") == "operator":
             from app.services.skill_runner import run_skill_script_by_content_async

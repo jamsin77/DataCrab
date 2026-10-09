@@ -13,6 +13,13 @@ function pushExecMsg(msg: any, text: string) {
   messages.value = [...messages.value]
 }
 
+// selectedData 轮询对比字段：值全等时不赋新对象（引用变化会触发 watch → 改写消息 → 闪烁）
+const _SEL_FIELDS = [
+  'datasource_id', 'datasource_name', 'table_name', 'filename',
+  'target_datasource_id', 'target_datasource_name', 'target_table_name', 'target_write_mode',
+  'skill_id', 'skill_name', 'skill_type',
+] as const
+
 export const useChatStore = defineStore('chat', () => {
   const sessions = ref<ChatSession[]>([])
   const currentSessionId = ref<string | null>(null)
@@ -155,18 +162,35 @@ export const useChatStore = defineStore('chat', () => {
       for (const m of messages.value) {
         if ((m as any)._execCollapsed) _collapsedIds[m.id] = true
       }
-      messages.value = await chatApi.listMessages(currentSessionId.value)
-      _restoreMetadata(messages.value)
-      for (const m of messages.value) {
-        if (_collapsedIds[m.id]) (m as any)._execCollapsed = true
+      const _freshMsgs = await chatApi.listMessages(currentSessionId.value)
+      // 无变化时跳过替换：整体换新数组会全量重渲染（markdown 重解析/卡片重挂载），是匹配提示闪烁的根源。
+      // 带 suggestions 的消息 content 由前端 updateParamsHint 实时管理，跳过 content 对比（DB 里是静态初版）。
+      const _unchanged = _freshMsgs.length === messages.value.length && _freshMsgs.every((fm: any, i: number) => {
+        const om = messages.value[i] as any
+        if (fm.id !== om.id || fm.role !== om.role) return false
+        if (om.suggestions || om.suggestion) return true
+        return (fm.content ?? '') === (om.content ?? '') && (fm.reasoning ?? '') === (om.reasoning ?? '')
+      })
+      if (!_unchanged) {
+        messages.value = _freshMsgs
+        _restoreMetadata(messages.value)
+        for (const m of messages.value) {
+          if (_collapsedIds[m.id]) (m as any)._execCollapsed = true
+        }
       }
       // 同步 session context 到 sessions 数组 + 恢复 selectedData
       const _fresh = await chatApi.getSession(currentSessionId.value)
       const idx = sessions.value.findIndex((s) => s.id === currentSessionId.value)
-      if (idx >= 0 && _fresh) sessions.value[idx] = _fresh
+      if (idx >= 0 && _fresh) {
+        const _old = sessions.value[idx] as any
+        if (!_old || _old.title !== _fresh.title || _old.updated_at !== _fresh.updated_at) {
+          sessions.value[idx] = _fresh
+        }
+      }
       const _ctx = _fresh?.context
       if (_ctx && _ctx.source_datasource_id && _ctx.source_datasource_name) {
-        selectedData.value = {
+        // 仅字段真正变化时才赋新对象：引用变化会触发 selectedData deep watch → updateParamsHint 改写 content → 轮询回滚 → 闪烁循环
+        const _cand = {
           datasource_id: _ctx.source_datasource_id,
           datasource_name: _ctx.source_datasource_name,
           table_name: _ctx.source_data_name || _ctx.source_table_name || '',
@@ -179,6 +203,9 @@ export const useChatStore = defineStore('chat', () => {
           skill_name: _ctx.last_skill_name || undefined,
           skill_type: _ctx.last_skill_type || undefined,
         }
+        const _cur = selectedData.value as any
+        const _selSame = _cur && _SEL_FIELDS.every((k) => _cur[k] === (_cand as any)[k])
+        if (!_selSame) selectedData.value = _cand
       } else if (selectedData.value && !selectedData.value.is_image) {
         // 只在没有 DB context 且当前 selectedData 非图片时才清空
         // 图片/文件 selectedData 可能还没写 DB，不清空
@@ -408,8 +435,7 @@ export const useChatStore = defineStore('chat', () => {
           } else if (event.type === 'agent_switch') {
             const _name = (event as any).display_name || event.agent || ''
             const _reason = (event as any).reason_display || event.reason || ''
-            const _m = _reason ? `${_name}：${_reason}` : _name
-            pushExecMsg(msg, _m)
+            pushExecMsg(msg, _reason || _name)
             msg.agentName = _name
           } else if (event.type === 'tool_action') {
             const _actions = (event as any).actions || []
@@ -444,6 +470,15 @@ export const useChatStore = defineStore('chat', () => {
       if (!directExecute) {
         await _syncFromDB()
       } else {
+        // directExecute 执行完成后清除 selectedData 的目标字段——
+        // 后端已消费目标（一次性参数），前端残留会导致下条消息回注旧目标（僵尸目标）
+        if (selectedData.value) {
+          const _sd: any = selectedData.value
+          _sd.target_datasource_id = undefined
+          _sd.target_datasource_name = undefined
+          _sd.target_table_name = undefined
+          _sd.target_write_mode = undefined
+        }
         // directExecute 跳过从 DB 刷新（避免重复用户消息），但仍持久化 meta（executingMsgs/suggestions 等）
         const msg = messages.value[aiIndex]
         if (msg) {

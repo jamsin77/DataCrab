@@ -317,12 +317,12 @@ async def distill_cross_patterns(db, user_id) -> str:
 """
         distilled = await llm_manager.chat_with_messages(
             messages=[
-                {"role": "system", "content": "你是数据处理经验整合助手。从多条经验中提炼通用模式。"},
+                {"role": "system", "content": "你是数据处理经验总结器，负责从多个算子的经验中提取跨算子通用模式。"},
                 {"role": "user", "content": prompt},
             ],
             model=llm_manager._flash,
             temperature=0.2,
-            max_tokens=600,
+            enable_thinking=False,
         )
         if distilled:
             global_lessons_path().parent.mkdir(parents=True, exist_ok=True)

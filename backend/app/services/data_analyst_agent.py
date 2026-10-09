@@ -512,9 +512,6 @@ class DataAnalystAgent(BaseAgent):
         last_params = context.get("debug_last_success_params")
         if last_params:
             parts.append(f"参考：上次成功执行的参数为 {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}")
-        debug_params = context.get("debug_parameters")
-        if debug_params:
-            parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
         _src_ds = context.get("debug_source_datasource_name", "")
         _src_tbl = context.get("debug_source_data_name", "")
         if _src_ds:

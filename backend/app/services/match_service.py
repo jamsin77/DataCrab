@@ -412,13 +412,14 @@ async def search_tables(query: str, top_k: int = 3) -> List[Tuple[str, float]]:
 # ---------- LLM 匹配（技能/流程/数据表，直接全列表给 LLM 判断）----------
 
 async def llm_match_tables(
-    user_message: str, db,
+    user_message: str, db, exclude_datasource_ids: set | None = None,
 ) -> Tuple[List[Tuple[str, float, dict]], List[str], List[Dict]]:
     """自适应 LLM 匹配数据表。返回 (result, ds_names, events)。
 
     先按数据源名过滤（字符串匹配），只把相关数据源的表给 LLM。
     - ds_names 非空 = 用户提到了数据源（即使没匹配到表）
     - ds_names 空 = 用户没提到数据源
+    - exclude_datasource_ids = 排除的数据源 id（如目标匹配排除虚拟数据源）
     """
     from app.models.datasource import DataSource, TableMetadata
     from sqlalchemy import select
@@ -426,6 +427,9 @@ async def llm_match_tables(
     _mlog(f"\n{'#'*60}")
     _mlog(f"# llm_match_tables 入口: user_message={user_message}")
     ds_rows = (await db.execute(select(DataSource))).scalars().all()
+    if exclude_datasource_ids:
+        ds_rows = [ds for ds in ds_rows if str(ds.id) not in exclude_datasource_ids]
+        _mlog(f"# 排除数据源: {exclude_datasource_ids}")
     ds_map = {str(ds.id): ds.name for ds in ds_rows}
 
     # 字符串匹配数据源名

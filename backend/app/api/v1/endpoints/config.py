@@ -350,9 +350,13 @@ async def test_llm_connection(
                 response = await client.chat.completions.create(
                     model=mdl,
                     messages=[{"role": "user", "content": "Hello, this is a test. Reply with 'OK'."}],
-                    max_tokens=10,
+                    max_tokens=2000,
                 )
                 text = response.choices[0].message.content or ""
+                # 思考型模型可能把 token 花在推理上导致 content 为空——finish=length 仍证明连通性
+                if not text:
+                    _finish = response.choices[0].finish_reason or ""
+                    text = "OK" if _finish else ""
                 return {"label": label, "provider": prov, "model": mdl, "success": True, "message": t("connection_success_text", text=text[:20])}
             except Exception as e:
                 msg = str(e)

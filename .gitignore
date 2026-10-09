@@ -136,3 +136,14 @@ query_skill.py
 
 # Vite timestamp temp files
 vite.config.ts.timestamp-*
+# Installer build artifacts
+installer/build/
+installer/dist/
+installer/cache/
+
+# Debug/test leftovers
+.playwright-mcp/
+backend/*.txt
+backend/query_tables.py
+backend/scan.py
+metadata-detail-dialog.png

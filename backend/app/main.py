@@ -25,7 +25,7 @@ from app.core.version import get_version
 # 启动时动态生成版本号（格式: YYYY.MM.DD.提交次数）
 settings.APP_VERSION = get_version()
 
-logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", "") or "[run_debug]" in r.get("message", "") or "[run]" in r.get("message", "") or "[llm_generate]" in r.get("message", "") or "[ChromaDB]" in r.get("message", ""), rotation="10 MB", retention=5)
+logger.add("debug_sse.log", filter=lambda r: "[SSE]" in r.get("message", "") or "[SSE-DEBUG]" in r.get("message", "") or "[Inspector-DEBUG]" in r.get("message", "") or "[handoff检查]" in r.get("message", "") or "[match-detail]" in r.get("message", "") or "[match]" in r.get("message", "") or "[classify]" in r.get("message", "") or "[direct_execute]" in r.get("message", "") or "[route]" in r.get("message", "") or "[run_debug]" in r.get("message", "") or "[run]" in r.get("message", "") or "[llm_generate]" in r.get("message", "") or "[ChromaDB]" in r.get("message", "") or "[infer-instruction]" in r.get("message", ""), rotation="10 MB", retention=5)
 logger.add("debug_modify.log", filter=lambda r: "[modify_skill]" in r.get("message", ""), rotation="5 MB")
 
 
@@ -599,6 +599,45 @@ async def health_check():
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
     }
+
+
+# --- 前端静态托管（Windows 安装包 / 生产部署）---
+# 前端构建产物（frontend/dist）由 FastAPI 直接托管，单端口同时服务 API 和页面，
+# 运行时不需要 Node.js。开发模式下 dist 不存在，前端仍走 Vite dev server。
+from pathlib import Path as _Path
+from starlette.staticfiles import StaticFiles as _StaticFiles
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+
+
+class _SPAStaticFiles(_StaticFiles):
+    """SPA 静态文件：vue-router history 模式下未命中的路径回退到 index.html；API 路径仍返回 404"""
+
+    async def get_response(self, path: str, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except _StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            response = None
+        if response is not None and response.status_code != 404:
+            return response
+        # API 前缀下的未知路径不回退（保持 404 JSON 语义）
+        if scope.get("path", "").startswith(settings.API_V1_PREFIX):
+            raise _StarletteHTTPException(status_code=404, detail="Not Found")
+        return await super().get_response("index.html", scope)
+
+
+if settings.FRONTEND_DIST:
+    _frontend_dist = _Path(settings.FRONTEND_DIST)
+else:
+    # main.py 位于 <根>/backend/app/main.py，前端产物默认在 <根>/frontend/dist
+    _frontend_dist = _Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+if _frontend_dist.is_dir():
+    app.mount("/", _SPAStaticFiles(directory=str(_frontend_dist)), name="frontend")
+    logger.info(f"前端静态文件已挂载: {_frontend_dist}")
+else:
+    logger.info(f"未找到前端构建产物（{_frontend_dist}），跳过静态托管（开发模式）")
 
 
 if __name__ == "__main__":

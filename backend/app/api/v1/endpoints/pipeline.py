@@ -150,15 +150,22 @@ async def delete_pipeline(
 
 
 def _read_last_success_params(skill_path_str: str):
-    """从 experience.json positive 读最近成功执行参数"""
+    """从 experience.json positive 读最近成功执行参数
+
+    返回 None 表示从未成功执行过（转流程应拒绝）；
+    有成功记录但没记参数时返回 {}（允许转流程，不固化参数）。
+    """
     try:
         from app.services import experience as _exp
         from pathlib import Path
         _positive = _exp.read_positive(Path(skill_path_str))
-        for entry in reversed(_positive or []):
+        if not _positive:
+            return None
+        for entry in reversed(_positive):
             _p = entry.get("parameters") or {}
             if _p:
                 return _p
+        return {}
     except Exception:
         pass
     return None
@@ -179,10 +186,10 @@ async def create_pipeline_from_skill(
 
     logger.info(f"从 Skill 生成 Pipeline: {skill.name} ({skill_id})")
 
-    from app.services.skill_parser import read_skill_md
-    from pathlib import Path
+    from app.services.skill_parser import read_skill_md, resolve_skill_folder
     import re as _re
-    skill_md = read_skill_md(Path(skill.skill_path)) or ""
+    skill_folder = resolve_skill_folder(skill.skill_path)
+    skill_md = read_skill_md(skill_folder) or ""
     func_desc = ""
     func_match = _re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, _re.DOTALL)
     if func_match:
@@ -190,21 +197,9 @@ async def create_pipeline_from_skill(
     if not func_desc:
         func_desc = skill.description or ""
 
-    fixed_params = _read_last_success_params(skill.skill_path)
-    if not fixed_params:
+    fixed_params = _read_last_success_params(str(skill_folder))
+    if fixed_params is None:
         raise HTTPException(status_code=400, detail=t('skill_no_success_record'))
-
-    try:
-        built = await build_pipeline_from_skill(
-            skill_path_str=skill.skill_path,
-            skill_id=str(skill_id),
-            skill_name=skill.name,
-            skill_display_name=skill.display_name or skill.name,
-            fixed_parameters=fixed_params,
-        )
-    except Exception as e:
-        logger.error(f"Pipeline 生成失败: {e}")
-        raise HTTPException(status_code=500, detail=t('pipeline_generate_failed', e=str(e)))
 
     display_name = (req.display_name if req else None) or f"{skill.display_name or skill.name}{t('pipeline_suffix')}"
 
@@ -233,7 +228,7 @@ async def create_pipeline_from_skill(
 
     try:
         built = await build_pipeline_from_skill(
-            skill_path_str=skill.skill_path,
+            skill_path_str=str(skill_folder),
             skill_id=str(skill_id),
             skill_name=skill.name,
             skill_display_name=skill.display_name or skill.name,
@@ -308,20 +303,21 @@ async def create_pipeline_from_skill_stream(
         raise HTTPException(status_code=404, detail=t('skill_not_found'))
     await assert_resource_access(db, current_user, "skill", skill, "view")
 
-    from app.services.skill_parser import read_skill_md
-    from pathlib import Path
+    from app.services.skill_parser import read_skill_md, resolve_skill_folder
+
+    skill_folder = resolve_skill_folder(skill.skill_path)
 
     async def event_stream():
         import json as json_mod
         try:
             yield f"data: {json_mod.dumps({'type': 'status', 'message': t('reading_debug_script')}, ensure_ascii=False)}\n\n"
 
-            fixed_params = _read_last_success_params(skill.skill_path)
-            if not fixed_params:
+            fixed_params = _read_last_success_params(str(skill_folder))
+            if fixed_params is None:
                 yield f"data: {json_mod.dumps({'type': 'error', 'message': t('skill_no_success_record')}, ensure_ascii=False)}\n\n"
                 return
 
-            skill_path = Path(skill.skill_path)
+            skill_path = skill_folder
             skill_md = read_skill_md(skill_path) or ""
             func_desc = ""
             func_match = re.search(r'##\s*📋?\s*功能说明\s*\n(.*?)(?=\n##\s|\Z)', skill_md, re.DOTALL)
@@ -355,7 +351,7 @@ async def create_pipeline_from_skill_stream(
                     messages=[{"role": "user", "content": prompt}],
                     model=llm_manager._default,
                     temperature=0.3,
-                    max_tokens=300,
+                    enable_thinking=False,
                 )
 
                 text = response.strip()
@@ -400,7 +396,7 @@ async def create_pipeline_from_skill_stream(
             yield f"data: {json_mod.dumps({'type': 'status', 'message': t('converting_creating_pipeline')}, ensure_ascii=False)}\n\n"
 
             built = await build_pipeline_from_skill(
-                skill_path_str=skill.skill_path,
+                skill_path_str=str(skill_folder),
                 skill_id=str(skill_id),
                 skill_name=skill.name,
                 skill_display_name=skill.display_name or skill.name,

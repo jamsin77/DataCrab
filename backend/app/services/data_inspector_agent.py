@@ -280,7 +280,7 @@ class DataInspectorAgent(BaseAgent):
             result_summary = message.payload.get("result_summary", "")
 
             # 预执行所有检查（遍历所有写入表）
-            yield {"type": "inspecting", "message": f"正在检查 {len(_output_tables)} 张表的数据质量..."}
+            yield {"type": "inspecting", "message": f"正在检查 {len(_output_tables)} 张表..."}
             from app.services.inspector_tools import inspector_tools
             _all_reports = []
             _all_check_results = {}
@@ -343,7 +343,7 @@ class DataInspectorAgent(BaseAgent):
 
         elif message.reason == HandoffReason.FIX_COMPLETED:
             # 复查：重新预执行所有写入表（清缓存，加载最新数据）
-            yield {"type": "inspecting", "message": f"正在复查 {len(_output_tables)} 张表的数据质量..."}
+            yield {"type": "inspecting", "message": f"正在复查 {len(_output_tables)} 张表..."}
             from app.services.inspector_tools import inspector_tools
             _all_reports = []
             _all_check_results = {}

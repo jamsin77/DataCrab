@@ -846,7 +846,7 @@ async def modify_operator_stream(
                     {"role": "system", "content": "你是一个算子描述生成器。根据算子脚本和修改指令，生成简洁的算子描述。只输出描述文本，不要任何解释。"},
                     {"role": "user", "content": f"原始描述：{operator.description}\n修改指令：{request.instruction}\n修改后的脚本：\n{script_content}\n\n请生成更新后的算子描述（一句话概括功能）和显示名称。格式：\n描述：...\n名称：..."},
                 ]
-                desc_result = await llm_manager.chat_with_messages(desc_messages, model=llm_manager._flash, temperature=0.3, max_tokens=200)
+                desc_result = await llm_manager.chat_with_messages(desc_messages, model=llm_manager._flash, temperature=0.3, enable_thinking=False)
                 if desc_result:
                     for line in desc_result.strip().split("\n"):
                         line = line.strip()

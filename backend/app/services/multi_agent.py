@@ -21,9 +21,9 @@ class HandoffReason(str, Enum):
 
 # HandoffReason 中文友好显示（用于前端过程日志）
 _HANDOFF_REASON_DISPLAY = {
-    HandoffReason.INSPECT_RESULT.value: "执行完成，自动检查",
-    HandoffReason.FIX_REQUIRED.value: "检查发现问题，需要修复",
-    HandoffReason.FIX_COMPLETED.value: "修复完成，再次检查",
+    HandoffReason.INSPECT_RESULT.value: "✓ 数据处理完成，开始自动检查数据质量",
+    HandoffReason.FIX_REQUIRED.value: "⚠️ 数据检查发现问题，开始自动修复",
+    HandoffReason.FIX_COMPLETED.value: "✓ 修复完成，开始复查数据质量",
     HandoffReason.ESCALATE.value: "升级处理",
     HandoffReason.DELEGATE.value: "委派处理",
 }

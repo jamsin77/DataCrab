@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # 公网部署时在 .env 设置 CORS_ORIGINS=["*"] 或指定来源，�?["http://1.2.3.4:5173","http://example.com"]
     CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
 
+    # 前端构建产物目录（Windows 安装包由 FastAPI 托管）
+    # 为空时自动探测 <仓库根>/frontend/dist（backend 的上级目录下）
+    FRONTEND_DIST: str = ""
+
     # 内部 API 地址（技能沙箱子进程调主进程用）
     # 直接部署默认 http://localhost:8000；Docker 部署设为 http://backend:8000
     DATACRAB_API_BASE: str = "http://localhost:8000"

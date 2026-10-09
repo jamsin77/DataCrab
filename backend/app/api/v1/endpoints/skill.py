@@ -849,7 +849,8 @@ async def infer_skill_instruction(
             },
         ]
 
-        instruction = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, max_tokens=500)
+        # enable_thinking=False：机械生成任务不需要推理；思考型 flash 模型会把小 max_tokens 烧在推理链上导致 content 为空
+        instruction = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, enable_thinking=False)
         instruction = instruction.strip()
         if instruction.startswith("```"):
             lines = instruction.split("\n")
@@ -956,7 +957,8 @@ async def _run_skill_nl(
     ]
 
     try:
-        nl_result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, max_tokens=500)
+        # enable_thinking=False：参数 JSON 推断是机械任务；思考型模型会烧光小 max_tokens 导致 content 为空
+        nl_result = await llm_manager.chat_with_messages(messages, model=llm_manager._flash, temperature=0.2, enable_thinking=False)
     except Exception as e:
         logger.error(f"自然语言参数推断失败: {e}")
         return {"success": False, "error": t('param_infer_failed', e=str(e))}

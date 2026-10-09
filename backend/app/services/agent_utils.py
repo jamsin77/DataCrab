@@ -55,7 +55,8 @@ MAX_TOOL_RESULT_CHARS = 8000
 def truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
     """截断过大的工具返回结果，防止撑爆上下文。
 
-    如果 JSON 结果超过 max_chars，保留结构信息 + 前 5 行数据 + 截断提示。
+    JSON 结果按行边界截断：保留结构信息 + 尽可能多的完整行，
+    不在单元格内容中间截断（避免 LLM 看到残缺数据误报截断）。
     """
     if not result_str or len(result_str) <= max_chars:
         return result_str
@@ -63,29 +64,52 @@ def truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS
     try:
         data = json.loads(result_str)
     except (json.JSONDecodeError, TypeError):
-        # 非 JSON 直接截断
         return result_str[:max_chars] + "\n\n... [结果过大已截断]"
 
-    if isinstance(data, dict):
-        truncated = dict(data)
-        rows = truncated.get("rows")
-        if isinstance(rows, list) and len(rows) > 5:
-            truncated["rows_preview"] = rows[:5]
-            truncated["rows"] = f"[已截断：共 {len(rows)} 行，仅显示前 5 行。如需更多数据请缩小查询范围或使用分页]"
-            truncated["truncated"] = True
-        result = json.dumps(truncated, ensure_ascii=False, default=str)
-        if len(result) > max_chars:
-            # 还是太大，激进截断
-            if isinstance(data.get("rows"), list):
-                data["rows"] = f"[已截断：共 {len(data['rows'])} 行]"
-                data["columns"] = data.get("columns", [])
-                data["truncated"] = True
-                result = json.dumps(data, ensure_ascii=False, default=str)
-            if len(result) > max_chars:
-                result = result[:max_chars] + "\n\n... [结果过大已截断]"
-        return result
+    if not isinstance(data, dict):
+        return result_str[:max_chars] + "\n\n... [结果过大已截断]"
 
-    return result_str[:max_chars] + "\n\n... [结果过大已截断]"
+    # 找到数据行列表的 key（query_table_data 用 "data"，其他工具用 "rows"）
+    rows_key = None
+    for key in ("rows", "data"):
+        if isinstance(data.get(key), list):
+            rows_key = key
+            break
+
+    if not rows_key:
+        result = json.dumps(data, ensure_ascii=False, default=str)
+        if len(result) <= max_chars:
+            return result
+        return result[:max_chars] + "\n\n... [结果过大已截断]"
+
+    all_rows = data[rows_key]
+    total_rows = len(all_rows)
+
+    # 逐步减少行数，直到结果 ≤ max_chars（保留完整行，不在单元格中间截断）
+    for keep in (min(total_rows, 20), min(total_rows, 10), min(total_rows, 5), 1):
+        truncated = dict(data)
+        truncated[rows_key] = all_rows[:keep]
+        truncated["truncated"] = True
+        truncated["total_rows"] = total_rows
+        result = json.dumps(truncated, ensure_ascii=False, default=str)
+        if len(result) <= max_chars:
+            return result
+
+    # 即使 1 行也超限 → 截断单元格值（在值末尾截断加标记，不在中间断字）
+    truncated = dict(data)
+    _single = all_rows[0] if all_rows else {}
+    if isinstance(_single, dict):
+        _single = {
+            k: (str(v)[:300] + "...[截断]" if v and len(str(v)) > 300 else v)
+            for k, v in _single.items()
+        }
+    truncated[rows_key] = [_single]
+    truncated["truncated"] = True
+    truncated["total_rows"] = total_rows
+    result = json.dumps(truncated, ensure_ascii=False, default=str)
+    if len(result) <= max_chars:
+        return result
+    return result[:max_chars] + "\n\n... [结果过大已截断]"
 
 
 # ==================== 卡死检测器 ====================

@@ -821,8 +821,11 @@ function updateParamsHint(msg: any) {
   let hint = t('chat.detectedMatch')
   if (ready.length) hint += '\n\n✅ ' + t('chat.paramsReady') + '：' + ready.join('，')
   if (missing.length) hint += '\n\n⚠️ ' + t('chat.paramsMissing') + '：' + missing.join('、') + t('chat.pleaseSupply')
-  msg.content = hint
-  chatStore.messages = [...chatStore.messages]
+  // 内容无变化时不赋值不复制数组——避免与 5s 轮询形成"改写→回滚"闪烁循环
+  if (msg.content !== hint) {
+    msg.content = hint
+    chatStore.messages = [...chatStore.messages]
+  }
 }
 
 function selectData(msg: any, m: any) {

@@ -53,6 +53,25 @@ def _get_connector(*args, **kwargs):
     return _gc(*args, **kwargs)
 
 
+def _detect_time_column(df) -> str:
+    """检测表的时间列（浏览默认时间倒序用）。
+
+    优先 datetime dtype（pandas 解析出的真时间列），其次列名关键词（时间/日期/date/time/created/updated 等）。
+    无时间列返回空串（保持自然序）。
+    """
+    if df is None or df.empty:
+        return ""
+    for col in df.columns:
+        if str(df[col].dtype).startswith("datetime"):
+            return str(col)
+    import re as _re
+    _pat = _re.compile(r"(时间|日期|采集|入库|date|time|created|updated|ctime|mtime|_at$)", _re.IGNORECASE)
+    for col in df.columns:
+        if _pat.search(str(col)):
+            return str(col)
+    return ""
+
+
 @router.post("", response_model=DataSourceResponse, status_code=status.HTTP_201_CREATED)
 async def create_datasource(
     request: DataSourceCreate,
@@ -343,6 +362,16 @@ async def get_table_data(
     try:
         connector = _get_connector(datasource.type, datasource.connection_config or {})
         df = await connector.get_table_data(table_name, page=page, page_size=page_size)
+        # 时间倒序浏览：检测到时间列时按其倒序取数（最新记录优先显示）
+        _time_col = _detect_time_column(df)
+        if _time_col:
+            try:
+                df = await connector.get_table_data(
+                    table_name, page=page, page_size=page_size,
+                    sort={"column": _time_col, "order": "desc"},
+                )
+            except Exception:
+                pass  # 连接器不支持排序时保持自然序
 
         total_count = len(df)
         try:

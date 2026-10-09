@@ -159,6 +159,40 @@
       "parameters": {},
       "stdout_preview": "[1/3] 开始解析图片: D:\\DataCrab\\backend\\data\\uploads\\c953d9f4-80e3-443d-9feb-9960e35550f6\\交易数据_20260907_075822.png\n[1/3] 调用 extract_image_table 分页提取表格...\n[SkillRunner] call_tool: extract_image_table",
       "context_summary": "工具: run_script\nAI输出: 修改已完成。核心变更：放弃 `llm_vision` 单次整图方案（漏行+幻觉），改为平台原生 `extract_image_table` 分页提取（历史证明名单列可提取到正确的 48 行），再走既有的错位修复、去重、空壳行过滤流程。\n\n现在运行验证，确认收敛到 48 行且无表头重复：\n\n"
+    },
+    {
+      "timestamp": "2026-10-08T17:04:17.552122",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp70idb4q0.py\", line 446, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp70idb4q0.py\", line 374, in main\n    mat = _extract_col_group(image_path, names, first_col_name, g, retries=2)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp70idb4q0.py\", line 229, in _extract_col_group\n    res = call_tool(\"llm_vision\", image_path=image_path, prompt=prompt, max_tokens=4096)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp70idb4q0.py\", line 151, in _logged_call_tool\n    _result = _orig_call_tool(tool_name, **args)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp70idb4q0.py\", line 86, in call_tool\n    with _urllib_req.urlopen(_req, timeout=240) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 4, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 304, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 321, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 281, in _call_chain\n    result = func(*ar",
+      "parameters": {
+        "datasource": "86e3ba97-4482-4164-9a1f-1b6397e159d1",
+        "datasource_name": "聊天上传数据",
+        "if_table_exists": "replace",
+        "table_name": "交易数据_20260930_020722.png",
+        "target_datasource_name": "聊天上传数据",
+        "target_table_name": "result_20260930"
+      },
+      "stdout_preview": "[1/3] 从源表 聊天上传数据.交易数据_20260930_020722.png 查找图片文件路径...\n[SkillRunner] call_tool: query_table_data\n[1/3] 从源表获取图片路径: D:\\DataCrab\\backend\\data\\uploads\\c953d9f4-80e3-443d-9feb-9960e35550f6\\交易数据_20260930_020722.png\n[1/3] 开始解析图片: D:\\DataCrab\\backend\\data\\uploads\\c953d9f4-80e3-443d-9feb-9960e35550f6\\交易数据_20260930_020722.png\n[1/3] 识别表头列名...\n[SkillRunner] call_tool: llm_vision\n[1/3] 表头识别成功: 15 列 -> ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', '2025年', '2024年', '2023年', '2022年', '2021年', '2020年'",
+      "context_summary": "工具: run_script\nAI输出: 脚本逻辑清晰：从图片中提取表格数据并写入目标数据源。源表是图片文件，脚本会自动从源表数据中查找 `file_path`。现在直接运行脚本，传入源数据源和目标表信息。"
+    },
+    {
+      "timestamp": "2026-10-08T17:09:12.972014",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "image_path 参数不能为空（请指定图片路径，或确保源表含 file_path 字段）",
+      "parameters": {
+        "datasource": "86e3ba97-4482-4164-9a1f-1b6397e159d1",
+        "datasource_name": "聊天上传数据",
+        "if_table_exists": "replace",
+        "table_name": "交易数据_20260930_020722.png",
+        "target_datasource_name": "聊天上传数据",
+        "target_table_name": "result_20260930"
+      },
+      "stdout_preview": "[1/3] 从源表 聊天上传数据.交易数据_20260930_020722.png 查找图片文件路径...\n[SkillRunner] call_tool: query_table_data\n[SkillRunner] call_tool(query_table_data) failed: timed out\n[1/3] 查询源表失败: timed out\n[1/3] 开始解析图片:",
+      "context_summary": "工具: run_script\nAI输出: 已将列组提取从串行改为并发执行（4线程），同时将重试次数从2降为1，大幅缩短总耗时。现在运行验证。"
     }
   ],
   "positive": [
@@ -286,6 +320,30 @@
       "source": "debug-chat",
       "script_name": "main.py",
       "parameters": {},
+      "result_summary": "{'success': True, 'rows': 48, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020', 'year_2019'], 'target_ta"
+    },
+    {
+      "timestamp": "2026-10-08T17:52:37.015037",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {
+        "datasource": "86e3ba97-4482-4164-9a1f-1b6397e159d1",
+        "datasource_name": "聊天上传数据",
+        "if_table_exists": "replace",
+        "table_name": "交易数据_20260930_020722.png",
+        "target_datasource_name": "聊天上传数据",
+        "target_table_name": "result_20260930"
+      },
+      "result_summary": "{'success': True, 'rows': 48, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020', 'year_2019'], 'target_ta"
+    },
+    {
+      "timestamp": "2026-10-08T17:54:20.606535",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {
+        "target_datasource_name": "聊天上传数据",
+        "target_table_name": "result_20260930"
+      },
       "result_summary": "{'success': True, 'rows': 48, 'columns': ['基金简称', '管理人', '管理规模', '策略', '近3年', '近2年', '近1年', '今年', 'year_2025', 'year_2024', 'year_2023', 'year_2022', 'year_2021', 'year_2020', 'year_2019'], 'target_ta"
     }
   ],

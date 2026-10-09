@@ -667,12 +667,12 @@ async def _compress_history(history_messages: list, session_id: str) -> list:
             id_hint = build_identifier_hint(older_text)
             summary = await llm_manager.chat_with_messages(
                 [
-                    {"role": "system", "content": "你是对话摘要助手。把多轮对话压缩成简洁中文要点摘要，保留关键数据、结论和上下文，不要寒暄，限300字以内。" + id_hint},
+                    {"role": "system", "content": "这是对话摘要器。请把多段对话压缩成简洁的摘要，保留关键标识符和数据结论。" + id_hint},
                     {"role": "user", "content": older_text[:8000]},
                 ],
                 model=llm_manager._flash,
                 temperature=0.2,
-                max_tokens=400,
+                enable_thinking=False,
             )
             _HISTORY_SUMMARIES[session_id] = (summary, last_older_id)
             while len(_HISTORY_SUMMARIES) > _HISTORY_SUMMARIES_MAX:
@@ -754,6 +754,21 @@ async def stream_response(
                 hint += "\n\n"
             hint += t('params_missing_label', missing="、".join(missing))
         return hint
+
+    def _consume_target_params(ctx: dict):
+        """目标参数一次性消费：处理执行成功后清空目标。
+
+        目标是 per-operation 参数（每次写入的位置），不是会话参数——执行完留存会导致下次任务
+        默认沿用旧目标、静默覆盖已有产出。失败/give_up 不清（保留便于重试）；分析类不动目标。
+        用户明确说换目标（keep_target=change）仍走"清+匹配"既有链路，不受影响。
+
+        注意：必须写 None 而不是 pop——save 块的合并写回是 dict.update()（只覆盖存在的键，不删缺失键），
+        pop 掉的键在 DB 里的旧值会原样保留（2026-10-08 17:56 沿用僵尸目标事故的根因）。
+        下游全部是 .get() 真值判断，None 等同于无。
+        """
+        for _k in ("target_datasource_id", "target_datasource_name", "target_data_name", "target_filename", "target_write_mode", "target_pending"):
+            ctx[_k] = None
+        ctx["awaiting_params"] = None
 
     async def generate():
         session_id = str(request.session_id)
@@ -923,6 +938,8 @@ async def stream_response(
                         _session_ctx["target_filename"] = request.target_data_name
                         if request.target_write_mode:
                             _session_ctx["target_write_mode"] = request.target_write_mode
+                        # pending 标记：目标由本轮请求设置（区别于旧任务遗留的僵尸目标——无标记不沿用）
+                        _session_ctx["target_pending"] = True
 
                 # 用户选择了技能/流程（前端从 skill_suggestion 选择后带上）
                 if request.selected_skill_id:
@@ -1026,6 +1043,11 @@ async def stream_response(
             _skill_instruction_generated = False
             if request.direct_execute:
                 _msg_type = _session_ctx.get("last_msg_type", "processing")
+                _keep_source = _keep_target = _keep_skill = True  # direct_execute 不重新匹配（classify 只在非 direct 分支跑，这里给默认值防 NameError）
+                # 僵尸目标：无 pending 标记的旧目标不带入执行（本轮请求带目标字段时段1已打标）
+                if _session_ctx.get("target_datasource_id") and not _session_ctx.get("target_pending"):
+                    logger.info(f"[direct_execute] 僵尸目标清理: {_session_ctx.get('target_datasource_name')} → {_session_ctx.get('target_data_name')}（无 pending 标记，不带入执行）")
+                    _consume_target_params(_session_ctx)
                 # 展示已确定的参数
                 _ready = _get_ready_params(_session_ctx)
                 if _ready:
@@ -1117,6 +1139,7 @@ async def stream_response(
                             # 外层比内层先死会把正常执行中的技能误杀。
                             _agen = _runtime.run(_agent_name, _debug_msg, _debug_context).__aiter__()
                             _exec_failed = False
+                            _run_succeeded = False  # 最终执行状态（成功后清目标参数用）
                             _loop = asyncio.get_running_loop()
                             while True:
                                 _fut = asyncio.ensure_future(_agen.__anext__())
@@ -1155,8 +1178,19 @@ async def stream_response(
                                     if _c:
                                         full_response += _c
                                         yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
-                                elif _t in ("thinking", "model", "executing", "progress", "tool_action", "tool_summary", "run_result", "inspecting", "inspection_report", "retry", "round", "give_up"):
+                                elif _t == "run_result":
+                                    # 跟踪最终执行状态（最后一次 run_result 为准，give_up 置 False）
+                                    _rr = _agent_event.get("result") or {}
+                                    _run_succeeded = bool(_rr.get("success"))
                                     yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                                elif _t == "give_up":
+                                    _run_succeeded = False
+                                    yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                                elif _t in ("thinking", "model", "executing", "progress", "tool_action", "tool_summary", "inspecting", "inspection_report", "retry", "round"):
+                                    yield f"data: {json.dumps(_agent_event, ensure_ascii=False, default=str)}\n\n"
+                            # 目标参数一次性消费：处理类技能执行成功后清空目标，防下次任务沿用旧目标覆盖产出
+                            if not _exec_failed and _run_succeeded and not _is_analysis:
+                                _consume_target_params(_session_ctx)
                             # 保存 assistant 消息到 DB（含异常时部分内容恢复）
                             async with _new_session() as save_session:
                                 _save_content = full_response or (t('skill_exec_failed') if _exec_failed else t('skill_exec_done'))
@@ -1251,8 +1285,9 @@ async def stream_response(
 
             compressed_history = await _compress_history(history_messages, session_id)
 
-            # ===== chat 类型：走 ChatAgent =====
-            if _msg_type == "chat" and not request.direct_execute:
+            # ===== chat 类型：走 ChatAgent（但用户要换源/目标数据时走匹配出卡片，人点卡片确认）=====
+            _wants_data_switch = not (_keep_source and _keep_target)
+            if _msg_type == "chat" and not request.direct_execute and not (_wants_data_switch and request.evolution_mode):
                 from app.services.multi_agent import ensure_agent_runtime, AgentMessage, HandoffReason, stream_agent_events_sse
                 _runtime = ensure_agent_runtime()
                 # 构建数据上下文提示（让 ChatAgent 知道用户已选了什么数据，能在闲聊中引用/补全）
@@ -1269,7 +1304,7 @@ async def stream_response(
                     _data_ctx_lines.append(f"当前技能/流程: {_session_ctx.get('last_skill_name') or _session_ctx.get('last_pipeline_name')}")
                 _data_ctx_hint = ""
                 if _data_ctx_lines:
-                    _data_ctx_hint = "\n".join(_data_ctx_lines) + "\n\n用户在闲聊/咨询时可能提到这些已选数据，你可以引用。但若用户要求切换/补全数据源或表，请告知用户在数据分析或数据处理模式下操作（chat 类型不修改数据上下文）。"
+                    _data_ctx_hint = "\n".join(_data_ctx_lines) + "\n\n用户在闲聊/咨询时可能提到这些已选数据，你可以引用。若用户要求切换/指定数据源或表，请告知用户直接说出数据源名称和表名（如\"用文物库的瓷器表\"），系统会自动展示选择卡片，点击即可切换。"
                 _chat_context = {
                     "user_id": current_user.id,
                     "history": compressed_history,
@@ -1317,7 +1352,8 @@ async def stream_response(
                 return
 
             # ===== 非 chat 且非 direct_execute 且演进模式开启：并行匹配 =====
-            if not request.direct_execute and _msg_type != "chat" and request.evolution_mode:
+            # chat 类型 + 用户要换数据（keep_source/keep_target=False）也走匹配——数据切换经"匹配→卡片→人点"确认，Agent 不直接改会话状态
+            if not request.direct_execute and (_msg_type != "chat" or _wants_data_switch) and request.evolution_mode:
                 from app.services.match_service import (
                     llm_match_tables, llm_match_skills, llm_match_pipelines,
                 )
@@ -1369,13 +1405,20 @@ async def stream_response(
                                 _session_ctx["target_write_mode"] = _wm
                                 _wm_label = {"overwrite": t('write_mode_overwrite'), "append": t('write_mode_append'), "direct": t('write_mode_direct'), "create": t('write_mode_create')}.get(_wm, _wm)
                                 _extracted_labels.append(t('write_strategy', label=_wm_label, mode=_wm))
+                            # 本轮消息补出了目标参数 → 打 pending 标记（无标记的旧目标视为僵尸不沿用）
+                            if _session_ctx.get("target_datasource_id") and (_tds or _ttbl):
+                                _session_ctx["target_pending"] = True
                             if _extracted_labels:
                                 yield f"data: {json.dumps({'type': 'executing', 'message': t('params_extracted_msg', params='，'.join(_extracted_labels))}, ensure_ascii=False)}\n\n"
 
                         # 判断三路是否需要匹配（参数可能刚被提取补齐，需先算完提取）
+                        # 僵尸目标清理：目标存在但无 pending 标记（执行已消费过/旧会话遗留/前端回注前的残留）
+                        # → 不沿用，清掉重新匹配——目标只在"本轮设置且未执行"的窗口内有效
+                        if _session_ctx.get("target_datasource_id") and not _session_ctx.get("target_pending"):
+                            logger.info(f"[match] 僵尸目标清理: {_session_ctx.get('target_datasource_name')} → {_session_ctx.get('target_data_name')}（无 pending 标记，不沿用）")
+                            _consume_target_params(_session_ctx)
                         _need_source = not _keep_source or not bool(_session_ctx.get("source_datasource_id") and _session_ctx.get("source_data_name"))
-                        _is_source_virtual = _session_ctx.get("source_datasource_name") == _VIRTUAL_DS_NAME
-                        _need_target = _msg_type == "processing" and not _is_source_virtual and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
+                        _need_target = (_msg_type == "processing" or (_msg_type == "chat" and not _keep_target)) and (not _keep_target or not bool(_session_ctx.get("target_datasource_id") and _session_ctx.get("target_data_name")))
                         _need_skill = not _keep_skill or not bool(_session_ctx.get("last_skill_id") or _session_ctx.get("last_pipeline_id"))
                         # 预查数据源（当前用户的 + 虚拟数据源，排除其他用户的私有数据源）
                         _all_ds = [ds for ds in (await db.execute(select(DataSource).where(DataSource.is_active == True))).scalars().all()
@@ -1463,10 +1506,11 @@ async def stream_response(
                             return {"type": "data_no_match"}
 
                         async def _match_target():
-                            """目标表匹配（仅 processing）"""
+                            """目标表匹配（仅 processing；排除虚拟数据源——上传文件区不是写入目标，写回同源由默认策略处理）"""
                             if not _need_target:
                                 return None
-                            target_matches, _, _events = await llm_match_tables(request.content, db)
+                            _virtual_ids = {str(ds.id) for ds in _all_ds if ds.is_virtual}
+                            target_matches, _, _events = await llm_match_tables(request.content, db, exclude_datasource_ids=_virtual_ids)
                             _results = []
                             for tid, score, meta in target_matches:
                                 _ds_id = meta.get("data_source_id", "")
@@ -1777,7 +1821,7 @@ async def stream_response(
                                 f"## 用户消息\n{request.content}\n\n"
                                 f"请根据以上信息，生成一条符合技能使用示例格式的调用指令。"
                             )},
-                        ], model=llm_manager._flash, temperature=0.2, max_tokens=500)
+                        ], model=llm_manager._flash, temperature=0.2, enable_thinking=False)
                         _instruction = _instruction.strip()
                         if _instruction.startswith("```"):
                             _lines = _instruction.split("\n")
@@ -1845,6 +1889,7 @@ async def stream_response(
             )
 
             agen = runtime.run(_agent_name, message, context).__aiter__()
+            _agent_gave_up = False  # give_up/未完成不清目标（保留便于重试）
             while True:
                 if cancel_event.is_set():
                     # 保存已收到的部分内容，避免刷新后回复丢失
@@ -1908,7 +1953,14 @@ async def stream_response(
                         yield f"data: {json.dumps({'type': 'content', 'content': _done_content}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
                 else:
+                    if event.get("type") == "give_up":
+                        _agent_gave_up = True
                     yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+            # 目标参数一次性消费：处理类任务正常执行完成后清空目标（分析类/give_up 不动）
+            # 注：Agent 路径无可靠写入日志，"完成"即视为目标已消费——清空的代价只是下次重选目标，无覆盖风险
+            if _msg_type == "processing" and not _agent_gave_up:
+                _consume_target_params(_session_ctx)
 
             # 用新 session 保存 AI 消息 + 合并写回 session_ctx（防止并发覆盖）
             from app.core.database import async_session as _new_session

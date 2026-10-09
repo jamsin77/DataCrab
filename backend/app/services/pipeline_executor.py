@@ -189,8 +189,8 @@ async def execute_pipeline(
                 _skill_result = await db.execute(_select(Skill).where(Skill.id == pipeline.source_skill_id))
                 _skill = _skill_result.scalar_one_or_none()
                 if _skill and _skill.skill_path:
-                    from pathlib import Path as _Path
-                    _skill_path = _Path(_skill.skill_path)
+                    from app.services.skill_parser import resolve_skill_folder
+                    _skill_path = resolve_skill_folder(_skill.skill_path)
 
             result = await asyncio.to_thread(
                 run_skill_script_by_content,

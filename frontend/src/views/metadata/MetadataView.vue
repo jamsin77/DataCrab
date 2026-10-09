@@ -85,7 +85,7 @@
     </el-table>
     </div>
 
-    <el-drawer v-model="detailDrawer" :title="detailData?.business_name || detailData?.table_name || t('metadata.detailTitle')" size="60%">
+    <el-dialog v-model="detailDrawer" :title="detailData?.business_name || detailData?.table_name || t('metadata.detailTitle')" width="min(920px, 94%)" top="6vh" class="detail-dialog" :close-on-click-modal="false">
       <div v-if="detailData" class="detail-layout">
         <div class="detail-section">
           <div class="section-header">
@@ -104,7 +104,7 @@
 
           <div v-if="detailData.table_schema?.length" class="schema-table">
             <div class="sub-title">{{ t('metadata.fieldDefinition') }}</div>
-            <el-table :data="detailData.table_schema" size="small" border>
+            <el-table :data="detailData.table_schema" size="small" border max-height="280">
               <el-table-column :label="t('metadata.columnName')" prop="name" min-width="120" />
               <el-table-column :label="t('common.type')" prop="dtype" width="120" />
               <el-table-column :label="t('metadata.nullable')" width="60" align="center">
@@ -115,7 +115,7 @@
 
           <el-collapse v-if="detailData.sample_data?.length" style="margin-top: 12px">
             <el-collapse-item :title="t('metadata.sampleData')">
-              <pre>{{ JSON.stringify(detailData.sample_data, null, 2) }}</pre>
+              <pre class="sample-pre">{{ JSON.stringify(detailData.sample_data, null, 2) }}</pre>
             </el-collapse-item>
           </el-collapse>
         </div>
@@ -126,9 +126,28 @@
             <el-button size="small" type="success" @click="aiEnrich(detailData)">{{ t('metadata.aiEnrich') }}</el-button>
           </div>
           <el-form label-width="100px">
-            <el-form-item :label="t('metadata.businessName')">
-              <el-input v-model="editForm.business_name" :placeholder="t('metadata.businessNamePlaceholder')" />
-            </el-form-item>
+            <div class="biz-grid">
+              <el-form-item :label="t('metadata.businessName')">
+                <el-input v-model="editForm.business_name" :placeholder="t('metadata.businessNamePlaceholder')" />
+              </el-form-item>
+              <el-form-item :label="t('metadata.sourceSystem')">
+                <el-input v-model="editForm.source_system" />
+              </el-form-item>
+              <el-form-item :label="t('metadata.dataDomain')">
+                <el-input v-model="editForm.data_domain" />
+              </el-form-item>
+              <el-form-item :label="t('metadata.dataOwner')">
+                <el-input v-model="editForm.data_owner" />
+              </el-form-item>
+              <el-form-item :label="t('metadata.securityLevel')">
+                <el-select v-model="editForm.security_level" style="width: 100%">
+                  <el-option :label="t('metadata.public')" value="public" />
+                  <el-option :label="t('metadata.internal')" value="internal" />
+                  <el-option :label="t('metadata.confidential')" value="confidential" />
+                  <el-option :label="t('metadata.secret')" value="secret" />
+                </el-select>
+              </el-form-item>
+            </div>
             <el-form-item :label="t('metadata.businessDescription')">
               <el-input v-model="editForm.business_description" type="textarea" :rows="2" />
             </el-form-item>
@@ -139,30 +158,13 @@
             <el-form-item :label="t('metadata.businessPurpose')">
               <el-input v-model="editForm.business_purpose" type="textarea" :rows="2" />
             </el-form-item>
-            <el-form-item :label="t('metadata.sourceSystem')">
-              <el-input v-model="editForm.source_system" />
-            </el-form-item>
-            <el-form-item :label="t('metadata.dataDomain')">
-              <el-input v-model="editForm.data_domain" />
-            </el-form-item>
-            <el-form-item :label="t('metadata.dataOwner')">
-              <el-input v-model="editForm.data_owner" />
-            </el-form-item>
-            <el-form-item :label="t('metadata.securityLevel')">
-              <el-select v-model="editForm.security_level" style="width: 100%">
-                <el-option :label="t('metadata.public')" value="public" />
-                <el-option :label="t('metadata.internal')" value="internal" />
-                <el-option :label="t('metadata.confidential')" value="confidential" />
-                <el-option :label="t('metadata.secret')" value="secret" />
-              </el-select>
-            </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="saveDetail" :disabled="saving">{{ t('metadata.saveChanges') }}</el-button>
             </el-form-item>
           </el-form>
         </div>
       </div>
-    </el-drawer>
+    </el-dialog>
 
     <!-- AI 增强进度弹窗（居中，并发处理） -->
     <el-dialog
@@ -589,13 +591,15 @@ onMounted(() => {
 .table-name { font-weight: 600; }
 .table-name-sub { font-size: 12px; color: #909399; }
 .text-muted { color: #c0c4cc; font-size: 12px; }
-.detail-layout { display: flex; flex-direction: column; gap: 24px; }
+.detail-layout { display: flex; flex-direction: column; gap: 16px; }
+.detail-dialog :deep(.el-dialog__body) { max-height: 76vh; overflow-y: auto; padding-top: 12px; }
+.biz-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
+.sample-pre { max-height: 220px; overflow: auto; background: #f5f7fa; padding: 8px; border-radius: 4px; margin: 0; font-size: 12px; }
 .detail-section { }
 .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-weight: 600; font-size: 15px; }
 .schema-table { margin-top: 12px; }
 .sub-title { font-size: 13px; color: #606266; margin-bottom: 8px; }
 :deep(.el-table__row) { cursor: pointer; }
-:deep(.el-drawer__body) { overflow-y: auto; }
 
 /* AI 增强弹窗 */
 .enrich-dialog :deep(.el-dialog__body) {

@@ -46,6 +46,19 @@ def build_skill_md(front_matter: Dict[str, Any], body: str) -> str:
     return f"---\n{fm_str}\n---\n\n{body}"
 
 
+def resolve_skill_folder(skill_path) -> Path:
+    """把 DB 中的 skill_path（可能是相对文件夹名）解析为实际绝对路径。
+
+    main.py 启动时会把 skill_path 统一为相对文件夹名，
+    直接 Path(skill_path) 会相对进程 CWD 解析导致找不到 experience.json/SKILL.md。
+    """
+    from app.core.config import settings
+    p = Path(skill_path)
+    if not p.is_absolute():
+        p = Path(settings.SKILL_STORAGE_PATH) / p
+    return p
+
+
 def get_skill_info_from_path(skill_path: Path) -> Dict[str, Any]:
     """从 Skill 文件夹路径读取基本信息"""
     info = {

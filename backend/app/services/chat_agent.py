@@ -1,10 +1,11 @@
 """ChatAgent 通用对话智能体
 
-处理闲聊/问候/系统配置/提问咨询等非数据操作。
+处理闲聊/问候/系统配置/提问咨询等对话请求。
 拥有配置管理工具（save_llm_adapter/delete_llm_adapter/get_llm_config/save_connector/delete_connector）
 和通用只读工具（web_fetch/kb_search/list_user_datasources）。
 
 不参与 handoff（跟 DataAnalyst 一样独立）。
+数据切换不由本 Agent 完成——用户说"换数据"时路由层会走匹配流程出选择卡片，人点卡片确认。
 """
 import json
 from typing import Dict, Any, AsyncGenerator, Optional
@@ -33,7 +34,8 @@ CHAT_INSTRUCTIONS = """你是 DataCrab 的通用对话智能体，负责处理�
 1. 用户要求查最新信息（如"GLM 有没有新模型"）时，必须调 web_fetch 抓取官网页面，不要说"我无法访问"
 2. 用户要求添加/修改/删除 Provider 或连接器时，调用相应配置工具
 3. 不处理数据查询/清洗/转换——引导用户描述数据任务
-4. 回复简洁直接，中文优先
+4. 用户要求切换/指定源数据或目标数据时，告知用户直接说出数据源名称和表名（如"用文物库的瓷器表"），系统会自动展示数据选择卡片，点击卡片即可完成切换
+5. 回复简洁直接，中文优先
 """
 
 

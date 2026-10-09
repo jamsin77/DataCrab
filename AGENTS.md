@@ -1219,3 +1219,50 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **GenericFileConnector 匹配** | connectors.py | `get_schema` 返回 `f.name`（带后缀）；`get_table_data`/`get_table_stats` 支持 4 种匹配（f.name/f.stem/filename_SheetName/stem_SheetName） |
 
 **与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 29 个工具）在本轮保持不变（extract_image_table 新增后删除，工具数稳定 29）。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。
+
+### 第三十四轮（Windows 安装包——Embeddable Python + Inno Setup，免装链路分发）
+
+**核心洞察**：DataCrab 需要分发给无 Python/Node 环境的 Windows 用户。**不能走 PyInstaller/Nuitka 单文件 exe 路线**——skill_runner.py 用 `Popen([sys.executable, temp_path])` 起子进程跑技能脚本，冻结成 exe 后 `sys.executable` 指向 exe 本身而非 python.exe，沙箱全挂。正确方案：**Embeddable Python（便携真解释器）+ pip --target 双依赖目录 + 前端 dist 由 FastAPI 托管 + Inno Setup 每用户安装**。
+
+**架构决策**：
+
+| 决策 | 原因 |
+|------|------|
+| Embeddable Python 3.12.10 + `._pth` | `sys.executable` 是真 python.exe → 沙箱子进程天然正常；`._pth` 列 `python312.zip / . / Lib\site-packages / Lib\extra-packages / ..\backend` 五路径 + `import site` |
+| 前端 dist 由 FastAPI 托管 | main.py 末尾挂 `_SPAStaticFiles`（StaticFiles 子类：404 回退 index.html，`/api/v1` 前缀不回退保持 404 JSON）；单端口，运行时不需要 Node；Monaco 是 npm 打包的天然离线可用 |
+| 依赖双目录 + venv freeze 锁版本 | `pip install --target -r requirements.txt -c constraints.txt`（constraints 来自 `pip freeze` dev venv）→ 安装包与开发环境**完全同版本**（sqlalchemy 2.0.52/greenlet 3.5.5/pandas 3.0.5）；site-packages（核心）/ extra-packages（chromadb+minio，Inno 可选组件，不装时匹配流程 try/except 兜底） |
+| 每用户安装（{localappdata}\Programs，无 UAC） | SQLite/技能/日志都写在 backend\ 下，安装目录必须可写；卸载不删数据（Inno 只删自己装的文件） |
+| launcher.py 动态端口 | 8000 被占自动顺延 +20 个；启动前设 `DATACRAB_API_BASE=http://127.0.0.1:{port}` 保证沙箱回连地址正确；健康检查通过后自动开浏览器（`DATACRAB_NO_BROWSER=1` 可关） |
+
+**新增文件（installer/）**：
+
+| 文件 | 职责 |
+|------|------|
+| `build.ps1` | 一键构建：前端 `npx vite build`（跳过 vue-tsc，见下）→ 下载 embeddable Python（cache 缓存）→ 两遍 `pip --target` 装 site-packages/extra-packages（清华镜像 + venv freeze 约束）→ robocopy 组装 staging（排除 \_\_pycache\_\_/.pytest_cache/app\data 脏目录/experience.json/error_log.json/\*.db/\*.log）→ PIL 生成 datacrab.ico → git 版本号 → iscc 编译。开关：`-SkipFrontend/-SkipDeps/-SkipInstaller`；依赖缓存存在即跳过（幂等） |
+| `datacrab.iss` | Inno Setup 6 脚本：core（固定）+ vector（chromadb+minio 可选组件）双组件；开始菜单/桌面快捷方式；装完可启动；[Dirs] 预建运行时数据目录；Excludes 兜底排除 db/log |
+| `launcher.py` | 启动器（动态端口 + DATACRAB_API_BASE 同步 + 浏览器自动打开） |
+| `DataCrab.bat` | 快捷方式入口（title + pause 便于看报错） |
+| `inno/ChineseSimplified.isl` | 简中语言包（Inno 官方不随包发行，来自 kira-96/Inno-Setup-Chinese-Simplified-Translation，build.ps1 自动下载） |
+| `安装说明.txt` / `README.md` | 面向用户的使用说明 / 面向构建者的文档（含冒烟测试步骤） |
+
+**源码改动（仅 2 处，开发模式零影响）**：
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| SPA 静态托管 | main.py | `_SPAStaticFiles`（history 模式 404→index.html 回退；API 前缀不回退）；dist 不存在时跳过（开发模式走 Vite dev server 不受影响） |
+| FRONTEND_DIST 配置 | config.py | 环境变量可覆盖前端产物路径，默认自动探测 `<根>/frontend/dist`（main.py parents[2]） |
+
+**构建过程中发现并绕过的坑**：
+
+| 坑 | 处置 |
+|----|------|
+| `npm run build` 崩溃 | vue-tsc 1.8 与 typescript 5.9 不兼容（`Search string not found: supportedTSExtensions`，repo 遗留问题，此前从未跑过 build）；build.ps1 直接 `npx vite build` 跳过类型检查。**待办：升级 vue-tsc 到 2.x** |
+| 仓库脏数据差点进包 | `backend\app\data\uploads\` 有 23 个旧版路径逻辑遗留的用户上传文件（文物 xlsx/微信图片），robocopy /MIR 差点全量带入；build.ps1 排除 `app` 复制时的 `data` 目录 + .iss Excludes 双保险。**待办：仓库删除 backend\app\data** |
+| pypi.org 直连极慢/瞬断 | 3.12.14 无 embeddable（安全维护版无二进制）→ 用 3.12.10；pip 加 `--timeout 60 --retries 5 -i 清华镜像` |
+| SQLAlchemy asyncio 缺 greenlet | 全新解析装 sqlalchemy 2.1.3（greenlet 变为 extra 依赖）→ 用 venv freeze 约束锁 2.0.52 + greenlet 3.5.5，版本与开发环境完全一致 |
+| Inno 缺简中语言包 | ChineseSimplified.isl 不随 Inno 发行；kira-96 社区翻译版存 installer\inno\，build.ps1 自动下载 |
+| PowerShell 5.1 ANSI 解析 | .ps1/.iss 含中文必须 UTF-8 **带 BOM** |
+
+**验证**：131 pytest 全通过（main.py 改动无破坏）；staging（641MB）实测 `/health` 200、`/` 200 index.html、`/skill` 200 SPA 回退、`/api/v1/xxx` 404 JSON、静态 JS 200（1.3MB）；安装包 `installer\dist\DataCrab-Setup-2026.10.04.182.exe`（141MB，lzma2 压缩）；包内无 \_\_pycache\_\_/experience.json/db/log/用户上传文件。
+
+**已知限制**：安装包未签名（SmartScreen 会拦，需"更多信息→仍要运行"）；ffmpeg 不随包（视频处理回退 OpenCV）；端口固定 8000 起步（占用自动顺延）。

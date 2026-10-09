@@ -990,8 +990,9 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
         ocr_pages = [p for p in image_pages if start_page <= p]
         print(f"  [OCR] 含图片页 {len(ocr_pages)} 页（总 {total_pages} 页，跳过 {total_pages - len(ocr_pages)} 个纯文本页）: {ocr_pages}")
     else:
-        ocr_pages = list(range(start_page, min(total_pages or 20, 30) + 1))
-        print(f"  [OCR] 未检测到图片页信息，回退扫描全部 {len(ocr_pages)} 页")
+        # 纯文本 PDF 无嵌入图片 → 不存在图片型表格，pdfplumber 结构化提取 + 文本层切分已覆盖全部表格，跳过 OCR
+        print(f"  [OCR] 无图片页（纯文本 PDF），跳过 OCR", flush=True)
+        return {}
 
     ocr_prompt = _OCR_PROMPT
 

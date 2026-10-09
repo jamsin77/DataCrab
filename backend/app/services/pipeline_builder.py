@@ -133,7 +133,10 @@ def _detect_entry(script_content: str) -> tuple:
         ]
         if func_defs:
             def _pc(fn):
-                return len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                return (
+                    len(fn.args.args) + len(fn.args.kwonlyargs) + len(fn.args.posonlyargs)
+                    + (1 if fn.args.vararg else 0) + (1 if fn.args.kwarg else 0)
+                )
 
             best = max(func_defs, key=lambda f: _pc(f[1]))
             if "main" in [f[0] for f in func_defs]:
@@ -161,6 +164,19 @@ def _extract_parameters_from_skill(
         params = _extract_main_params(script_content)
 
     md_params = _parse_skill_md_param_table(skill_md)
+
+    # main(**kwargs) 兜底入口：真实参数定义在 SKILL.md 参数表，签名里提取不到
+    if not uses_argparse and md_params and all(p["name"].startswith("*") for p in params):
+        params = [
+            {
+                "name": name,
+                "type": info.get("type", "any"),
+                "required": info.get("required", True),
+                "description": info.get("description", ""),
+            }
+            for name, info in md_params.items()
+        ]
+
     for p in params:
         md_info = md_params.get(p["name"])
         if md_info:
@@ -168,6 +184,8 @@ def _extract_parameters_from_skill(
                 p["description"] = md_info.get("description", "")
             if (not p.get("type") or p["type"] == "any") and md_info.get("type"):
                 p["type"] = md_info["type"]
+            if not p.get("default") and md_info.get("default") is not None:
+                p["default"] = md_info["default"]
     return params
 
 
@@ -216,33 +234,66 @@ def _extract_argparse_params(script_content: str) -> List[Dict[str, Any]]:
 def _parse_skill_md_param_table(skill_md: str) -> Dict[str, Dict[str, Any]]:
     """从 SKILL.md 参数表（markdown table）解析参数信息。
 
-    格式：
-    | 参数名 | 类型 | 必填 | 说明 |
-    | :--- | :--- | :--- | :--- |
-    | datasource | string | 是 | 数据源名称 |
+    按表头列名（参数/类型/必填/默认值/说明）定位列，兼容 4 列 / 5 列格式：
+    | 参数 | 类型 | 必填 | 说明 |
+    | 参数 | 类型 | 必填 | 默认值 | 说明 |
+    必填支持 是/否、✅/❌；参数名支持反引号包裹。
     """
     result: Dict[str, Dict[str, Any]] = {}
     lines = skill_md.split("\n")
-    in_table = False
+    col_map = None  # {列序号: 角色}
+
+    def _cells(line: str):
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    def _cell(cells, role):
+        for ci, r in col_map.items():
+            if r == role and ci < len(cells):
+                return cells[ci]
+        return ""
+
     for line in lines:
         stripped = line.strip()
-        if "|" in stripped and ("参数" in stripped or "类型" in stripped or "必填" in stripped):
-            in_table = True
-            continue
-        if not in_table:
-            continue
         if not stripped.startswith("|"):
-            break
-        if "---" in stripped:
+            if col_map:
+                break  # 表格结束
             continue
-        parts = [p.strip() for p in stripped.split("|")]
-        parts = [p for p in parts if p]
-        if len(parts) >= 4:
-            name = parts[0]
-            ptype = parts[1]
-            required = "是" in parts[2]
-            desc = parts[3]
-            result[name] = {"type": ptype, "required": required, "description": desc}
+        cells = _cells(stripped)
+        if col_map is None:
+            # 表头识别：含"参数"列 + 至少另一个已知角色列
+            roles = {}
+            for ci, c in enumerate(cells):
+                if not c:
+                    continue
+                if "参数" in c:
+                    roles[ci] = "name"
+                elif "类型" in c:
+                    roles[ci] = "type"
+                elif "必填" in c:
+                    roles[ci] = "required"
+                elif "默认" in c:
+                    roles[ci] = "default"
+                elif "说明" in c or "描述" in c:
+                    roles[ci] = "desc"
+            if "name" in roles.values() and len(roles) >= 2:
+                col_map = roles
+            continue
+        if all(set(c) <= {"-", ":", " ", ""} for c in cells):
+            continue  # 分隔行
+        name = _cell(cells, "name").strip("` ").strip()
+        if not name:
+            continue
+        req_raw = _cell(cells, "required")
+        required = ("是" in req_raw or "✅" in req_raw) and ("否" not in req_raw and "❌" not in req_raw)
+        info = {
+            "type": _cell(cells, "type").strip("` ") or "any",
+            "required": required,
+            "description": _cell(cells, "desc"),
+        }
+        default_raw = _cell(cells, "default")
+        if default_raw and default_raw not in ("-", "—", "无", "None", "none"):
+            info["default"] = default_raw
+        result[name] = info
     return result
 
 
@@ -370,3 +421,4 @@ def _annotation_to_str(ann) -> str:
     if isinstance(ann, ast.Constant):
         return str(ann.value)
     return "any"
+

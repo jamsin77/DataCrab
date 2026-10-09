@@ -26,7 +26,7 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
         - events: 流式事件列表
     """
     if not user_message:
-        return "chat", False, False, False, []
+        return "chat", True, True, True, []
     try:
         from app.services.llm import llm_manager
 
@@ -49,8 +49,10 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
             "   - analysis：用户想分析数据内容，不改变数据本身\n"
             "   - processing：用户想对数据进行加工处理，使其发生变化\n"
             "   - chat：其他一切——闲聊提问、平台配置管理（查看/修改/添加 Provider、模型、API Key、数据源连接器、备注说明）、系统操作咨询等。注意：'刷新列表''加备注''改配置'这类针对平台设置的操作不算 processing\n"
-            "2. 源数据表：keep 或 change（当前数据表不适合当前需求时 change，继续用才 keep）\n"
-            "3. 目标数据表：keep 或 change（当前目标表不适合当前需求时 change）\n"
+            "2. 源数据表：keep 或 change（当前数据表不适合当前需求时 change，继续用才 keep；"
+            "用户要求换/改用/指定其他数据源或表时（如'换成XX库的YY表''用XX表'）必须 change）\n"
+            "3. 目标数据表：keep 或 change（当前目标表不适合当前需求时 change；"
+            "用户要求换/指定结果写入的数据源或表时必须 change）\n"
             "4. 技能：keep 或 change（当前技能不适合当前需求时 change）\n"
             f"\n当前已选数据：\n{_ctx_block}\n"
             f"\n用户消息：{user_message}\n"
@@ -95,7 +97,7 @@ async def classify_message(user_message: str, session_ctx: dict | None = None) -
     except Exception as e:
         logger.error(f"[classify] LLM 调用失败: {e}")
         events = [{"type": "error", "content": f"❌ 路由判断失败: {e}"}]
-        return "chat", False, False, False, events
+        return "chat", True, True, True, events
 
 
 async def extract_params(user_message: str, session_ctx: dict | None = None) -> dict:

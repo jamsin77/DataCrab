@@ -181,7 +181,7 @@ def _build_give_up_reason(count: int, err_msg: str) -> str:
 
 
 def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
-                     content: str = "", tool_name: str = "") -> None:
+                     content: str = "", tool_name: str = "", parameters: dict = None) -> None:
     """记录执行反例到经验库 — 两个 Agent 共用
 
     Args:
@@ -191,6 +191,7 @@ def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
         script_name: 脚本名
         content: 本轮 LLM 输出文本（Processor 传，用于 context_summary）
         tool_name: 触发工具名（Processor 传，用于 context_summary）
+        parameters: 本次执行参数
     """
     if not folder or not err_msg:
         return
@@ -200,6 +201,7 @@ def _record_negative(folder, err_msg: str, rdata: dict, script_name: str,
             source="debug-chat",
             error_type="execution_error",
             error_message=err_msg,
+            parameters=parameters or {},
             stdout=rdata.get("stdout", ""),
             script_name=script_name,
         )
@@ -592,9 +594,11 @@ class DataProcessorAgent(BaseAgent):
             _result_lines = []
             for r in results:
                 tool_name = ""
+                _tc_args = ""
                 for tc in tool_calls:
                     if tc["id"] == r["tool_call_id"]:
                         tool_name = tc["function"]["name"]
+                        _tc_args = tc["function"].get("arguments") or ""
                         break
 
                 # tool 消息精简
@@ -768,8 +772,18 @@ class DataProcessorAgent(BaseAgent):
                         if folder:
                             try:
                                 from app.services import experience as _exp
-                                if _exp.read_negative(folder):
-                                    _exp.append_positive(folder, source="debug-chat", parameters={}, result_summary=str(_inner_r)[:200], script_name=script_name)
+                                # 记录本次执行实际参数：优先 run_script 调用参数，
+                                # 解析失败/为空则用 handler 存的本次执行参数（debug_last_run_params）
+                                _run_params = {}
+                                try:
+                                    _ap = json.loads(_tc_args) if _tc_args else {}
+                                    if isinstance(_ap, dict) and isinstance(_ap.get("parameters"), dict):
+                                        _run_params = _ap["parameters"]
+                                except Exception:
+                                    pass
+                                if not _run_params:
+                                    _run_params = context.get("debug_last_run_params") or context.get("debug_last_success_params") or {}
+                                _exp.append_positive(folder, source="debug-chat", parameters=_run_params, result_summary=str(_inner_r)[:200], script_name=script_name)
                             except Exception as e:
                                 logger.warning(f"记录正例失败(非致命): {e}")
                     else:
@@ -785,9 +799,19 @@ class DataProcessorAgent(BaseAgent):
                                 yield {"type": "give_up", "reason": _reason}
                                 yield {"type": "done", "result": {"agent": self.name, "content": content or "执行失败"}}
                                 return
+                        _neg_params = {}
+                        try:
+                            _np = json.loads(_tc_args) if _tc_args else {}
+                            if isinstance(_np, dict) and isinstance(_np.get("parameters"), dict):
+                                _neg_params = _np["parameters"]
+                        except Exception:
+                            pass
+                        if not _neg_params:
+                            _neg_params = context.get("debug_last_run_params") or {}
                         _record_negative(
                             context.get("debug_folder"), _err_msg, rdata,
                             script_name, content=content, tool_name=tool_name,
+                            parameters=_neg_params,
                         )
 
                 # 搜索饱和检测（U）
@@ -1036,9 +1060,6 @@ class DataProcessorAgent(BaseAgent):
         last_params = context.get("debug_last_success_params")
         if last_params:
             parts.append(f"参考：上次成功执行的参数为 {json.dumps(last_params, ensure_ascii=False, default=str)[:300]}，本次请以用户当前指令的源表、目标表、参数为准")
-        debug_params = context.get("debug_parameters")
-        if debug_params:
-            parts.append(f"本次执行参数: {json.dumps(debug_params, ensure_ascii=False, default=str)[:500]}")
 
         # 双数据源上下文（源端 + 目标端）
         _src_ds = context.get("debug_source_datasource_name", "")

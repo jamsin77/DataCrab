@@ -666,36 +666,17 @@ class LLMManager:
                 logger.info(f"[llm_generate] content preview: {repr(_content[:300])}")
                 logger.info(f"[llm_generate] reasoning preview: {repr(_reasoning[:300])}")
 
-                # content 为空但 reasoning 有内容：推理型模型 reasoning 耗光 max_tokens
-                # → 加大 max_tokens 重试一次，让推理 + 输出都能放下
-                if not _content and _reasoning and _finish == "length":
-                    _retry_max = max((max_tokens or 8000) * 3, 24000)
-                    logger.warning(f"[llm_generate] content 空 + reasoning 耗光 max_tokens，加大到 {_retry_max} 重试...")
-                    try:
-                        _retry_resp = await self._acreate_with_retry(
-                            cfg,
-                            model=actual_model,
-                            messages=messages,
-                            temperature=temperature,
-                            max_tokens=_retry_max,
-                            **({"extra_body": {"enable_thinking": False}} if not enable_thinking else {}),
-                        )
-                        _retry_msg = _retry_resp.choices[0].message
-                        _retry_content = _retry_msg.content or ""
-                        _retry_reasoning = getattr(_retry_msg, "reasoning_content", None) or ""
-                        _retry_finish = _retry_resp.choices[0].finish_reason
-                        logger.info(f"[llm_generate] 重试结果: content_len={len(_retry_content)}, reasoning_len={len(_retry_reasoning)}, finish_reason={_retry_finish}, max_tokens={_retry_max}")
-                        if _retry_content:
-                            return _retry_content
-                        if _retry_reasoning:
-                            return _retry_reasoning
-                    except Exception as _retry_e:
-                        logger.warning(f"[llm_generate] 加大 max_tokens 重试失败: {_retry_e}")
-
-                # reasoning_content 兜底
+                # content 为空但 reasoning 有内容
                 if not _content and _reasoning:
-                    logger.warning(f"[llm_generate] content 为空，用 reasoning_content 兜底（{len(_reasoning)} 字符）")
-                    return _reasoning
+                    if _finish == "length":
+                        # 推理模型耗光 max_tokens（reasoning 没写完就被截断），content 根本没开始。
+                        # 实测加大 max_tokens 只会让 reasoning 更长（14763→26504），content 仍空——重试无效。
+                        # 不返回半截 reasoning（不是可用内容，会让调用方 JSON 解析失败触发重试循环），返回空让调用方明确失败。
+                        logger.warning(f"[llm_generate] 推理模型耗光 max_tokens（reasoning={len(_reasoning)} 字符被截断），content 为空，返回空")
+                    else:
+                        # finish=stop 等：模型自然结束但把答案放 reasoning 里了 → 兜底返回
+                        logger.warning(f"[llm_generate] content 为空，用 reasoning_content 兜底（{len(_reasoning)} 字符）")
+                        return _reasoning
 
                 return _content
             except Exception as e:
