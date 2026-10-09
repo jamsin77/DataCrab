@@ -554,12 +554,23 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
         return idx, all_parsed
 
     results, errors = {}, []
+    import threading as _threading_mod
+    _hb_stop = _threading_mod.Event()
+    _hb_done = [0]
+    def _heartbeat():
+        _cnt = 0
+        while not _hb_stop.wait(20):
+            _cnt += 1
+            print(f"    [心跳] 正文提取中... 已完成 {_hb_done[0]}/{total}", flush=True)
+    _hb_thread = _threading_mod.Thread(target=_heartbeat, daemon=True)
+    _hb_thread.start()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_process, idx, chunk): idx for idx, chunk in enumerate(chunks, 1)}
         done = 0
         for fut in as_completed(futures):
             idx = futures[fut]
             done += 1
+            _hb_done[0] = done
             try:
                 _, parsed = fut.result()
                 results[idx] = parsed
@@ -567,6 +578,7 @@ def _extract_rules_from_text(text: str, max_workers: int = 3, schema_plan: Optio
             except Exception as e:
                 errors.append((idx, str(e)))
                 print(f"    [错误] 第 {idx}/{total} 段: {e}")
+    _hb_stop.set()
     if errors and not results:
         raise RuntimeError(f"LLM 提取全部失败: {errors}")
     if errors:
@@ -972,6 +984,137 @@ _OCR_PROMPT = """你是表格 OCR 专家。请把页面上**实际存在的**表
 - 忽略水印/页眉/页脚/封面信息
 - 直接输出 Markdown，不要代码围栏
 - 不要输出解释文字"""
+
+
+def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> str:
+    """Per-table 按需 OCR：只扫描可能含该表的页，不预扫全部 image_pages。
+
+    策略：
+    1. read_file 获取 total_pages + image_pages
+    2. 有 image_pages → 只扫含图片的页（图片型表格在图片里）
+    3. 无 image_pages → 文本层无数据但也没嵌入图片 → 可能是纯扫描件，扫全部页
+    4. 复用提取阶段的页级磁盘缓存（_ocr_cache_p{N}.md）
+    """
+    from pathlib import Path as _Path
+    text_res = call_tool("read_file", path=pdf_path)
+    if not isinstance(text_res, dict) or "content" not in text_res:
+        return ""
+    total_pages = text_res.get("total_pages") or 0
+    if not total_pages:
+        probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
+        total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
+    if not total_pages:
+        return ""
+
+    image_pages = text_res.get("image_pages") or []
+    if image_pages:
+        ocr_pages = image_pages[:30]
+    else:
+        ocr_pages = list(range(1, min(total_pages, 30) + 1))
+
+    # 页级磁盘缓存（与提取阶段共用）
+    _pdf_p = _Path(pdf_path)
+    try:
+        _size_tag = _pdf_p.stat().st_size
+    except Exception:
+        _size_tag = 0
+    _cache_dir = _pdf_p.parent / "_ocr_cache"
+    try:
+        _cache_dir.mkdir(exist_ok=True)
+    except Exception:
+        _cache_dir = _pdf_p.parent
+
+    def _cache_path(pg):
+        return _cache_dir / f"{_pdf_p.stem}[{_size_tag}]_p{pg}.md"
+
+    def _cache_load(pg):
+        try:
+            _f = _cache_path(pg)
+            if _f.exists():
+                _c = _f.read_text(encoding="utf-8").strip()
+                if _c:
+                    return _c
+        except Exception:
+            pass
+        return ""
+
+    def _cache_write(pg, raw):
+        try:
+            _cache_path(pg).write_text(raw, encoding="utf-8")
+        except Exception:
+            pass
+
+    # 先吃缓存
+    cached_mds = []
+    pages_to_ocr = []
+    for pg in ocr_pages:
+        cached = _cache_load(pg)
+        if cached:
+            cached_mds.append((pg, cached))
+        else:
+            pages_to_ocr.append(pg)
+
+    if cached_mds:
+        print(f"  [OCR] 缓存命中 {len(cached_mds)}/{len(ocr_pages)} 页", flush=True)
+
+    # 只扫未缓存的页
+    if pages_to_ocr:
+        print(f"  [OCR] 需扫描 {len(pages_to_ocr)} 页: {pages_to_ocr[:10]}", flush=True)
+        batch_size = 5
+        for bi in range(0, len(pages_to_ocr), batch_size):
+            batch_pages = pages_to_ocr[bi:bi + batch_size]
+            print(f"  [OCR] 渲染第 {batch_pages} 页...", flush=True)
+            try:
+                img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
+                if not isinstance(img_res, dict) or not img_res.get("success"):
+                    continue
+                image_paths = img_res.get("image_paths") or []
+            except Exception:
+                continue
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            def _ocr_one(pg, img_p):
+                for _ in range(3):
+                    try:
+                        vres = call_tool("llm_vision", image_path=img_p, prompt=_OCR_PROMPT)
+                        if isinstance(vres, dict) and "error" not in vres:
+                            raw = str(vres.get("result") or "").strip()
+                            if raw:
+                                return pg, raw
+                    except Exception:
+                        pass
+                return pg, ""
+
+            page_imgs = {}
+            for i, img_path in enumerate(image_paths):
+                page_no = batch_pages[i] if i < len(batch_pages) else 0
+                page_imgs[page_no] = str(img_path)
+
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
+                for fut in as_completed(futs):
+                    pg, raw = fut.result()
+                    if raw:
+                        _cache_write(pg, raw)
+                        cached_mds.append((pg, raw))
+                    print(f"  [OCR] 第 {pg} 页完成", flush=True)
+
+    # 从所有 OCR 结果中过滤出该表的数据
+    target_mds = []
+    for pg, raw in cached_mds:
+        if table_number:
+            target = _filter_md_by_table_number(raw, table_number)
+            if target:
+                target_mds.append(f"== 第 {pg} 页 ==\n{target}")
+                _TABLE_PAGE_MAP.setdefault(table_number, []).append(pg)
+        else:
+            target_mds.append(f"== 第 {pg} 页 ==\n{raw}")
+
+    if not target_mds:
+        print(f"  [OCR] 表{table_number} 未在 {len(cached_mds)} 页中匹配到表格数据", flush=True)
+        return ""
+
+    return "\n\n".join(target_mds)
 
 
 def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
@@ -1911,11 +2054,14 @@ def _apply_row_col_fixes(grouped: Dict[str, List[Dict]], issues: List[tuple], so
                 print(f"  [修复] 表「{tbl}」SKILL-DQ-004 子列合并 {len(headers)}→{len(new_headers)} 列")
                 fixed_count += abs(len(headers) - len(new_headers))
 
-        # SKILL-DQ-005（列错位）与 SKILL-DQ-001（丢行）调 Vision 重新 OCR 整页后按行回填。
-        if "SKILL-DQ-005" in rule_ids or "SKILL-DQ-001" in rule_ids:
+        # SKILL-DQ-005（列错位）与 SKILL-DQ-001（丢行）调同通道 LLM 重新还原后按行回填。
+        # 收敛保护：问题数 ≥5 的表只修一次（LLM 修复大概率引入新问题，反复修不如保留）
+        if ("SKILL-DQ-005" in rule_ids or "SKILL-DQ-001" in rule_ids) and len(tbl_issues) < 5:
             _llm_fixed = _llm_fix_rows(tbl, recs, tbl_issues, source_text, pdf_path)
             if _llm_fixed:
                 fixed_count += _llm_fixed
+        elif "SKILL-DQ-005" in rule_ids or "SKILL-DQ-001" in rule_ids:
+            print(f"  [修复] 表「{tbl}」问题数 {len(tbl_issues)} ≥5，跳过 LLM 修复（收敛保护）")
 
     return fixed_count
 
@@ -1991,124 +2137,29 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
             seq_col = ci
             break
 
-    # 确定表格在 PDF 哪些页：只对含图片的页重新 OCR
-    try:
-        text_res = call_tool("read_file", path=pdf_path)
-        if not isinstance(text_res, dict) or "content" not in text_res:
-            return 0
-        total_pages = text_res.get("total_pages") or 0
-        image_pages = text_res.get("image_pages") or []
-        if not total_pages:
-            probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
-            total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
-    except Exception:
-        return 0
-
-    if not total_pages:
-        return 0
-
-    # 只对含图片的页做 OCR；无图片页信息时回退全部页
-    if image_pages:
-        _all_img_pages = image_pages[:30]
-    else:
-        _all_img_pages = list(range(1, min(total_pages, 30) + 1))
-
-    # 从表名中提取表号（如"表A.1"）
+    # 确定表格在 PDF 哪些页：用提取阶段记录的表号→页码映射收窄
+    # 无映射记录时（OCR 通道表未记录页码）用 _ocr_table_on_demand 统一处理（含磁盘缓存）
     tbl_number = ""
     m = re.search(r"表\s*([A-Za-z]?\s*\.?\s*\d+(?:[.．]\d+)?)", tbl)
     if m:
         tbl_number = m.group(1).strip()
 
-    # 重扫范围收窄：用提取阶段记录的表号→页码映射，只扫该表所在的页（±1 页含续表）。
-    # 全部图片页重扫 10-15 分钟，收窄后 2-4 页 1-3 分钟——总时长超时的主因就是这里。
-    ocr_pages = []
-    if tbl_number:
-        _known = _TABLE_PAGE_MAP.get(tbl_number) or []
-        if _known:
-            _min_p, _max_p = min(_known), max(_known)
-            ocr_pages = [p for p in _all_img_pages if _min_p - 1 <= p <= _max_p + 1]
-    if not ocr_pages:
-        ocr_pages = _all_img_pages
-
-    # 重新 OCR（复用 _OCR_PROMPT）
-    print(f"  [修复] 表「{tbl}」Vision 重新 OCR（{len(ocr_pages)} 页：{ocr_pages[:10]}）...", flush=True)
-    ocr_prompt = _OCR_PROMPT
-
-    # 逐批 OCR——模块级缓存：同一次运行内多张问题表共享一轮重扫的原始结果，不重复扫
-    global _RESUME_OCR_CACHE
-    if _RESUME_OCR_CACHE.get("pdf_path") == pdf_path and _RESUME_OCR_CACHE.get("pages") == ocr_pages:
-        page_raw_map = _RESUME_OCR_CACHE["raw_by_page"]
-        print(f"  [修复] 表「{tbl}」复用已有重扫结果（{len(page_raw_map)} 页有内容）", flush=True)
-    else:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        batch_size = 5
-        page_raw_map = {}
-        _ocr_total = len(ocr_pages)
-        _ocr_done = 0
-        for bi in range(0, len(ocr_pages), batch_size):
-            batch_pages = ocr_pages[bi:bi + batch_size]
-            print(f"  [修复] OCR 渲染第 {batch_pages} 页...", flush=True)
-            try:
-                img_res = call_tool("read_file", path=pdf_path, pdf_page_images=batch_pages, dpi=200)
-                if not isinstance(img_res, dict) or not img_res.get("success"):
-                    continue
-                image_paths = img_res.get("image_paths") or []
-            except Exception:
-                continue
-
-            def _ocr_one(pg, img_p):
-                for _ in range(3):
-                    try:
-                        vres = call_tool("llm_vision", image_path=img_p, prompt=ocr_prompt)
-                        if isinstance(vres, dict) and "error" not in vres:
-                            raw = str(vres.get("result") or "").strip()
-                            if raw:
-                                return pg, raw
-                    except Exception:
-                        pass
-                return pg, ""
-
-            page_imgs = {}
-            for i, img_path in enumerate(image_paths):
-                page_no = batch_pages[i] if i < len(batch_pages) else 0
-                page_imgs[page_no] = str(img_path)
-
-            # 2 路并发（与提取阶段一致；4 路会降智丢页）
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
-                for fut in as_completed(futs):
-                    pg, raw = fut.result()
-                    _ocr_done += 1
-                    if raw:
-                        page_raw_map[pg] = raw
-                    print(f"  [修复] OCR 第 {pg} 页完成（{_ocr_done}/{_ocr_total}）", flush=True)
-        _RESUME_OCR_CACHE = {"pdf_path": pdf_path, "pages": ocr_pages, "raw_by_page": page_raw_map}
-
-    # 按本表表号从缓存的原始结果中过滤
-    all_ocr_md = []
-    for pg in sorted(page_raw_map.keys()):
-        raw = page_raw_map[pg]
-        if tbl_number:
-            target = _filter_md_by_table_number(raw, tbl_number)
-            if target:
-                all_ocr_md.append(f"== 第 {pg} 页 ==\n{target}")
-        else:
-            all_ocr_md.append(f"== 第 {pg} 页 ==\n{raw}")
-
-    if not all_ocr_md:
-        print(f"  [修复] 表「{tbl}」重新 OCR 未提取到表格数据")
+    # 用 _ocr_table_on_demand 获取该表的 OCR 数据（复用磁盘缓存，不重复扫）
+    print(f"  [修复] 表「{tbl}」按需 OCR（表号 {tbl_number}）...", flush=True)
+    ocr_md = _ocr_table_on_demand(pdf_path, tbl_number, tbl)
+    if not ocr_md:
+        print(f"  [修复] 表「{tbl}」OCR 未提取到表格数据，跳过")
         return 0
 
-    # 确定性归并多页 OCR 结果
-    merged = _merge_md_tables(tbl, tbl_number, all_ocr_md)
+    # 确定性归并 OCR 结果
+    merged = _merge_md_tables(tbl, tbl_number, [ocr_md])
     new_headers = merged.get("headers") or []
     new_rows = merged.get("rows") or []
     if not new_headers or not new_rows:
-        print(f"  [修复] 表「{tbl}」重新 OCR 归并失败")
+        print(f"  [修复] 表「{tbl}」OCR 归并失败")
         return 0
 
-    print(f"  [修复] 表「{tbl}」重新 OCR 得到 {len(new_rows)} 行 × {len(new_headers)} 列")
-
+    print(f"  [修复] 表「{tbl}」OCR 得到 {len(new_rows)} 行 × {len(new_headers)} 列")
     # 后处理：前向填充 + 表头拆分 + 子列合并
     ti = {"headers": new_headers, "rows": new_rows}
     ti = _filter_polluted_rows(ti)
@@ -2476,14 +2527,13 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         blocks = _merge_blocks_by_number(_split_by_tables(text))
         print(f"  [切分] 共 {len(blocks)} 个块")
 
-        # 只对文本层无数据的表格走 OCR
+        # per-table 按需 OCR：不预扫全部 image_pages，只在 _process_table 内文本层无数据时才 OCR 该表所在页
         ocr_blocks = [b for b in blocks if (b.get("title") or "正文") != "正文" and not _table_block_has_data(b)]
-        ocr_md_cache = {}
-        if ocr_blocks and ocr_blocks[0].get("number"):
-            print(f"  [OCR] {len(ocr_blocks)} 个表格文本层无数据，需要 OCR")
-            ocr_md_cache = _scan_pages_for_tables(path, [b["number"] for b in ocr_blocks if b.get("number")])
+        if ocr_blocks:
+            print(f"  [OCR] {len(ocr_blocks)} 个表格文本层无数据，将在逐表处理时按需 OCR")
         else:
             print(f"  [OCR] 所有表格文本层有数据，跳过 OCR")
+        ocr_md_cache = {}  # per-table 按需填充，不再预扫
 
         body_parts, table_blocks = [], []
         for b in blocks:
@@ -2503,12 +2553,25 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         def _process_table(b):
             number = b.get("number") or ""
             try:
-                if number in ocr_md_cache:
-                    ti = _extract_table_from_ocr(b, ocr_md_cache[number])
+                if not _table_block_has_data(b) and number:
+                    # 文本层无数据 → per-table 按需 OCR：只扫该表所在页
+                    print(f"  [表格] 表{number} 文本层无数据，按需 OCR...", flush=True)
+                    _ocr_md = _ocr_table_on_demand(path, number, b.get("title") or "")
+                    if _ocr_md:
+                        ocr_md_cache[number] = _ocr_md
+                        ti = _extract_table_from_ocr(b, _ocr_md)
+                        _channel = "ocr"
+                    else:
+                        ti = {"table_name": _sanitize_table_name(f"表{number} {b.get('title', '')}".strip()), "headers": [], "rows": []}
+                        _channel = "ocr"
                 else:
                     ti = _extract_table_literal(b)
+                    _channel = "text_layer"
                 if ti.get("headers") and ti.get("rows"):
                     pass
+                _tbl_result_name = ti.get("table_name", "")
+                if _tbl_result_name:
+                    _TABLE_CHANNEL_MAP[_tbl_result_name] = _channel
                 return {"table_name": ti["table_name"], "records": _table_rows_to_records(ti, Path(path).name), "title": b.get("title"), "number": number}
             except Exception as e:
                 print(f"  [表格] 表{number} 提取失败: {e}")
@@ -2711,10 +2774,14 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         print(f"[自检] 发现 {len(_all_check_issues)} 个问题：")
         for tbl, iss in _all_check_issues:
             print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
-        # 确定性修复（列数归一/前向填充/子列合并，秒级）
-        # + Vision 重扫修复（表级收窄到目标表所在页，豆包约 70s/页，5 页 ≈ 6 分钟）
+        # 分阶段预算：修复阶段剩余不足 300s → 只做确定性修复（秒级），跳过 LLM/Vision 重扫
+        _fix_budget = _TIME_BUDGET - _elapsed()
         _modified_tables = {tbl for tbl, _ in _all_check_issues}
-        _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, paths[0] if paths else "")
+        if _fix_budget < 300:
+            print(f"[自检] 剩余 {_fix_budget}s 不足 LLM 修复，仅做确定性修复", flush=True)
+            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, "")
+        else:
+            _fixed_count = _apply_row_col_fixes(grouped, _all_check_issues, _src_text, _table_original_titles, paths[0] if paths else "")
         print(f"[自检] 修复 {_fixed_count} 处")
         # 修复后只重写修过的表（一次，不再重新检查）
         if _fixed_count > 0:
