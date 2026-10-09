@@ -222,6 +222,7 @@ export default {
     deleteSessionConfirm: 'Are you sure you want to delete this session? All messages will be lost.',
     renameSession: 'Rename Session',
     inputHistory: 'Input History',
+    noInputHistory: 'No input history',
     untitledSession: 'New Session',
     me: 'Me',
     progressCount: '{n} progress messages',

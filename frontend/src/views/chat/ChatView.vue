@@ -354,6 +354,36 @@
                   <el-icon v-if="!uploading"><Paperclip /></el-icon>
                 </el-button>
               </el-upload>
+              <el-popover
+                v-model:visible="historyPopoverVisible"
+                placement="top"
+                :width="isMobile ? 300 : 360"
+                trigger="click"
+                popper-class="history-popover"
+              >
+                <template #reference>
+                  <el-button
+                    circle
+                    :disabled="chatStore.isStreaming || inputHistory.length === 0"
+                    :title="t('chat.inputHistory')"
+                  >
+                    <el-icon><Clock /></el-icon>
+                  </el-button>
+                </template>
+                <div class="history-list">
+                  <div v-if="inputHistory.length === 0" class="history-empty">
+                    {{ t('chat.noInputHistory') }}
+                  </div>
+                  <div
+                    v-for="(item, i) in reversedHistory"
+                    :key="i"
+                    class="history-item"
+                    @click="selectHistory(item)"
+                  >
+                    {{ item }}
+                  </div>
+                </div>
+              </el-popover>
               <el-button
                 v-if="chatStore.isStreaming"
                 type="danger"
@@ -385,7 +415,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right, Menu } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right, Menu, Clock } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import api from '@/api/index'
@@ -419,6 +449,7 @@ const uploading = ref(false)
 const inputHistory = ref<string[]>([])
 const historyIdx = ref(-1)
 const savedDraft = ref('')
+const historyPopoverVisible = ref(false)
 
 // 演进模式开关：开启后走数据/技能/流程匹配，关闭则直接路由 Agent 处理
 const evolutionMode = ref(localStorage.getItem('dc_evolution_mode') === 'true')
@@ -429,6 +460,13 @@ function onEvolutionModeChange(val: any) {
 function loadInputHistory(sessionId: string | null) {
   if (!sessionId) { inputHistory.value = []; return }
   try { inputHistory.value = JSON.parse(localStorage.getItem(`dc_chat_history_${sessionId}`) || '[]') } catch { inputHistory.value = [] }
+  historyIdx.value = -1
+}
+
+const reversedHistory = computed(() => [...inputHistory.value].reverse())
+function selectHistory(text: string) {
+  inputText.value = text
+  historyPopoverVisible.value = false
   historyIdx.value = -1
 }
 
@@ -1882,6 +1920,35 @@ async function handleExportCurrent() {
     display: flex;
     gap: 8px;
   }
+}
+
+/* 历史输入列表 */
+.history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.history-empty {
+  color: #909399;
+  text-align: center;
+  padding: 20px 0;
+  font-size: 13px;
+}
+.history-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.15s;
+}
+.history-item:hover {
+  background-color: #f5f7fa;
+}
+.history-item:active {
+  background-color: #ecf5ff;
 }
 
 /* 手机适配 */

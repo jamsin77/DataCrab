@@ -1,6 +1,26 @@
 {
   "negative": [
     {
+      "timestamp": "2026-09-24T17:40:54.409938",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "脚本执行超时（总时长超过 1800秒 上限）\n\n--- 已收集的 stdout（最后 2000 字符）---\n...\n[SkillRunner] call_tool: write_table_data\n写入完成: 62 条\n[自检] 重新写入表「表A.5 电压互感器状态量劣化检修内容明细表」(25 条)\n写入表 表A.5 电压互感器状态量劣化检修内容明细表，共 25 条，分 1 批\n  正在写入第 1/1 批 (25 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 25 条\n[自检] 重新写入表「GIS设备检修规则_GIS停电检修时间决策表」(5 条)\n写入表 GIS设备检修规则_GIS停电检修时间决策表，共 5 条，分 1 批\n  正在写入第 1/1 批 (5 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 5 条\n[自检] 重新写入表「GIS设备检修规则_GIS状态检修规则主表」(45 条)\n写入表 GIS设备检修规则_GIS状态检修规则主表，共 45 条，分 1 批\n  正在写入第 1/1 批 (45 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 45 条\n[自检] 重新写入表「GIS设备检修规则_GIS状态量劣化检修内容明细表」(18 条)\n写入表 GIS设备检修规则_GIS状态量劣化检修内容明细表，共 18 条，分 1 批\n  正在写入第 1/1 批 (18 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 18 条\n[自检] 重新写入表「表2 GIS检修类别及对应的检修内容」(5 条)\n写入表 表2 GIS检修类别及对应的检修内容，共 5 条，分 1 批\n  正在写入第 1/1 批 (5 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 5 条\n[自检] 重新写入表「表1 GIS设备停电检修时间决策表」(1 条)\n写入表 表1 GIS设备停电检修时间决策表，共 1 条，分 1 批\n  正在写入第 1/1 批 (1 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 1 条\n[自检] 重新写入表「表A.4 避雷器状态量劣化检修内容明细表」(34 条)\n写入表 表A.4 避雷器状态量劣化检修内容明细表，共 34 条，分 1 批\n  正在写入第 1/1 批 (34 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 34 条\n[自检] 重新写入表「表A.7 母线状态量劣化检修内容明细表」(54 条)\n写入表 表A.7 母线状态量劣化检修内容明细表，共 54 条，分 1 批\n  正在写入第 1/1 批 (54 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 54 条\n[自检] 重新写入表「表A.3 电流互感器状态量劣化检修决策明细表」(31 条)\n写入表 表A.3 电流互感器状态量劣化检修决策明细表，共 31 条，分 1 批\n  正在写入第 1/1 批 (31 条，strategy=overwrite)...\n[SkillRunner] call_tool: write_table_data\n写入完成: 31 条\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check_skill_rules\n[SkillRunner] call_tool: check",
+      "parameters": {},
+      "stdout_preview": "[SkillRunner] call_tool: list_user_file_links\n正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] PDF 文本: DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.6364924.pdfcache.tx",
+      "context_summary": "工具: run_script\nAI输出: 入口已确认，参数与写入逻辑清晰。按你的要求**只执行、不修改代码**，直接用当前脚本运行。\n\n参数：\n- `document_paths` = `DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf`（电网数据源 `e270806b-7244-40e7-b66e-11ef9423f158`）\n- `target_datasource_name` = `电网规则`（`74d94ef7-025e-4d57-bc11-e29bf7a03a90`）\n- `target_table_name` = `GIS设备检修规则`\n- `if_table_exists` = `replace`\n\n"
+    },
+    {
+      "timestamp": "2026-09-24T17:47:07.608468",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "error_type": "execution_error",
+      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpl_t7tl0j.py\", line 2171, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpl_t7tl0j.py\", line 2153, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpl_t7tl0j.py\", line 2094, in extract_rules_to_kb\n    _result = call_tool(\"check_skill_rules\", headers=headers, rows=rows, source_text=_src_text_check, table_name=tbl)\n                                                                                     ^^^^^^^^^^^^^^^\nNameError: name '_src_text_check' is not defined",
+      "parameters": {},
+      "stdout_preview": "[SkillRunner] call_tool: list_user_file_links\n正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n开始提取文件文本: D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  [缓存命中] PDF 文本: DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.6364924.pdfcache.tx",
+      "context_summary": "工具: run_script\nAI输出: 修改完成，重新运行验证。"
+    },
+    {
       "timestamp": "2026-09-24T22:23:01.540580",
       "source": "debug-chat",
       "script_name": "main.py",
@@ -251,67 +271,79 @@
       "context_summary": "工具: run_script\nAI输出: 好的，直接重新执行验证。\n\n"
     },
     {
-      "timestamp": "2026-10-04T09:25:53.925175",
+      "timestamp": "2026-10-05T14:54:33.514004",
       "source": "debug-chat",
       "script_name": "main.py",
       "error_type": "execution_error",
-      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp92ghaykq.py\", line 2766, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp92ghaykq.py\", line 2748, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp92ghaykq.py\", line 2700, in extract_rules_to_kb\n    for _cfut in as_completed(_cfuts):\n                 ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 32, in as_completed\n    waiter.event.wait(wait_timeout)\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 444, in wait\n    signaled = self._cond.wait(timeout)\n               ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 144, in wait\n    waiter.acquire()\nKeyboardInterrupt",
+      "error_message": "Traceback (most recent call last):\n  File \"/tmp/tmpukf2_h61.py\", line 2764, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"/tmp/tmpukf2_h61.py\", line 2746, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmpukf2_h61.py\", line 2441, in extract_rules_to_kb\n    ocr_md_cache = _scan_pages_for_tables(path, [b[\"number\"] for b in ocr_blocks if b.get(\"number\")])\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmpukf2_h61.py\", line 940, in _scan_pages_for_tables\n    raise RuntimeError(f\"read_file 获取 PDF 失败: {text_res!r}\")\nRuntimeError: read_file 获取 PDF 失败: {'error': 'PDF 解析失败（主进程缺少 pdfplumber/fitz）: pdfplumber 未安装; PyMuPDF(fitz) 未安装'}",
       "parameters": {},
-      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 3319 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n  文档文本总长 3319 字符\n  [切分] 共 10 个块\n  [OCR] 9 个表格文本层无数据，需要 OCR\n[SkillRunner] call_tool: re",
-      "context_summary": "工具: run_script\nAI输出: 参数规范已确认。按用户要求「只执行不修改代码」，直接用当前脚本运行。用已验证的绝对路径（跳过慢的 `list_user_file_links` 调用），目标数据源「电网规则」，主表名用中文。\n\n\n\n"
+      "stdout_preview": "[SkillRunner] call_tool: list_user_file_links\n正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f, 图数据库=False)\n[1/1] 处理文档: /usr/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 0 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n开始提取文件文本: /usr/Data/电网/DL_T_1689_2017-气体绝",
+      "context_summary": "工具: run_script\nAI输出: 我已确认脚本结构和运行方式。脚本入口 `main` 需要参数 `document_paths`、`target_datasource_name`、`target_table_name`；目标「电网规则」是 excel 类型（支持中文表名，不会走英文翻译分支），电网数据文件链接目录为 `/usr/Data/电网`。\n\n直接按用户指令运行当前脚本，不做任何代码修改。目标表名前缀用中文，各子表名由脚本根据文档内容动态生成。"
     },
     {
-      "timestamp": "2026-10-04T09:33:19.786006",
+      "timestamp": "2026-10-06T20:25:40.313822",
       "source": "debug-chat",
       "script_name": "main.py",
       "error_type": "execution_error",
-      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 2766, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 2748, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 2423, in extract_rules_to_kb\n    target_ds_id = _get_datasource_id(target_datasource_name)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 30, in _get_datasource_id\n    ds = call_tool(\"list_user_datasources\", by_name=name)\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 151, in _logged_call_tool\n    _result = _orig_call_tool(tool_name, **args)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmp10rhvk8l.py\", line 86, in call_tool\n    with _urllib_req.urlopen(_req, timeout=240) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 4, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 304, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 321, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\ur",
+      "error_message": "Traceback (most recent call last):\n  File \"/tmp/tmphh5jgkpq.py\", line 2764, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"/tmp/tmphh5jgkpq.py\", line 2746, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmphh5jgkpq.py\", line 2441, in extract_rules_to_kb\n    ocr_md_cache = _scan_pages_for_tables(path, [b[\"number\"] for b in ocr_blocks if b.get(\"number\")])\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmphh5jgkpq.py\", line 940, in _scan_pages_for_tables\n    raise RuntimeError(f\"read_file 获取 PDF 失败: {text_res!r}\")\nRuntimeError: read_file 获取 PDF 失败: {'error': 'PDF 解析失败（主进程缺少 pdfplumber/fitz）: pdfplumber 未安装; PyMuPDF(fitz) 未安装'}",
       "parameters": {},
-      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n[SkillRunner] call_tool(list_user_datasources) failed: timed out",
-      "context_summary": "工具: run_script\nAI输出: 直接执行技能验证。\n\n"
+      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f, 图数据库=False)\n[1/1] 处理文档: /usr/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 0 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n开始提取文件文本: /usr/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: r",
+      "context_summary": "工具: run_script\nAI输出: 我已确认脚本入口参数规范：`main` 需要 `document_paths`、`target_datasource_name`、`target_table_name`（必填，作为主表前缀）、`if_table_exists`。目标「电网规则」是 excel 类型，支持中文表名，不会触发英文翻译分支。\n\nPDF 文件位于电网数据文件链接目录 `/usr/Data/电网` 下。我直接用当前脚本运行，主表前缀用中文名，子表名由脚本根据文档内容动态生成。\n\n"
     },
     {
-      "timestamp": "2026-10-08T09:50:45.343508",
+      "timestamp": "2026-10-06T20:30:01.842462",
       "source": "debug-chat",
       "script_name": "main.py",
       "error_type": "execution_error",
-      "error_message": "脚本执行超时（总时长超过 1800秒 上限）\n\n--- 已收集的 stdout（最后 2000 字符）---\n [表格] 完成 3/9: 「表1 GIS设备停电检修时间决策表」1 行\n  [表格] 完成 4/9: 「表A.1 断路器状态量劣化检修内容明细表」68 行\n  [表格] 完成 5/9: 「表A.3 电流互感器状态量劣化检修决策明细表」32 行  [确定性归并] 表A.5 36 行 × 6 列（2 段）\n  [阶段日志] 表A.5 确定性归并输出: 36 行 × 6 列\n  [阶段日志] 表A.6 确定性归并输出: 45 行 × 6 列\n  [阶段日志] 表A.6 ⚠️ 归并丢行: OCR 49 行 → 归并 45 行\n  [阶段日志] 表A.4 确定性归并输出: 39 行 × 6 列\n  [阶段日志] 表A.4 ⚠️ 归并丢行: OCR 43 行 → 归并 39 行\n  [阶段日志] 表A.4 后处理输入: 39 行 × 6 列  [阶段日志] 表A.6 后处理输入: 45 行 × 6 列  [阶段日志] 表A.5 ⚠️ 归并丢行: OCR 38 行 → 归并 36 行\n  [阶段日志] 表A.5 后处理输入: 36 行 × 6 列\n  [合并单元格] 前向填充 11 个空值（1 列）\n  [合并单元格] 前向填充 4 个空值（1 列）\n  [阶段日志] 表A.7 OCR输入: 33 行数据  [表格] 完成 6/9: 「表A.5 电压互感器状态量劣化检修内容明细表」36 行\n  [确定性归并] 表A.7 31 行 × 6 列（2 段）\n  [阶段日志] 表A.7 确定性归并输出: 31 行 × 6 列\n  [阶段日志] 表A.7 ⚠️ 归并丢行: OCR 33 行 → 归并 31 行  [表格] 完成 7/9: 「表A.6 套管状态量劣化检修内容明细表」45 行\n  [表格] 完成 8/9: 「表A.4 避雷器状态量劣化检修内容明细表」39 行\n  [阶段日志] 表A.7 后处理输入: 31 行 × 6 列\n  [表格] 完成 9/9: 「表A.7 母线状态量劣化检修内容明细表」31 行\n[SkillRunner] call_tool: llm_generate\n  [结构分析] 主表「运行中GIS设备状态检修标准主表」+ 3 张子表\n  [表结构] 主表「运行中GIS设备状态检修标准主表」+ 3 张子表\n  [LLM提取] 切分为 1 块，并发 3 路提取...\n    [提取] 开始第 1 段（正文，2942 字符）\n    [提取] 第 1 段 第1次调用 llm_generate...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 第2次调用 llm_generate...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 第3次调用 llm_generate...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 整块失败，细切为 2 块\n    [提取] 第 1 段 细切1/2 调用...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 细切1/2 调用...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 细切1/2 调用...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] 第 1 段 细切2/2 调用...\n[SkillRunner] call_tool: llm_generate\n[SkillRunner] call_tool(llm_generate) failed: timed out\n    [提取] ",
+      "error_message": "Traceback (most recent call last):\n  File \"/tmp/tmp54wxhqcm.py\", line 2764, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"/tmp/tmp54wxhqcm.py\", line 2746, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmp54wxhqcm.py\", line 2441, in extract_rules_to_kb\n    ocr_md_cache = _scan_pages_for_tables(path, [b[\"number\"] for b in ocr_blocks if b.get(\"number\")])\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tmp54wxhqcm.py\", line 940, in _scan_pages_for_tables\n    raise RuntimeError(f\"read_file 获取 PDF 失败: {text_res!r}\")\nRuntimeError: read_file 获取 PDF 失败: {'error': 'PDF 解析失败（主进程缺少 pdfplumber/fitz）: pdfplumber 未安装; PyMuPDF(fitz) 未安装'}",
       "parameters": {},
-      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 3319 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n  文档文本总长 3319 字符\n  [切分] 共 10 个块\n  [OCR] 9 个表格文本层无数据，需要 OCR\n[SkillRunner] call_tool: re",
-      "context_summary": "工具: run_script\nAI输出: 已确认关键信息：\n\n- **文件链接目录**：「电网数据」对应 `D:\\Data\\电网`，PDF 路径为 `D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf`。\n- **脚本入口**：`main(document_paths, target_datasource_name, target_table_name, if_table_exists)`，目标数据源按名称「电网规则」反查 UUID。\n- **策略**：按你的要求「只执行不修改代码」，直接运行，不改任何逻辑。\n\n本次运行参数：文档用绝对路径（跳过慢的 `list_user_file_links`），目标数据源「电网规则」，主表名用中文「GIS设备状态检修规则主表」，写入策略沿用默认 `replace`。现在执行。\n\n"
-    },
-    {
-      "timestamp": "2026-10-08T11:06:13.197385",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "error_type": "execution_error",
-      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 2766, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 2748, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 2423, in extract_rules_to_kb\n    target_ds_id = _get_datasource_id(target_datasource_name)\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 30, in _get_datasource_id\n    ds = call_tool(\"list_user_datasources\", by_name=name)\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 151, in _logged_call_tool\n    _result = _orig_call_tool(tool_name, **args)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpsq3ga9l4.py\", line 86, in call_tool\n    with _urllib_req.urlopen(_req, timeout=240) as resp:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 4, in urlopen\n    return opener.open(url, data, timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 304, in open\n    response = self._open(req, data)\n               ^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\urllib\\request.py\", line 321, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\ur",
-      "parameters": {
-        "document_paths": "D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf",
-        "if_table_exists": "replace",
-        "target_datasource_name": "电网规则",
-        "target_table_name": "GIS设备状态检修规则主表"
-      },
-      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n[SkillRunner] call_tool(list_user_datasources) failed: timed out",
-      "context_summary": "工具: run_script\nAI输出: 收到，直接执行技能验证脚本。参数沿用已验证的配置：绝对路径 + 「电网规则」数据源 + `replace` 策略。\n\n"
-    },
-    {
-      "timestamp": "2026-10-08T18:15:05.114199",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "error_type": "execution_error",
-      "error_message": "Traceback (most recent call last):\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpy34s5es7.py\", line 2766, in <module>\n    result = main(input_data, **params) if input_data is not None else main(**params)\n                                                                       ^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpy34s5es7.py\", line 2748, in main\n    return extract_rules_to_kb(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpy34s5es7.py\", line 2483, in extract_rules_to_kb\n    ocr_md_cache = _scan_pages_for_tables(path, [b[\"number\"] for b in ocr_blocks if b.get(\"number\")])\n                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Local\\Temp\\tmpy34s5es7.py\", line 1094, in _scan_pages_for_tables\n    for fut in as_completed(futs):\n               ^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\concurrent\\futures\\_base.py\", line 32, in as_completed\n    waiter.event.wait(wait_timeout)\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 444, in wait\n    signaled = self._cond.wait(timeout)\n               ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\suiqi\\AppData\\Roaming\\uv\\python\\cpython-3.12.14-windows-x86_64-none\\Lib\\threading.py\", line 144, in wait\n    waiter.acquire()\nKeyboardInterrupt",
-      "parameters": {
-        "document_paths": "D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf",
-        "target_datasource_name": "电网规则",
-        "target_table_name": "油浸式变压器状态检修规则主表",
-        "if_table_exists": "replace"
-      },
-      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=74d94ef7-025e-4d57-bc11-e29bf7a03a90, 图数据库=False)\n[1/1] 处理文档: D:\\Data\\电网\\DL_T_1684_2017-油浸式变压器(电抗器)状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 15164 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n  文档文本总长 15164 字符\n  [切分] 共 9 个块\n  [OCR] 8 个表格文本层无数据，需要 OCR\n[SkillRunner] call_tool: re",
-      "context_summary": "工具: run_script\nAI输出: 脚本入口确认完毕。参数格式与上次一致，本次文档是油浸式变压器状态检修导则，主表名用中文「油浸式变压器状态检修规则主表」。直接运行。"
+      "stdout_preview": "正在查找数据源: 电网规则\n[SkillRunner] call_tool: list_user_datasources\n数据源已找到: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f)\n[SkillRunner] call_tool: list_user_datasources\n目标数据源: 电网规则 (id=e374438f-fa62-459d-bcd1-5429b57c3e7f, 图数据库=False)\n[1/1] 处理文档: /usr/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: read_file\n  文档文本总长 0 字符，pdfplumber 检测到 0 张结构化表格\n  [OCR补充] 结构化表格处理完成，继续对文本层无数据的表格走 Vision OCR 补充\n开始提取文件文本: /usr/Data/电网/DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf\n[SkillRunner] call_tool: r",
+      "context_summary": "工具: run_script\nAI输出: 我直接用原参数重新执行脚本，验证后端环境是否已恢复。"
     }
   ],
   "positive": [
+    {
+      "timestamp": "2026-09-21T17:18:28.444177",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 169, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修总则与术语': 17, 'r"
+    },
+    {
+      "timestamp": "2026-09-21T18:51:10.833397",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 19, 'total_rules_written': 169, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_术语定义表': 11, 'rules_kn"
+    },
+    {
+      "timestamp": "2026-09-21T19:28:30.527324",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 166, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则主表': 16, '"
+    },
+    {
+      "timestamp": "2026-09-21T19:41:45.496303",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 8, 'total_rules_written': 159, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修通用规则主表': 7, 'ru"
+    },
+    {
+      "timestamp": "2026-09-21T20:37:49.985060",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 17, 'total_rules_written': 167, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修总则与术语': 16, 'r"
+    },
+    {
+      "timestamp": "2026-09-21T20:50:30.499778",
+      "source": "debug-chat",
+      "script_name": "main.py",
+      "parameters": {},
+      "result_summary": "{'success': True, 'extracted_rules': 18, 'total_rules_written': 169, 'target_table': 'rules_knowledge_base', 'target_datasource': '电网规则', 'tables_written': {'rules_knowledge_base_GIS状态检修总则与术语': 17, 'r"
+    },
     {
       "timestamp": "2026-09-22T10:08:09.795648",
       "source": "debug-chat",
@@ -493,49 +525,6 @@
       "script_name": "main.py",
       "parameters": {},
       "result_summary": "{'success': True, 'warnings': [], 'extracted_rules': 22, 'total_rules_written': 358, 'target_table': '气体绝缘金属封闭开关设备状态检修导则规则', 'target_datasource': '电网规则', 'tables_written': {'气体绝缘金属封闭开关设备状态检修导则规则_GIS状态"
-    },
-    {
-      "timestamp": "2026-10-06T20:46:02.524410",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {},
-      "result_summary": "{'success': True, 'warnings': [], 'extracted_rules': 0, 'total_rules_written': 340, 'target_table': 'DL_T_1689_2017气体绝缘金属封闭开关设备状态检修导则规则', 'target_datasource': '电网规则', 'tables_written': {'表1 GIS设备停电检修时"
-    },
-    {
-      "timestamp": "2026-10-08T10:44:17.296051",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {
-        "document_paths": "D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf",
-        "target_datasource_name": "电网规则",
-        "target_table_name": "GIS设备状态检修规则主表",
-        "if_table_exists": "replace"
-      },
-      "result_summary": "{'success': True, 'warnings': [], 'extracted_rules': 22, 'total_rules_written': 362, 'target_table': 'GIS设备状态检修规则主表', 'target_datasource': '电网规则', 'tables_written': {'GIS设备状态检修规则主表_GIS状态检修标准正文主表': 18,"
-    },
-    {
-      "timestamp": "2026-10-08T11:53:26.224533",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {
-        "document_paths": "D:\\Data\\电网\\DL_T_1689_2017-气体绝缘金属封闭开关设备状态检修导则.pdf",
-        "target_datasource_name": "电网规则",
-        "target_table_name": "GIS设备状态检修规则主表",
-        "if_table_exists": "replace"
-      },
-      "result_summary": "{'success': True, 'warnings': [\"[SKILL-DQ-001] 表「表1 GIS设备停电检修时间决策表」: 源文档片段中未包含表1的具体数据内容，无法验证提取的单元格值（如'正常周期或延长一年'等）是否与源文档一致，存在内容截断或无源文档依据的风险。\"], 'extracted_rules': 1, 'total_rules_written': 341, 'targe"
-    },
-    {
-      "timestamp": "2026-10-08T17:31:59.318205",
-      "source": "debug-chat",
-      "script_name": "main.py",
-      "parameters": {
-        "document_paths": "D:\\Data\\电网\\DL_T_2840_2024-变压器铁心接地电流现场测试导则.pdf",
-        "target_datasource_name": "电网规则",
-        "target_table_name": "变压器铁心接地电流测试规则主表",
-        "if_table_exists": "replace"
-      },
-      "result_summary": "{'success': True, 'warnings': [\"[SKILL-DQ-001] 表「表3 测试结果异常时的分析」: 提取的表格数据中混入了源文档的水印文字。第1行混入了'资'，第2行混入了'台'和'理'，第3行混入了'管'，第4行混入了'网'和'电'，导致单元格内容截断且不完整。\", \"[SKILL-DQ-004] 表「表3 测试结果异常时的分析」: 多级表头拼接错误。源文档中表头为"
     }
   ],
   "lessons": "### 常见错误\n\n#### 1. read_file 调用超时（最频繁，~40次）\n- 根因: PDF 文本提取（read_file）在主进程耗时过长，沙箱子进程等待期间无 stdout 输出，触发 300 秒 idle 超时\n- 修复: 使用 PDF 文本缓存（_load_pdf_text_cached），首次解析后写入 .pdfcache.txt，后续直接读缓存\n- 避免: 不要在 call_tool(read_file) 调用期间不做任何 print，必须先 print 进度\n\n#### 2. 沙箱禁止 import os/sys/fitz 等\n- 根因: 沙箱 __import__ hook 拦截危险模块，fitz 依赖链中 import glob 被拦截\n- 修复: 用 pathlib.Path 替代 os.path，用 call_tool 替代直接文件操作\n- 避免: 不要在脚本中 import fitz/PyMuPDF，用平台 read_file/render_pdf_pages\n\n#### 3. document_paths 被传为 list 而非 str\n- 根因: 前端有时传 list 类型，脚本用 .split(\",\") 报 AttributeError\n- 修复: 入口处统一转换 paths = [p.strip() for p in (document_paths if isinstance(document_paths, str) else \",\".join(document_paths)).split(\",\") if p.strip()]\n\n#### 4. Excel 写入 Permission denied\n- 根因: 目标 Excel 文件被其他进程占用（可能上次执行未释放）\n- 修复: 写入前检查文件是否被占用，或使用 overwrite 策略\n\n#### 5. LLM 返回空 content / JSON 解析失败\n- 根因: 推理模型 reasoning 过长导致 content 被截断，或返回空字符串\n- 修复: 空 content 时重试（最多3次），最终失败显式报错不吞异常\n\n### 成功模式\n\n#### 1. PDF 文本缓存是必须的\n- 首次解析 PDF 用 read_file，成功后立即写 .pdfcache.txt 缓存\n- 后续运行直接读缓存，避免重复慢解析超时\n\n#### 2. 文本路径优先，OCR 仅在文本层无数据时使用\n- OCR（llm_vision）比文本路径慢 5-10 倍，且容易产生重复行（幻觉）\n- 文本层有数据的表格优先走文本还原路径\n- 仅在 _table_block_has_data 返回 False（图片型 PDF）时才走 OCR\n- 瞬态错误（timeout/JSON/网络）重试文本路径，不切 OCR\n\n#### 3. 数据质量校验必须在写入前执行\n- _validate_table_quality 检查重复行率/行数异常/空行率\n- 质量校验失败直接 raise（不吞异常），让脚本崩溃记 negative\n- 附录明细表正常 30-50 行，超 80 行判定为幻觉\n"

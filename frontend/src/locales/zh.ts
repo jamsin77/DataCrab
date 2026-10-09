@@ -222,6 +222,7 @@ export default {
     deleteSessionConfirm: '确定删除此会话？所有对话记录将丢失。',
     renameSession: '重命名会话',
     inputHistory: '历史输入',
+    noInputHistory: '暂无历史输入',
     untitledSession: '新会话',
     me: '我',
     progressCount: '{n} 条进度信息',
