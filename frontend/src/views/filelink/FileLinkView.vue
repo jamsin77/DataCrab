@@ -34,7 +34,7 @@
     </el-table>
 
     <!-- 创建/编辑对话框 -->
-    <el-dialog v-model="showCreateDialog" :title="editingLink ? t('filelink.editLink') : t('filelink.createFileLink')" width="500px">
+    <el-dialog v-model="showCreateDialog" :title="editingLink ? t('filelink.editLink') : t('filelink.createFileLink')" :width="isMobile ? '95%' : '500px'">
       <el-form :model="createForm" label-width="100px">
         <el-form-item :label="t('filelink.name')" required>
           <el-input v-model="createForm.name" :placeholder="t('filelink.linkName')" />
@@ -63,7 +63,7 @@
     </el-dialog>
 
     <!-- 浏览对话框 -->
-    <el-dialog v-model="showBrowseDialog" :title="browsingLink?.name" width="800px">
+    <el-dialog v-model="showBrowseDialog" :title="browsingLink?.name" :width="isMobile ? '95%' : '800px'">
       <div class="browse-header">
         <el-breadcrumb separator="/">
           <el-breadcrumb-item v-for="(part, idx) in browsePath.split('/').filter(Boolean)" :key="idx">
@@ -97,7 +97,7 @@
     </el-dialog>
 
     <!-- 预览对话框 -->
-    <el-dialog v-model="showPreviewDialog" :title="previewingFile?.name" width="800px">
+    <el-dialog v-model="showPreviewDialog" :title="previewingFile?.name" :width="isMobile ? '95%' : '800px'">
       <pre class="preview-content">{{ previewContent }}</pre>
     </el-dialog>
   </div>
@@ -108,6 +108,7 @@ import { ref, onMounted } from 'vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { useResponsive } from '@/composables/useResponsive'
 
 interface FileLink {
   id: string
@@ -130,8 +131,7 @@ interface FileInfo {
 }
 
 const { t } = useI18n()
-
-const fileLinks = ref<FileLink[]>([])
+const { isMobile } = useResponsive()
 const showCreateDialog = ref(false)
 const showBrowseDialog = ref(false)
 const showPreviewDialog = ref(false)

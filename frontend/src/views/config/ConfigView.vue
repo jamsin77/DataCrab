@@ -67,4 +67,14 @@ function handleTabChange(tab: string) {
     margin-bottom: 20px;
   }
 }
+
+@media (max-width: 768px) {
+  .config-container {
+    padding: 10px;
+  }
+  .config-container :deep(.el-tabs__nav) {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
 </style>

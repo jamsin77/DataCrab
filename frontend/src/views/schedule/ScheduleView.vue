@@ -4,7 +4,7 @@
       <el-button type="primary" @click="openCreateDialog">
         <el-icon><Plus /></el-icon> {{ t('schedule.createSchedule') }}
       </el-button>
-      <el-select v-model="filterStatus" :placeholder="t('common.status')" clearable style="width: 130px">
+      <el-select v-model="filterStatus" :placeholder="t('common.status')" clearable style="max-width: 130px">
         <el-option :label="t('schedule.statusActive')" value="active" />
         <el-option :label="t('schedule.statusPaused')" value="paused" />
       </el-select>
@@ -81,7 +81,7 @@
     </el-table>
 
     <!-- 新建/编辑对话框 -->
-    <el-dialog v-model="showDialog" :title="editing ? t('schedule.editSchedule') : t('schedule.createSchedule')" width="560px">
+    <el-dialog v-model="showDialog" :title="editing ? t('schedule.editSchedule') : t('schedule.createSchedule')" :width="isMobile ? '95%' : '560px'">
       <el-form label-width="100px" class="schedule-dialog-form">
         <el-form-item :label="t('schedule.scheduleName')" required>
           <el-input v-model="form.name" :placeholder="t('schedule.namePlaceholder')" :disabled="isBuiltinSchedule" />
@@ -112,7 +112,7 @@
           <el-form-item :label="t('schedule.executeTime')">
             <div class="cron-times">
               <div v-for="(t_item, i) in cronTimes" :key="i" class="cron-time-row">
-                <el-time-picker v-model="cronTimes[i]" format="HH:mm" value-format="HH:mm" :placeholder="t('schedule.inputTimePlaceholder')" style="width: 140px" clearable />
+                <el-time-picker v-model="cronTimes[i]" format="HH:mm" value-format="HH:mm" :placeholder="t('schedule.inputTimePlaceholder')" style="max-width: 140px" clearable />
                 <el-button v-if="cronTimes.length > 1" size="small" text type="danger" @click="cronTimes.splice(i, 1)">
                   <el-icon><Delete /></el-icon>
                 </el-button>
@@ -123,13 +123,13 @@
             </div>
           </el-form-item>
           <el-form-item :label="t('schedule.timezone')">
-            <el-select v-model="cronTimezone" filterable allow-create default-first-option :placeholder="t('schedule.selectTimezone')" style="width: 240px">
+            <el-select v-model="cronTimezone" filterable allow-create default-first-option :placeholder="t('schedule.selectTimezone')" style="max-width: 240px">
               <el-option v-for="tz in commonTimezones" :key="tz" :label="timezoneLabel(tz)" :value="tz" />
             </el-select>
             <span class="form-hint">{{ t('schedule.timezoneHint') }}</span>
           </el-form-item>
           <el-form-item :label="t('schedule.repeatFrequency')">
-            <el-select v-model="cronFrequency" style="width: 120px" :disabled="isBuiltinSchedule">
+            <el-select v-model="cronFrequency" style="max-width: 120px" :disabled="isBuiltinSchedule">
               <el-option :label="t('schedule.daily')" value="daily" />
               <el-option v-if="!isBuiltinSchedule" :label="t('schedule.weekly')" value="weekly" />
               <el-option v-if="!isBuiltinSchedule" :label="t('schedule.monthly')" value="monthly" />
@@ -152,7 +152,7 @@
         <el-form-item v-if="form.schedule_type === 'interval'" :label="t('schedule.executeInterval')">
           <div class="interval-row">
             <el-input-number v-model="intervalValue" :min="1" />
-            <el-select v-model="intervalUnit" style="width: 90px">
+            <el-select v-model="intervalUnit" style="max-width: 90px">
               <el-option :label="t('schedule.seconds')" :value="1" />
               <el-option :label="t('schedule.minutes')" :value="60" />
               <el-option :label="t('schedule.hours')" :value="3600" />
@@ -173,7 +173,7 @@
     </el-dialog>
 
     <!-- 执行历史 -->
-    <el-dialog v-model="showHistory" :title="t('schedule.runHistory')" width="800px" @close="stopPolling">
+    <el-dialog v-model="showHistory" :title="t('schedule.runHistory')" :width="isMobile ? '95%' : '800px'" @close="stopPolling">
       <template #header>
         <div class="history-header">
           <span>{{ t('schedule.runHistory') }}</span>
@@ -206,7 +206,7 @@
     </el-dialog>
 
     <!-- 执行详情 -->
-    <el-dialog v-model="showDetail" :title="t('schedule.executionDetail')" width="700px" @close="stopDetailPolling">
+    <el-dialog v-model="showDetail" :title="t('schedule.executionDetail')" :width="isMobile ? '95%' : '700px'" @close="stopDetailPolling">
       <template #header>
         <div class="history-header">
           <span>{{ t('schedule.executionDetail') }}</span>
@@ -247,8 +247,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Delete, Refresh } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/api'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 interface Schedule {
   id: string

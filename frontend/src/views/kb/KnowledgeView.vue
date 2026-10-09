@@ -17,7 +17,7 @@
       <el-input
         v-model="searchQuery"
         :placeholder="t('kb.searchPlaceholderSemantic')"
-        style="width: 300px"
+        style="max-width: 300px; flex: 1; min-width: 120px"
         clearable
         :prefix-icon="Search"
         @keyup.enter="doSearch"
@@ -105,8 +105,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Document, Search } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { knowledgeApi, type KbDocument, type KbSearchResult } from '@/api/knowledge'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 const documents = ref<KbDocument[]>([])
 const loading = ref(false)

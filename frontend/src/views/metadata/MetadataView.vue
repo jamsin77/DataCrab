@@ -32,7 +32,7 @@
       <div class="page-header">
         <h2>{{ t('metadata.title') }}</h2>
         <div class="header-actions">
-          <el-input v-model="searchQuery" :placeholder="t('metadata.searchHint')" clearable style="width: 280px" @clear="loadMetadata" @keyup.enter="loadMetadata">
+          <el-input v-model="searchQuery" :placeholder="t('metadata.searchHint')" clearable style="max-width: 280px; flex: 1; min-width: 120px" @clear="loadMetadata" @keyup.enter="loadMetadata">
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
           <el-button type="success" @click="batchEnrich" :disabled="!selectedRows.length || batchEnriching">
@@ -170,7 +170,7 @@
     <el-dialog
       v-model="enrichDialog.visible"
       :title="enrichDialogTitle"
-      width="720px"
+      :width="isMobile ? '95%' : '720px'"
       top="8vh"
       :close-on-click-modal="!enrichDialog.processing"
       :close-on-press-escape="true"
@@ -238,8 +238,10 @@ import { Search, CircleCheckFilled, CircleCloseFilled, Loading, Connection, Refr
 import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 const loading = ref(false)
 const metadataList = ref<any[]>([])
@@ -697,5 +699,11 @@ onMounted(() => {
 }
 .is-loading {
   animation: rotating 1.5s linear infinite;
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .metadata-page { flex-direction: column; padding: 8px; }
+  .ds-sidebar { width: 100%; max-height: 25vh; }
 }
 </style>

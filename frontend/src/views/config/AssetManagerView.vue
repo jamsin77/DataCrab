@@ -6,7 +6,7 @@
 
     <el-row :gutter="20">
       <!-- 导出 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <el-card>
           <template #header>
             <span style="font-weight: bold">{{ t('config.asset.export') }}</span>
@@ -31,7 +31,7 @@
       </el-col>
 
       <!-- 导入 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <el-card>
           <template #header>
             <span style="font-weight: bold">{{ t('config.asset.import') }}</span>

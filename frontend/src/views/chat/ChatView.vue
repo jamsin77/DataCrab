@@ -1,7 +1,7 @@
 <template>
   <div class="chat-container">
-    <!-- 会话列表侧边栏 -->
-    <div class="session-sidebar">
+    <!-- 会话列表侧边栏（桌面/平板） -->
+    <div v-if="!isMobile" class="session-sidebar">
       <el-button class="new-session-btn" @click="handleNewSession">
         <el-icon><Plus /></el-icon> {{ t('chat.newSession') }}
       </el-button>
@@ -29,6 +29,43 @@
       </div>
     </div>
 
+    <!-- 会话列表抽屉（手机） -->
+    <el-drawer
+      v-if="isMobile"
+      v-model="sessionDrawerVisible"
+      direction="ltr"
+      :size="260"
+      :with-header="false"
+    >
+      <div class="session-sidebar mobile-session-sidebar">
+        <el-button class="new-session-btn" @click="handleNewSession(); sessionDrawerVisible = false">
+          <el-icon><Plus /></el-icon> {{ t('chat.newSession') }}
+        </el-button>
+        <div class="session-list">
+          <div
+            v-for="session in chatStore.sessions"
+            :key="session.id"
+            class="session-item"
+            :class="{ active: session.id === chatStore.currentSessionId }"
+            @click="chatStore.switchSession(session.id); sessionDrawerVisible = false"
+          >
+            <el-icon><ChatDotRound /></el-icon>
+            <span class="session-title">{{ session.title || t('chat.untitledSession') }}</span>
+            <el-dropdown trigger="click" @command="(cmd: string) => handleSessionCommand(cmd, session.id)">
+              <el-icon class="session-more" @click.stop><MoreFilled /></el-icon>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="rename">{{ t('chat.renameSession') }}</el-dropdown-item>
+                  <el-dropdown-item command="export">{{ t('chat.exportConversation') }}</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>{{ t('common.delete') }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
+
     <!-- 对话主区域 -->
     <div class="chat-main">
       <div v-if="!chatStore.currentSessionId" class="empty-chat">
@@ -39,7 +76,12 @@
       <template v-else>
         <!-- 顶部工具栏 -->
         <div class="chat-toolbar">
-          <span class="chat-toolbar-title">{{ currentSessionTitle || t('chat.untitledSession') }}</span>
+          <div class="chat-toolbar-left">
+            <el-button v-if="isMobile" text @click="sessionDrawerVisible = true" class="session-toggle-btn">
+              <el-icon :size="18"><Menu /></el-icon>
+            </el-button>
+            <span class="chat-toolbar-title">{{ currentSessionTitle || t('chat.untitledSession') }}</span>
+          </div>
           <div class="chat-toolbar-actions">
             <el-button
               class="export-btn"
@@ -161,7 +203,7 @@
                   <!-- 不选择：新建目标表 -->
                   <div class="suggestion-actions" style="margin-top: 8px;">
                     <span style="font-size: 12px; color: #909399;">{{ t('chat.newTargetTable') }}</span>
-                    <el-input v-model="msg._newTableName" size="small" :placeholder="t('chat.inputNewTableName')" style="width: 200px;"></el-input>
+                    <el-input v-model="msg._newTableName" size="small" :placeholder="t('chat.inputNewTableName')" style="max-width: 200px; flex: 1; min-width: 120px;"></el-input>
                     <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">{{ t('common.confirm') }}</el-button>
                   </div>
                 </template>
@@ -172,7 +214,7 @@
                   </div>
                   <div class="suggestion-actions">
                     <span style="font-size: 12px; color: #909399;">{{ t('chat.newTargetTableName') }}</span>
-                    <el-input v-model="msg._newTableName" size="small" :placeholder="defaultNewTableName()" style="width: 200px;"></el-input>
+                    <el-input v-model="msg._newTableName" size="small" :placeholder="defaultNewTableName()" style="max-width: 200px; flex: 1; min-width: 120px;"></el-input>
                     <el-button type="primary" size="small" style="margin-left: 8px;" @click="confirmNewTargetTable(msg)">{{ t('common.confirm') }}</el-button>
                   </div>
                 </template>
@@ -343,19 +385,22 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Loading, CircleCheck, Paperclip, Document, RefreshRight, CaretRight, MagicStick, Coin, InfoFilled, WarningFilled, Picture, Right, Menu } from '@element-plus/icons-vue'
 import MarkdownIt from 'markdown-it'
 import * as echarts from 'echarts'
 import api from '@/api/index'
 import { chatApi } from '@/api/chat'
+import { useResponsive } from '@/composables/useResponsive'
 
 const router = useRouter()
 const { t } = useI18n()
 const chatStore = useChatStore()
+const { isMobile } = useResponsive()
 const inputText = ref('')
 const messageListRef = ref<HTMLElement>()
 const reasoningExpanded = ref<Record<string, boolean>>({})
 const agentName = ref('DC')
+const sessionDrawerVisible = ref(false)
 
 // 消息列表虚拟分页：默认只显示最近6条，每点一次「查看更多」往前多显示6条
 const extraMsgCount = ref(0)
@@ -1350,6 +1395,17 @@ async function handleExportCurrent() {
   border-bottom: 1px solid #f0f0f0;
   background: #fafafa;
 
+  .chat-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .session-toggle-btn {
+    padding: 4px;
+  }
+
   .chat-toolbar-title {
     font-size: 14px;
     font-weight: 500;
@@ -1825,6 +1881,42 @@ async function handleExportCurrent() {
   .input-actions {
     display: flex;
     gap: 8px;
+  }
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .message-list {
+    padding: 10px;
+  }
+  .chat-toolbar {
+    padding: 6px 10px;
+  }
+  .input-area {
+    padding: 10px;
+    gap: 8px;
+  }
+  .selected-data-bar,
+  .evolution-mode-bar {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .evolution-mode-bar .evolution-mode-hint {
+    display: none;
+  }
+  .suggestion-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+
+/* 横屏手机 */
+@media (max-height: 500px) and (orientation: landscape) {
+  .chat-toolbar {
+    padding: 4px 12px;
+  }
+  .input-area {
+    padding: 6px 12px;
   }
 }
 </style>

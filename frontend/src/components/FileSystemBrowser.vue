@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="mode === 'folder' ? t('fileBrowser.selectFolder') : t('fileBrowser.selectFile')" width="600px" :close-on-click-modal="false" @close="emit('cancel')">
+  <el-dialog v-model="visible" :title="mode === 'folder' ? t('fileBrowser.selectFolder') : t('fileBrowser.selectFile')" :width="isMobile ? '95%' : '600px'" :close-on-click-modal="false" @close="emit('cancel')">
     <div class="fs-browser">
       <div class="fs-path-bar">
         <el-input v-model="currentPath" size="default" @keydown.enter="navigateTo(currentPath)">
@@ -53,8 +53,10 @@ import { ref, watch } from 'vue'
 import { Back, Folder, Document, Right } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import api from '@/api/index'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 const props = defineProps<{
   modelValue: boolean

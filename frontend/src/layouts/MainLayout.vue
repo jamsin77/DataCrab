@@ -1,7 +1,7 @@
 <template>
   <el-container class="main-layout">
-    <!-- 侧边栏 -->
-    <el-aside :width="isCollapsed ? '64px' : '220px'" class="sidebar">
+    <!-- 桌面/平板侧边栏 -->
+    <el-aside v-if="!isMobile" :width="isCollapsed ? '64px' : '220px'" class="sidebar">
       <div class="logo">
         <h1 v-if="!isCollapsed">DataCrab</h1>
         <h1 v-else>DC</h1>
@@ -47,10 +47,57 @@
       </div>
     </el-aside>
 
+    <!-- 手机端抽屉侧边栏 -->
+    <el-drawer
+      v-if="isMobile"
+      v-model="drawerVisible"
+      direction="ltr"
+      :size="240"
+      :with-header="false"
+      class="mobile-drawer"
+    >
+      <div class="logo">
+        <h1>DataCrab</h1>
+      </div>
+      <el-menu
+        :default-active="currentRoute"
+        router
+        class="sidebar-menu"
+        @select="drawerVisible = false"
+      >
+        <el-menu-item index="/chat">
+          <el-icon><ChatDotRound /></el-icon>
+          <template #title>{{ t('layout.menu.chat') }}</template>
+        </el-menu-item>
+        <el-menu-item index="/skill">
+          <el-icon><MagicStick /></el-icon>
+          <template #title>{{ t('layout.menu.skill') }}</template>
+        </el-menu-item>
+        <el-menu-item index="/pipeline">
+          <el-icon><Share /></el-icon>
+          <template #title>{{ t('layout.menu.pipeline') }}</template>
+        </el-menu-item>
+        <el-menu-item index="/schedule">
+          <el-icon><Timer /></el-icon>
+          <template #title>{{ t('layout.menu.schedule') }}</template>
+        </el-menu-item>
+        <el-menu-item index="/config">
+          <el-icon><Tools /></el-icon>
+          <template #title>{{ t('layout.menu.config') }}</template>
+        </el-menu-item>
+      </el-menu>
+      <div class="sidebar-footer">
+        <span v-if="version" class="version-text">v{{ version }}</span>
+      </div>
+    </el-drawer>
+
     <!-- 主内容区 -->
     <el-container>
       <el-header class="header">
         <div class="header-left">
+          <el-button v-if="isMobile" text @click="drawerVisible = true" class="hamburger-btn">
+            <el-icon :size="20"><Menu /></el-icon>
+          </el-button>
           <span class="page-title">{{ pageTitle }}</span>
         </div>
         <div class="header-right">
@@ -62,7 +109,7 @@
               <el-avatar :size="32" :src="authStore.user?.avatar || undefined">
                 {{ authStore.user?.display_name?.charAt(0) || 'U' }}
               </el-avatar>
-              <span class="username">{{ authStore.user?.display_name || t('layout.user') }}</span>
+              <span v-if="!isMobile" class="username">{{ authStore.user?.display_name || t('layout.user') }}</span>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
@@ -90,7 +137,8 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useVersionStore } from '@/stores/version'
 import { useI18nStore } from '@/stores/i18n'
-import { ChatDotRound, Operation, MagicStick, Share, Timer, Tools, Fold, Expand } from '@element-plus/icons-vue'
+import { useResponsive } from '@/composables/useResponsive'
+import { ChatDotRound, Operation, MagicStick, Share, Timer, Tools, Fold, Expand, Menu } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -98,7 +146,9 @@ const router = useRouter()
 const authStore = useAuthStore()
 const versionStore = useVersionStore()
 const i18nStore = useI18nStore()
+const { isMobile } = useResponsive()
 const isCollapsed = ref(false)
+const drawerVisible = ref(false)
 const version = ref('')
 
 onMounted(async () => {
@@ -196,6 +246,16 @@ async function handleUserCommand(command: string) {
   border-bottom: 1px solid #e6e6e6;
   background: #fff;
 
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .hamburger-btn {
+    padding: 4px;
+  }
+
   .page-title {
     font-size: 18px;
     font-weight: 500;
@@ -206,6 +266,31 @@ async function handleUserCommand(command: string) {
     align-items: center;
     gap: 8px;
     cursor: pointer;
+  }
+}
+
+.mobile-drawer {
+  .logo {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid #e8e8e8;
+    h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  }
+  .sidebar-menu {
+    border-right: none;
+    background: transparent;
+  }
+  .sidebar-footer {
+    padding: 12px;
+    text-align: center;
+    border-top: 1px solid #e8e8e8;
+    .version-text {
+      display: block;
+      font-size: 12px;
+      color: var(--el-text-color-placeholder);
+    }
   }
 }
 

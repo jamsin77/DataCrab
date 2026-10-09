@@ -45,7 +45,7 @@
     </div>
 
     <!-- 注册对话框 -->
-    <el-dialog v-model="showRegister" :title="t('login.registerTitle')" width="400px">
+    <el-dialog v-model="showRegister" :title="t('login.registerTitle')" :width="dialogWidth">
       <el-form ref="registerFormRef" :model="registerForm" :rules="registerRules">
         <el-form-item prop="username" :label="t('login.username')">
           <el-input v-model="registerForm.username" />
@@ -64,7 +64,7 @@
     </el-dialog>
 
     <!-- 修改密码对话框 -->
-    <el-dialog v-model="showReset" :title="t('login.resetTitle')" width="400px">
+    <el-dialog v-model="showReset" :title="t('login.resetTitle')" :width="dialogWidth">
       <el-form ref="resetFormRef" :model="resetForm" :rules="resetRules">
         <el-form-item prop="username" :label="t('login.username')">
           <el-input v-model="resetForm.username" />
@@ -102,6 +102,11 @@ const router = useRouter()
 const authStore = useAuthStore()
 const versionStore = useVersionStore()
 const version = ref('')
+
+const dialogWidth = ref(window.innerWidth <= 768 ? '95%' : '400px')
+window.addEventListener('resize', () => {
+  dialogWidth.value = window.innerWidth <= 768 ? '95%' : '400px'
+})
 
 onMounted(async () => {
   version.value = await versionStore.loadVersion()
@@ -237,7 +242,8 @@ async function handleRegister() {
 }
 
 .login-card {
-  width: 400px;
+  width: 90%;
+  max-width: 400px;
   padding: 40px;
   background: #fff;
   border-radius: 12px;
@@ -272,6 +278,15 @@ async function handleRegister() {
     font-size: 12px;
     color: #c0c4cc;
     margin-top: 16px;
+  }
+}
+
+@media (max-width: 768px) {
+  .login-card {
+    padding: 24px 20px;
+  }
+  .login-card .title {
+    font-size: 24px;
   }
 }
 </style>

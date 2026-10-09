@@ -12,14 +12,14 @@
         </el-button>
       </div>
       <div class="toolbar-right">
-        <el-select v-model="sortBy" style="width: 120px" @change="loadSkills">
+        <el-select v-model="sortBy" style="max-width: 120px" @change="loadSkills">
           <el-option :label="t('common.createdAt')" value="created" />
           <el-option :label="t('skill.modifiedAt')" value="updated" />
         </el-select>
         <el-input
           v-model="searchQuery"
           :placeholder="t('skill.searchPlaceholder')"
-          style="width: 220px"
+          style="max-width: 220px; flex: 1; min-width: 120px"
           clearable
           :prefix-icon="Search"
         />
@@ -79,7 +79,7 @@
     </div>
 
     <!-- ==================== 另存为对话框 ==================== -->
-    <el-dialog v-model="showCloneDialog" :title="t('skill.saveAs')" width="450px" @closed="cloneName = ''; cloneTarget = null">
+    <el-dialog v-model="showCloneDialog" :title="t('skill.saveAs')" :width="isMobile ? '95%' : '450px'" @closed="cloneName = ''; cloneTarget = null">
       <div v-if="cloneTarget" class="modify-target-info">
         <el-tag>{{ cloneTarget.display_name || cloneTarget.name }}</el-tag>
         <span class="modify-desc">{{ t('skill.cloneHint') }}</span>
@@ -102,7 +102,7 @@
     </el-dialog>
 
     <!-- ==================== 导入对话框 ==================== -->
-    <el-dialog v-model="showUploadDialog" :title="t('skill.importSkill')" width="480px">
+    <el-dialog v-model="showUploadDialog" :title="t('skill.importSkill')" :width="isMobile ? '95%' : '480px'">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           {{ t('skill.uploadHint') }}
@@ -124,7 +124,7 @@
     </el-dialog>
 
     <!-- ==================== 重名冲突对话框 ==================== -->
-    <el-dialog v-model="showConflictDialog" :title="t('skill.skillExists')" width="460px" :close-on-click-modal="false">
+    <el-dialog v-model="showConflictDialog" :title="t('skill.skillExists')" :width="isMobile ? '95%' : '460px'" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom:16px">
         <template #title>
           {{ t('skill.conflictHint', { name: conflictInfo?.parsed_name }) }}
@@ -147,7 +147,7 @@
     </el-dialog>
 
     <!-- ==================== 转流程重名冲突对话框 ==================== -->
-    <el-dialog v-model="showPipelineConflict" :title="t('skill.pipelineExists')" width="460px" :close-on-click-modal="false">
+    <el-dialog v-model="showPipelineConflict" :title="t('skill.pipelineExists')" :width="isMobile ? '95%' : '460px'" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom:16px">
         <template #title>
           {{ t('skill.pipelineConflictHint', { name: pipelineConflictInfo?.existing_display_name || pipelineConflictInfo?.existing_name }) }}
@@ -230,7 +230,7 @@
     </el-dialog>
 
     <!-- ==================== 相似技能检测对话框 ==================== -->
-    <el-dialog v-model="showSimilarDialog" :title="t('skill.similarSkillsFound')" width="600px" :close-on-click-modal="false">
+    <el-dialog v-model="showSimilarDialog" :title="t('skill.similarSkillsFound')" :width="isMobile ? '95%' : '600px'" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
         <template #title>{{ t('skill.similarSkillsHint') }}</template>
       </el-alert>
@@ -416,7 +416,7 @@
                   <el-select
                     v-model="skillTypeEdit"
                     size="small"
-                    style="width:130px"
+                    style="max-width: 130px"
                     @change="saveSkillType"
                     :loading="savingType"
                   >
@@ -546,7 +546,7 @@
             <el-select
               v-model="debugScriptName"
               size="small"
-              style="width: 160px; margin-left: 8px"
+              style="max-width: 160px; margin-left: 8px"
               :disabled="debugStreaming || execRunning"
             >
               <el-option
@@ -772,7 +772,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" width="min(1100px, 92%)" top="5vh" @opened="scrollExperienceToBottom">
+    <el-dialog v-model="showExperience" :title="t('skill.debugExperience')" :width="isMobile ? '95%' : 'min(1100px, 92%)'" top="5vh" @opened="scrollExperienceToBottom">
       <div v-loading="expLoading">
         <el-tabs @tab-change="scrollExperienceToBottom">
           <el-tab-pane :label="t('skill.inductReasons')">
@@ -818,10 +818,13 @@ import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
 import { formatTime, timePrefix } from '@/utils/time'
+import { useResponsive } from '@/composables/useResponsive'
 
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
+const { isMobile } = useResponsive()
+const dialogWidth = computed(() => isMobile.value ? '95%' : '')
 const skills = ref<any[]>([])
 const searchQuery = ref('')
 const sortBy = ref('updated')
@@ -4249,5 +4252,41 @@ onActivated(() => {
 }
 .similar-skill-contact {
   margin-top: 4px;
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-direction: row !important;
+  }
+  .toolbar-left,
+  .toolbar-right {
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    flex-shrink: 0;
+  }
+  .debug-layout {
+    flex-direction: column;
+    height: auto;
+    max-height: calc(92vh - 60px);
+  }
+  .debug-left {
+    width: 100%;
+    max-height: 40vh;
+    flex-shrink: 0;
+  }
+  .debug-right {
+    min-height: 40vh;
+  }
+}
+
+/* 横屏手机 */
+@media (max-height: 500px) and (orientation: landscape) {
+  .debug-layout {
+    height: calc(96vh - 60px);
+  }
 }
 </style>

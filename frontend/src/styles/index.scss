@@ -34,3 +34,63 @@ html, body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ===== 响应式断点变量 ===== */
+:root {
+  --dc-mobile-max: 768px;
+  --dc-tablet-max: 1024px;
+}
+
+/* ===== 平板适配 (769px ~ 1024px) ===== */
+@media (max-width: 1024px) {
+  .dc-hide-tablet { display: none !important; }
+}
+
+/* ===== 手机适配 (<= 768px) ===== */
+@media (max-width: 768px) {
+  .dc-hide-mobile { display: none !important; }
+
+  /* 全局 padding 缩小 */
+  .el-main { padding: 8px !important; }
+
+  /* 工具栏手机端单行横向滚动，不换行 */
+  .toolbar {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 10px !important;
+    gap: 8px !important;
+    min-height: 40px;
+  }
+  .toolbar .toolbar-left,
+  .toolbar .toolbar-right {
+    flex-wrap: nowrap !important;
+    flex-shrink: 0;
+  }
+  .toolbar > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* el-dialog 在手机上全宽 */
+  .el-dialog {
+    width: 95% !important;
+    margin: 4vh auto !important;
+  }
+
+  /* el-tabs 顶部 scroll */
+  .el-tabs__nav { overflow-x: auto; }
+}
+
+/* ===== 横屏手机适配 (高度 <= 500px, 宽度 > 高度) ===== */
+@media (max-height: 500px) and (orientation: landscape) {
+  .el-dialog {
+    margin: 2vh auto !important;
+    max-height: 96vh;
+  }
+  .el-dialog__body {
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+}

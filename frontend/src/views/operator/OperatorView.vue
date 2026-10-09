@@ -19,14 +19,14 @@
         </el-upload>
       </div>
       <div class="toolbar-right">
-        <el-select v-model="sortBy" style="width: 120px" @change="loadOperators">
+        <el-select v-model="sortBy" style="max-width: 120px" @change="loadOperators">
           <el-option :label="t('operator.sortCreatedAt')" value="created" />
           <el-option :label="t('operator.sortUpdatedAt')" value="updated" />
         </el-select>
         <el-input
           v-model="searchQuery"
           :placeholder="t('operator.searchPlaceholder')"
-          style="width: 220px"
+          style="max-width: 220px; flex: 1; min-width: 120px"
           clearable
           :prefix-icon="Search"
         />
@@ -365,7 +365,7 @@
     </el-dialog>
 
     <!-- ==================== Similar Operator Detection Dialog ==================== -->
-    <el-dialog v-model="showSimilarDialog" :title="t('operator.similarFound')" width="600px" :close-on-click-modal="false">
+    <el-dialog v-model="showSimilarDialog" :title="t('operator.similarFound')" :width="isMobile ? '95%' : '600px'" :close-on-click-modal="false">
       <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
         <template #title>{{ t('operator.similarHint') }}</template>
       </el-alert>
@@ -451,7 +451,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showCloneDialog" :title="t('operator.cloneTitle')" width="450px" @closed="cloneName = ''; cloneTarget = null">
+    <el-dialog v-model="showCloneDialog" :title="t('operator.cloneTitle')" :width="isMobile ? '95%' : '450px'" @closed="cloneName = ''; cloneTarget = null">
       <div v-if="cloneTarget" class="modify-target-info">
         <el-tag>{{ cloneTarget.display_name || cloneTarget.name }}</el-tag>
         <span class="modify-desc">{{ t('operator.cloneHint') }}</span>
@@ -483,8 +483,10 @@ import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
 import { formatTime } from '@/utils/time'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 const md = markdownIt({ html: false, breaks: true, linkify: true })
 function renderMarkdown(text: string) {
@@ -2353,5 +2355,39 @@ onMounted(() => {
 }
 .similar-op-contact {
   margin-top: 4px;
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-direction: row !important;
+  }
+  .toolbar-left,
+  .toolbar-right {
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    flex-shrink: 0;
+  }
+  .debug-layout {
+    flex-direction: column;
+    height: auto;
+    max-height: calc(92vh - 60px);
+  }
+  .debug-left {
+    width: 100%;
+    max-height: 40vh;
+  }
+  .debug-right {
+    min-height: 40vh;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .debug-layout {
+    height: calc(96vh - 60px);
+  }
 }
 </style>

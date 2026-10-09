@@ -13,13 +13,13 @@
           </template>
 
           <div class="filter-bar">
-            <el-select v-model="filterType" :placeholder="t('config.permission.resourceType')" clearable style="width: 150px" @change="loadResourcePerms">
+            <el-select v-model="filterType" :placeholder="t('config.permission.resourceType')" clearable style="max-width: 150px" @change="loadResourcePerms">
               <el-option :label="t('config.permission.typeDatasource')" value="datasource" />
               <el-option :label="t('config.permission.typeOperator')" value="operator" />
               <el-option :label="t('config.permission.typeSkill')" value="skill" />
               <el-option :label="t('config.permission.typeMetadata')" value="metadata" />
             </el-select>
-            <el-input v-model="filterResourceId" :placeholder="t('config.permission.resourceIdInput')" clearable style="width: 320px" @keyup.enter="loadResourcePerms" />
+            <el-input v-model="filterResourceId" :placeholder="t('config.permission.resourceIdInput')" clearable style="max-width: 320px; flex: 1; min-width: 120px" @keyup.enter="loadResourcePerms" />
             <el-button @click="loadResourcePerms" :disabled="!filterType || !filterResourceId">{{ t('config.permission.queryGrants') }}</el-button>
           </div>
 
@@ -122,7 +122,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="showGrantDialog" :title="t('config.permission.addGrant')" width="500px">
+    <el-dialog v-model="showGrantDialog" :title="t('config.permission.addGrant')" :width="isMobile ? '95%' : '500px'">
       <el-form label-width="100px">
         <el-form-item :label="t('config.permission.resourceType')">
           <el-select v-model="grantForm.resource_type" style="width: 100%">
@@ -165,7 +165,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showRoleDialog" :title="t('config.permission.createRole')" width="450px">
+    <el-dialog v-model="showRoleDialog" :title="t('config.permission.createRole')" :width="isMobile ? '95%' : '450px'">
       <el-form label-width="80px">
         <el-form-item :label="t('common.name')">
           <el-input v-model="roleForm.name" :placeholder="t('config.permission.roleNamePlaceholder')" />
@@ -183,7 +183,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showMembersDialog" :title="t('config.permission.roleMembers') + (currentRole?.display_name || '')" width="500px">
+    <el-dialog v-model="showMembersDialog" :title="t('config.permission.roleMembers') + (currentRole?.display_name || '')" :width="isMobile ? '95%' : '500px'">
       <div style="margin-bottom: 12px; display: flex; gap: 8px;">
         <el-select v-model="newMemberId" filterable :placeholder="t('config.permission.selectUser')" style="flex: 1">
           <el-option v-for="u in users" :key="u.id" :label="u.display_name" :value="u.id" />
@@ -200,7 +200,7 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="showCopyDialog" :title="t('config.permission.copyPermissions')" width="450px">
+    <el-dialog v-model="showCopyDialog" :title="t('config.permission.copyPermissions')" :width="isMobile ? '95%' : '450px'">
       <p style="margin-bottom: 12px; color: #606266;">
         {{ t('config.permission.copyFromPrefix') }} <strong>{{ copySource?.display_name || copySource?.name }}</strong> {{ t('config.permission.copyToSuffix') }}
       </p>
@@ -228,8 +228,10 @@ import { useI18n } from 'vue-i18n'
 import { Share, Plus } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 const activeTab = ref('grants')
 const isSuperuser = ref(false)
 

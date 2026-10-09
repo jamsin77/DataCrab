@@ -10,7 +10,7 @@
         <el-input
           v-model="searchText"
           :placeholder="t('pipeline.searchPlaceholder')"
-          style="width: 220px"
+          style="max-width: 220px; flex: 1; min-width: 120px"
           clearable
           :prefix-icon="Search"
           @input="loadPipelines"
@@ -84,7 +84,7 @@
     </div>
 
     <!-- Import Pipeline Dialog -->
-    <el-dialog v-model="showImportDialog" :title="t('pipeline.importPipeline')" width="480px">
+    <el-dialog v-model="showImportDialog" :title="t('pipeline.importPipeline')" :width="isMobile ? '95%' : '480px'">
       <el-alert type="info" :closable="false" style="margin-bottom:16px">
         <template #title>
           {{ t('pipeline.importHint') }}
@@ -358,7 +358,7 @@
     </el-dialog>
 
     <!-- Schedule Settings Dialog -->
-    <el-dialog v-model="showScheduleDialog" :title="t('pipeline.scheduleSettings')" width="520px">
+    <el-dialog v-model="showScheduleDialog" :title="t('pipeline.scheduleSettings')" :width="isMobile ? '95%' : '520px'">
       <el-alert v-if="existingSchedule" type="warning" :closable="false" style="margin-bottom: 16px">
         <template #title>{{ t('pipeline.existingScheduleWarn') }}</template>
       </el-alert>
@@ -386,7 +386,7 @@
           <el-form-item :label="t('pipeline.executionTime')">
             <div class="cron-times">
               <div v-for="(t_item, i) in cronTimes" :key="i" class="cron-time-row">
-                <el-time-select v-model="cronTimes[i]" start="00:00" step="00:15" end="23:45" :placeholder="t('pipeline.selectTime')" style="width: 120px" />
+                <el-time-select v-model="cronTimes[i]" start="00:00" step="00:15" end="23:45" :placeholder="t('pipeline.selectTime')" style="max-width: 120px" />
                 <el-button v-if="cronTimes.length > 1" size="small" text type="danger" @click="cronTimes.splice(i, 1)">
                   <el-icon><Delete /></el-icon>
                 </el-button>
@@ -397,7 +397,7 @@
             </div>
           </el-form-item>
           <el-form-item :label="t('pipeline.repeatFreq')">
-            <el-select v-model="cronFrequency" style="width: 120px">
+            <el-select v-model="cronFrequency" style="max-width: 120px">
               <el-option :label="t('pipeline.everyDay')" value="daily" />
               <el-option :label="t('pipeline.everyWeek')" value="weekly" />
               <el-option :label="t('pipeline.everyMonth')" value="monthly" />
@@ -420,7 +420,7 @@
         <el-form-item v-if="scheduleForm.schedule_type === 'interval'" :label="t('pipeline.execInterval')">
           <div class="interval-row">
             <el-input-number v-model="scheduleIntervalValue" :min="1" />
-            <el-select v-model="scheduleIntervalUnit" style="width: 90px">
+            <el-select v-model="scheduleIntervalUnit" style="max-width: 90px">
               <el-option :label="t('pipeline.secondsUnit')" :value="1" />
               <el-option :label="t('pipeline.minutesUnit')" :value="60" />
               <el-option :label="t('pipeline.hoursUnit')" :value="3600" />
@@ -470,6 +470,9 @@
                     :nodes-draggable="true"
                     :snap-to-grid="true"
                     :snap-grid="[20, 20]"
+                    :zoom-on-pan="isMobile"
+                    :pan-on-scroll="isMobile"
+                    :prevent-scrolling="isMobile"
                     fit-view-on-init
                     class="pl-vue-flow"
                   >
@@ -535,8 +538,10 @@ import 'highlight.js/styles/vs2015.css'
 import markdownIt from 'markdown-it'
 import FlowNode from './FlowNode.vue'
 import { formatTime } from '@/utils/time'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 hljs.registerLanguage('python', python)
 
@@ -2179,5 +2184,53 @@ onMounted(async () => {
   a { color: #409eff; }
   hr { border: none; border-top: 1px solid #e4e7ed; margin: 20px 0; }
   strong { font-weight: 600; color: #1d1d1f; }
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-direction: row !important;
+  }
+  .toolbar-left,
+  .toolbar-right {
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    flex-shrink: 0;
+  }
+  .debug-layout {
+    flex-direction: column;
+    height: auto;
+    max-height: calc(92vh - 60px);
+  }
+  .debug-left {
+    width: 100%;
+    max-height: 40vh;
+  }
+  .debug-right {
+    min-height: 40vh;
+  }
+  .pl-detail-side {
+    width: 100%;
+    max-height: 30vh;
+  }
+  .pl-detail-layout {
+    flex-direction: column;
+    height: auto;
+  }
+  .pl-flow-canvas {
+    min-height: 300px;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .debug-layout {
+    height: calc(96vh - 60px);
+  }
+  .pl-flow-canvas {
+    min-height: 200px;
+  }
 }
 </style>

@@ -7,7 +7,7 @@
         </el-button>
       </div>
       <div class="toolbar-right">
-        <el-select v-model="typeFilter" :placeholder="t('datasource.typeFilter')" clearable @change="fetchDataSources" style="width: 160px;">
+        <el-select v-model="typeFilter" :placeholder="t('datasource.typeFilter')" clearable @change="fetchDataSources" style="max-width: 160px;">
           <el-option
             v-for="c in connectors"
             :key="c.name"
@@ -50,7 +50,7 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="showCreateDialog" :title="editId ? t('datasource.editDataSource') : t('datasource.createDataSource')" width="600px" @closed="resetForm">
+    <el-dialog v-model="showCreateDialog" :title="editId ? t('datasource.editDataSource') : t('datasource.createDataSource')" :width="isMobile ? '95%' : '600px'" @closed="resetForm">
       <el-form :model="configForm" label-position="top" ref="formRef">
         <el-form-item :label="t('datasource.name')" required>
           <el-input v-model="configForm.name" :placeholder="t('datasource.nameRequired')" />
@@ -165,7 +165,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showConnectorManager" :title="t('datasource.connectorManagement')" width="720px">
+    <el-dialog v-model="showConnectorManager" :title="t('datasource.connectorManagement')" :width="isMobile ? '95%' : '720px'">
       <div style="margin-bottom: 12px;">
         <el-button type="primary" size="small" @click="openConnectorCreate">
           <el-icon><Plus /></el-icon> {{ t('datasource.createConnector') }}
@@ -189,7 +189,7 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? t('datasource.editConnector') : t('datasource.createConnector')" width="680px">
+    <el-dialog v-model="showConnectorEditDialog" :title="connectorEditForm.id ? t('datasource.editConnector') : t('datasource.createConnector')" :width="isMobile ? '95%' : '680px'">
       <el-form label-position="top">
         <el-form-item :label="t('datasource.identifier')" required>
           <el-input v-model="connectorEditForm.name" :disabled="!!connectorEditForm.id" :placeholder="t('datasource.identifierPlaceholder')" />
@@ -232,8 +232,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, FolderOpened, Refresh, Setting, Delete, Grid } from '@element-plus/icons-vue'
 import FileSystemBrowser from '@/components/FileSystemBrowser.vue'
 import { formatTime } from '@/utils/time'
+import { useResponsive } from '@/composables/useResponsive'
 
 const { t } = useI18n()
+const { isMobile } = useResponsive()
 
 const dataSources = ref<any[]>([])
 const showCreateDialog = ref(false)
@@ -843,5 +845,27 @@ async function deleteConnector(c: any) {
   align-items: center;
   margin-bottom: 8px;
   width: 100%;
+}
+
+/* 手机适配 */
+@media (max-width: 768px) {
+  .toolbar {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+  .browse-layout {
+    flex-direction: column;
+  }
+  .browse-sidebar {
+    width: 100%;
+    max-height: 30vh;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .browse-sidebar {
+    max-height: 70vh;
+  }
 }
 </style>
