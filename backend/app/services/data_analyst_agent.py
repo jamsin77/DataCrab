@@ -481,6 +481,12 @@ class DataAnalystAgent(BaseAgent):
 ## 定位
 数据分析技能只读不写——执行后不修改源数据。你的任务是运行分析脚本，查看结果。
 
+## 并行调查（关键提速）
+调查阶段多个独立的工具调用可以放在同一轮返回，系统会并行执行同一轮内的所有工具调用。
+- 第一轮调查：同时调 read_script（看不同函数/不同行段）+ grep_script（搜索关键词），一轮拿到全部信息
+- 大脚本：同时 read_script(offset=1,limit=50) + read_script(offset=50,limit=50) 分段读，不用串行翻页
+- edit_script 和 run_script 有依赖关系，不能放同一轮（先改后执行）
+
 ## 工作流（对齐 OpenCode）
 1. 用 read_script/grep_script 查看脚本（如需理解逻辑）
 2. 用 run_script 执行脚本，查看结果
