@@ -1242,7 +1242,7 @@ async def debug_skill_chat(
                         _targets = []
                         _seen = set()
                         for _tc in (_last_result.get("tool_calls") or []) if _last_result else []:
-                            if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
+                            if _tc.get("tool") == "write_data" and _tc.get("success") and _tc.get("table_name"):
                                 _key = (_tc.get("datasource_id", ""), _tc["table_name"])
                                 if _key not in _seen:
                                     _seen.add(_key)
@@ -1415,6 +1415,37 @@ async def check_similar_skills(
     return SimilarSkillCheckResponse(has_similar=len(skill_items) > 0, skills=skill_items)
 
 
+@router.post("/upload-reference")
+async def upload_reference_doc(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传参考文档（PDF/Word/TXT/Excel），供技能生成/修改时读取文档内容。"""
+    import os
+    if not file.filename:
+        raise HTTPException(status_code=400, detail=t('filename_not_provided'))
+    filename = os.path.basename(file.filename)
+    ext = os.path.splitext(filename)[1].lower()
+    allowed = {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".xls", ".csv", ".md"}
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}，支持: {', '.join(sorted(allowed))}")
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件大小不能超过 10MB")
+    if not content:
+        raise HTTPException(status_code=400, detail=t('file_empty'))
+    from datetime import datetime as _dt
+    ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+    base = os.path.splitext(filename)[0]
+    saved_filename = f"{base}_{ts}{ext}"
+    user_dir = os.path.join("uploads", "reference_docs", str(current_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+    file_path = os.path.join(user_dir, saved_filename)
+    with open(file_path, "wb") as f:
+        f.write(content)
+    return {"file_path": file_path, "filename": saved_filename, "original_name": filename, "size": len(content)}
+
+
 @router.post("/generate", response_model=SkillDetailResponse, status_code=status.HTTP_201_CREATED)
 async def generate_skill_endpoint(
     request: SkillGenerateRequest,
@@ -1428,7 +1459,7 @@ async def generate_skill_endpoint(
     try:
         ds_info = await _build_datasource_info(db, current_user.id)
         all_lessons = (await _collect_all_lessons(db, current_user.id))[:2000]
-        generated = await generate_skill(request.prompt, datasource_info=ds_info, lessons=all_lessons)
+        generated = await generate_skill(request.prompt, datasource_info=ds_info, lessons=all_lessons, reference_docs=request.reference_docs)
     except Exception as e:
         logger.error(f"Skill Creator 生成失败: {e}")
         raise HTTPException(status_code=500, detail=t('skill_generate_error', e=str(e)))
@@ -1493,7 +1524,7 @@ async def generate_skill_stream_endpoint(
     async def event_stream():
         await init_user_llm_context(current_user.id)
         parsed_data = None
-        async for event in generate_skill_stream(request.prompt, datasource_info=ds_info, lessons=all_lessons):
+        async for event in generate_skill_stream(request.prompt, datasource_info=ds_info, lessons=all_lessons, reference_docs=request.reference_docs):
             if event["type"] == "done":
                 parsed_data = event["data"]
                 yield f"data: {json.dumps({'type': 'done', 'message': t('parsing_done_creating')}, ensure_ascii=False)}\n\n"
@@ -1637,7 +1668,7 @@ async def modify_skill_stream(
         parsed_data = None
         logger.info(f"[modify_skill] 端点进入，skill_id={skill_id}, instruction={request.instruction[:100]}")
         try:
-            async for chunk in skill_creator.modify_skill_stream(current_md, request.instruction, existing_scripts):
+            async for chunk in skill_creator.modify_skill_stream(current_md, request.instruction, existing_scripts, reference_docs=request.reference_docs):
                 yield f"data: {json_mod.dumps(chunk, ensure_ascii=False)}\n\n"
                 if chunk.get("type") == "content":
                     full_content += chunk.get("content", "")
@@ -1799,8 +1830,8 @@ def _extract_argparse_params(script_content: str, tree) -> list[SkillParamDef]:
 
 
 _BUILTIN_SKILL_FUNCTIONS = frozenset({
-    "query_table_data", "get_table_data", "get_table_schema",
-    "get_datasource_id_by_name", "write_table_data",
+    "query_data", "get_table_data", "get_table_schema",
+    "get_datasource_id_by_name", "write_data",
 })
 
 

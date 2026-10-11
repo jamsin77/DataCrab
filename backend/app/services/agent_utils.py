@@ -69,7 +69,7 @@ def truncate_tool_result(result_str: str, max_chars: int = MAX_TOOL_RESULT_CHARS
     if not isinstance(data, dict):
         return result_str[:max_chars] + "\n\n... [结果过大已截断]"
 
-    # 找到数据行列表的 key（query_table_data 用 "data"，其他工具用 "rows"）
+    # 找到数据行列表的 key（query_data 用 "data"，其他工具用 "rows"）
     rows_key = None
     for key in ("rows", "data"):
         if isinstance(data.get(key), list):
@@ -520,13 +520,13 @@ def get_anti_hallucination_section(level: str = "basic") -> str:
 
 # 工具图标映射
 _TOOL_ICON_MAP = {
-    "query_table_data": "📊",
+    "query_data": "📊",
     "get_table_schema": "📋",
     "execute_sql": "🔍",
     "list_user_datasources": "📚",
     "list_user_file_links": "🔗",
     "save_file_to_link": "💾",
-    "write_table_data": "✍️",
+    "write_data": "✍️",
     "kb_search": "🔎",
     "web_fetch": "🔗",
     # Inspector 工具
@@ -565,7 +565,7 @@ def build_tool_action_event(tool_calls: list) -> Dict[str, Any]:
                 _sql = re.sub(r"\s+", " ", _sql)[:200]
                 if _sql:
                     _act["detail"] = _sql
-            elif _name == "query_table_data":
+            elif _name == "query_data":
                 _tbl = _args.get("table_name", "")
                 _page = _args.get("page", 1)
                 if _tbl:
@@ -578,7 +578,7 @@ def build_tool_action_event(tool_calls: list) -> Dict[str, Any]:
                 _q = _args.get("query", "")[:50]
                 if _q:
                     _act["detail"] = f'"{_q}"'
-            elif _name == "write_table_data":
+            elif _name == "write_data":
                 _tbl = _args.get("table_name", "")
                 if _tbl:
                     _act["detail"] = f"写入表={_tbl}"
@@ -668,7 +668,7 @@ class ToolResultCache:
     """
 
     READONLY_TOOLS = frozenset({
-        "query_table_data", "get_table_schema",
+        "query_data", "get_table_schema",
         "list_user_file_links",
         "kb_search", "profile_data",
         "check_data_standards", "check_data_quality", "check_data_security",

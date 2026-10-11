@@ -163,7 +163,7 @@ def main(**params):
 | **有类型注解和 docstring** | 函数参数标注类型，函数有文档字符串 |
 | **处理边界情况** | 空表、列不存在、数据源不可达等 |
 | **不得吞掉平台错误** | `call_tool` 调用的异常**不得用 try-except 吞掉后返回 `success=True`**。LLM 不可用、API key 未配置、连接失败、缺库等属于平台错误，应让异常传播（脚本崩溃），让系统判断是否可修复。**禁止**用 `except Exception: pass` 或 `except Exception: return {"success": True}` 隐藏错误 |
-| **工具返回值必须检查 success** | `call_tool("query_table_data")`/`call_tool("write_table_data")`/`call_tool("execute_sql")` 等返回 `{success: bool, ...}`，调用后必须检查 `success` 字段，失败时 `raise`，不得静默继续 |
+| **工具返回值必须检查 success** | `call_tool("query_data")`/`call_tool("write_data")`/`call_tool("execute_sql")` 等返回 `{success: bool, ...}`，调用后必须检查 `success` 字段，失败时 `raise`，不得静默继续 |
 | **核心操作失败必须返回 success=False** | 如果脚本的核心操作（如 PDF 解析、OCR、翻译、分类、文件读取）失败或返回空结果，**必须返回 `success=False`**，不得用空值/默认值冒充成功。例如：PDF 解析返回空文本 → `success=False`（不是"提取到 0 条规则"的 `success=True`） |
 
 ### 3.3 返回值格式
@@ -195,7 +195,7 @@ return {
 }
 ```
 
-> `target_table` 和 `target_datasource` 的值应与 `call_tool("write_table_data", ...)` 实际写入的表名/数据源一致。如果脚本写了多张表，返回主输出表即可。
+> `target_table` 和 `target_datasource` 的值应与 `call_tool("write_data", ...)` 实际写入的表名/数据源一致。如果脚本写了多张表，返回主输出表即可。
 
 ### 3.4 参数兼容映射
 
@@ -228,11 +228,11 @@ result = call_tool(tool_name, **args)
 
 | 工具名 | 用途 | 关键参数 | 返回 |
 |--------|------|----------|------|
-| `query_table_data` | 查询表数据 | `datasource_id`, `table_name`, `limit=1000` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
+| `query_data` | 查询表数据 | `datasource_id`, `table_name`, `limit=1000` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
 | `iter_table_data` | 分块读取大表 | `datasource_id`, `table_name`, `page=1`, `page_size=10000` | `{"columns": [...], "rows": [...], "page": int, "total": int, "has_next": bool}` |
 | `get_table_schema` | 获取表结构 | `datasource_id`, `table_name` | `{"columns": [...], "row_count": int}` |
 | `execute_sql` | 执行 SQL 查询 | `datasource_id`, `sql` | `{"success": bool, "data": [...], "columns": [...], "row_count": int}` |
-| `write_table_data` | 写入数据到表 | `datasource_id`, `table_name`, `records=None`, `data=None`, `if_table_exists="fail"`, `table_remark=""`, `column_remarks=None` | `{"success": bool, "rows_written": int, "message": str}` |
+| `write_data` | 写入数据到表 | `datasource_id`, `table_name`, `records=None`, `data=None`, `if_table_exists="fail"`, `table_remark=""`, `column_remarks=None` | `{"success": bool, "rows_written": int, "message": str}` |
 | `list_user_datasources` | 列出/查找数据源 | `by_name=None`（按名称查找，不传则列出全部） | `{"id": "uuid", "name": "...", "type": "..."}`（按名称查找时）或列表 |
 | `llm_generate` | 大模型文本生成 | `prompt`, `system_prompt=None`, `temperature=0.7`, `max_tokens=2000` | `{"content": "回复文本"}` |
 | `llm_vision` | 大模型视觉理解 | `image_path`, `prompt` | `{"result": "分析文本"}` |
@@ -243,7 +243,7 @@ result = call_tool(tool_name, **args)
 
 ### 4.3 写入策略（`if_table_exists`）
 
-适用于 `call_tool("write_table_data", ..., if_table_exists=...)`：
+适用于 `call_tool("write_data", ..., if_table_exists=...)`：
 
 | 策略 | 说明 | 会清空已有数据 |
 |------|------|:---:|
@@ -258,13 +258,13 @@ result = call_tool(tool_name, **args)
 
 ```python
 # 查询数据
-res = call_tool("query_table_data", datasource_id=ds_id, table_name="relics", limit=100)
+res = call_tool("query_data", datasource_id=ds_id, table_name="relics", limit=100)
 if not res["success"]:
     raise RuntimeError(res.get("message", "查询失败"))
 df = pd.DataFrame(res["data"], columns=res["columns"])
 
 # 写入数据
-res = call_tool("write_table_data", datasource_id=target_ds, table_name="clean_relics",
+res = call_tool("write_data", datasource_id=target_ds, table_name="clean_relics",
                 records=records, if_table_exists="overwrite")
 if not res["success"]:
     raise RuntimeError(res.get("message", "写入失败"))
@@ -306,7 +306,7 @@ def _write_records(records, table_name, if_table_exists, batch_size=1000):
         current_strategy = if_table_exists
         if batch_num > 1 and if_table_exists in clearing_strategies:
             current_strategy = "append"  # 后续批次追加，避免清空前面批次
-        call_tool("write_table_data", datasource_id=target_ds, table_name=table_name,
+        call_tool("write_data", datasource_id=target_ds, table_name=table_name,
                   records=batch, if_table_exists=current_strategy)
 ```
 
@@ -389,3 +389,29 @@ prompt = f"请归并表格。{_extract_header_hint(headers)}"
 - HTML 标签清洗：解析时机械清除 `<sub>`、`<sup>`、`<br>` 等标签
 - 多行子项合并到同一单元格（用分号连接），确保每行单元格数与表头列数一致
 - 各列内容不得互换或重复填
+
+### 8.6 增量修复（fix_hints 参数）
+
+耗时较长的技能（OCR/大量 LLM 调用）建议在 `main()` 入口支持 `fix_hints` 参数，实现增量修复：
+
+```python
+def main(**params):
+    # ... 参数解析 ...
+    fix_hints = params.get("fix_hints")
+    if fix_hints:
+        # 增量修复模式：只修复指定表，不重跑整个流程
+        return fix_data(fix_hints, document_paths, ...)
+    else:
+        # 正常全量执行
+        return extract_rules_to_kb(...)
+```
+
+`fix_hints` 是 list，每条描述一个要修的问题，字段不固定：
+```json
+[
+  {"table": "表A.6", "row": 7, "column": "检修内容和类别", "issue": "空值", "suggestion": "应回填B类检修"}
+]
+```
+
+修复策略由技能脚本自己决定（重新 OCR / 重新提取 / 直接改值），平台不预设。
+不支持的技能忽略 `fix_hints` 参数全量重跑（降级）。

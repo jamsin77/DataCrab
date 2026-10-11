@@ -1,4 +1,4 @@
-﻿"""工具注册中心——所有工具的 schema + handler 集中管理。
+"""工具注册中心——所有工具的 schema + handler 集中管理。
 
 各 Agent 通过 tool_names 声明自己要用哪些工具（不定义实现），
 统一通过 execute_tool() 分发调用。
@@ -141,7 +141,7 @@ def _ensure_registered():
     global SHARED_TOOL_SCHEMAS
     SHARED_TOOL_SCHEMAS = [
         get_tool_schema(n) for n in
-        ["query_table_data", "get_table_schema", "list_user_datasources",
+        ["query_data", "get_table_schema", "list_user_datasources",
          "list_user_file_links", "save_file_to_link", "kb_search",
          "execute_sql", "web_fetch"]
         if get_tool_schema(n)
@@ -158,10 +158,10 @@ def _register_data_tools():
     from pathlib import Path
     from sqlalchemy import select
 
-    register_tool("query_table_data", {
+    register_tool("query_data", {
         "type": "function",
         "function": {
-            "name": "query_table_data",
+            "name": "query_data",
             "description": (
                 "查询数据源中某个表的数据，支持筛选、排序和分页。"
                 "限制：默认最多返回100行；筛选和排序会先加载最多50000行到内存再过滤，"
@@ -181,7 +181,7 @@ def _register_data_tools():
                 "required": ["datasource_id", "table_name"],
             },
         },
-    }, _query_table_data_handler, cacheable=True)
+    }, _query_data_handler, cacheable=True)
 
     register_tool("get_table_schema", {
         "type": "function",
@@ -256,7 +256,7 @@ def _register_data_tools():
                 "适用于从非结构化文档中查找信息。"
                 "限制：top_k默认5，必然遗漏大量相关内容，需要全面检索时请多次用不同关键词搜索；"
                 "仅支持已上传并解析完成的文档；PDF/DOCX仅提取纯文本，表格结构和图片内容会丢失；"
-                "不支持结构化数据源查询（请用 query_table_data）"
+                "不支持结构化数据源查询（请用 query_data）"
             ),
             "parameters": {
                 "type": "object",
@@ -276,7 +276,7 @@ def _register_data_tools():
             "description": (
                 "在数据源上执行 SQL 查询（仅 SELECT）。"
                 "DB 型（PostgreSQL/MySQL/SQLite）走原生 SQL；文件型（Excel/CSV）用 DuckDB 在内存里跑 SQL。"
-                "适用于跨表 JOIN、GROUP BY 聚合、窗口函数等 query_table_data 无法完成的复杂查询。"
+                "适用于跨表 JOIN、GROUP BY 聚合、窗口函数等 query_data 无法完成的复杂查询。"
                 "限制：仅 SELECT；最多返回 1000 行（可调 limit 最大 10000）；"
                 "文件型数据源表名规则：Excel 表名=文件名_工作表名（如 销售数据_Q1），CSV 表名=文件名（不带扩展名）；"
                 "表名含中文/特殊字符时用双引号包裹：SELECT * FROM \"销售数据_Q1\""
@@ -329,10 +329,10 @@ def _register_data_tools():
         },
     }, _llm_vision_handler, cacheable=False)
 
-    register_tool("write_table_data", {
+    register_tool("write_data", {
         "type": "function",
         "function": {
-            "name": "write_table_data",
+            "name": "write_data",
             "description": (
                 "写入数据到数据源的表中。支持多种写入策略。"
                 "限制：records/data 二选一；if_table_exists 控制表已存在时的行为。"
@@ -351,7 +351,7 @@ def _register_data_tools():
                 "required": ["datasource_id", "table_name"],
             },
         },
-    }, _write_table_data_handler, cacheable=False)
+    }, _write_data_handler, cacheable=False)
 
     register_tool("iter_table_data", {
         "type": "function",
@@ -464,7 +464,7 @@ def _register_data_tools():
     # render_pdf_pages 工具已删除——文本提取走 read_file（fitz + 旋转页转正），
     # 图片渲染走 read_file 的 pdf_page_images 参数
 
-async def _query_table_data_handler(args, db, user_id, context):
+async def _query_data_handler(args, db, user_id, context):
     try:
         import uuid as _uuid
         from sqlalchemy import select
@@ -508,7 +508,7 @@ async def _query_table_data_handler(args, db, user_id, context):
                 stats = await connector.get_table_stats(table_name)
                 total = stats.get("row_count", 0)
             except Exception as e:
-                logger.warning(f"query_table_data stats 获取失败: {e}")
+                logger.warning(f"query_data stats 获取失败: {e}")
             df = await connector.get_table_data(table_name, page=1, page_size=limit or 100)
 
         await connector.close()
@@ -611,7 +611,8 @@ async def _list_user_datasources_handler(args, db, user_id, context):
                 return json.dumps({"error": f"获取表列表失败: {e}"}, ensure_ascii=False)
             return json.dumps({"tables": tables}, ensure_ascii=False)
 
-        # 默认模式：列出所有数据源
+        # 默认模式：列出所有数据源（从 DB 元数据读表列表，不建连接，避免 N 次连接开销）
+        from app.models.datasource import TableMetadata
         result = await db.execute(
             select(DataSource).where(
                 DataSource.created_by == user_id,
@@ -619,16 +620,20 @@ async def _list_user_datasources_handler(args, db, user_id, context):
             )
         )
         sources = result.scalars().all()
+        ds_ids = [s.id for s in sources]
+        # 批量查 TableMetadata，避免逐数据源建连接调 get_schema()
+        tbl_result = await db.execute(
+            select(TableMetadata).where(TableMetadata.data_source_id.in_(ds_ids))
+        ) if ds_ids else None
+        tbl_map: dict = {}
+        if tbl_result:
+            for tm in tbl_result.scalars().all():
+                tbl_map.setdefault(tm.data_source_id, []).append(
+                    {"table_name": tm.table_name, "data_type": tm.data_type or "unknown"}
+                )
         ds_list = []
         for s in sources:
-            tables = []
-            try:
-                connector = get_connector(s.type, s.connection_config or {})
-                schema = await connector.get_schema()
-                await connector.close()
-                tables = [{"table_name": t.get("table_name", ""), "data_type": t.get("data_type", "unknown")} for t in (schema or [])]
-            except Exception:
-                pass
+            tables = tbl_map.get(s.id, [])
             entry = {"name": s.name, "id": str(s.id), "type": s.type, "tables": tables}
             # 沙箱调用时返回 connection_config（用于读取文件路径等配置）
             if context.get("_sandbox_call"):
@@ -871,7 +876,7 @@ async def _llm_vision_handler(args, db, user_id, context):
         logger.error(f"llm_vision handler 异常: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
-async def _write_table_data_handler(args, db, user_id, context):
+async def _write_data_handler(args, db, user_id, context):
     try:
         import uuid as _uuid
         from sqlalchemy import select
@@ -925,7 +930,7 @@ async def _write_table_data_handler(args, db, user_id, context):
         _err_type = type(e).__name__
         _err_detail = str(e)
         _tb_summary = _tb.format_exc()[-500:]
-        logger.error(f"write_table_data 失败: {_err_type}: {_err_detail}\n{_tb_summary}")
+        logger.error(f"write_data 失败: {_err_type}: {_err_detail}\n{_tb_summary}")
         return json.dumps({"error": f"{_err_type}: {_err_detail}", "traceback": _tb_summary}, ensure_ascii=False)
 
 
@@ -1095,8 +1100,8 @@ async def _read_file_handler(args, db, user_id, context):
             if args.get("extract_tables"):
                 text, tables, page_texts, total_pages, image_pages = await asyncio.to_thread(_extract_pdf_tables, str(p))
                 return json.dumps({"format": "tables", "content": text, "tables": tables, "page_texts": page_texts, "total_pages": total_pages, "image_pages": image_pages}, ensure_ascii=False, default=str)
-            text, total_pages, image_pages = await asyncio.to_thread(_extract_pdf_text, str(p))
-            return json.dumps({"format": "text", "content": text, "total_pages": total_pages, "image_pages": image_pages}, ensure_ascii=False)
+            text, total_pages, image_pages, page_texts = await asyncio.to_thread(_extract_pdf_text, str(p))
+            return json.dumps({"format": "text", "content": text, "total_pages": total_pages, "image_pages": image_pages, "page_texts": page_texts}, ensure_ascii=False, default=str)
         elif ext == ".docx":
             text = await asyncio.to_thread(_extract_docx_text, str(p))
             return json.dumps({"format": "text", "content": text}, ensure_ascii=False)
@@ -1204,8 +1209,9 @@ def _extract_pdf_text(file_path: str) -> tuple:
     含水印识别（xref 复用 / 同尺寸组覆盖 ≥80% 页面且文本丰富）——水印不计入大图信号，
     防止文本型 PDF 因背景水印被全页误判 OCR。
 
-    返回 (text, total_pages, image_pages)：
+    返回 (text, total_pages, image_pages, page_texts)：
     - image_pages: List[int] 疑似图片型表格所在页号（1-based），供 OCR 判断用。
+    - page_texts: List[str] 每页文本（供技能脚本按表号匹配所在页）
     """
     errors = []
     # 水印预扫描（fitz）：结果供 pdfplumber 主路径和 fitz 兜底路径共用
@@ -1290,7 +1296,7 @@ def _extract_pdf_text(file_path: str) -> tuple:
             if rotated:
                 logger.info(f"检测到旋转页 {len(rotated)} 页: {rotated[:10]}")
             logger.info(f"含图片页: {image_pages[:20]}{'...' if len(image_pages) > 20 else ''}（共 {len(image_pages)} 页）")
-            return "\n".join(pages), total_pages, image_pages
+            return "\n".join(pages), total_pages, image_pages, pages
     except ImportError:
         errors.append("pdfplumber 未安装")
     except Exception as e:
@@ -1314,7 +1320,7 @@ def _extract_pdf_text(file_path: str) -> tuple:
                 if i % 10 == 0:
                     logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
             logger.info(f"含图片页: {image_pages[:20]}{'...' if len(image_pages) > 20 else ''}（共 {len(image_pages)} 页）")
-            return "\n".join(pages), total_pages, image_pages
+            return "\n".join(pages), total_pages, image_pages, pages
         finally:
             doc.close()
     except ImportError:
@@ -1413,8 +1419,8 @@ def _extract_pdf_tables(file_path: str) -> tuple:
         logger.warning("pdfplumber 未安装，回退到纯文本提取")
     except Exception as e:
         logger.warning(f"pdfplumber 表格提取失败: {e}，回退到纯文本提取")
-    text, total_pages, image_pages = _extract_pdf_text(file_path)
-    return text, [], [], total_pages, image_pages
+    text, total_pages, image_pages, page_texts = _extract_pdf_text(file_path)
+    return text, [], page_texts, total_pages, image_pages
 
 
 def _render_pdf_pages(file_path: str, page_indices: list, dpi: int = 200) -> dict:
@@ -1439,11 +1445,18 @@ def _render_pdf_pages(file_path: str, page_indices: list, dpi: int = 200) -> dic
         if len(valid) > 20:
             valid = valid[:20]
 
-        out_dir = _Path(tempfile.mkdtemp(prefix="dc_pdf_render_"))
+        # PNG 与 OCR 缓存放同一目录（PDF 同目录的 _ocr_cache/），便于清理和复用
+        _pdf_path = _Path(file_path)
+        out_dir = _pdf_path.parent / "_ocr_cache"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            import tempfile
+            out_dir = _Path(tempfile.mkdtemp(prefix="dc_pdf_render_"))
         image_paths = []
         for i in valid:
             pix = doc[i - 1].get_pixmap(dpi=dpi)
-            img_path = out_dir / f"page_{i}.png"
+            img_path = out_dir / f"{_pdf_path.stem}_p{i}.png"
             pix.save(str(img_path))
             image_paths.append(str(img_path))
 
@@ -1882,7 +1895,7 @@ def _register_debug_tools():
         "type": "function",
         "function": {
             "name": "grep_script",
-            "description": "在代码中搜索关键词或正则表达式，返回匹配行+行号+上下文。\n\n用法：\n- pattern 是正则表达式（默认大小写不敏感），如 \"write_table_data\" 或 \"batch.*append\"\n- 返回每个匹配的行号和内容，附带上下文行（默认 3 行）\n- 搜平台源码时用 file_filter 限定文件（如 \"connectors.py\"）",
+            "description": "在代码中搜索关键词或正则表达式，返回匹配行+行号+上下文。\n\n用法：\n- pattern 是正则表达式（默认大小写不敏感），如 \"write_data\" 或 \"batch.*append\"\n- 返回每个匹配的行号和内容，附带上下文行（默认 3 行）\n- 搜平台源码时用 file_filter 限定文件（如 \"connectors.py\"）",
             "parameters": {
                 "type": "object",
                 "properties": {

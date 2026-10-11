@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 import json
 import time
+import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -25,7 +26,14 @@ STANDARD_COLUMNS = [
 
 # ==================== 数据源查找（动态） ====================
 
+_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
+def _is_uuid(s: str) -> bool:
+    return bool(_UUID_RE.match(str(s)))
+
 def _get_datasource_id(name: str) -> str:
+    if _is_uuid(name):
+        return name
     print(f"正在查找数据源: {name}")
     ds = call_tool("list_user_datasources", by_name=name)
     if not ds or not isinstance(ds, dict) or not ds.get("id"):
@@ -35,6 +43,8 @@ def _get_datasource_id(name: str) -> str:
 
 
 def _is_graph_datasource(name: str) -> bool:
+    if _is_uuid(name):
+        return False
     try:
         ds = call_tool("list_user_datasources", by_name=name)
         if isinstance(ds, dict):
@@ -46,6 +56,8 @@ def _is_graph_datasource(name: str) -> bool:
 
 
 def _is_chroma_datasource(name: str) -> bool:
+    if _is_uuid(name):
+        return False
     try:
         ds = call_tool("list_user_datasources", by_name=name)
         if isinstance(ds, dict):
@@ -58,6 +70,9 @@ def _is_chroma_datasource(name: str) -> bool:
 
 # ==================== 文件文本提取 ====================
 
+_CACHE_MAX_AGE = 86400  # 缓存有效期 24 小时，超时自动失效重新提取
+
+
 def _load_pdf_text_cached(path: str) -> str:
     p = Path(path)
     try:
@@ -69,6 +84,12 @@ def _load_pdf_text_cached(path: str) -> str:
     cache_candidates = [p.with_name(cache_name), p.with_name(f"{p.stem}.pdfcache.txt")]
     for cand in cache_candidates:
         try:
+            _cf = Path(str(cand))
+            if _cf.exists():
+                _age = time.time() - _cf.stat().st_mtime
+                if _age > _CACHE_MAX_AGE:
+                    print(f"  [缓存] {cand.name} 已过期（{_age/3600:.1f}h），重新提取")
+                    continue
             res = call_tool("read_file", path=str(cand))
             if isinstance(res, dict) and not res.get("error") and res.get("content"):
                 cached = str(res["content"])
@@ -241,7 +262,7 @@ def _parse_table_title(line: str):
         return False, "", "", False
     m = _TABLE_TITLE_PATTERN.match(s)
     if m and s.startswith("表"):
-        return True, _normalize_table_number(m.group(1).strip()), m.group(2).strip(), "续" in s
+        return True, _normalize_table_number(m.group(1).strip()), m.group(2).strip(), bool(re.search(r"[（(]\s*续\s*[)）]", s))
     return False, "", "", False
 
 
@@ -767,8 +788,8 @@ def _block_is_body_not_table(block: Dict[str, str]) -> bool:
         if _CHAPTER_HEADING_RE.match(ln) and len(ln) < 80:
             chapter_headings += 1
             continue
-        # 真实表格数据行特征：制表符 / 2+连续空格对齐 / 短序号开头
-        if "\t" in ln:
+        # 真实表格数据行特征：Markdown 竖线 / 制表符 / 2+连续空格对齐 / 短序号开头
+        if "|" in ln or "\t" in ln:
             table_data_lines += 1
         elif re.search(r"\s{2,}", ln) and len(ln) < 80:
             table_data_lines += 1
@@ -986,14 +1007,23 @@ _OCR_PROMPT = """你是表格 OCR 专家。请把页面上**实际存在的**表
 - 不要输出解释文字"""
 
 
+def _ocr_has_table(md_text: str) -> bool:
+    """检测 OCR 结果是否包含 Markdown 表格（至少 2 行含 |）。"""
+    if not md_text or not md_text.strip():
+        return False
+    pipe_lines = [ln for ln in md_text.split("\n") if ln.strip().startswith("|") and ln.strip().endswith("|")]
+    return len(pipe_lines) >= 2
+
+
 def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> str:
     """Per-table 按需 OCR：只扫描可能含该表的页，不预扫全部 image_pages。
 
     策略：
-    1. read_file 获取 total_pages + image_pages
-    2. 有 image_pages → 只扫含图片的页（图片型表格在图片里）
-    3. 无 image_pages → 文本层无数据但也没嵌入图片 → 可能是纯扫描件，扫全部页
-    4. 复用提取阶段的页级磁盘缓存（_ocr_cache_p{N}.md）
+    1. read_file 获取 total_pages + image_pages + page_texts
+    2. 从 page_texts 中搜索表号出现的页号（文本层有表标题但可能无表格数据）
+    3. image_pages + 表号所在页 合并去重 → ocr_pages
+    4. 无 image_pages 且无表号匹配 → 可能是纯扫描件，扫全部页
+    5. 复用提取阶段的页级磁盘缓存（_ocr_cache_p{N}.md）
     """
     from pathlib import Path as _Path
     text_res = call_tool("read_file", path=pdf_path)
@@ -1007,9 +1037,19 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
         return ""
 
     image_pages = text_res.get("image_pages") or []
-    if image_pages:
-        ocr_pages = image_pages[:30]
-    else:
+    page_texts = text_res.get("page_texts") or []
+    
+    # 从 page_texts 中搜索表号出现的页号
+    table_text_pages = []
+    if table_number and page_texts:
+        _tbl_pat = re.compile(r"表\s*" + re.escape(table_number) + r"\b", re.IGNORECASE)
+        for pi, pt in enumerate(page_texts):
+            if pt and _tbl_pat.search(pt):
+                table_text_pages.append(pi + 1)  # page_texts 是 0-indexed，页号是 1-indexed
+    
+    # 合并 image_pages + 表号所在页，去重排序
+    ocr_pages = sorted(set(image_pages + table_text_pages))[:30]
+    if not ocr_pages:
         ocr_pages = list(range(1, min(total_pages, 30) + 1))
 
     # 页级磁盘缓存（与提取阶段共用）
@@ -1025,12 +1065,15 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
         _cache_dir = _pdf_p.parent
 
     def _cache_path(pg):
-        return _cache_dir / f"{_pdf_p.stem}[{_size_tag}]_p{pg}.md"
+        return _cache_dir / f"{_pdf_p.stem}[_{_size_tag}]_p{pg}.md"
 
     def _cache_load(pg):
         try:
             _f = _cache_path(pg)
             if _f.exists():
+                _age = time.time() - _f.stat().st_mtime
+                if _age > _CACHE_MAX_AGE:
+                    return ""
                 _c = _f.read_text(encoding="utf-8").strip()
                 if _c:
                     return _c
@@ -1044,7 +1087,7 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
         except Exception:
             pass
 
-    # 先吃缓存
+    # 先吃缓存（加锁：检查缓存 → 拿到锁 → 再检查一次 → OCR → 写缓存 → 释放锁）
     cached_mds = []
     pages_to_ocr = []
     for pg in ocr_pages:
@@ -1080,6 +1123,7 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
                         if isinstance(vres, dict) and "error" not in vres:
                             raw = str(vres.get("result") or "").strip()
                             if raw:
+                                _cache_write(pg, raw)
                                 return pg, raw
                     except Exception:
                         pass
@@ -1090,7 +1134,7 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
                 page_no = batch_pages[i] if i < len(batch_pages) else 0
                 page_imgs[page_no] = str(img_path)
 
-            with ThreadPoolExecutor(max_workers=2) as ex:
+            with ThreadPoolExecutor(max_workers=5) as ex:
                 futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
                 for fut in as_completed(futs):
                     pg, raw = fut.result()
@@ -1102,6 +1146,10 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
     # 从所有 OCR 结果中过滤出该表的数据
     target_mds = []
     for pg, raw in cached_mds:
+        # 跳过纯图片页（无表格的示意图/流程图/照片等）
+        if not _ocr_has_table(raw):
+            print(f"  [OCR] 第 {pg} 页无表格（纯图片/示意图），跳过", flush=True)
+            continue
         if table_number:
             target = _filter_md_by_table_number(raw, table_number)
             if target:
@@ -1118,7 +1166,11 @@ def _ocr_table_on_demand(pdf_path: str, table_number: str, table_title: str) -> 
 
 
 def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: int = 1) -> Dict[str, str]:
-    """只在含图片的页（图片型表格所在页）才走 OCR，无图片的页直接跳过。"""
+    """批量按页 OCR：每页只 OCR 一次，返回 {表号: MD 片段}。
+
+    页来源 = image_pages（含嵌入图片的页）∪ table_text_pages（page_texts 中提到表号的页）。
+    矢量表格页可能无嵌入图片但文本层有表标题，需纳入扫描。
+    """
     from pathlib import Path as _Path
     text_res = call_tool("read_file", path=pdf_path)
     if not isinstance(text_res, dict) or "content" not in text_res:
@@ -1127,15 +1179,35 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
     if not total_pages:
         probe = call_tool("read_file", path=pdf_path, pdf_page_images=[1], dpi=72)
         total_pages = probe.get("total_pages") if isinstance(probe, dict) else 0
-    # 只对含嵌入图片的页做 OCR（图片型表格在图片里，纯文本页没有表格图片）
+
     image_pages = text_res.get("image_pages") or []
-    if image_pages:
-        ocr_pages = [p for p in image_pages if start_page <= p]
-        print(f"  [OCR] 含图片页 {len(ocr_pages)} 页（总 {total_pages} 页，跳过 {total_pages - len(ocr_pages)} 个纯文本页）: {ocr_pages}")
-    else:
-        # 纯文本 PDF 无嵌入图片 → 不存在图片型表格，pdfplumber 结构化提取 + 文本层切分已覆盖全部表格，跳过 OCR
-        print(f"  [OCR] 无图片页（纯文本 PDF），跳过 OCR", flush=True)
+    page_texts = text_res.get("page_texts") or []
+
+    # 从 page_texts 中搜索表号出现的页号（矢量表格页可能无嵌入图片）
+    table_text_pages = []
+    if page_texts and table_numbers:
+        for num in table_numbers:
+            if not num:
+                continue
+            _tbl_pat = re.compile(r"表\s*" + re.escape(num) + r"\b", re.IGNORECASE)
+            for pi, pt in enumerate(page_texts):
+                if pt and _tbl_pat.search(pt):
+                    table_text_pages.append(pi + 1)
+
+    # 合并 image_pages + 表号所在页，去重排序
+    ocr_pages = sorted(set(image_pages + table_text_pages))
+    ocr_pages = [p for p in ocr_pages if start_page <= p and p <= (total_pages or 999)]
+
+    if not ocr_pages:
+        print(f"  [OCR] 无需扫描的页（无图片页且无表号匹配），跳过 OCR", flush=True)
         return {}
+
+    _src_parts = []
+    if image_pages:
+        _src_parts.append(f"图片页 {len(image_pages)} 页")
+    if table_text_pages:
+        _src_parts.append(f"表号文本页 {len(set(table_text_pages))} 页")
+    print(f"  [OCR] 需扫描 {len(ocr_pages)} 页（{' + '.join(_src_parts)}，去重后）: {ocr_pages[:15]}", flush=True)
 
     ocr_prompt = _OCR_PROMPT
 
@@ -1169,6 +1241,9 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
         try:
             _f = _cache_path(pg)
             if _f.exists():
+                _age = time.time() - _f.stat().st_mtime
+                if _age > _CACHE_MAX_AGE:
+                    return ""
                 _c = _f.read_text(encoding="utf-8").strip()
                 if _c:
                     return _c
@@ -1214,6 +1289,7 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
                     if isinstance(vres, dict) and "error" not in vres:
                         raw = str(vres.get("result") or "").strip()
                         if raw:
+                            _cache_write(pg, raw)
                             return pg, raw
                 except Exception:
                     pass
@@ -1222,24 +1298,23 @@ def _scan_pages_for_tables(pdf_path: str, table_numbers: List[str], start_page: 
         page_imgs = {}
         for i, img_path in enumerate(image_paths):
             page_no = batch_pages[i] if i < len(batch_pages) else 0
-            src = _Path(str(img_path))
-            dst = _Path(pdf_path).parent / f"_dc_ocr_p{page_no}_{src.name}"
-            try:
-                dst.write_bytes(src.read_bytes())
-            except Exception:
-                dst = src
-            page_imgs[page_no] = str(dst)
+            page_imgs[page_no] = str(img_path)
 
         # Vision OCR 并发：2 路折中（1 路太慢触发超时，4 路并发下 API 降智导致丢页——
         # 每批第 3+ 个请求排队降级，返回内容格式异常匹配不到表号）
         _ocr_done = 0
-        with ThreadPoolExecutor(max_workers=2) as ex:
+        with ThreadPoolExecutor(max_workers=5) as ex:
             futs = {ex.submit(_ocr_one, pg, img_p): pg for pg, img_p in page_imgs.items()}
             for fut in as_completed(futs):
                 pg, raw = fut.result()
                 _ocr_done += 1
                 _page_matched = False
                 if raw:
+                    # 跳过纯图片页（OCR 结果无表格特征）
+                    if not _ocr_has_table(raw):
+                        print(f"  [OCR] 第 {pg} 页无表格（纯图片/示意图），跳过", flush=True)
+                        _ocr_done += 1
+                        continue
                     for num in table_numbers:
                         target = _filter_md_by_table_number(raw, num)
                         if target:
@@ -1518,6 +1593,7 @@ def _find_table_title_from_page_text(page_texts: List[str], tbl_page: int, tbl_i
     同一页有多张表时按出现顺序匹配。
     """
     _title_re = re.compile(r"表\s*([A-Za-z]?\s*\.?\s*\d+(?:[.．]\d+)?)\s*[:：]?\s*(.+)")
+    _cont_re = re.compile(r"[（(]\s*续\s*[)）]")
     # 收集该页所有表标题
     for offset in [0, -1, 1]:
         idx = tbl_page - 1 + offset
@@ -1526,6 +1602,9 @@ def _find_table_title_from_page_text(page_texts: List[str], tbl_page: int, tbl_i
             for line in page_texts[idx].split("\n"):
                 s = line.strip()
                 if not s:
+                    continue
+                # 跳过续表标题行（"表A.1 (续)"），只用非续表标题
+                if _cont_re.search(s):
                     continue
                 m = _title_re.match(s)
                 if m:
@@ -1667,8 +1746,8 @@ def _forward_fill_merged_cells(ti: Dict[str, Any]) -> Dict[str, Any]:
         if not col_vals:
             continue
         empty_ratio = 1.0 - len(non_empty) / len(col_vals)
-        header = str(headers[ci]).strip()
-        if "序号" in header or "编号" in header:
+        # 跳过纯数字列（序号/编号列），不做前向填充
+        if _is_numeric_column(rows, ci):
             continue
         if 0.1 <= empty_ratio <= 0.9 and non_empty:
             fill_cols.append(ci)
@@ -1793,13 +1872,11 @@ def _split_stuck_headers(ti: Dict[str, Any]) -> Dict[str, Any]:
                 # 多数行以数字开头 → 拆为 序号列 + 名称列
                 seq_name = "序号"
                 name_name = h
-                if h.startswith("序号") or h.startswith("编号"):
-                    name_part = re.sub(r"^(序号|编号)", "", h)
-                    name_name = name_part if name_part else "名称"
-                    seq_name = h[:2] if h[:2] in ("序号", "编号") else "序号"
-                elif h.startswith("编号"):
-                    name_name = h[2:]
-                    seq_name = "编号"
+                # 如果表头本身含中文前缀，用前缀做 seq_name
+                _m = re.match(r"^([\u4e00-\u9fff]{1,4})(.*)", h)
+                if _m and _m.group(2):
+                    seq_name = _m.group(1)
+                    name_name = _m.group(2)
                 new_headers[ci] = seq_name
                 new_headers.insert(ci + 1, name_name)
                 for row in new_rows:
@@ -1923,6 +2000,88 @@ def _normalize_column_count(ti: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _detect_transposed_table(ti: Dict[str, Any]) -> bool:
+    """检测转置表格：第一行是纯数字递增序列（1, 2, 3, ...），且行数 < 列数。
+
+    转置表格特征：原表头（字段名）在第一列，数据在后续列，
+    第一行是编号 1 2 3 4 5... 对应原始行号。
+    """
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not headers or not rows or len(rows) < 2 or len(headers) < 3:
+        return False
+    # 行数明显少于列数是转置的强信号
+    if len(rows) >= len(headers):
+        return False
+    first_row = rows[0]
+    nums = []
+    for ci in range(len(first_row)):
+        cell = str(first_row[ci]).strip() if ci < len(first_row) else ""
+        try:
+            nums.append(int(cell))
+        except ValueError:
+            return False
+    if len(nums) < 3:
+        return False
+    # 第一行是 1 2 3 ... 递增序列
+    return nums == list(range(1, len(nums) + 1))
+
+
+def _transpose_table(ti: Dict[str, Any]) -> Dict[str, Any]:
+    """转置表格：第一列变为新表头，其余行列互换。
+
+    原表:
+      [1, 2, 3]          原始行号
+      [字段A, val1, val2]  ← 字段名在第一列
+      [字段B, val3, val4]
+    转置后:
+      headers = [字段A, 字段B]
+      rows = [[val1, val3], [val2, val4]]
+    """
+    headers = ti.get("headers") or []
+    rows = ti.get("rows") or []
+    if not rows:
+        return ti
+    # 新表头 = 第一列各行值（跳过第一行的编号行）
+    new_headers = []
+    for ri in range(1, len(rows)):
+        val = str(rows[ri][0]).strip() if rows[ri] and len(rows[ri]) > 0 else ""
+        new_headers.append(val)
+    # 新行 = 原第一行编号之后的每列变成一行
+    new_rows = []
+    for ci in range(1, len(headers)):
+        new_row = []
+        for ri in range(1, len(rows)):
+            new_row.append(str(rows[ri][ci]).strip() if ci < len(rows[ri]) else "")
+        new_rows.append(new_row)
+    print(f"  [转置] {len(rows)}行×{len(headers)}列 → {len(new_rows)}行×{len(new_headers)}列", flush=True)
+    return {
+        "headers": new_headers,
+        "rows": new_rows,
+        "table_name": ti.get("table_name", ""),
+        "table_number": ti.get("table_number", ""),
+    }
+
+
+def _is_numeric_column(rows: list, ci: int, min_ratio: float = 0.6) -> bool:
+    """检测某列是否为纯数字列（序号/编号列）。"""
+    if not rows:
+        return False
+    num_count = 0
+    total = 0
+    for row in rows[:20]:
+        if ci >= len(row):
+            continue
+        total += 1
+        cell = str(row[ci]).strip()
+        try:
+            int(cell)
+            num_count += 1
+        except ValueError:
+            pass
+    return total > 0 and num_count / total >= min_ratio
+
+
 def _table_rows_to_records(ti: Dict[str, Any], source_document: str) -> List[Dict[str, Any]]:
     _in_rows = len(ti.get("rows") or [])
     _in_cols = len(ti.get("headers") or [])
@@ -1941,24 +2100,26 @@ def _table_rows_to_records(ti: Dict[str, Any], source_document: str) -> List[Dic
     if _after_merge != _after_filter or _after_merge_cols != _in_cols:
         print(f"  [阶段日志] 表{_tbl_num} 前填充/表头拆分/子列合并后: {_after_merge} 行 × {_after_merge_cols} 列", flush=True)
     ti = _normalize_column_count(ti)
+    # 转置检测：第一行是 1 2 3... 递增序列且行数 < 列数 → 行列互换
+    if _detect_transposed_table(ti):
+        ti = _transpose_table(ti)
     # 表头归一化：去除字间空格（如「劣 化 情 况」→「劣化情况」），统一跨表列名
     ti["headers"] = [re.sub(r"\s+", "", str(h)) for h in (ti.get("headers") or [])]
     headers = ti.get("headers") or []
     rows = ti.get("rows") or []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 确保序号列保持字符串格式（避免 Excel 自动转为数字/浮点）
-    seq_header = ""
-    if headers:
-        first_header = str(headers[0]).strip()
-        if "序号" in first_header or "编号" in first_header:
-            seq_header = first_header
+    # 检测数字列（序号/编号列），保持字符串格式避免 Excel 自动转数字
+    numeric_col_indices = set()
+    for ci in range(len(headers)):
+        if _is_numeric_column(rows, ci):
+            numeric_col_indices.add(ci)
     records = []
     for row in rows:
         rec = {}
         for ci, h in enumerate(headers):
             val = "" if ci >= len(row) or row[ci] is None else str(row[ci])
-            # 序号列强制保持字符串格式
-            if h == seq_header and val:
+            # 数字列强制保持字符串格式
+            if ci in numeric_col_indices and val:
                 val = val.strip()
             rec[str(h)] = val
         rec["source_document"] = source_document
@@ -2130,10 +2291,10 @@ def _llm_fix_rows(tbl: str, recs: List[Dict], tbl_issues: List[Dict], source_tex
         print(f"  [修复] 表「{tbl}」非文档表格（正文规则表），跳过 Vision 重扫")
         return 0
 
-    # 找到序号列（如果有）
+    # 找到序号列（数字列）
     seq_col = -1
     for ci, h in enumerate(headers):
-        if "序号" in str(h) or "编号" in str(h):
+        if _is_numeric_column([list(r.values()) for r in recs[:20]], ci):
             seq_col = ci
             break
 
@@ -2384,13 +2545,13 @@ def _write_records(ds_id: str, table_name: str, records: List[Dict], if_table_ex
     total, batch_total = len(records), len(batches)
     print(f"写入表 {table_name}，共 {total} 条，分 {batch_total} 批")
     print(f"  正在写入第 1/{batch_total} 批 ({len(batches[0])} 条，strategy={if_table_exists})...")
-    result = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=batches[0], if_table_exists=if_table_exists)
+    result = call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=batches[0], if_table_exists=if_table_exists)
     if not result.get("success"):
         raise RuntimeError(f"写入失败(表 {table_name}): {result.get('message') or result.get('error') or result}")
     if len(batches) > 1:
         def _append(batch_num, batch):
             print(f"  正在写入第 {batch_num}/{batch_total} 批 ({len(batch)} 条)...")
-            r = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=batch, if_table_exists="append")
+            r = call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=batch, if_table_exists="append")
             if not r.get("success"):
                 raise RuntimeError(f"写入失败(表 {table_name} 第 {batch_num} 批): {r.get('message') or r.get('error')}")
             return len(batch)
@@ -2527,20 +2688,12 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         blocks = _merge_blocks_by_number(_split_by_tables(text))
         print(f"  [切分] 共 {len(blocks)} 个块")
 
-        # per-table 按需 OCR：不预扫全部 image_pages，只在 _process_table 内文本层无数据时才 OCR 该表所在页
-        ocr_blocks = [b for b in blocks if (b.get("title") or "正文") != "正文" and not _table_block_has_data(b)]
-        if ocr_blocks:
-            print(f"  [OCR] {len(ocr_blocks)} 个表格文本层无数据，将在逐表处理时按需 OCR")
-        else:
-            print(f"  [OCR] 所有表格文本层有数据，跳过 OCR")
-        ocr_md_cache = {}  # per-table 按需填充，不再预扫
-
+        # 收集需要 OCR 的页：文本层无数据的表块 → 收集表号 → 扫描所需页（每页只 OCR 一次）
         body_parts, table_blocks = [], []
         for b in blocks:
             if (b.get("title") or "正文") == "正文":
                 body_parts.append(b.get("content") or "")
             elif _block_is_body_not_table(b):
-                # 表标题后无真实表格数据、紧跟章节正文 → 拆成表标题块(触发OCR) + 正文
                 tbl_block, body_text = _split_body_from_table_block(b)
                 if tbl_block:
                     table_blocks.append(tbl_block)
@@ -2550,28 +2703,29 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
             else:
                 table_blocks.append(b)
 
+        # 按页批量 OCR：文本层无数据的表块 → 收集所有涉及的页号 → 每页只 OCR 一次
+        _ocr_blocks = [b for b in table_blocks if not _table_block_has_data(b) and b.get("number")]
+        if _ocr_blocks:
+            _table_numbers = [b.get("number") for b in _ocr_blocks]
+            print(f"  [OCR] {len(_ocr_blocks)} 个表格文本层无数据，批量 OCR 所需页...", flush=True)
+            _ocr_md_cache = _scan_pages_for_tables(path, _table_numbers)
+        else:
+            _ocr_md_cache = {}
+            print(f"  [OCR] 所有表格文本层有数据，跳过 OCR")
+
         def _process_table(b):
             number = b.get("number") or ""
             try:
                 if not _table_block_has_data(b) and number:
-                    # 文本层无数据 → per-table 按需 OCR：只扫该表所在页
-                    print(f"  [表格] 表{number} 文本层无数据，按需 OCR...", flush=True)
-                    _ocr_md = _ocr_table_on_demand(path, number, b.get("title") or "")
+                    # 从批量 OCR 结果中按表号过滤
+                    _ocr_md = _ocr_md_cache.get(number, "")
                     if _ocr_md:
-                        ocr_md_cache[number] = _ocr_md
                         ti = _extract_table_from_ocr(b, _ocr_md)
-                        _channel = "ocr"
                     else:
+                        print(f"  [表格] 表{number} OCR 结果为空，跳过", flush=True)
                         ti = {"table_name": _sanitize_table_name(f"表{number} {b.get('title', '')}".strip()), "headers": [], "rows": []}
-                        _channel = "ocr"
                 else:
                     ti = _extract_table_literal(b)
-                    _channel = "text_layer"
-                if ti.get("headers") and ti.get("rows"):
-                    pass
-                _tbl_result_name = ti.get("table_name", "")
-                if _tbl_result_name:
-                    _TABLE_CHANNEL_MAP[_tbl_result_name] = _channel
                 return {"table_name": ti["table_name"], "records": _table_rows_to_records(ti, Path(path).name), "title": b.get("title"), "number": number}
             except Exception as e:
                 print(f"  [表格] 表{number} 提取失败: {e}")
@@ -2729,12 +2883,16 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
     print(f"[自检] 待检查 {len(_tables_to_check)} 张文档表格（跳过 {len(grouped) - len(_tables_to_check)} 张正文规则表）")
 
     def _check_one(tbl):
-        recs = grouped.get(tbl, [])
-        if not recs:
+        # 从实际写入的数据源读回数据检查（不检查内存中的 grouped，避免内存与实际写入不一致）
+        print(f"[自检] 开始检查「{tbl}」...", flush=True)
+        _qr = call_tool("query_data", datasource_id=target_ds_id, table_name=tbl)
+        if not isinstance(_qr, dict) or not _qr.get("data"):
+            print(f"[自检] 「{tbl}」读回数据为空，跳过", flush=True)
             return tbl, []
-        headers = list(recs[0].keys())
-        rows = [[r.get(h, "") for h in headers] for r in recs]
-        print(f"[自检] 开始检查「{tbl}」({len(recs)} 行)...", flush=True)
+        _data = _qr["data"]
+        headers = list(_data[0].keys()) if _data else []
+        rows = [[str(r.get(h, "") or "") for h in headers] for r in _data]
+        print(f"[自检] 「{tbl}」读回 {len(rows)} 行 × {len(headers)} 列", flush=True)
         _src_snippet = _locate_source_snippet(_src_text_check, tbl, headers) if _src_text_check else ""
         _issues = []
         _BATCH = 30
@@ -2774,7 +2932,7 @@ def extract_rules_to_kb(document_paths: str, target_datasource_name: str, target
         print(f"[自检] 发现 {len(_all_check_issues)} 个问题：")
         for tbl, iss in _all_check_issues:
             print(f"  [{iss.get('severity','?')}] {iss.get('rule_id','')} 表「{tbl}」: {iss.get('description','')}")
-        # 分阶段预算：修复阶段剩余不足 300s → 只做确定性修复（秒级），跳过 LLM/Vision 重扫
+        # 从数据源读回实际数据修复（不操作内存 grouped，避免与实际写入不一致）
         _fix_budget = _TIME_BUDGET - _elapsed()
         _modified_tables = {tbl for tbl, _ in _all_check_issues}
         if _fix_budget < 300:

@@ -254,9 +254,9 @@ def _logged_call_tool(tool_name, **args):
             "message": str(_message)[:300] if _message else "",
             "elapsed_ms": round((_time.time() - _start) * 1000, 2),
         }}
-        # 记录 write_table_data 的目标表信息（供 RunTime handoff Inspector 用）
+        # 记录 write_data 的目标表信息（供 RunTime handoff Inspector 用）
         # 同一张表多次分批写入只记一条（合并行数），避免 Inspector 收到 10 条重复表
-        if tool_name == "write_table_data" and _success:
+        if tool_name == "write_data" and _success:
             _ds_id = args.get("datasource_id", "")
             _tbl_name = ""
             if isinstance(_result, dict):
@@ -269,7 +269,7 @@ def _logged_call_tool(tool_name, **args):
             # 查找已存在的同表记录（合并）
             _merged = False
             for _existing in _TOOL_CALL_LOG:
-                if (_existing.get("tool") == "write_table_data"
+                if (_existing.get("tool") == "write_data"
                         and _existing.get("datasource_id") == _ds_id
                         and _existing.get("table_name") == _tbl_name):
                     _existing["elapsed_ms"] = round(_existing["elapsed_ms"] + (_time.time() - _start) * 1000, 2)
@@ -335,7 +335,7 @@ if __name__ == "__main__":
         # 显式输出 tool_call_log（不依赖 atexit，避免 stdout pipe 在退出阶段已关闭）
         if _TOOL_CALL_LOG:
             print("__TOOL_CALL_LOG__" + json.dumps(_sanitize_nans(_TOOL_CALL_LOG), ensure_ascii=False, default=str), flush=True)
-        # 检查是否有写入表记录（通过 call_tool 的 write_table_data 返回值追踪）
+        # 检查是否有写入表记录（通过 call_tool 的 write_data 返回值追踪）
         # _WRITTEN_TABLES 由 handler 侧管理，通过 result 返回
 """
 

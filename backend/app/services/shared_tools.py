@@ -17,6 +17,6 @@ async def execute_shared_tool(name, arguments, db, user_id):
 
 # 向后兼容：DataAnalyst 旧版用 ANALYSIS_TOOLS（现在直接用 get_tool_schemas）
 ANALYSIS_TOOLS = get_tool_schemas([
-    "query_table_data", "get_table_schema", "list_user_datasources",
+    "query_data", "get_table_schema", "list_user_datasources",
     "execute_sql", "kb_search",
 ])

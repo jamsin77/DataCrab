@@ -453,8 +453,8 @@ SYSTEM_PROMPT = """你是一个专业的Python数据算子脚本生成器。你�
 
 ## 编码最佳实践
 1. 主函数通过 call_tool("list_user_datasources", by_name=...) 获取数据源ID
-2. 查询数据用 call_tool("query_table_data", datasource_id=..., table_name=...)，返回 dict（含 success/data/columns/row_count）
-3. 构造 DataFrame：`result = call_tool("query_table_data", ...); df = pd.DataFrame(result["data"], columns=result["columns"])`
+2. 查询数据用 call_tool("query_data", datasource_id=..., table_name=...)，返回 dict（含 success/data/columns/row_count）
+3. 构造 DataFrame：`result = call_tool("query_data", ...); df = pd.DataFrame(result["data"], columns=result["columns"])`
 4. 使用 pandas 进行数据处理，优先使用向量化操作而非循环
 5. 处理边界情况：空DataFrame、列不存在、空值、类型转换失败
 6. 用 print() 输出关键处理步骤和结果摘要
@@ -497,7 +497,7 @@ def filter_expensive_products(
         raise ValueError(f"找不到数据源: {datasource_name}")
     ds_id = ds_result["id"]
 
-    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+    result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"读取表失败: {result.get('error')}")
     df = pd.DataFrame(result["data"], columns=result["columns"])

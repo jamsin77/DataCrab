@@ -82,6 +82,7 @@ class SkillRunResponse(BaseModel):
 
 class SkillGenerateRequest(BaseModel):
     prompt: str = Field(..., description="自然语言描述，用于生成完整的Skill")
+    reference_docs: Optional[List[str]] = Field(None, description="上传的参考文档路径列表（供 AI 读文档内容生成技能）")
 
 
 class SkillCloneRequest(BaseModel):
@@ -99,6 +100,7 @@ class SkillScriptUpdate(BaseModel):
 
 class SkillModifyRequest(BaseModel):
     instruction: str = Field(..., description="自然语言修改指令")
+    reference_docs: Optional[List[str]] = Field(None, description="上传的参考文档路径列表（供 AI 读文档内容修改技能）")
 
 
 class SkillInferInstructionRequest(BaseModel):

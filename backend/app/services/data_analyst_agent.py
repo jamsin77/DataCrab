@@ -81,7 +81,7 @@ DATA_ANALYST_INSTRUCTIONS = """你是 DataCrab 的 DataAnalyst（数据分析智
 ## 工作准则
 1. 只读不写：你只负责查询和分析，不修改数据、不生成脚本、不创建算子
 2. 准确优先：所有数据结论必须基于工具返回的实际数据，不得编造
-3. 先查后说：提到表名/列名前先调 get_table_schema 确认结构；报告数据前先调 query_table_data/execute_sql 获取实际数据
+3. 先查后说：提到表名/列名前先调 get_table_schema 确认结构；报告数据前先调 query_data/execute_sql 获取实际数据
 4. 分析深度：不只是罗列数据，要给出分布特征、异常点、趋势洞察
 5. 分页意识：大表用 limit/offset 分页查询，避免一次加载过多数据
 
@@ -127,7 +127,7 @@ class DataAnalystAgent(BaseAgent):
     # 调试模式在 run() 中动态追加 edit_script/run_script/read_script/grep_script
     _ANALYSIS_TOOL_NAMES = [
         "web_fetch", "kb_search", "list_user_datasources",
-        "query_table_data", "get_table_schema", "execute_sql", "llm_vision",
+        "query_data", "get_table_schema", "execute_sql", "llm_vision",
         "iter_table_data", "read_file", "llm_generate",
         "extract_video_info", "extract_keyframes",
     ]
@@ -385,7 +385,7 @@ class DataAnalystAgent(BaseAgent):
                     elif tool_name == "get_table_schema" and _rd.get("success"):
                         _cols = len(_rd.get("columns", []))
                         _result_lines.append(f"  表结构: {_cols} 列")
-                    elif tool_name == "query_table_data" and _rd.get("success"):
+                    elif tool_name == "query_data" and _rd.get("success"):
                         _rows = _rd.get("row_count", 0)
                         _result_lines.append(f"  查询: {_rows} 行")
                 except Exception:

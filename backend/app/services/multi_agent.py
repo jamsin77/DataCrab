@@ -349,6 +349,12 @@ class AgentRuntime:
             if isinstance(iss, dict) and iss.get("severity") in ("error", "critical", "fatal"):
                 issues.append(iss)
 
+        # 提取 Inspector LLM 文字结论中报告的 issue
+        _llm_issues = check_results.get("llm_reported_issues", []) if isinstance(check_results, dict) else []
+        for iss in _llm_issues:
+            if isinstance(iss, dict) and iss.get("severity") in ("error", "critical", "fatal"):
+                issues.append(iss)
+
         return issues
 
 

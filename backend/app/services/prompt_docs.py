@@ -25,8 +25,8 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 
 ### 工具调用
 - 脚本中所有数据操作都通过 `call_tool(tool_name, **args)` 调用，返回 dict
-- 查询数据: `call_tool("query_table_data", datasource_id=..., table_name=...)` → {"success", "data": [行dict], "columns": [列名], "row_count": int}
-- 写入数据: `call_tool("write_table_data", datasource_id=..., table_name=..., records=[...], if_table_exists="append")`
+- 查询数据: `call_tool("query_data", datasource_id=..., table_name=...)` → {"success", "data": [行dict], "columns": [列名], "row_count": int}
+- 写入数据: `call_tool("write_data", datasource_id=..., table_name=..., records=[...], if_table_exists="append")`
 - 执行 SQL: `call_tool("execute_sql", datasource_id=..., sql="SELECT ...")` → {"success", "data": [...], "columns": [...]}
 - 按名查数据源: `call_tool("list_user_datasources", by_name="数据源名")` → {"id": "uuid", "name": ..., "type": ...}
 - LLM 调用: `call_tool("llm_generate", prompt="...", system_prompt="...")` → {"content": "回复文本"}
@@ -80,7 +80,7 @@ PLATFORM_CONVENTIONS_DOC = """## 平台约定（生成/修改/调试脚本时必
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def _process_table(ds_id, table_name):
-    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+    result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"查询失败: {result.get('error')}")
     df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -100,7 +100,7 @@ os, sys, subprocess, shutil, ctypes, sqlite3, psycopg2, pymysql, asyncpg, sqlalc
 替代方案：
 - 路径操作：用 `from pathlib import Path` 替代 `os.path`
 - 文件读写：用 `call_tool("read_file", path=...)` / `call_tool("write_file", path=..., data=...)` 替代 `open()`
-- 数据查询：用 `call_tool("query_table_data", ...)` / `call_tool("execute_sql", ...)` 替代直接连数据库
+- 数据查询：用 `call_tool("query_data", ...)` / `call_tool("execute_sql", ...)` 替代直接连数据库
 - 环境变量：不可用（沙箱不传敏感环境变量），需要的配置通过参数传入
 - 时间戳：用 `from datetime import datetime` 替代 `os.path.getmtime`"""
 

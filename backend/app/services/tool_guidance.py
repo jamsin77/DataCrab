@@ -10,7 +10,7 @@ _MAIN_TOOL_CAPABILITY_TABLE = """## 工具能力表（诚实声明）
 
 | 工具 | 覆盖率 | 精确度 | 已知局限 |
 |------|--------|--------|----------|
-| query_table_data | 默认最多100行 | 高 | 筛选/排序时先加载最多50000行到内存再过滤，大表可能较慢；不支持跨表JOIN，复杂关联需写算子脚本 |
+| query_data | 默认最多100行 | 高 | 筛选/排序时先加载最多50000行到内存再过滤，大表可能较慢；不支持跨表JOIN，复杂关联需写算子脚本 |
 | get_table_schema | 仅采样5行推断类型 | 中 | 行数依赖get_table_stats，部分数据源可能不支持；类型推断基于样本，可能有偏差 |
 | execute_sql | 最多1000行（可调到10000） | 高 | DB型走原生SQL；Excel/CSV 用 DuckDB 内存SQL。Excel表名=文件名_工作表名，CSV表名=文件名(不带扩展名)；表名含中文/特殊字符用双引号包裹：SELECT * FROM "销售数据_Q1"。仅SELECT，不支持DML |
 | list_user_file_links | 全量 | 高 | 仅返回目录类型的链接 |
@@ -39,29 +39,29 @@ TOOL_CAPABILITY_TABLE = _MAIN_TOOL_CAPABILITY_TABLE
 PLATFORM_CAPABILITIES = {
     "connector": {
         "excel": {
-            "write_table_data": {"create_new_file": False, "create_new_sheet": False,
+            "write_data": {"create_new_file": False, "create_new_sheet": False,
                                  "if_table_exists": ["fail", "append", "overwrite"]},
             "execute_sql": False,
         },
         "csv": {
-            "write_table_data": {"create_new_file": True,
+            "write_data": {"create_new_file": True,
                                  "if_table_exists": ["fail", "append", "overwrite"]},
             "execute_sql": False,
         },
         "sqlite": {
-            "write_table_data": {"create_new_table": True,
+            "write_data": {"create_new_table": True,
                                  "if_table_exists": ["fail", "append", "replace", "overwrite",
                                                      "truncate", "delete_rows", "upsert", "create_new"]},
             "execute_sql": True,
         },
         "postgresql": {
-            "write_table_data": {"create_new_table": True,
+            "write_data": {"create_new_table": True,
                                  "if_table_exists": ["fail", "append", "replace", "overwrite",
                                                      "truncate", "delete_rows", "upsert", "create_new"]},
             "execute_sql": True,
         },
         "mysql": {
-            "write_table_data": {"create_new_table": True,
+            "write_data": {"create_new_table": True,
                                  "if_table_exists": ["fail", "append", "replace", "overwrite",
                                                      "truncate", "delete_rows", "upsert", "create_new"]},
             "execute_sql": True,
@@ -115,7 +115,7 @@ def get_platform_capabilities(target_connector_type: str = None) -> str:
 
     if target_connector_type and target_connector_type in caps["connector"]:
         c = caps["connector"][target_connector_type]
-        wtd = c.get("write_table_data", {})
+        wtd = c.get("write_data", {})
         lines.append(f"\n### 目标连接器（{target_connector_type}）")
         can_create = wtd.get("create_new_file", wtd.get("create_new_table", False))
         lines.append(f"- 创建新文件/表: {'✅' if can_create else '❌ 不支持'}")

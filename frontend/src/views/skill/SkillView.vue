@@ -190,6 +190,20 @@
             {{ t('skill.historySwitchHint', { count: genHistory.length }) }}
           </div>
         </el-form-item>
+        <el-form-item label="参考文档">
+          <div class="ref-docs-area">
+            <el-button size="small" @click="($refs.genFileInput as HTMLInputElement).click()" :loading="genUploadingRef" :disabled="generating">
+              <el-icon><Upload /></el-icon> 上传文档
+            </el-button>
+            <input ref="genFileInput" type="file" multiple accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.md" style="display:none" @change="uploadGenReferenceDoc" />
+            <span class="ref-docs-hint" v-if="!genReferenceDocs.length">支持 PDF/Word/TXT/Excel，AI 将读取文档内容辅助生成技能</span>
+            <div class="ref-docs-list" v-if="genReferenceDocs.length">
+              <el-tag v-for="(doc, idx) in genReferenceDocs" :key="idx" closable size="small" @close="removeGenReferenceDoc(idx)" style="margin-right:6px">
+                {{ doc.name }}
+              </el-tag>
+            </div>
+          </div>
+        </el-form-item>
       </el-form>
 
       <div v-if="genMessages.length" class="gen-msg-list" ref="genMsgListRef">
@@ -304,6 +318,18 @@
               <el-icon><VideoPause /></el-icon>
               {{ t('common.stop') }}
             </el-button>
+          </div>
+          <div class="ref-docs-area" style="margin-top:6px">
+            <el-button size="small" @click="($refs.modifyFileInput as HTMLInputElement).click()" :loading="modifyUploadingRef" :disabled="modifying">
+              <el-icon><Upload /></el-icon> 上传文档
+            </el-button>
+            <input ref="modifyFileInput" type="file" multiple accept=".pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.md" style="display:none" @change="uploadModifyReferenceDoc" />
+            <span class="ref-docs-hint" v-if="!modifyReferenceDocs.length">上传文档辅助修改</span>
+            <div class="ref-docs-list" v-if="modifyReferenceDocs.length">
+              <el-tag v-for="(doc, idx) in modifyReferenceDocs" :key="idx" closable size="small" @close="removeModifyReferenceDoc(idx)" style="margin-right:6px">
+                {{ doc.name }}
+              </el-tag>
+            </div>
           </div>
           <div v-if="modifyError" class="modify-error">
             <el-alert :title="modifyError" type="error" show-icon :closable="false" />
@@ -1239,6 +1265,8 @@ const generating = ref(false)
 let generateAbortController: AbortController | null = null
 const genMessages = ref<any[]>([])
 const genMsgListRef = ref<HTMLElement | null>(null)
+const genReferenceDocs = ref<any[]>([])
+const genUploadingRef = ref(false)
 
 // ==================== 相似技能检测 ====================
 const showSimilarDialog = ref(false)
@@ -1248,6 +1276,65 @@ const checkingSimilar = ref(false)
 function onGenerateDialogClosed() {
   generatePrompt.value = ''
   genMessages.value = []
+  genReferenceDocs.value = []
+}
+
+async function uploadGenReferenceDoc(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (!target.files || !target.files.length) return
+  genUploadingRef.value = true
+  try {
+    for (const file of Array.from(target.files)) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const token = localStorage.getItem('access_token')
+      const resp = await api.post('/skills/upload-reference', formData, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (resp.file_path) {
+        genReferenceDocs.value.push({ path: resp.file_path, name: resp.original_name })
+        ElMessage.success(`已上传: ${resp.original_name}`)
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '上传失败')
+  } finally {
+    genUploadingRef.value = false
+    target.value = ''
+  }
+}
+
+function removeGenReferenceDoc(idx: number) {
+  genReferenceDocs.value.splice(idx, 1)
+}
+
+async function uploadModifyReferenceDoc(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (!target.files || !target.files.length) return
+  modifyUploadingRef.value = true
+  try {
+    for (const file of Array.from(target.files)) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const token = localStorage.getItem('access_token')
+      const resp = await api.post('/skills/upload-reference', formData, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (resp.file_path) {
+        modifyReferenceDocs.value.push({ path: resp.file_path, name: resp.original_name })
+        ElMessage.success(`已上传: ${resp.original_name}`)
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || '上传失败')
+  } finally {
+    modifyUploadingRef.value = false
+    target.value = ''
+  }
+}
+
+function removeModifyReferenceDoc(idx: number) {
+  modifyReferenceDocs.value.splice(idx, 1)
 }
 
 function stopGenerate() {
@@ -1296,7 +1383,7 @@ async function doGenerate(userText: string) {
     const response = await fetch('/api/v1/skills/generate-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ prompt: userText }),
+      body: JSON.stringify({ prompt: userText, reference_docs: genReferenceDocs.value.map(d => d.path) }),
       signal: generateAbortController.signal,
     })
     if (!response.ok) {
@@ -1410,6 +1497,8 @@ const modifyError = ref('')
 const modifyMessages = ref<any[]>([])
 const modifyMsgListRef = ref<HTMLElement | null>(null)
 const modifyAbortCtrl = ref<AbortController | null>(null)
+const modifyReferenceDocs = ref<any[]>([])
+const modifyUploadingRef = ref(false)
 
 const expandedScript = ref('')
 const scriptContents = reactive<Record<string, string>>({})
@@ -1527,7 +1616,7 @@ async function handleModifySkill() {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ instruction: userText }),
+      body: JSON.stringify({ instruction: userText, reference_docs: modifyReferenceDocs.value.map(d => d.path) }),
       signal: ctrl.signal,
     })
 
@@ -3086,6 +3175,21 @@ onActivated(() => {
   font-size: 12px;
   color: #909399;
   margin-top: 4px;
+}
+.ref-docs-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ref-docs-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.ref-docs-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .skill-page {
   padding: 20px;

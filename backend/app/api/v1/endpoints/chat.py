@@ -336,7 +336,7 @@ async def _build_selected_datasource_context(ds, table_name: str, user_message: 
     if table_name:
         lines.append(f"用户选择的表: {table_name}")
     lines.append("")
-    lines.append("> 请用 query_table_data / get_table_schema / execute_sql 等工具按 datasource_id 查询此数据源的数据。")
+    lines.append("> 请用 query_data / get_table_schema / execute_sql 等工具按 datasource_id 查询此数据源的数据。")
     return "\n".join(lines), ""
 
 
@@ -889,7 +889,7 @@ async def stream_response(
                                             f"数据源类型: generic_file（文件型，非 DB）",
                                             "",
                                             "可用工具：",
-                                            "- query_table_data / get_table_schema / execute_sql",
+                                            "- query_data / get_table_schema / execute_sql",
                                             "",
                                             "本次上传文件：",
                                         ])
@@ -981,7 +981,7 @@ async def stream_response(
                                     f"数据源类型: generic_file（文件型，非 DB）",
                                     "",
                                     "可用工具：",
-                                    "- query_table_data: 分页拉数据（page/page_size，默认100行）",
+                                    "- query_data: 分页拉数据（page/page_size，默认100行）",
                                     "- get_table_schema: 查看表结构",
                                     "- execute_sql: 用 DuckDB 在内存跑 SQL（支持 SELECT/WHERE/GROUP BY/JOIN，"
                                     "  统计/聚合优先用此工具，比翻页拉数据再算高效）",

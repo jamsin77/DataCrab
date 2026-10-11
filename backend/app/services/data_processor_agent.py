@@ -60,7 +60,7 @@ DataCrab 只能处理用户数据，绝不能修改平台自身。
 2. 修改后必验证：每次修改数据/代码后必须测试验证
 3. 准确优先：所有数据结论必须基于工具返回的实际数据，不得编造
 4. 翻译优先用算子：涉及文本翻译时，优先调用「文本翻译」算子，不在脚本中自行编写 LLM 翻译逻辑
-5. 脚本工具调用：帮用户编写脚本时使用 call_tool("工具名", **参数) 调用数据操作工具（query_table_data/write_table_data/execute_sql/llm_generate 等），禁止 import datacrab 或 pip install datacrab
+5. 脚本工具调用：帮用户编写脚本时使用 call_tool("工具名", **参数) 调用数据操作工具（query_data/write_data/execute_sql/llm_generate 等），禁止 import datacrab 或 pip install datacrab
 
 ## 扩展能力（用户可扩展数据源连接器与大模型适配器）
 - save_connector：用户说"添加/修改 MongoDB 连接器"时，生成继承 BaseConnector 的 Python 类（实现 connect/test_connection/get_schema/get_table_data/get_table_stats/close）
@@ -74,9 +74,9 @@ DataCrab 只能处理用户数据，绝不能修改平台自身。
 # 调试模式在 run() 中动态追加脚本调试工具
 MAIN_TOOLS = [
     "web_fetch", "kb_search", "list_user_datasources",
-    "query_table_data", "get_table_schema", "execute_sql",
+    "query_data", "get_table_schema", "execute_sql",
     "list_user_file_links", "save_file_to_link", "llm_vision",
-    "write_table_data", "iter_table_data", "read_file", "write_file",
+    "write_data", "iter_table_data", "read_file", "write_file",
     "llm_generate", "extract_video_info", "extract_keyframes",
     "check_skill_rules",
 ]
@@ -105,7 +105,7 @@ VERY IMPORTANT: 修改完成后，必须调 run_script 执行验证结果是否�
 不要反复尝试同一个修改。
 
 ## 平台规范
-- 脚本中所有数据操作通过 call_tool("工具名", **参数) 调用（如 call_tool("query_table_data", datasource_id=..., table_name=...)），返回 dict 含 success/data/columns 等字段
+- 脚本中所有数据操作通过 call_tool("工具名", **参数) 调用（如 call_tool("query_data", datasource_id=..., table_name=...)），返回 dict 含 success/data/columns 等字段
 - 沙箱禁止 import os/sys/subprocess/shutil/sqlite3/socket/http/urllib/sqlalchemy 等，路径操作用 pathlib，文件读写用 call_tool，数据操作用 call_tool
 - 不要在脚本中安装数据库扩展、不要直接调用外部 API
 - 不要吞掉异常：except 块必须 re-raise 或返回 success=False（不能静默返回 success=True 隐藏错误）
@@ -383,15 +383,10 @@ class DataProcessorAgent(BaseAgent):
                 if issue.get('suggestion'):
                     fix_prompt += f" → 建议: {issue.get('suggestion')}"
                 fix_prompt += "\n"
-            fix_prompt += (
-                "\n修复策略（先判断问题类型再动手）：\n"
-                "1. 数据级问题（单元格内容截断/个别值错误/空值/重复行）：直接用数据工具修复——"
-                "query_table_data 定位问题行，从源文档或上下文找到正确内容，"
-                "write_table_data 或 execute_sql 更新该单元格。禁止为此重跑整个脚本。\n"
-                "2. 结构级问题（整表丢行/列错位/表结构错）：才考虑修改脚本并重新执行。\n"
-                "3. 修复后用 query_table_data 验证修复结果。\n"
-                "优先选 1——多数检查问题是数据级小问题，改数据比改脚本重跑快得多。"
-            )
+            fix_prompt += "\n\n## 修复方式\n"
+            fix_prompt += "优先用 query_data 读回问题表数据定位问题行，用 write_data 直接修补数据（if_table_exists=overwrite 覆盖写入修好的数据）。\n"
+            fix_prompt += "只有脚本逻辑本身有 bug 才用 edit_script 改脚本 + run_script 重跑。数据问题不要全量重跑。\n"
+            fix_prompt += "修复后系统会自动交给 DataInspector 复查。"
             _dynamic_hints = self.build_debug_dynamic_hints(context, "") if _is_debug else ""
             if _dynamic_hints:
                 fix_prompt = fix_prompt + "\n\n" + _dynamic_hints
@@ -667,7 +662,7 @@ class DataProcessorAgent(BaseAgent):
                     elif tool_name == "get_table_schema" and _rd.get("success"):
                         _cols = len(_rd.get("columns", []))
                         _result_lines.append(f"  表结构: {_cols} 列")
-                    elif tool_name == "query_table_data" and _rd.get("success"):
+                    elif tool_name == "query_data" and _rd.get("success"):
                         _rows = _rd.get("row_count", 0)
                         _result_lines.append(f"  查询: {_rows} 行")
                 except Exception as e:
@@ -710,7 +705,7 @@ class DataProcessorAgent(BaseAgent):
                         _output_tables = []  # 收集所有写入的表 [{datasource_id, table_name}]
                         _seen_output = set()  # 去重（同一数据源+表名只记一次）
                         for _tc in _tool_calls_log:
-                            if _tc.get("tool") == "write_table_data" and _tc.get("success") and _tc.get("table_name"):
+                            if _tc.get("tool") == "write_data" and _tc.get("success") and _tc.get("table_name"):
                                 _ds_id = _tc.get("datasource_id", "")
                                 _tbl = _tc.get("table_name", "")
                                 _key = f"{_ds_id}|{_tbl}"
@@ -821,7 +816,7 @@ class DataProcessorAgent(BaseAgent):
                         )
 
                 # 搜索饱和检测（U）
-                if tool_name in ("kb_search", "query_table_data"):
+                if tool_name in ("kb_search", "query_data"):
                     sat_warn = saturation_detector.record_search(r["content"])
                     if sat_warn:
                         local_messages.append({"role": "user", "content": sat_warn})
@@ -1045,7 +1040,7 @@ class DataProcessorAgent(BaseAgent):
         if target_ds_type:
             from app.services.tool_guidance import PLATFORM_CAPABILITIES
             _caps = PLATFORM_CAPABILITIES.get("connector", {}).get(target_ds_type, {})
-            _wtd = _caps.get("write_table_data", {})
+            _wtd = _caps.get("write_data", {})
             _can_create = _wtd.get("create_new_file", _wtd.get("create_new_table", False))
             prompt += f"\n目标连接器({target_ds_type}): 创建新文件/表={'✅' if _can_create else '❌'}, execute_sql={'✅' if _caps.get('execute_sql') else '❌'}"
             if not _can_create:

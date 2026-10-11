@@ -21,14 +21,14 @@ SKILL_SPEC = _SPEC_PATH.read_text(encoding="utf-8") if _SPEC_PATH.exists() else 
 _COMMON_PITFALLS = """
 ## 常见陷阱（必须避免）
 
-### 1. call_tool("query_table_data", ...) 返回 dict，不是 DataFrame
+### 1. call_tool("query_data", ...) 返回 dict，不是 DataFrame
 ```python
 # ❌ 错误：直接当 DataFrame 用
-result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
 print(result.columns)  # AttributeError: 'dict' object has no attribute 'columns'
 
 # ✅ 正确：从 dict 取出 data 构造 DataFrame
-result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
 if not result.get("success"):
     raise ValueError(f"查询失败: {result.get('error')}")
 df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -56,23 +56,23 @@ if df is not None and not df.empty:
     process(df)
 ```
 
-### 4. call_tool("write_table_data", ...) 的 records 参数是 list[dict]，不是 DataFrame
+### 4. call_tool("write_data", ...) 的 records 参数是 list[dict]，不是 DataFrame
 ```python
 # ❌ 错误（传 DataFrame）
-call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=df)
+call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=df)
 
 # ✅ 正确（转成 list[dict]）
-call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=df.to_dict(orient="records"), if_table_exists="replace")
+call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=df.to_dict(orient="records"), if_table_exists="replace")
 ```
 
-### 5. call_tool("write_table_data", ...) 返回 dict，检查 success 字段
+### 5. call_tool("write_data", ...) 返回 dict，检查 success 字段
 ```python
 # ❌ 错误
-call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=data)
+call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=data)
 print("写入成功")
 
 # ✅ 正确
-result = call_tool("write_table_data", datasource_id=ds_id, table_name=table_name, records=data, if_table_exists="replace")
+result = call_tool("write_data", datasource_id=ds_id, table_name=table_name, records=data, if_table_exists="replace")
 if not result.get("success"):
     raise ValueError(f"写入失败: {result.get('message')}")
 ```
@@ -85,7 +85,7 @@ def main(datasource_name, table_name, output_table=None):
         raise ValueError(f"找不到数据源: {datasource_name}")
 
     # 查询
-    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+    result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"查询失败: {result.get('error')}")
     df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -98,7 +98,7 @@ def main(datasource_name, table_name, output_table=None):
 
     # 写回
     target = output_table or table_name
-    write_result = call_tool("write_table_data",
+    write_result = call_tool("write_data",
         datasource_id=ds_id, table_name=target,
         records=df.to_dict(orient="records"),
         if_table_exists="replace",
@@ -134,7 +134,7 @@ if fail_count == len(images):
     raise RuntimeError(f"全部 {len(images)} 个 llm_vision 调用失败，可能 LLM 未配置")
 ```
 
-### 8. call_tool("execute_sql", ...) / call_tool("write_table_data", ...) 返回 dict，检查 success
+### 8. call_tool("execute_sql", ...) / call_tool("write_data", ...) 返回 dict，检查 success
 ```python
 # ❌ 错误：不检查返回值
 result = call_tool("execute_sql", datasource_id=ds_id, sql="SELECT * FROM users")
@@ -152,7 +152,7 @@ df = pd.DataFrame(result["data"], columns=result["columns"])
 # ❌ 错误：耗时操作期间无输出，框架判定卡死 → 超时杀进程
 frames = call_tool("extract_keyframes", video_path=video_path, max_frames=8)["frames"]
 result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]
-call_tool("write_table_data", datasource_id=ds_id, table_name=table, records=data)
+call_tool("write_data", datasource_id=ds_id, table_name=table, records=data)
 
 # ✅ 正确：每步操作前 print 进度，框架持续收到输出不判定超时
 print(f"[1/5] 开始抽取关键帧（最多 {max_frames} 帧）...")
@@ -164,11 +164,11 @@ result = call_tool("llm_vision", image_path=image_path, prompt=prompt)["result"]
 print(f"[2/5] 帧 {i+1} 分析完成: {len(result)} 字符")
 
 print(f"[3/5] 开始写入 {len(records)} 条记录到 {datasource_name}.{table_name}...")
-call_tool("write_table_data", datasource_id=ds_id, table_name=table, records=data)
+call_tool("write_data", datasource_id=ds_id, table_name=table, records=data)
 print(f"[3/5] 写入完成")
 
 # 规范：
-# 1. 每个耗时操作（llm_vision/llm_chat/extract_keyframes/write_table_data/query_table_data）前后都 print
+# 1. 每个耗时操作（llm_vision/llm_chat/extract_keyframes/write_data/query_data）前后都 print
 # 2. 循环体内也要 print（如"正在处理第 3/10 条"）
 # 3. 格式: [步骤号/总步骤] 描述... → 完成描述: 数量/结果
 # 4. 耗时超过 30 秒的操作必须加中间进度 print（如批量写入每 100 条打一次）
@@ -276,7 +276,7 @@ def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
     ds_id = call_tool("list_user_datasources", by_name=datasource_name)["id"]
     if not ds_id:
         raise ValueError(f"找不到数据源: {datasource_name}")
-    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name)
+    result = call_tool("query_data", datasource_id=ds_id, table_name=table_name)
     if not result.get("success"):
         raise ValueError(f"读取数据失败: {result.get('error')}")
     return pd.DataFrame(result["data"], columns=result["columns"])
@@ -355,7 +355,41 @@ def main(**params):
 """
 
 
-async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = "") -> Dict[str, Any]:
+async def _read_reference_docs(reference_docs: list) -> str:
+    """读取上传的参考文档内容，拼接为 prompt 段落。"""
+    if not reference_docs:
+        return ""
+    from app.services.tool_registry import execute_tool
+    import asyncio
+    parts = []
+    total_chars = 0
+    _MAX_TOTAL = 15000
+    _MAX_PER_DOC = 5000
+    for path in reference_docs:
+        if total_chars >= _MAX_TOTAL:
+            break
+        try:
+            result = await execute_tool("read_file", {"path": str(path)}, None, None, {})
+            import json as _json
+            data = _json.loads(result) if isinstance(result, str) else result
+            if isinstance(data, dict) and data.get("success"):
+                content = str(data.get("content") or "").strip()
+                if content:
+                    if len(content) > _MAX_PER_DOC:
+                        content = content[:_MAX_PER_DOC] + "\n...(已截断)"
+                    filename = Path(path).name
+                    parts.append(f"### 参考文档: {filename}\n{content}")
+                    total_chars += len(content)
+            elif isinstance(data, dict) and data.get("error"):
+                logger.warning(f"[skill_creator] 参考文档解析失败 {path}: {data.get('error')}")
+        except Exception as e:
+            logger.warning(f"[skill_creator] 读取参考文档失败 {path}: {e}")
+    if not parts:
+        return ""
+    return "\n\n## 参考文档内容\n\n请先判断文档内容是否适合作为技能参考。如果不适合（如纯小说/无关内容），说明原因并拒绝生成。\n\n" + "\n\n---\n\n".join(parts) + "\n"
+
+
+async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = "", reference_docs: list = None) -> Dict[str, Any]:
     """根据自然语言描述生成完整 Skill 包"""
     await llm_manager.initialize()
 
@@ -379,11 +413,14 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 请在生成脚本时参考以上经验，避免犯相同的错误。如果经验中有相关的修复建议，在脚本中体现。
 """
 
+    ref_section = await _read_reference_docs(reference_docs)
+
     user_prompt = f"""请根据以下需求，创建一个完整的 Skill 包：
 
 {prompt}
 {ds_section}
 {lessons_section}
+{ref_section}
 请输出：
 1. SKILL.md（包含 YAML front matter + Markdown 内容，front matter 必须包含 skill_type 字段）
 2. scripts/main.py（核心处理脚本）
@@ -535,11 +572,14 @@ def create_skill_on_disk(skill_path: Path, skill_md: str, scripts: Dict[str, str
     logger.info(f"Skill 文件夹已创建: {skill_path}")
 
 
-async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons: str = "") -> AsyncGenerator[Dict[str, Any], None]:
+async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons: str = "", reference_docs: list = None) -> AsyncGenerator[Dict[str, Any], None]:
     """流式生成 Skill 包，逐步返回生成过程"""
     await llm_manager.initialize()
 
     yield {"type": "status", "message": "正在分析需求..."}
+    if reference_docs:
+        yield {"type": "status", "message": "正在读取参考文档..."}
+    ref_section = await _read_reference_docs(reference_docs)
 
     ds_section = ""
     if datasource_info:
@@ -566,6 +606,7 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 {prompt}
 {ds_section}
 {lessons_section}
+{ref_section}
 请输出：
 1. SKILL.md（包含 YAML front matter + Markdown 内容，front matter 必须包含 skill_type 字段）
 2. scripts/main.py（核心处理脚本）
@@ -684,6 +725,7 @@ async def modify_skill_stream(
     current_md: str,
     instruction: str,
     existing_scripts: Dict[str, str] = None,
+    reference_docs: list = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """流式修改 Skill 包（SKILL.md + scripts），复用 generate_skill_stream 的输出格式。
 
@@ -693,6 +735,10 @@ async def modify_skill_stream(
     """
     logger.info("[modify_skill] ====== 进入了 skill_creator.modify_skill_stream ======")
     await llm_manager.initialize()
+
+    if reference_docs:
+        yield {"type": "status", "message": "正在读取参考文档..."}
+    ref_section = await _read_reference_docs(reference_docs)
 
     scripts_section = ""
     if existing_scripts:
@@ -709,7 +755,7 @@ async def modify_skill_stream(
 {current_md}
 ```
 {scripts_section}
-
+{ref_section}
 请根据以下要求修改这个 Skill：
 {instruction}
 

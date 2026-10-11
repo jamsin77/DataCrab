@@ -29,12 +29,12 @@ def test_platform_capabilities_structure():
     assert "postgresql" in PLATFORM_CAPABILITIES["connector"]
 
     # Excel 不能创建新文件（这次的 bug）
-    excel_wtd = PLATFORM_CAPABILITIES["connector"]["excel"]["write_table_data"]
+    excel_wtd = PLATFORM_CAPABILITIES["connector"]["excel"]["write_data"]
     assert excel_wtd["create_new_file"] is False
     assert PLATFORM_CAPABILITIES["connector"]["excel"]["execute_sql"] is False
 
     # SQLite 可以创建新表
-    sqlite_wtd = PLATFORM_CAPABILITIES["connector"]["sqlite"]["write_table_data"]
+    sqlite_wtd = PLATFORM_CAPABILITIES["connector"]["sqlite"]["write_data"]
     assert sqlite_wtd["create_new_table"] is True
     assert PLATFORM_CAPABILITIES["connector"]["sqlite"]["execute_sql"] is True
 
