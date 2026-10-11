@@ -335,6 +335,36 @@
               @keydown="handleDebugKeyDown"
               :disabled="plStreaming"
             />
+            <el-popover
+              v-model:visible="debugHistoryPopoverVisible"
+              placement="top"
+              :width="360"
+              trigger="click"
+              popper-class="history-popover"
+            >
+              <template #reference>
+                <el-button
+                  circle
+                  :disabled="plStreaming || debugHistory.length === 0"
+                  :title="t('pipeline.inputHistory')"
+                >
+                  <el-icon><Clock /></el-icon>
+                </el-button>
+              </template>
+              <div class="history-list">
+                <div v-if="debugHistory.length === 0" class="history-empty">
+                  {{ t('pipeline.noInputHistory') }}
+                </div>
+                <div
+                  v-for="(item, i) in reversedDebugHistory"
+                  :key="i"
+                  class="history-item"
+                  @click="selectDebugHistory(item)"
+                >
+                  {{ item }}
+                </div>
+              </div>
+            </el-popover>
             <el-button
               v-if="plStreaming"
               type="danger"
@@ -992,6 +1022,13 @@ const HISTORY_MAX = 100
 const debugHistory = ref<string[]>([])
 const debugHistoryIdx = ref(-1)
 const debugDraft = ref('')
+
+const debugHistoryPopoverVisible = ref(false)
+const reversedDebugHistory = computed(() => [...debugHistory.value].reverse())
+function selectDebugHistory(text: string) {
+  debugInput.value = text
+  debugHistoryPopoverVisible.value = false
+}
 
 function loadDebugHistory(): string[] {
   if (!_curPlId) return []
@@ -2090,6 +2127,34 @@ onMounted(async () => {
   background: #fff;
   .el-textarea { flex: 1; font-size: 14px; }
   .el-button { margin-bottom: 4px; }
+}
+
+.history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.history-empty {
+  color: #909399;
+  text-align: center;
+  padding: 20px 0;
+  font-size: 13px;
+}
+.history-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.15s;
+}
+.history-item:hover {
+  background-color: #f5f7fa;
+}
+.history-item:active {
+  background-color: #ecf5ff;
 }
 
 .typing-indicator {

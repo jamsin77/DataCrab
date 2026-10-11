@@ -290,6 +290,36 @@
               @keydown="handleOpKeyDown"
               :disabled="opStreaming"
             />
+            <el-popover
+              v-model:visible="opHistoryPopoverVisible"
+              placement="top"
+              :width="360"
+              trigger="click"
+              popper-class="history-popover"
+            >
+              <template #reference>
+                <el-button
+                  circle
+                  :disabled="opStreaming || opChatHistory.length === 0"
+                  :title="t('operator.inputHistory')"
+                >
+                  <el-icon><Clock /></el-icon>
+                </el-button>
+              </template>
+              <div class="history-list">
+                <div v-if="opChatHistory.length === 0" class="history-empty">
+                  {{ t('operator.noInputHistory') }}
+                </div>
+                <div
+                  v-for="(item, i) in reversedOpChatHistory"
+                  :key="i"
+                  class="history-item"
+                  @click="selectOpHistory(item)"
+                >
+                  {{ item }}
+                </div>
+              </div>
+            </el-popover>
             <el-button
               v-if="opStreaming"
               type="danger"
@@ -478,7 +508,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, nextTick, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh, CircleCheck } from '@element-plus/icons-vue'
+import { Upload, Download, Delete, VideoPlay, CaretRight, Search, Check, MagicStick, Edit, CopyDocument, VideoPause, Loading, Document, Cpu, ChatDotRound, Promotion, Refresh, CircleCheck, Clock } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import markdownIt from 'markdown-it'
@@ -1344,6 +1374,13 @@ const opChatHistory = ref<string[]>([])
 const opChatHistoryIdx = ref(-1)
 const opChatDraft = ref('')
 
+const opHistoryPopoverVisible = ref(false)
+const reversedOpChatHistory = computed(() => [...opChatHistory.value].reverse())
+function selectOpHistory(text: string) {
+  opInput.value = text
+  opHistoryPopoverVisible.value = false
+}
+
 let _curOpId = ''
 function reloadOpHistories(opId: number | string) {
   _curOpId = String(opId)
@@ -2152,6 +2189,34 @@ onMounted(() => {
     font-size: 14px;
   }
   .el-button { margin-bottom: 4px; }
+}
+
+.history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.history-empty {
+  color: #909399;
+  text-align: center;
+  padding: 20px 0;
+  font-size: 13px;
+}
+.history-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.15s;
+}
+.history-item:hover {
+  background-color: #f5f7fa;
+}
+.history-item:active {
+  background-color: #ecf5ff;
 }
 
 .typing-indicator {

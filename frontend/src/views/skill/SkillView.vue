@@ -776,6 +776,36 @@
               @keydown="handleDebugKeyDown"
               :disabled="debugStreaming || execRunning"
             />
+            <el-popover
+              v-model:visible="chatHistoryPopoverVisible"
+              placement="top"
+              :width="360"
+              trigger="click"
+              popper-class="history-popover"
+            >
+              <template #reference>
+                <el-button
+                  circle
+                  :disabled="debugStreaming || execRunning || chatHistory.length === 0"
+                  :title="t('skill.inputHistory')"
+                >
+                  <el-icon><Clock /></el-icon>
+                </el-button>
+              </template>
+              <div class="history-list">
+                <div v-if="chatHistory.length === 0" class="history-empty">
+                  {{ t('skill.noInputHistory') }}
+                </div>
+                <div
+                  v-for="(item, i) in reversedChatHistory"
+                  :key="i"
+                  class="history-item"
+                  @click="selectChatHistory(item)"
+                >
+                  {{ item }}
+                </div>
+              </div>
+            </el-popover>
             <el-button
               v-if="debugStreaming"
               type="danger"
@@ -838,7 +868,7 @@ import {
   Upload, Download, Delete, VideoPlay, CaretRight, Search, Check,
   MagicStick, Edit, CopyDocument, UploadFilled, CaretBottom, Loading,
   Promotion, ChatDotRound, InfoFilled, Share, VideoPause, CircleCheck,
-  Document, DataLine, DataAnalysis,
+  Document, DataLine, DataAnalysis, Clock,
 } from '@element-plus/icons-vue'
 import api from '@/api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2344,6 +2374,13 @@ function onHistoryKey(e: KeyboardEvent, list: Ref<string[]>, idx: Ref<number>, m
 const nlDraft = ref('')
 const cmdDraft = ref('')
 const chatDraft = ref('')
+
+const chatHistoryPopoverVisible = ref(false)
+const reversedChatHistory = computed(() => [...chatHistory.value].reverse())
+function selectChatHistory(text: string) {
+  debugInput.value = text
+  chatHistoryPopoverVisible.value = false
+}
 
 function onGenHistoryKey(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -4161,6 +4198,34 @@ onActivated(() => {
     font-size: 14px;
   }
   .el-button { margin-bottom: 4px; }
+}
+
+.history-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+.history-empty {
+  color: #909399;
+  text-align: center;
+  padding: 20px 0;
+  font-size: 13px;
+}
+.history-item {
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 0.15s;
+}
+.history-item:hover {
+  background-color: #f5f7fa;
+}
+.history-item:active {
+  background-color: #ecf5ff;
 }
 
 .typing-indicator {
