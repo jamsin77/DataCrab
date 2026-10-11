@@ -21,7 +21,7 @@ def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
     if not ds_id:
         # 如果按名称找不到，说明传入的已经是 UUID（系统自动解析），直接使用
         ds_id = datasource_name
-    result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name, limit=100000)
+    result = call_tool("query_data", datasource_id=ds_id, table_name=table_name, limit=100000)
     if not result.get("success"):
         raise ValueError(f"读取数据失败: {result.get('error')}")
     df = pd.DataFrame(result["data"], columns=result["columns"])
@@ -161,7 +161,7 @@ def table_stats(
         info = call_tool("list_user_datasources", by_name=datasource_name)
         ds_id = info.get("id") if info else datasource_name
         write_result = call_tool(
-            "write_table_data",
+            "write_data",
             datasource_id=ds_id,
             table_name=output_table,
             records=result_df.to_dict(orient="records"),

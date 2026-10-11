@@ -17,7 +17,7 @@ DataCrab 数据工程智能体后端服务
 - **演进模式开关**（`evolution_mode`，关闭时跳过匹配直接路由 Agent）
 - 9 种数据源连接器（PG/MySQL/SQLite/CSV/Excel/GenericFile/OBS/HDFS/Chroma）+ 自定义连接器（AI 生成代码，沙箱加载；seed 连接器所有用户可见）
 - 技能/算子/流程全生命周期（CRUD + AI 生成/调试 + 自愈循环 + 经验库）
-- 统一工具注册中心（29 个工具，Agent function calling + 脚本 call_tool 共用同一套 handler）
+- 统一工具注册中心（30 个工具，Agent function calling + 脚本 call_tool 共用同一套 handler）
 - **文档解析**（read_file 支持 PDF/Word，PDF 页面渲染供 OCR）
 - **技能专属规则**（rules.md，DataInspector 合并执行全局规则 + 技能规则）
 - **中英文双语**（core/i18n.py + `X-Lang` 请求头 + ContextVar 语言上下文）

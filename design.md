@@ -32,7 +32,7 @@ Loop 化是终极目标：AI 在「执行 → 观测 → 修正」的循环中�
 │- Markdown渲染                                                 │
 └───────────────────────────────────────────────────────────────┘
                                │                               
-                        WebSocket/HTTP                         
+                         SSE/HTTP
                                ▼                               
 ┌───────────────────────────────────────────────────────────────┐
 │                      前端应用 (Frontend)                      │
@@ -1016,7 +1016,7 @@ tags: [filter, transform]
 在独立子进程中执行 Skill 脚本，支持：
 - 注入输入数据（DataFrame 格式）
 - 注入参数（parameters dict）
-- 通过 `call_tool(tool_name, **args)` 统一入口调用 29 个工具（HTTP 调 `/internal/execute-tool` 端点）
+- 通过 `call_tool(tool_name, **args)` 统一入口调用 30 个工具（HTTP 调 `/internal/execute-tool` 端点）
 - 自动检测脚本中的主函数名（通过 AST 解析）
 - 超时控制（默认 300 秒，可通过 SKILL_RUNNER_TIMEOUT 配置）
 - 结果捕获：通过 __RESULT__ 标记解析返回值
@@ -1051,7 +1051,7 @@ tags: [filter, transform]
 - parse_security_rules 不再跳过无正则规则
 
 ##### skill_executor.py - 执行上下文与结果数据结构
-> **说明**：`ExecutionContext`/`ExecutionResult` 已移除（随多智能体统一 + 非流式端点删除）。`skill_executor.py` 已精简至 2 个 dataclass（保留最小必要数据结构），无人调用。
+> **说明**：`skill_executor.py` 已完全移除（随多智能体统一 + 非流式端点删除）。`ExecutionContext`/`ExecutionResult` 数据结构不再存在。
 
 #### 2.5.6 前端界面
 
@@ -1690,13 +1690,10 @@ DataCrab 借鉴 Swarm 的 Handoff 简洁性 + CrewAI 的角色分工思想 + Aut
 
 | 智能体 | 代号 | 职责 | 核心工具 | 接收来自 | 可交接给 |
 |--------|------|------|----------|----------|----------|
-| **数据处理智能体** | `DataProcessor` | 理解用户意图、修改/执行算子和技能、调度执行、溯源修复 | MAIN_TOOLS（20 个）：`query_table_data`、`write_table_data`、`edit_script`、`run_script`、`read_script`、`grep_script`、`llm_vision`、`llm_generate` 等 | 用户对话、`DataInspector` | `DataInspector` |
+| **数据处理智能体** | `DataProcessor` | 理解用户意图、修改/执行算子和技能、调度执行、溯源修复 | MAIN_TOOLS（21 个 = 17 主工具 + 4 调试工具）：`query_data`、`write_data`、`edit_script`、`run_script`、`read_script`、`grep_script`、`llm_vision`、`llm_generate` 等 | 用户对话、`DataInspector` | `DataInspector` |
 | **数据检查智能体** | `DataInspector` | 对加工后的数据进行标准检查、质量检查、安全检查，发现错误后记录并反馈 | `check_data_standards`、`check_data_quality`、`check_data_security`、`profile_data` | `DataProcessor` | `DataProcessor` |
-| **数据分析智能体** | `DataAnalyst` | 只读分析：查询、统计、分布、洞察（不修改数据） | 14 个只读工具子集（含 4 个调试工具）：`query_table_data`、`get_table_schema`、`execute_sql`、`llm_generate`、`edit_script`、`run_script` 等 | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
-| **对话智能体** | `ChatAgent` | 闲聊/问候/系统配置/提问咨询 | `web_fetch`、`get_llm_config`、`save_llm_adapter`、`delete_llm_adapter`、`save_connector`、`delete_connector` | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
-| *(未来扩展)* | | | | | |
-| 数据治理智能体 | `DataGovernor` | 数据血缘追踪、元数据补全、数据目录管理 | `trace_lineage`、`enrich_metadata` | 任意智能体 | 任意智能体 |
-| 数据安全智能体 | `DataSentinel` | 敏感数据识别、脱敏建议、合规审查 | `detect_pii`、`suggest_masking`、`audit_compliance` | `DataInspector`、用户 | `DataProcessor` |
+| **数据分析智能体** | `DataAnalyst` | 只读分析：查询、统计、分布、洞察（不修改数据） | 16 个只读工具子集（12 主工具 + 4 调试工具）：`query_data`、`get_table_schema`、`execute_sql`、`llm_generate`、`edit_script`、`run_script` 等 | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
+| **对话智能体** | `ChatAgent` | 闲聊/问候/系统配置/提问咨询 | `web_fetch`、`get_llm_config`、`save_llm_adapter`、`delete_llm_adapter`、`save_connector`、`delete_connector`、`list_user_datasources`（7 个工具） | 用户对话（chat_router.classify_message 语义判断） | 无（不参与 handoff） |
 
 #### 2.7.3 架构设计
 
@@ -1933,20 +1930,22 @@ class AgentRuntime:
 - 当收到 DataInspector 的检查结果时，应定位问题根源并修复
 
 **工具集**：
-> 实际工具集是 `MAIN_TOOLS`（20 个工具名），通过 `get_tool_schemas(MAIN_TOOLS)` 获取 JSON Schema。以下为工具分类概览，`generate_operator`/`generate_skill`/`modify_script` 等不再是独立工具（技能/算子生成走独立端点，脚本修改走调试工具 edit_script）。
+> 实际工具集是 `MAIN_TOOLS`（17 主工具）+ `DEBUG_TOOL_NAMES`（4 调试工具）= 21 个工具名，通过 `get_tool_schemas(MAIN_TOOLS + DEBUG_TOOL_NAMES)` 获取 JSON Schema。以下为工具分类概览，`generate_operator`/`generate_skill`/`modify_script` 等不再是独立工具（技能/算子生成走独立端点，脚本修改走调试工具 edit_script）。
 
 ```python
 MAIN_TOOLS = [
     # 数据查询
-    "query_table_data", "get_table_schema", "execute_sql", "iter_table_data",
+    "query_data", "get_table_schema", "execute_sql", "iter_table_data",
     # 数据写入
-    "write_table_data",
+    "write_data",
     # 文件操作
     "read_file", "write_file", "save_file_to_link", "list_user_file_links",
     # LLM / 视觉
     "llm_generate", "llm_vision", "extract_video_info", "extract_keyframes",
     # 知识库 / 联网
     "kb_search", "web_fetch", "list_user_datasources",
+    # 检查
+    "check_skill_rules",
     # 调试工具（4 个，对齐 OpenCode Grep/Read/Edit/Bash）
     "edit_script", "run_script", "read_script", "grep_script",
     # 注：handoff_to_inspector 工具已在第十七/二十三轮删除
@@ -2387,11 +2386,11 @@ class EventStore:
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **Phase 1** | 基础框架：BaseAgent + AgentRegistry + AgentRuntime + Handoff 机制 | ✅ 已完成 |
-| **Phase 2** | DataProcessor 智能体：将现有 agent.py 重构为 DataProcessor | ✅ 已完成 |
+| **Phase 2** | DataProcessor 智能体：构建 DataProcessor（原 agent.py 已移除） | ✅ 已完成 |
 | **Phase 3** | DataInspector 智能体：实现检查工具 + 系统提示词 | ✅ 已完成 |
 | **Phase 4** | 前端：智能体状态指示 + 检查报告页 | ✅ 已完成 |
 | **Phase 5** | 事件存储与溯源 | ✅ 已完成 |
-| **Phase 6** | 扩展：DataGovernor / DataSentinel 等新智能体 | ⬜ 待实现 |
+| **Phase 6** | 扩展：DataAnalyst / ChatAgent 等新智能体 | ✅ 已完成 |
 | **Phase 7** | 调试页面集成多智能体：技能/算子/流程调试助手接入 DataProcessor + DataInspector | ✅ 已完成 |
 
 #### 2.7.16 调试页面集成多智能体（已完成）
@@ -3713,7 +3712,7 @@ DataCrab 后端采用 **RESTful + SSE 流式** 混合 API 架构：
 ┌──────────────────────────────────────────────────────────────────┐
 │                    /api/v1/ 统一路由前缀                          │
 ├──────────────────────────────────────────────────────────────────┤
-│  17 个端点文件 · 140 个 OpenAPI paths                             │
+│  17 个端点文件 · 143 个 OpenAPI paths                             │
 │                                                                   │
 │  ┌─────────┐ ┌──────┐ ┌───────────┐ ┌──────────┐ ┌───────────┐  │
 │  │ /auth   │ │/chat │ │/datasources│ │ /skills  │ │/operators │  │
@@ -3842,7 +3841,7 @@ DataCrab 的工具系统是**一套 handler、两个入口**：
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                     tool_registry.py（29 个工具）                    │
+│                     tool_registry.py（30 个工具）                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │
 │  │query_table│ │write_table│ │edit_script│ │run_script│ │llm_gen  │ │
 │  │_data     │ │_data     │ │          │ │          │ │erate    │ │
@@ -3868,7 +3867,7 @@ DataCrab 的工具系统是**一套 handler、两个入口**：
 
 **设计要点**：
 - **一套 handler**：Agent 和脚本调用同一套 `tool_registry.py` 中的 handler 实现，无重复代码
-- **29 个工具**：数据查询（query_table_data/execute_sql/iter_table_data/get_table_schema）+ 数据写入（write_table_data）+ 调试（edit_script/run_script/read_script/grep_script）+ LLM（llm_generate/llm_vision）+ 文件（read_file/write_file，read_file 支持 PDF/Word/PDF 页面渲染）+ 视频（extract_video_info/extract_keyframes）+ 列表/知识库/检查等
+- **30 个工具**：数据查询（query_data/execute_sql/iter_table_data/get_table_schema）+ 数据写入（write_data）+ 调试（edit_script/run_script/read_script/grep_script）+ LLM（llm_generate/llm_vision）+ 文件（read_file/write_file，read_file 支持 PDF/Word/PDF 页面渲染）+ 视频（extract_video_info/extract_keyframes）+ 检查（profile_data/check_data_standards/check_data_quality/check_data_security/check_skill_rules）+ 列表/知识库等
 - **返回格式统一**：`records` 格式（`{"data": [...], "success": true, "columns": [...], "row_count": N}`），Agent 和脚本一致
 
 ### 4.5 认证与授权
@@ -4327,9 +4326,9 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 |------|------|------|
 | 调度系统后台执行 | task_runner.py（新增）+ schedule.py | `execute_task()` 按 task_type 分派到 skill（to_thread）/ operator（exec+func）/ pipeline（await execute_pipeline）；trigger 端点接入 BackgroundTasks 实际执行；更新 TaskExecution + Schedule 记录 |
 | 定时调度扫描器 | task_runner.py + main.py | 30s 间隔扫描 `next_run_at <= now()` 的 active 调度；并发控制（concurrent_runs）+ next_run_at 重算防重复触发；lifespan 启停（start_scheduler/stop_scheduler） |
-| 沙箱命名空间抽出 | sandbox_ns.py（新增）+ operator.py | `build_operator_namespace` + `run_async_in_thread` 从 operator.py 端点移至 service 层，消除 API→service 反向依赖 |
+| 沙箱命名空间抽出 | sandbox_ns.py（新增）+ operator.py | `build_operator_namespace` + `run_async_in_thread` 从 operator.py 端点移至 service 层，消除 API→service 反向依赖。> **后续校正（第三十二轮）**：sandbox_ns.py 已删除，算子执行统一走 skill_runner |
 | Element Plus 中文化 | main.ts | `app.use(ElementPlus, { locale: zhCn })` |
-| 死代码清理 | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行） |
+| 死代码清理 | 多文件 | 删除 CodeView/ExploreView/Notebook 全套（前后端+model+schema+路由，净减 1159 行）；skill_executor.py 精简至 2 个 dataclass（333→37 行）。> **后续校正**：skill_executor.py 后续已完全移除 |
 
 ### 11.19 调试 Loop 强化
 
@@ -4370,6 +4369,8 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | endpoints max_tokens 同步 | operator.py + pipeline.py + skill.py | 4 处 `chat_stream_with_thinking(max_tokens=4000/2000)` → 12000，与新默认一致 |
 
 **与前轮的关系**：第八轮的「无工具重定向（切 fast_model）」和「长度升级死代码清理」被本轮 L2+L3 彻底替代——L2 续写保留推理（不丢），L3 同模型兜底（不换傻模型）。第八轮的 `_stream_with_timeout` / written_tables / embedding 按 provider 选 / handoff 上限联动 保留不动。
+
+> **后续校正（第十七轮）**：L2 续写 / L3 强制推进（tool_choice=required）/ L4 frequency_penalty 三层截断保证契约已简化为多模型降级链 + CircuitBreaker 熔断 + 瞬态重试。finish_reason=length 直接返回不续写。实测复杂度高收益低，多模型降级 + CircuitBreaker 已足够兜底。
 
 ### 11.21 第十轮：行级补丁原语（对齐 OpenCode edit）
 
@@ -4835,7 +4836,7 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | **classify_message 合并 keep/change** | chat_router.py | 一次 LLM 调用判断类型 + keep/change；返回 `(msg_type, keep_data, events)` |
 | **keep_data 控制 tables 跳过** | chat.py | `_keep_data=True` → 跳过数据表匹配；`False` → 清除旧数据走匹配 |
 
-**技能/流程匹配优化**：粗筛+精排带 msg_type（analysis 类加"只分析不修改"提示）；9 个技能全部加 `skill_type` 字段 + 口语化 description。
+**技能/流程匹配优化**：粗筛+精排带 msg_type（analysis 类加"只分析不修改"提示）；8 个技能全部加 `skill_type` 字段 + 口语化 description。
 
 **与前轮关系**：第二十六轮 DataAnalystAgent 的 skill_type 路由在本轮扩展到全部技能；第二十三轮的 `_compress_history` 用 `_session_ctx` 但未发现 dirty 问题在本轮修复。
 
@@ -4934,7 +4935,7 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | **handler 返回格式统一 records** | tool_registry.py | query_table_data/execute_sql 从 split(`rows`+`format`) → records(`data`+`success`+`columns`+`row_count`)，脚本和 Agent 统一 |
 | **模板删 17 个适配函数** | skill_runner.py | SKILL_RUNNER_TEMPLATE 从 14506→6925 字符；只留 `call_tool` + `_logged_call_tool` + 安全 hooks |
 | **删 TOOL_FUNCTIONS_DOC** | prompt_docs.py | LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可 |
-| **9 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | `query_table_data`→`call_tool("query_table_data",...)`；`llm_chat`→`call_tool("llm_generate")["content"]` |
+| **8 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | `query_table_data`→`call_tool("query_table_data",...)`；`llm_chat`→`call_tool("llm_generate")["content"]` |
 | **skill_creator + SKILL_SPEC 全改** | skill_creator.py / SKILL_SPEC.md | _COMMON_PITFALLS + Section 4 全改 call_tool |
 
 **沙箱安全加固（P0-P2）**：
@@ -4965,7 +4966,7 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 | **GenericFileConnector 内建** | connectors.py | 注册到 _SEED_CONNECTORS；支持 mode=files 多文件模式 |
 | **聊天上传去扩展名过滤** | chat.py + ChatView.vue | 接受任意文件（不再只 Excel+图片）；虚拟数据源 type 从 "excel" → "generic_file" |
 
-**工具分配**：DataProcessor 13→20 工具（新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes）；DataAnalyst 11→14 工具（新增 iter_table_data/read_file/llm_generate）。
+**工具分配**：DataProcessor 17→21 工具（新增 write_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes/check_skill_rules）；DataAnalyst 12→16 工具（新增 iter_table_data/read_file/llm_generate）。
 
 **written_tables 死代码清理**：删 `_WRITTEN_TABLES` 追踪 + data_processor_agent 3 处消费；handoff 靠脚本返回值 output_table。
 
@@ -5050,4 +5051,4 @@ skill.py / operator.py 从 4 处 ~50 行内联采集 → 各 6 行调用。
 
 **验证**：`app.main` 完整加载；pysqlite3 替换生效（sqlite3.sqlite_version ≥ 3.35.0）；i18n 前后端全链路（X-Lang 请求头 → ContextVar → t() 返回对应语言）；document-rule-extractor 技能 PDF 解析 + OCR 归并 + 规则提取完整链路通；rules.md 机制（skill_creator 引导 + DataInspector 合并执行）；演进模式开关前端控制；经验系统假阳性清除。
 
-**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 29 个工具）在本轮保持不变（extract_image_table 新增后删除，工具数稳定 29）。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。
+**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 30 个工具）在本轮保持不变。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。

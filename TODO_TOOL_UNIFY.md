@@ -1,6 +1,8 @@
 # 工具统一 + 算子迁移沙箱 — ✅ 已完成（第三十二轮）
 
-> 本文档已归档，所有任务已完成。详见 AGENTS.md 第三十二轮记录。当前实现状态以 AGENTS.md「现状校正（文档 vs 代码实际）」为准。
+> **归档文档——请勿用于了解当前状态。** 所有任务已完成。详见 AGENTS.md 第三十二轮记录。当前实现状态以 AGENTS.md「现状校正（文档 vs 代码实际）」为准。
+>
+> 注意：本文档中引用的工具名（如 `query_table_data`/`write_table_data`）已分别重命名为 `query_data`/`write_data`；`_WRITTEN_TABLES` 追踪已删除；`resolve_column` 已删除（脚本内联 difflib）；`sandbox_ns.py` 已删除。
 
 ## 背景
 DataCrab 有两套工具实现：Agent 工具（tool_registry.py，主进程）和沙箱工具（skill_runner.py 模板，子进程 HTTP）。同一能力两套实现是历史演进（先有沙箱工具，后加 Agent 时复制了一份）。目标是统一成一套工具，一个 handler 实现，两个入口（LLM 决策 / 脚本调用）。

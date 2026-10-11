@@ -32,6 +32,15 @@ npm install
 - 安装前端 npm 依赖（`frontend/`）
 - **检测 Python 3.11+ 与 sqlite3 模块**，通过后用 `python -m pip install -e ./backend` 安装后端依赖
 
+> **推荐：使用虚拟环境**。开发时建议创建 `.venv`（Python 3.12）：
+> ```bash
+> cd backend
+> python -m venv .venv
+> # Windows: .venv\Scripts\python.exe -m pip install -e .
+> # Linux/Mac: .venv/bin/python -m pip install -e .
+> ```
+> 后端单独启动时用 `.venv` 中的 Python（见下方运行命令）。
+
 > 若后端依赖安装失败，可手动执行：
 > ```bash
 > python -m pip install -e ./backend

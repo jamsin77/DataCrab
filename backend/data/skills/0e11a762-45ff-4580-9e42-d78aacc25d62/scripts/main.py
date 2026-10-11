@@ -147,7 +147,7 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         column_remarks: 列备注字典。
 
     Raises:
-        RuntimeError: 当 write_table_data 返回失败或抛出异常时。
+        RuntimeError: 当 write_data 返回失败或抛出异常时。
     """
     clearing_strategies = {"overwrite", "replace", "truncate", "delete_rows"}
     total = len(records)
@@ -162,15 +162,15 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
         write_result = None
         try:
             write_result = call_tool(
-                "write_table_data", datasource_id=target_ds, table_name=table_name,
+                "write_data", datasource_id=target_ds, table_name=table_name,
                 records=batch,
                 if_table_exists=current_strategy,
                 table_remark=table_remark,
                 column_remarks=column_remarks,
             )
-            print(f"  [DEBUG] write_table_data 返回: {write_result}")
+            print(f"  [DEBUG] write_data 返回: {write_result}")
         except Exception as we:
-            raise RuntimeError(f"write_table_data 异常 (批次 {batch_num}): {we}")
+            raise RuntimeError(f"write_data 异常 (批次 {batch_num}): {we}")
 
         if isinstance(write_result, dict) and not write_result.get("success", True):
             err_msg = write_result.get("error", write_result.get("message", str(write_result)))
@@ -180,7 +180,7 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
                 print(f"表已存在，fail 策略失败，自动切换为 replace 重试...")
                 try:
                     write_result = call_tool(
-                        "write_table_data", datasource_id=target_ds, table_name=table_name,
+                        "write_data", datasource_id=target_ds, table_name=table_name,
                         records=batch,
                         if_table_exists="replace",
                         table_remark=table_remark,
@@ -192,7 +192,7 @@ def _write_records(records: List[Dict[str, Any]], target_ds: str, table_name: st
                 if isinstance(write_result, dict) and not write_result.get("success", True):
                     raise RuntimeError(f"truncate 重试返回失败 (批次 {batch_num}): {write_result}")
             else:
-                raise RuntimeError(f"write_table_data 返回失败 (批次 {batch_num}): {err_msg}")
+                raise RuntimeError(f"write_data 返回失败 (批次 {batch_num}): {err_msg}")
 
         written = min(i + batch_size, total)
         print(f"  已写入第 {batch_num} 批: {len(batch)} 条 (累计 {written}/{total})")
@@ -311,7 +311,7 @@ def extract_image_info(
                 source_columns = list(data[0].keys())
     except Exception as e:
         print(f"分块读取失败，尝试单次小批量读取: {e}")
-        result = call_tool("query_table_data", datasource_id=source_ds, table_name=source_table_name, limit=2000)
+        result = call_tool("query_data", datasource_id=source_ds, table_name=source_table_name, limit=2000)
         if not isinstance(result, dict) or not result.get("success"):
             return {"success": False, "error": f"读取源表失败: {result}", "message": "数据读取异常"}
         data = result.get("data", [])
@@ -571,7 +571,7 @@ def extract_image_info(
         "ocr_success": ocr_success_count,
         "ocr_fail": ocr_fail_count,
         "doc_type_distribution": type_dist,
-        "write_method": "write_table_data",
+        "write_method": "write_data",
         "sample": processed_records[:3],
         "warnings": platform_warnings if platform_warnings else None,
     }

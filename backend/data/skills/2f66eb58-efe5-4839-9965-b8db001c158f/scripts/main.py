@@ -337,11 +337,11 @@ def migrate_data(
         _r = call_tool("list_user_datasources", by_name=name)
         return _r.get("id") if isinstance(_r, dict) else None
 
-    def query_table_data(ds_id, table, **kwargs):
-        return call_tool("query_table_data", datasource_id=ds_id, table_name=table, **kwargs)
+    def query_data(ds_id, table, **kwargs):
+        return call_tool("query_data", datasource_id=ds_id, table_name=table, **kwargs)
 
-    def write_table_data(ds_id, table, **kwargs):
-        return call_tool("write_table_data", datasource_id=ds_id, table_name=table, **kwargs)
+    def write_data(ds_id, table, **kwargs):
+        return call_tool("write_data", datasource_id=ds_id, table_name=table, **kwargs)
 
     # 兼容系统自动注入的参数
     if not source_datasource_name and 'datasource' in kwargs:
@@ -408,7 +408,7 @@ def migrate_data(
     print(f"  目标表已存在策略: {if_table_exists}")
     print("=" * 60)
 
-    # write_table_data 支持的参数（skill_runner 已支持 if_table_exists/table_remark/column_remarks）
+    # write_data 支持的参数（skill_runner 已支持 if_table_exists/table_remark/column_remarks）
     write_supported_params = {"if_table_exists", "table_remark", "column_remarks"}
 
     # 步骤1: 获取数据源 ID（单次尝试，失败直接用名称）
@@ -439,7 +439,7 @@ def migrate_data(
 
     # 步骤2: 读取源表数据
     print(f"\n📊 步骤2: 从源表 '{source_table_name}' 读取数据 (limit={limit})...")
-    result = query_table_data(source_ds_id, source_table_name, limit=limit)
+    result = query_data(source_ds_id, source_table_name, limit=limit)
     if not result.get("success"):
         error_msg = result.get("error") or result.get("message", "未知错误")
         raise ValueError(f"读取源表数据失败: {error_msg}")
@@ -674,12 +674,12 @@ def migrate_data(
                 print(f"    📝 后续批次使用 append 策略")
 
             try:
-                write_result = write_table_data(
+                write_result = write_data(
                     target_ds_id, t_name, records=batch, **current_kwargs
                 )
             except TypeError:
-                print(f"    ⚠️ write_table_data 不支持额外参数，降级为基本参数...")
-                write_result = write_table_data(
+                print(f"    ⚠️ write_data 不支持额外参数，降级为基本参数...")
+                write_result = write_data(
                     target_ds_id, t_name, records=batch
                 )
             except Exception as e:
@@ -689,11 +689,11 @@ def migrate_data(
                     retry_kwargs = dict(write_extra_kwargs)
                     retry_kwargs["if_table_exists"] = "replace"
                     try:
-                        write_result = write_table_data(
+                        write_result = write_data(
                             target_ds_id, t_name, records=batch, **retry_kwargs
                         )
                     except TypeError:
-                        write_result = write_table_data(
+                        write_result = write_data(
                             target_ds_id, t_name, records=batch
                         )
                 else:
@@ -720,12 +720,12 @@ def migrate_data(
         total_written = _write_records(records, target_table_name)
     except Exception as e:
         err_str = str(e)
-        # 检测是否为"文件/表不存在"错误 → 用 create 策略重试 write_table_data
+        # 检测是否为"文件/表不存在"错误 → 用 create 策略重试 write_data
         if "不存在" in err_str or "does not exist" in err_str.lower() or "no such" in err_str.lower():
-            print(f"  ⚠️ write_table_data 写入失败: {e}")
+            print(f"  ⚠️ write_data 写入失败: {e}")
             print(f"  💡 目标表不存在，尝试用 fail 策略自动创建并写入...")
 
-            # 用 fail 策略重试 write_table_data（平台 fail = 表不存在则自动建表，表存在才报错）
+            # 用 fail 策略重试 write_data（平台 fail = 表不存在则自动建表，表存在才报错）
             create_kwargs = dict(write_extra_kwargs)
             create_kwargs["if_table_exists"] = "fail"
             try:
@@ -737,7 +737,7 @@ def migrate_data(
                     # 第一批用 fail（表不存在则建），后续用 append
                     if batch_num > 1:
                         create_kwargs["if_table_exists"] = "append"
-                    write_result = write_table_data(
+                    write_result = write_data(
                         target_ds_id, target_table_name, records=batch, **create_kwargs
                     )
                     if not write_result.get("success"):
@@ -782,7 +782,7 @@ def migrate_data(
                     print(f"  ✅ SQL写入成功! 共 {total_written} 行")
                 except Exception as sql_err:
                     print(f"  ❌ execute_sql 方式也失败: {sql_err}")
-                    raise ValueError(f"所有写入方式均失败。write_table_data 错误: {e}; create重试错误: {create_err}; execute_sql 错误: {sql_err}")
+                    raise ValueError(f"所有写入方式均失败。write_data 错误: {e}; create重试错误: {create_err}; execute_sql 错误: {sql_err}")
         else:
             print(f"  ⚠️ 首次写入失败: {e}")
             print(f"  🔄 尝试将所有数据转为字符串后重试...")
@@ -1139,7 +1139,7 @@ def repair_existing_data(datasource_name, table_name):
     1. 查询表中 name 为空的记录
     2. 尝试从 remark 备注中提取名称（匹配"更名为XXX"模式）
     3. 无法提取的标记为"未知名称（待补录）"
-    4. 使用 write_table_data upsert 写回修复后的记录
+    4. 使用 write_data upsert 写回修复后的记录
     """
     print(f"\n🔧 数据质量修复: 检查表 '{table_name}' 中的必填字段空值...")
 
@@ -1182,7 +1182,7 @@ def repair_existing_data(datasource_name, table_name):
 
     # 使用 upsert 写回修复的记录
     def write_func(ds_id, table, **kwargs):
-        return call_tool("write_table_data", datasource_id=ds_id, table_name=table, **kwargs)
+        return call_tool("write_data", datasource_id=ds_id, table_name=table, **kwargs)
     write_result = write_func(datasource_name, table_name, records=fixed_records, if_table_exists="upsert")
 
     if not write_result or not write_result.get("success"):

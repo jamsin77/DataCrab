@@ -57,7 +57,7 @@ def _resolve_datasource(datasource_name: str) -> str:
 def _load_data(datasource_name: str, table_name: str) -> pd.DataFrame:
     """从数据源加载表数据。
 
-    ⚠️ 不使用 query_table_data 的一次性加载，因为它返回的 row_count = len(df)
+    ⚠️ 不使用 query_data 的一次性加载，因为它返回的 row_count = len(df)
     （实际返回行数，非表总行数），导致截断检测失效。
     改用 iter_table_data 分块读取（timeout=120s，更可靠），并用 API 返回的
     total 字段做行数校验，确保不丢数据。
@@ -792,7 +792,7 @@ def _write_result(
                 print(f"等待 {wait_sec}s 后重试写入（第 {attempt + 1}/{max_retries} 次）")
                 time.sleep(wait_sec)
             result = call_tool(
-                "write_table_data", datasource_id=ds_id, table_name=table_name,
+                "write_data", datasource_id=ds_id, table_name=table_name,
                 records=batch,
                 if_table_exists=current_strategy,
                 column_remarks=column_remarks if batch_num == 1 else None,
@@ -814,7 +814,7 @@ def _write_result(
 
     # ── 写入后最终校验：查询表实际行数，防止平台静默截断 ──
     print("正在查询表实际行数做最终校验...")
-    verify_result = call_tool("query_table_data", datasource_id=ds_id, table_name=table_name, limit=total_records + 1000)
+    verify_result = call_tool("query_data", datasource_id=ds_id, table_name=table_name, limit=total_records + 1000)
     if verify_result.get("success"):
         actual_row_count = len(verify_result.get("data", []))
         if actual_row_count != total_records:

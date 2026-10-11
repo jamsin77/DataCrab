@@ -425,7 +425,7 @@ def _build_chroma_records(
 ) -> List[Dict]:
     """将知识点构建为 Chroma 向量库可写入的 records。
 
-    Chroma 连接器的 write_table_data 只识别每条记录中的
+    Chroma 连接器的 write_data 只识别每条记录中的
     `id` / `document`(或 text) / `metadata`(或 metadatas) / `embedding` 字段。
     document 是向量化与语义检索的主体文本，metadata 承载结构化属性。
     """
@@ -543,7 +543,7 @@ def _delete_existing_knowledge(
 ) -> int:
     """删除向量库中与本次视频同名的旧知识条目，实现「覆盖」而非累积。
 
-    后端 Chroma 连接器的 write_table_data 只做 upsert，没有删除入口；当同一视频
+    后端 Chroma 连接器的 write_data 只做 upsert，没有删除入口；当同一视频
     重新分析后知识条数变化或 id 变化时，历史条目会残留。这里直接通过 chromadb
     客户端按 metadata.video_name 精确删除旧条目（沙箱与后端同 Python 环境，已装 chromadb）。
     """
@@ -618,7 +618,7 @@ def _write_to_chroma(
         _log_step(f"[写入] 批次 {batch_num}/{total_batches} ({len(batch)} 条)")
         # 第一批 overwrite 清空集合旧数据，后续批次 upsert 追加（避免重复清空）
         strategy = "overwrite" if batch_num == 1 else "upsert"
-        result = call_tool("write_table_data", datasource_id=ds_id, table_name=collection_name, records=batch, if_table_exists=strategy)
+        result = call_tool("write_data", datasource_id=ds_id, table_name=collection_name, records=batch, if_table_exists=strategy)
         if not result.get("success"):
             err = result.get("message") or result.get("error") or "未知错误"
             raise ValueError(f"写入失败: {err}")

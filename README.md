@@ -42,7 +42,7 @@ DataCrab 是一款 Agentic AI 驱动的自主演进式数据治理平台，提�
 
 - ChatGPT 风格的聊天界面，支持流式响应（SSE）
 - 会话管理：创建、列表、重命名、删除、搜索
-- 多轮对话：保留最近 20 条消息作为上下文
+- 多轮对话：历史消息分层压缩（总量超预算时旧消息自动摘要 + 保留最近 6 条原文）
 - 数据源上下文注入：用户提及数据源时，系统自动查询真实数据并注入到 LLM 提示词中
 - 支持停止生成
 
@@ -103,7 +103,7 @@ DataCrab 采用 **Orchestrator-Worker** 模式的多智能体协作架构（参�
 - **AI 生成**：自然语言描述 → LLM 生成 Python 脚本 → 自动解析创建
 - **AI 修改**：自然语言指令修改已有算子脚本，修改后自动验证
 - **克隆**：复制算子及其脚本
-- **调试/执行**：在子进程沙箱中运行算子，通过 `call_tool("tool_name", ...)` 统一入口注入工具能力（query_table_data/llm_generate 等 29 个工具）
+- **调试/执行**：在子进程沙箱中运行算子，通过 `call_tool("tool_name", ...)` 统一入口注入工具能力（query_data/llm_generate 等 30 个工具）
 - **AI 调试助手**：Chat 风格交互式调试，4 工具模型（edit_script/run_script/read_script/grep_script，对齐 OpenCode Grep/Read/Edit/Bash）；AI 修改脚本后自动执行验证，执行结果直接显示在消息流中；执行成功后 RunTime 自动交接 DataInspector 质量检查；Inspector 报告通过独立事件格式化展示
 - **下载**：导出为 `.py` 文件
 - **自我进化经验库**：调试失败自动记录反例、修错后成功采集正例，LLM 归纳经验（常见错误+成功模式）并注入后续生成/修改/调试提示词，越用越聪明
@@ -299,7 +299,7 @@ DataCrab/
 │   ├── app/
 │   │   ├── main.py            # FastAPI 入口
 │   │   ├── core/              # 核心配置（数据库、安全、类型、i18n 国际化）
-│   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，140 个 OpenAPI paths）
+│   │   ├── api/v1/endpoints/  # API 端点（17 个端点文件，143 个 OpenAPI paths）
 │   │   ├── models/            # ORM 模型（19 个模型类，10 个文件）
 │   │   ├── schemas/           # Pydantic 请求/响应模式
 │   │   └── services/          # 业务逻辑服务
@@ -315,7 +315,7 @@ DataCrab/
 │   │       ├── pipeline_builder.py  # 流程生成器
 │   │       ├── pipeline_executor.py # 流程执行引擎
 │   │       ├── connectors.py    # 9 种数据源连接器（含 GenericFileConnector）
-│   │       ├── tool_registry.py # 29 个工具统一注册中心（schema + handler + LRU 缓存）
+│   │       ├── tool_registry.py # 30 个工具统一注册中心（schema + handler + LRU 缓存）
 │   │       ├── shared_tools.py  # 向后兼容层（委托 tool_registry）
 │   │       ├── asset_io.py      # 资产导出/导入服务（7 类资产一键 ZIP 迁移）
 │   │       ├── match_service.py # 向量索引服务（ChromaDB 语义检索 + LLM 自适应匹配）
@@ -348,7 +348,7 @@ DataCrab/
 ### 环境要求
 
 - Python 3.11+
-- Node.js 16+
+- Node.js 18+
 
 ### 一键启动
 
@@ -363,10 +363,12 @@ npm run dev
 ### 单独启动
 
 ```bash
-# 后端
+# 后端（需先创建 .venv Python 3.12 虚拟环境）
 cd backend
-pip install -e .
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m venv .venv
+# Windows: .venv\Scripts\python.exe -m pip install -e .
+# Linux/Mac: .venv/bin/python -m pip install -e .
+.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 前端
 cd frontend

@@ -51,20 +51,9 @@ OpenCode 的"精准判断"是**把错误信息原样给 LLM 看**，LLM 自己�
 
 ### DataCrab 当前的问题
 
-`_is_non_script_error` 用信号词列表替 LLM 做判断：
-- 超时错误不含英文 "timeout" → 信号词没匹配 → 误判为"参数错误" → give_up
-- AI 没机会看到错误自己做判断 → 编了个"平台环境问题"当理由放弃
+> **已解决（第二十七/二十八轮）**：`_is_non_script_error` 已彻底删除。当前错误处理靠 LLM 自主判断 + 执行错误计数 + 修改次数上限三层兜底，完全对齐 OpenCode 的做法。
 
-**违背了本质含义**：
-- 脚本错误 = 能通过修改脚本修复（超时可以加进度输出修复 → 是脚本问题）
-- 非脚本错误 = 怎么修脚本也修不好（如脚本主动 return success:False 做参数校验）
-- `_is_non_script_error` 把超时（能修）误判为非脚本错误（修不了）→ 放弃修复
-
-### DataCrab 应该对齐的做法
-
-- **删除 `_is_non_script_error`**：把错误信息原样给 LLM 看，让 LLM 自己判断该不该修
-- **保留兜底**：3 次执行错误 + 7 次修改上限 + StuckDetector 重复检测 + 总轮次上限
-- **give_up 时让 LLM 说明原因**，不替它归因
+历史问题（供参考）：`_is_non_script_error` 用信号词列表替 LLM 做判断——超时错误不含英文 "timeout" → 信号词没匹配 → 误判为"参数错误" → give_up。违背了本质含义：脚本错误 = 能通过修改脚本修复（超时可以加进度输出修复 → 是脚本问题），非脚本错误 = 怎么修脚本也修不好（如脚本主动 return success:False 做参数校验）。
 
 ## 3. 调试循环：修改 → 执行 → 看结果
 
@@ -96,7 +85,7 @@ OpenCode 的"精准判断"是**把错误信息原样给 LLM 看**，LLM 自己�
 
 ### DataCrab 的做法
 - **空转检测**：连续 N 轮有输出但没有工具调用 → 干预提示
-- **总轮次上限**：30 轮（DataProcessor 调试模式）→ 强制退出
+- **总轮次上限**：DataProcessor 调试模式 50 轮、主对话 30 轮；DataAnalyst 15 轮；ChatAgent 10 轮 → 强制退出
 - **重复调用检测**：连续 N 轮调用相同工具 + 相同参数 → 干预提示
 
 ## 5. 上下文管理
@@ -150,31 +139,27 @@ OpenCode 的"精准判断"是**把错误信息原样给 LLM 看**，LLM 自己�
 - **Handoff 由 RunTime 决策**（Agent 不感知 handoff 存在）
 - **调试模式自动交接**：DataProcessor 执行成功 → DataInspector 检查
 - **主对话靠人判断**：不自动交接
-- **触发条件**：done_result 有 `output_datasource_id` + `output_table`（从 written_tables 提取）
+- **触发条件**：done 事件后 RunTime 检查 result 中的 `output_tables`（从脚本返回值提取）
 
 ### ChromaDB 的特殊处理
-- ChromaDB 写入走 `write_table_data` → skill_runner 记录 `written_tables` → Handoff 自动触发
+- ChromaDB 写入走 `write_data` 工具 → 脚本返回 `output_table` → Handoff 自动触发
 - Inspector 对 ChromaDB 走专用检查（5 条 VEC 规则），不套结构化 STD/DQ/SEC 规则
-- 如果技能没走 `write_table_data`（如直接调 ChromaDB API），written_tables 为空 → Handoff 不触发
+- 如果技能没走 `write_data`（如直接调 ChromaDB API），output_tables 为空 → Handoff 不触发
 
 ## 9. 关键差异总结
 
 | 维度 | OpenCode | DataCrab 当前 | 差异原因 |
 |---|---|---|---|
-| 错误分类 | LLM 自主判断 | `_is_non_script_error` 机械分类 | DataCrab 想早停省时间，但机械分类不可靠 |
-| 卡死检测 | 无（靠 LLM 自停） | StuckDetector 15 轮兜底 | DataCrab 的 LLM 不如 OpenCode 自律 |
-| 修改次数 | 无上限 | 3 次执行 + 7 次修改 | DataCrab 怕 LLM 空转浪费 token |
+| 错误分类 | LLM 自主判断 | LLM 自主判断（`_is_non_script_error` 已删除） | DataCrab 已对齐 OpenCode |
+| 卡死检测 | 无（靠 LLM 自停） | StuckDetector 空转检测 + 总轮次上限（debug 50/main 30） | DataCrab 的 LLM 不如 OpenCode 自律 |
+| 修改次数 | 无上限 | 3 次执行错误 + 7 次修改 | DataCrab 怕 LLM 空转浪费 token |
 | Handoff | 无 | RunTime 自动交接 Inspector | DataCrab 有多 Agent 架构 |
 | 上下文 | Compaction | Compaction + Prefix Cache | DataCrab 对齐了 |
 
-## 10. 待决策问题
+## 10. 已决策问题
 
 ### `_is_non_script_error` 怎么改？
-- **方案 A（对齐 OpenCode，推荐）**：删除 `_is_non_script_error`，不做错误分类。所有错误都让 AI 看着办，靠 3 次执行错误 + 7 次修改上限 + StuckDetector 兜底。
-- **方案 B（简化）**：只判方式 B（`return {"success": False}`）为非脚本错误（参数校验），方式 A（raise 异常/超时/崩溃）一律当脚本问题。不需要信号词列表。
-- **方案 C（补全，治标不治本）**：补全 `_crash_signals` 列表 + 加中文信号词——列表永远不全，不推荐。
-
-> 本质含义：脚本错误 = 能通过修改脚本修复（包括超时加进度输出）；非脚本错误 = 怎么修脚本也修不好（如参数校验脚本主动报错）。
+> **已决策（第二十七/二十八轮）**：采用方案 A——删除 `_is_non_script_error`，不做错误分类。所有错误都让 AI 看着办，靠 3 次执行错误 + 7 次修改上限 + StuckDetector 兜底。已完全对齐 OpenCode。
 
 ### content 截断怎么处理？
-- 见第 7 节的 4 个方案。
+> **已决策**：采用方案 C——content 只放最终结论，修改说明放 thinking 里。工具调用通过 `tool_action`/`tool_summary` 独立事件输出，不混在 content 里。

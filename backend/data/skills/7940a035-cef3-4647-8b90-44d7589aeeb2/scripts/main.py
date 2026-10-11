@@ -277,7 +277,7 @@ def main(input_data=None, **kwargs):
             return {"success": False, "error": f"找不到数据源: {datasource_name}"}
         print(f"通过名称找到数据源: {datasource_name} -> {ds_id}")
 
-    # 确定输出数据源：Excel 类型不支持 write_table_data 创建新表，需回退到 PostgreSQL
+    # 确定输出数据源：Excel 类型不支持 write_data 创建新表，需回退到 PostgreSQL
     write_ds_id = ds_id  # 默认同源写入
     if output_datasource_name:
         _r2 = call_tool("list_user_datasources", by_name=output_datasource_name)
@@ -542,7 +542,7 @@ def main(input_data=None, **kwargs):
         elif batch_num == 1 and if_table_exists == "overwrite":
             # overwrite 不清除旧列结构，改用 replace 确保列名干净
             current_strategy = "replace"
-        write_result = call_tool("write_table_data", datasource_id=ds_id, table_name=output_table, records=batch, if_table_exists=current_strategy)
+        write_result = call_tool("write_data", datasource_id=ds_id, table_name=output_table, records=batch, if_table_exists=current_strategy)
         if not write_result.get("success"):
             return {"success": False, "error": f"写入失败(批次{batch_num}): {write_result.get('message', write_result)}"}
         print(f"批次 {batch_num} 写入成功: {len(batch)} 行 (策略={current_strategy})")

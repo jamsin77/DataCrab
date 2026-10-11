@@ -281,7 +281,7 @@ def _write_to_datasource(
             total_batches = (total_rows - 1) // batch_size + 1
             print(f"[3/3] 写入批次 {batch_num}/{total_batches}，{len(batch)} 行...")
             result = call_tool(
-                "write_table_data",
+                "write_data",
                 datasource_id=ds_id,
                 table_name=target_table_name,
                 records=batch,
@@ -292,7 +292,7 @@ def _write_to_datasource(
     else:
         print(f"[3/3] 写入 {total_rows} 行数据到 {target_datasource_name}.{target_table_name}...")
         result = call_tool(
-            "write_table_data",
+            "write_data",
             datasource_id=ds_id,
             table_name=target_table_name,
             records=records,
@@ -327,9 +327,9 @@ def main(
     # 如果没有显式传 image_path，从源表数据中查找图片文件路径
     if not image_path and source_ds_id and source_table:
         print(f"[1/3] 从源表 {source_ds_name}.{source_table} 查找图片文件路径...")
-        # 先尝试 query_table_data，超时则 fallback 到 get_table_schema
+        # 先尝试 query_data，超时则 fallback 到 get_table_schema
         try:
-            res = call_tool("query_table_data", datasource_id=source_ds_id, table_name=source_table)
+            res = call_tool("query_data", datasource_id=source_ds_id, table_name=source_table)
             if isinstance(res, dict) and res.get("data"):
                 rows_data = res["data"]
                 if rows_data:
@@ -338,7 +338,7 @@ def main(
                     if image_path:
                         print(f"[1/3] 从源表获取图片路径: {image_path}")
         except Exception as e:
-            print(f"[1/3] query_table_data 失败: {e}，尝试 get_table_schema fallback...")
+            print(f"[1/3] query_data 失败: {e}，尝试 get_table_schema fallback...")
         # fallback: get_table_schema 的 columns sample 中也含 file_path
         if not image_path:
             try:

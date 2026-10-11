@@ -32,11 +32,12 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `multi_agent.py` | 多 Agent 框架（BaseAgent / AgentRegistry / AgentRuntime）；**Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）；调试模式自动交接，主对话靠人判断** |
 | `agent_config.py` | Agent 配置管理（加载 soul.md 人格、构建各 Agent system prompt 静态段） |
 | `chat_router.py` | 对话路由器——一次 LLM 调用判断消息类型(analysis/processing/chat) + 4 段 keep(keep_source/keep_target/keep_skill)；返回 `(msg_type, keep_source, keep_target, keep_skill, events)`；**传当前已选数据上下文（源/目标/技能名）给 LLM 判断 keep/change**；默认 keep，用户明确说换才 change |
-| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；20 个工具（数据查询/写入/文件/LLM/视频 + 4 调试工具 edit_script/run_script/read_script/grep_script）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；3 次执行错误兜底 + StuckDetector 总轮次上限** |
+| `data_processor_agent.py` | DataProcessor 智能体——数据处理、算子生成；21 个工具（17 主工具：数据查询/写入/文件/LLM/视频/检查 + 4 调试工具 edit_script/run_script/read_script/grep_script）+ RunTime 自动交接 Inspector；**system prompt 进程级 memoize（Prefix Cache）；3 次执行错误兜底 + StuckDetector 总轮次上限** |
 | `data_inspector_agent.py` | DataInspector 智能体——数据质量/标准/安全检查；规则移至 user message（run_all_checks 预执行 + format_report 表格化）；severity 校正；**报告通过 `inspection_report` 独立事件输出** |
-| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；14 个工具（只读数据查询 + 文件读取 + LLM + 调试工具）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
+| `data_analyst_agent.py` | DataAnalyst 智能体——只读分析（查询/统计/分布/洞察）；16 个工具（12 主工具：只读数据查询 + 文件读取 + LLM + 视频 + 4 调试工具）；不参与 handoff；独立截断阈值（30000 字符/50 行）；system prompt 进程级 memoize |
 | `shared_tools.py` | 向后兼容层——委托 tool_registry，无独立 schema 或实现 |
-| `tool_registry.py` | **工具注册中心——29 个工具统一注册（schema + handler + LRU 缓存）；Agent 通过 tool_names 声明工具，脚本通过 call_tool 调同一套 handler；execute_tool 统一分发入口** |
+| `chat_agent.py` | ChatAgent 智能体——闲聊/问候/系统配置/提问咨询；7 个工具（web_fetch + LLM 配置管理 + 数据源列表）；不参与 handoff；`_decide_handoff` 返回 None |
+| `tool_registry.py` | **工具注册中心——30 个工具统一注册（schema + handler + LRU 缓存）；Agent 通过 tool_names 声明工具，脚本通过 call_tool 调同一套 handler；execute_tool 统一分发入口** |
 | `inspector_tools.py` | 确定性数据检查工具（pandas/regex），31 条 STD/DQ/SEC 规则实现 + `format_report` 表格化 |
 | `agent_utils.py` | **Agent 工程工具：token 估算、结果截断、卡死检测（StuckDetector 空转+总轮次上限）、标识符抽取、反幻觉、动态轮次预算、上下文压力告警、三级反幻觉注入、上下文压缩（Compaction）** |
 | `tool_guidance.py` | **工具诚实能力表——主对话/调试模式拆分（`get_tool_guidance(debug=)`），主对话不注入调试工具表** |
@@ -45,6 +46,8 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 | `skill_creator.py` | AI 生成完整 Skill 包（SKILL.md + scripts，从自然语言描述生成） |
 | `skill_parser.py` | SKILL.md 解析器（YAML front matter + Markdown 内容，含 skill_type 字段） |
 | `operator_parser.py` | **Python 脚本 AST 解析（提取算子函数签名/docstring）+ 行级补丁原语 `apply_patch`（对齐 OpenCode edit）+ `apply_partial_code`（函数级合并，保 import/常量/其他函数）** |
+| `code_merge.py` | 并发技能调试 3-way 合并（AST 函数级合并 → difflib 行级合并 → LLM 兜底）；多会话同时调试同一技能时合并冲突 |
+| `working_copy.py` | 并发调试工作副本管理（每会话独立副本 `dc_debug_wc/` + 24h 自动清理 + save 时 3-way 合并回主分支） |
 | `operators.py` | 算子基类与内置算子 |
 | `pipeline_builder.py` | Pipeline Builder——从 Skill 机械转换流程（保留调试好的脚本不重新生成，解析函数签名+参数说明） |
 | `pipeline_executor.py` | Pipeline Executor——复用 skill_runner 子进程沙箱执行流程主函数 |
@@ -68,7 +71,7 @@ DataCrab（数据工程智能体）是一个 ChatGPT 风格的对话式数据工
 > 注：历史单 Agent 服务 `agent.py`（非流式 /chat）与 `skill_executor.py`（ExecutionContext/ExecutionResult）随多智能体统一 + 非流式端点删除已移除，不再存在。
 
 ### API 端点（`backend/app/api/v1/endpoints/`）
-17 个端点文件、共 140 个 OpenAPI paths（175 个 path+method operations），主要：
+17 个端点文件、共 143 个 OpenAPI paths（178 个 path+method operations），主要：
 - `chat.py` — 对话/流式响应/数据处理；**演进模式开关（`evolution_mode`，关闭时跳过匹配直接路由 Agent）**；classify 传上下文判断 keep/change + 并行匹配每路独立返回结果（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match）；chat 类型走 ChatAgent 直接 LLM 对话不走匹配；**使用技能走调试模式（build_debug_context + runtime.run），Agent 用 run_script 执行技能 + Inspector 自愈**；**directExecute 不存用户消息（避免刷新重复弹出），复用 assistant 消息**；`use_skill` 标记区分使用技能/直接处理
 - `agents.py` — 多智能体事件/血缘查询
 - `skill.py` — 技能 CRUD + AI 生成/调试（23 paths，最多）
@@ -128,7 +131,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 
 > 四智能体：DataProcessor（修改数据/脚本）、DataInspector（检查）、DataAnalyst（只读分析）、ChatAgent（闲聊/咨询）。ChatAgent/DataAnalyst 的 `_decide_handoff` 返回 None（不参与 handoff）。Handoff 由 RunTime `_decide_handoff` 决策（Agent 不感知 handoff 存在）。
 
-**调试模式**：DataProcessor/DataAnalyst 的 `run()` 通过 `context.get("debug_folder") or context.get("debug_script_content")` 判断是否调试模式（`_is_debug` flag 分支，无独立 `run_debug()` 方法）；调试模式用 `build_debug_system_prompt` + `temperature=0.1` + 修改尝试计数 + StuckDetector；主对话用 `build_system_prompt` + `temperature=0.3` + 按复杂度分配轮次。DataProcessor 用 MAIN_TOOLS（20 工具，含 4 个调试工具），DataAnalyst 用只读工具子集（14 工具，含 4 个调试工具）。
+**调试模式**：DataProcessor/DataAnalyst 的 `run()` 通过 `context.get("debug_folder") or context.get("debug_script_content")` 判断是否调试模式（`_is_debug` flag 分支，无独立 `run_debug()` 方法）；调试模式用 `build_debug_system_prompt` + `temperature=0.1` + 修改尝试计数 + StuckDetector；主对话用 `build_system_prompt` + `temperature=0.3` + 按复杂度分配轮次。DataProcessor 用 MAIN_TOOLS（17 主工具 + 4 调试工具 = 21），DataAnalyst 用只读工具子集（12 主工具 + 4 调试工具 = 16）。
 
 **修改尝试正法**：3 次执行错误上限（首次成功前）+ 7 次总修改上限（含检查修复），调查（read/grep）不算次数。
 
@@ -844,10 +847,10 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 |------|------|---------|
 | 第十九轮 | "DB model 删 2 个 Column（LLMProvider.fast_model + UserLLMConfig.fast_model）" | `flash_model` 列仍存在于 `models/custom_extension.py`（line 40, 62）；`llm.py` 仍读写 `flash_model`（line 96/107/271/283-284/303/471/524/536 等 12 处，含 `_flash` 属性 line 471）。业务路径用 `_default`/`_flash` 属性间接消费，DB 列未删除（向后兼容） |
 | 第二十二轮 | "主对话循环流式化：run() 从非流式 chat_with_tools → 流式 chat_stream_with_tools_and_thinking" | `run()`（line 338）统一处理主对话与调试——通过 `_is_debug = bool(context.get("debug_folder") or context.get("debug_script_content"))`（line 353）分支；调试分支用流式 `chat_stream_with_tools_and_thinking`，主对话用非流式 `chat_with_tools`；**无独立 `run_debug()` 方法**（历史记录中的 run_debug 已合并入 run()） |
-| 第二十五轮 | "调试工具精简至 4 个" | **无 `DEBUG_TOOLS` 列表**；实际为单一 `MAIN_TOOLS`（line 73-80，20 个工具名），`tools = get_tool_schemas(MAIN_TOOLS)`（line 335）同时用于主对话与调试模式；4 个调试工具（edit_script/run_script/read_script/grep_script）含在 MAIN_TOOLS 中，注册于 tool_registry.py（line 1132/1148/1166/1186） |
+| 第二十五轮 | "调试工具精简至 4 个" | **无 `DEBUG_TOOLS` 列表**；实际为 `MAIN_TOOLS`（17 主工具名）+ `DEBUG_TOOL_NAMES`（4 调试工具名），调试模式用 `MAIN_TOOLS + DEBUG_TOOL_NAMES` = 21 工具；4 个调试工具（edit_script/run_script/read_script/grep_script）注册于 tool_registry.py |
 | 第二十三轮 | "skill_runner 三函数合一为 run_skill_script_streaming" | 实际保留 6 个函数：`run_skill_script`（631）/`run_skill_script_async`（659）/`run_skill_script_streaming`（898）/`run_skill_script_streaming_async`（995）/`run_skill_script_by_content`（1043）/`run_skill_script_by_content_async`（1066），含 async 包装器 |
 | 第十五轮 | "启动自动 seed 算子：operators 表为空时从 data/seed/operators.json 加载" | 第二十八轮已删除 seed 算子/流程加载逻辑（改用资产导入导出替代）；`data/seed/operators.json` 不存在；`main.py` `_seed_skills_and_pipelines` 仅保留技能磁盘扫描 + 内置流程/调度 seed（按 is_builtin 查重） |
-| 路由数 | 第二十一轮记录"183 条路由" | 实际 140 个 OpenAPI paths（175 operations）：skills 23 / permissions 16 / operators 14 / config 11 / pipelines 11 / chat 9 / schedules 9 / datasources 8 / auth 6 / filelinks 6 / metadata 6 / agents 5 / knowledge 5 / assets 4 / connectors 2 / providers 2 / filesystem 1 / llm 1 / health 1 |
+| 路由数 | 第二十一轮记录"183 条路由" | 实际 143 个 OpenAPI paths（178 operations） |
 | 第二十五轮 | "Docker 一键部署：前端多阶段构建 nginx 托管 + SSE 长连接支持" | 第二十八轮（2bd1a58）已删除 Docker/nginx 全部配置（`docker-compose.yml`/`Dockerfile`×2/`nginx/nginx.conf` 均不存在），回归开发模式 |
 | 第二十七轮 | "当前错误处理机制含平台信号词匹配（_PLATFORM_FAILURE_SIGNALS）" | 第二十八轮（2bd1a58）已彻底删除平台信号词匹配（`_PLATFORM_FAILURE_SIGNALS`/`_has_platform_failure_in_warnings`/`is_platform_issue` grep 全空），靠 LLM 自主判断 + 执行错误计数 + 修改次数上限三层兜底 |
 | 第二十六轮 | "关键词路由：含查询/统计/分析…→ DataAnalyst" | 第三十轮已删除关键词路由，改为 `classify_message` LLM 语义判断 msg_type（analysis/processing/chat）→ 选 Agent；chat_router 不再依赖关键词列表 |
@@ -857,7 +860,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 第三十轮 | "classify 不传 context 信息给 LLM（只靠用户消息语义判断）" | 第三十一轮已改为传当前已选数据上下文（源/目标/技能名）给 LLM，让它能判断 keep/change |
 | 第三十轮 | "有任意 suggestion → 保存 ChatMessage + yield done + return；无 suggestion → 走 Agent" | 第三十一轮已改为每路独立返回结果（含 no_match 类型），不再用 `_has_suggestion` 判断 |
 | 第三十轮 | "前端 suggestions 数组（data_suggestion/target_suggestion/skill_suggestion + missing_source/missing_target）" | 第三十一轮已改为 8 种独立事件类型（data_suggestion/source_datasource_no_match/source_table_no_match/target_suggestion/target_datasource_no_match/target_table_no_match/skill_suggestion/skill_no_match） |
-| 路由数 | 第三十一轮记录"188 条路由" | 第三十二轮删 13 个旧 /internal/* 端点 + 1 个孤儿 /internal/execute → 140 OpenAPI paths（139 API + 1 health） |
+| 路由数 | 第三十一轮记录"188 条路由" | 实际 143 个 OpenAPI paths（142 API + 1 health） |
 | 全局 | "三智能体（DataProcessor/DataInspector/DataAnalyst）" | 实际为**四智能体**：新增 `ChatAgent`（`chat_agent.py`，处理闲聊/问候/系统配置/提问咨询等非数据操作，`_decide_handoff` 对其返回 None 不参与 handoff）；chat 类型消息走 ChatAgent 而非 DataProcessor |
 | 第二十六轮 | "DataAnalyst run_debug() 分析技能调试" | **无 `run_debug()` 方法**（data_analyst_agent.py 与 data_processor_agent.py 均无独立 run_debug）；调试模式在 `run()` 内部通过 `_is_debug` flag 分支处理 |
 | 全局 | "StuckDetector max_total_rounds 30→15" | `StuckDetector.__init__` 默认 `max_total_rounds=15`（agent_utils.py line 102），但实例化时传参不同：data_processor debug=50/main=30、data_analyst=15、chat_agent=10；无"只调查不修改"检测（已删） |
@@ -867,8 +870,8 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 全局 | "_BUILTIN_CONNECTORS" | 第三十二轮已改 _SEED_CONNECTORS |
 | 全局 | "沙箱模板注入 17 个适配函数" | 第三十二轮已删除，只留 call_tool 统一入口 + 安全 hooks |
 | 全局 | "聊天上传虚拟数据源 type=excel" | 第三十二轮已改 type=generic_file + 去扩展名过滤（接受任意文件） |
-| 全局 | "DataProcessor 13 工具 / DataAnalyst 11 工具" | 第三十二轮 DataProcessor 20 工具 / DataAnalyst 14 工具（新增 write_table_data/iter_table_data/read_file/write_file/llm_generate/extract_video_info/extract_keyframes） |
-| 第三十二轮 | "工具数 29 个" | 第三十三轮 extract_image_table 工具新增（ac76188）后删除（b3aa25a，内联到技能脚本），工具数稳定 29 |
+| 全局 | "DataProcessor 13 工具 / DataAnalyst 11 工具" | 第三十二轮 DataProcessor 21 工具（17 主 + 4 调试）/ DataAnalyst 16 工具（12 主 + 4 调试）；工具名从 query_table_data→query_data、write_table_data→write_data 简化 |
+| 第三十二轮 | "工具数 29 个" | 实际 30 个（新增 `profile_data` 数据概览工具；check_data_standards/check_data_quality/check_data_security 检查工具） |
 | 全局 | "LLM Provider 5 种（智谱/阿里/硅基/Azure/自定义）" | 第三十三轮新增火山AI网关 Provider（聚合 DeepSeek/Qwen/Doubao/GLM/MiniMax/HunYuan）+ 火山方舟，共 7 种 |
 | 全局 | "read_file 只读文本/CSV" | 第三十三轮 read_file 支持 PDF（pdfplumber/fitz）+ Word（python-docx）+ PDF 页面渲染（`pdf_page_images` 参数） |
 | 全局 | "规则库 3 份（STD/DQ/SEC）" | 第三十三轮新增技能专属 rules.md（`SKILL-STD-*`/`SKILL-DQ-*`/`SKILL-SEC-*` 编号），DataInspector 合并执行全局规则 + 技能规则 |
@@ -876,6 +879,10 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 全局 | "无国际化" | 第三十三轮新增全栈 i18n（前端 vue-i18n + 后端 core/i18n.py + I18nMiddleware + `X-Lang` 请求头） |
 | 全局 | "Chat 匹配始终走" | 第三十三轮新增演进模式开关（`evolution_mode`，关闭时跳过 classify + 匹配直接路由 Agent） |
 | 全局 | "handoff 单表" | 第三十三轮 handoff payload 从单表改为 `output_tables` 列表，Inspector 遍历所有写入表检查 |
+| 全局 | "技能 9 个" | 实际 8 个技能（`migrate-and-translate-to-chinese` 未提交到 data/skills/） |
+| 全局 | "ChatAgent 工具数未记录" | ChatAgent 有 7 个工具（web_fetch/get_llm_config/save_llm_adapter/delete_llm_adapter/save_connector/delete_connector/list_user_datasources） |
+| 全局 | "code_merge.py / working_copy.py 未记录" | 两文件均存在——code_merge.py（234 行）并发调试 3-way 合并；working_copy.py（101 行）并发调试工作副本管理 |
+| 全局 | "工具名 query_table_data / write_table_data" | tool_registry 注册名已改为 `query_data` / `write_data`；但技能脚本仍用旧名 `call_tool("query_table_data", ...)`，需同步更新 |
 
 ### 第二十九轮（Chat 数据上下文持久化 + 会话隔离 + 路由判断合并 + 技能匹配优化 + 输入历史隔离）
 
@@ -914,7 +921,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | 改进 | 文件 | 说明 |
 |------|------|------|
 | **粗筛+精排带 msg_type** | match_service.py | `_llm_coarse_match`/`_llm_fine_match` 加 `msg_type` 参数；analysis 类加"用户意图：只分析不修改"；processing 类加"用户意图：数据处理"；`llm_match_pipelines`/`llm_match_skills`/`_llm_match_items` 全链路透传 |
-| **全部技能加 skill_type** | data/skills/*/SKILL.md | 9 个技能全部加 `skill_type` 字段（8 个 processing + 1 个 analysis）；description 按 skill_creator 规范重写（覆盖常见问法+口语化表达，如"导出/迁移/搬数据"、"清洗/清理/去重"、"提取/识别/标注"） |
+| **全部技能加 skill_type** | data/skills/*/SKILL.md | 8 个技能全部加 `skill_type` 字段（7 个 processing + 1 个 analysis）；description 按 skill_creator 规范重写（覆盖常见问法+口语化表达，如"导出/迁移/搬数据"、"清洗/清理/去重"、"提取/识别/标注"） |
 
 **目标表匹配按钮文案**：
 
@@ -922,7 +929,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 |------|------|------|
 | **按钮文案调整** | ChatView.vue:134+139 | 目标表匹配：每个表项 `继续处理` → `选择此数据`（调 `selectData` 选目标表）；底部 `直接继续处理` → `继续处理`（调 `continueProcessing` 跳过目标匹配） |
 
-**验证**：`ChatSession.context` 正确持久化（源+目标数据源名+表名全写入 DB）；infer-instruction 从 context 读取生成带真实参数的指令；classify 一次 LLM 调用判断类型+keep/change；技能匹配带 msg_type 意图提示；9 个技能全有 skill_type + 口语化 description。
+**验证**：`ChatSession.context` 正确持久化（源+目标数据源名+表名全写入 DB）；infer-instruction 从 context 读取生成带真实参数的指令；classify 一次 LLM 调用判断类型+keep/change；技能匹配带 msg_type 意图提示；8 个技能全有 skill_type + 口语化 description。
 
 **与前轮关系**：第二十六轮 DataAnalystAgent 集成的 skill_type 路由在本轮扩展到全部技能（之前只有 data-statistics 有 skill_type）；第二十八轮 LLM 配置去全局化的 `_flash`/`_default` 属性在本轮被 classify_message 复用（`model=llm_manager._flash` 快速判断）；第二十三轮的 `_compress_history` 用 `_session_ctx` 但未发现 dirty 问题在本轮修复。
 
@@ -1093,7 +1100,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **模板删 17 个适配函数** | skill_runner.py | SKILL_RUNNER_TEMPLATE 从 14506→6925 字符；只留 `call_tool` + `_logged_call_tool` + 安全 hooks |
 | **删 TOOL_FUNCTIONS_DOC** | prompt_docs.py | LLM 看 JSON Schema + PLATFORM_CONVENTIONS_DOC 即可 |
 | **PLATFORM_CONVENTIONS_DOC 全改 call_tool** | prompt_docs.py | 所有示例从旧函数名 → call_tool 风格 |
-| **9 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | query_table_data→call_tool("query_table_data",...)；resolve_column→内联 difflib；llm_chat→call_tool("llm_generate")["content"]；iter_table_data 生成器→while 翻页 |
+| **8 个技能脚本全改 call_tool** | data/skills/*/scripts/main.py | query_table_data→call_tool("query_table_data",...)；resolve_column→内联 difflib；llm_chat→call_tool("llm_generate")["content"]；iter_table_data 生成器→while 翻页 |
 | **skill_creator + SKILL_SPEC 全改 call_tool** | skill_creator.py / SKILL_SPEC.md | _COMMON_PITFALLS 20+ 示例 + Section 4 全改 call_tool |
 | **chat.py 附件提示改 call_tool** | chat.py | llm_vision(...)/execute_sql(...) → call_tool("llm_vision",...)/call_tool("execute_sql",...) |
 | **data_processor_agent system prompt 改 call_tool** | data_processor_agent.py | "内置函数" → "call_tool" |
@@ -1218,7 +1225,7 @@ cd backend && .venv\Scripts\python.exe -m black app/ && .venv\Scripts\python.exe
 | **图片上传 table_name 丢失** | chat.py | 图片上传也写 `source_data_name`（之前 `if not is_image` 跳过，导致 switchSession 恢复时 table_name 丢失） |
 | **GenericFileConnector 匹配** | connectors.py | `get_schema` 返回 `f.name`（带后缀）；`get_table_data`/`get_table_stats` 支持 4 种匹配（f.name/f.stem/filename_SheetName/stem_SheetName） |
 
-**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 29 个工具）在本轮保持不变（extract_image_table 新增后删除，工具数稳定 29）。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。
+**与前轮关系**：第三十二轮工具统一（call_tool + tool_registry 30 个工具）在本轮保持不变。第三十一轮 Chat 匹配流程在本轮加演进模式开关（可跳过匹配直接路由 Agent）。第十五轮规则全量实现（31 条 STD/DQ/SEC 确定性检查）在本轮扩展到技能专属 rules.md（SKILL-DQ-* 编号）。第二十八轮 LLM 配置去全局化在本轮加火山AI网关 Provider（聚合多家模型）。
 
 ### 第三十四轮（Windows 安装包——Embeddable Python + Inno Setup，免装链路分发）
 
