@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 import asyncio
 from typing import Dict, Any, AsyncGenerator
 
@@ -202,7 +203,7 @@ class DataInspectorAgent(BaseAgent):
             op_desc = message.payload.get("operation_description", "")
             result_summary = message.payload.get("result_summary", "")
 
-            yield {"type": "inspecting", "message": f"正在检查 {len(_output_tables)} 张表..."}
+            yield {"type": "inspecting", "message": f"Inspector 正在检查 {len(_output_tables)} 张表..."}
 
             # 构建检查指令：列出输出表 + 源信息，引导 LLM 自主调工具检查
             inspect_prompt = "请对以下输出表进行全面数据检查。\n\n"
@@ -221,20 +222,31 @@ class DataInspectorAgent(BaseAgent):
             if _output_tables:
                 _tbl_list = "\n".join(f"  - 数据源ID: {t.get('datasource_id','')}, 表名: {t.get('table_name','')}" for t in _output_tables)
                 inspect_prompt += f"\n输出表清单:\n{_tbl_list}\n"
-            inspect_prompt += "\n## 检查方式（全部通过工具调用）\n"
-            inspect_prompt += "- 用 profile_data 获取每张表的数据概览（行数、列数、空值率、类型）\n"
-            inspect_prompt += "- 用 check_data_quality / check_data_standards / check_data_security 做通用规则检查\n"
+                # 生成 tables JSON 供 LLM 直接复制传参
+                _tables_json = json.dumps([{"datasource_id": t.get("datasource_id", ""), "table_name": t.get("table_name", "")} for t in _output_tables], ensure_ascii=False)
+                inspect_prompt += f"\n可用作工具参数的 tables JSON:\n```json\n{_tables_json}\n```\n"
+            inspect_prompt += "\n## 检查方式（全部通过工具调用，一次传所有表）\n"
+            inspect_prompt += "- 用 profile_data(tables=[...]) 一次性获取所有表的数据概览\n"
+            inspect_prompt += "- 用 check_data_quality(tables=[...]) 一次性检查所有表的数据质量\n"
+            inspect_prompt += "- 用 check_data_standards(tables=[...]) 一次性检查所有表的数据标准\n"
+            inspect_prompt += "- 用 check_data_security(tables=[...]) 一次性检查所有表的数据安全\n"
             inspect_prompt += "- 用 check_skill_rules 做技能专属规则检查（headers + rows 从 query_data 获取）\n"
-            inspect_prompt += "- 用 query_data 深入查看具体行的数据（如空值行、可疑值）\n"
-            inspect_prompt += "- 逐表检查，每张表都要覆盖\n\n"
-            inspect_prompt += "检查完成后，结论末尾输出 JSON 代码块列出需修复问题（只有 error/critical 级别）：\n"
+            inspect_prompt += "- 用 query_data(datasource_id=..., table_name=...) 深入查看具体行的数据\n\n"
+            inspect_prompt += "## 报告格式\n"
+            inspect_prompt += "检查结果必须包含以下四个维度的结论，不得遗漏：\n"
+            inspect_prompt += "1. 标准检查（check_data_standards）\n"
+            inspect_prompt += "2. 质量检查（check_data_quality）\n"
+            inspect_prompt += "3. 安全检查（check_data_security）\n"
+            inspect_prompt += "4. 技能专属规则检查（check_skill_rules）\n"
+            inspect_prompt += "每个维度列出：通过/未通过、问题数量、问题摘要。即使某维度全部通过也要明确列出。\n\n"
+            inspect_prompt += "结论末尾输出 JSON 代码块列出需修复问题（只有 error/critical 级别）：\n"
             inspect_prompt += '```json\n{"llm_issues": [{"severity": "error", "rule_id": "规则ID", "table": "表名", "description": "问题描述", "suggestion": "修复建议"}]}\n```\n'
             inspect_prompt += "无问题输出空数组：```json\n{\"llm_issues\": []}\n```"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
 
         elif message.reason == HandoffReason.FIX_COMPLETED:
-            yield {"type": "inspecting", "message": f"正在复查 {len(_output_tables)} 张表..."}
+            yield {"type": "inspecting", "message": f"Inspector 正在复查 {len(_output_tables)} 张表..."}
 
             inspect_prompt = "数据已修复，请重新检查确认问题是否已解决，并检查是否引入新问题。\n\n"
             _user_msg = message.payload.get("user_message", "") or context.get("debug_user_message", "")
@@ -243,18 +255,18 @@ class DataInspectorAgent(BaseAgent):
             if _output_tables:
                 _tbl_list = "\n".join(f"  - 数据源ID: {t.get('datasource_id','')}, 表名: {t.get('table_name','')}" for t in _output_tables)
                 inspect_prompt += f"\n输出表清单:\n{_tbl_list}\n"
-            inspect_prompt += "\n## 检查方式（全部通过工具调用）\n"
-            inspect_prompt += "- 用 profile_data 获取每张表的数据概览\n"
-            inspect_prompt += "- 用 check_data_quality / check_data_standards / check_data_security 做通用规则检查\n"
+                _tables_json = json.dumps([{"datasource_id": t.get("datasource_id", ""), "table_name": t.get("table_name", "")} for t in _output_tables], ensure_ascii=False)
+                inspect_prompt += f"\n可用作工具参数的 tables JSON:\n```json\n{_tables_json}\n```\n"
+            inspect_prompt += "\n## 检查方式（全部通过工具调用，一次传所有表）\n"
+            inspect_prompt += "- 用 profile_data(tables=[...]) 获取所有表的数据概览\n"
+            inspect_prompt += "- 用 check_data_quality(tables=[...]) / check_data_standards(tables=[...]) / check_data_security(tables=[...]) 做通用规则检查\n"
             inspect_prompt += "- 用 check_skill_rules 做技能专属规则检查\n"
-            inspect_prompt += "- 用 query_data 深入查看之前有问题的行\n\n"
+            inspect_prompt += "- 用 query_data(datasource_id=..., table_name=...) 深入查看之前有问题的行\n\n"
             inspect_prompt += "检查完成后输出 JSON 代码块：\n"
             inspect_prompt += '```json\n{"llm_issues": [{"severity": "error", "rule_id": "规则ID", "table": "表名", "description": "问题描述", "suggestion": "修复建议"}]}\n```\n'
             inspect_prompt += "无问题输出空数组。"
 
             local_messages.append({"role": "user", "content": inspect_prompt})
-            logger.info(f"[Inspector-DEBUG] FIX_COMPLETED report_len={len(report)} report_preview={report[:200]}")
-            yield {"type": "inspection_report", "report": report}
 
         else:
             user_msg = message.payload.get("user_message", message.payload.get("content", ""))
@@ -323,10 +335,10 @@ class DataInspectorAgent(BaseAgent):
                     local_messages.append({"role": "user", "content": intervention})
                     continue
 
-                # 最终结论：解析 LLM 输出的结构化 issue 列表
-                yield {"type": "content", "content": content}
-                # 解析 LLM 输出的结构化 issue 列表，写入 check_results
+                # 最终结论：剥离末尾的 llm_issues JSON 代码块（给系统解析用的，不展示给用户）
                 _llm_issues = _parse_llm_issues(content)
+                _display_content = re.sub(r'\n*```json\s*\{"llm_issues":\s*\[.*?\]\s*\}\s*```\s*$', '', content, flags=re.DOTALL).rstrip()
+                yield {"type": "content", "content": _display_content}
                 if _llm_issues:
                     _cr = context.get("_check_results")
                     if isinstance(_cr, dict):
@@ -339,6 +351,33 @@ class DataInspectorAgent(BaseAgent):
 
             # 有工具调用：输出 content（LLM 在解释要做什么）
             yield {"type": "content", "content": content}
+
+            # 工具调用进度提示：每个工具调用单独 yield 一条 progress
+            _tool_labels = {"profile_data": "数据概览", "check_data_quality": "数据质量检查", "check_data_standards": "数据标准检查",
+                            "check_data_security": "数据安全检查", "check_skill_rules": "技能规则检查",
+                            "query_data": "查询数据", "read_file": "读取文件", "list_user_datasources": "列出数据源"}
+            import re as _re
+            def _simplify(name):
+                return _re.sub(r'\.(xlsx|csv|xls)\|.*$', '', str(name))
+            for tc in tool_calls:
+                _name = tc["function"]["name"]
+                _label = _tool_labels.get(_name, _name)
+                try:
+                    _args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    _args = {}
+                _tbls = _args.get("table_name", "")
+                if not _tbls:
+                    _tlist = _args.get("tables", [])
+                    if isinstance(_tlist, list) and _tlist:
+                        for _t in _tlist:
+                            if isinstance(_t, dict) and _t.get("table_name"):
+                                yield {"type": "progress", "message": f"Inspector {_label}：{_simplify(_t['table_name'])}"}
+                        continue
+                if _tbls:
+                    yield {"type": "progress", "message": f"Inspector {_label}：{_simplify(_tbls)}"}
+                else:
+                    yield {"type": "progress", "message": f"Inspector {_label}"}
 
             had_any_tool_calls = True
 

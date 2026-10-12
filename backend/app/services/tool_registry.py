@@ -1096,10 +1096,6 @@ async def _read_file_handler(args, db, user_id, context):
             if page_images:
                 result = await asyncio.to_thread(_render_pdf_pages, str(p), page_images, int(args.get("dpi", 200)))
                 return json.dumps({"format": "images", **result}, ensure_ascii=False)
-            # extract_tables 参数：用 pdfplumber 提取结构化表格（行列结构保留）
-            if args.get("extract_tables"):
-                text, tables, page_texts, total_pages, image_pages = await asyncio.to_thread(_extract_pdf_tables, str(p))
-                return json.dumps({"format": "tables", "content": text, "tables": tables, "page_texts": page_texts, "total_pages": total_pages, "image_pages": image_pages}, ensure_ascii=False, default=str)
             text, total_pages, image_pages, page_texts = await asyncio.to_thread(_extract_pdf_text, str(p))
             return json.dumps({"format": "text", "content": text, "total_pages": total_pages, "image_pages": image_pages, "page_texts": page_texts}, ensure_ascii=False, default=str)
         elif ext == ".docx":
@@ -1126,7 +1122,7 @@ def _scan_pdf_images(file_path: str) -> tuple:
     3. 近全页图（≥90% 面积）+ 页面文本丰富（≥200 字符）→ 整页背景/底纹
        （如带防伪底纹的标准文档：600dpi 整页背景图 + 完整文本层 + 矢量表格线）
 
-    fitz 不可用返回 None（调用方退回 pdfplumber 面积检测，不识别水印，保持旧行为）。
+    fitz 不可用返回 None（调用方退回面积检测，不识别水印，保持旧行为）。
 
     返回 ({page_no: set(>10%面积非水印图片xref)}, 水印xref集合, {旋转页号: fitz文本})
     """
@@ -1198,14 +1194,14 @@ def _scan_pdf_images(file_path: str) -> tuple:
         finally:
             doc.close()
     except Exception as e:
-        logger.warning(f"fitz 图片预扫描失败（退回 pdfplumber 检测，不识别水印）: {e}")
+        logger.warning(f"fitz 图片预扫描失败（退回面积检测，不识别水印）: {e}")
         return None
 
 
 def _extract_pdf_text(file_path: str) -> tuple:
     """在主进程解析 PDF 文本（不受沙箱 import 限制）。
 
-    旋转页文本用 fitz 提取（pdfplumber 0.11 无 page.rotate() 且旋转页字符按视觉序排列会乱序）；
+    fitz 优先（字符顺序正确）；
     含水印识别（xref 复用 / 同尺寸组覆盖 ≥80% 页面且文本丰富）——水印不计入大图信号，
     防止文本型 PDF 因背景水印被全页误判 OCR。
 
@@ -1213,95 +1209,12 @@ def _extract_pdf_text(file_path: str) -> tuple:
     - image_pages: List[int] 疑似图片型表格所在页号（1-based），供 OCR 判断用。
     - page_texts: List[str] 每页文本（供技能脚本按表号匹配所在页）
     """
-    errors = []
-    # 水印预扫描（fitz）：结果供 pdfplumber 主路径和 fitz 兜底路径共用
     _scan = _scan_pdf_images(file_path)
     if _scan is None:
         _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = {}, set(), {}
-        _scan_ok = False
     else:
         _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = _scan
-        _scan_ok = True
-    try:
-        import pdfplumber
-        with pdfplumber.open(file_path) as pdf:
-            total_pages = len(pdf.pages)
-            pages = []
-            rotated = []
-            image_pages = []
-            for i, page in enumerate(pdf.pages, 1):
-                rotation = getattr(page, "rotation", 0) or 0
-                if rotation != 0:
-                    rotated.append(i)
-                    # pdfplumber 0.11 无 page.rotate()（旧代码调用即 AttributeError 静默崩到 fitz 兜底，
-                    # 曾致整份 PDF 全页 OCR）。旋转页文本改用 fitz 提取（阅读顺序正确）；
-                    # find_tables 的线条几何检测不受旋转影响。
-                page_text = _fitz_rot_texts.get(i) or (page.extract_text() or "")
-                pages.append(page_text)
-                # 图片型表格页判定（水印修复版，四层）：
-                # 0. 水印/底纹（同一图片对象复用在 ≥80% 页面）不算大图——标准文档水印曾导致
-                #    文本型 PDF 全页满足"有大图"前提，配合弱启发式误判 5 页去 OCR
-                # 1. 大图（>10% 页面）且文本贫乏（<100字符）→ 纯表格图片页
-                # 2. 大图但 find_tables 能提取 ≥2 行结构化表格 → 表格在文本层，跳过 OCR（硬信号）
-                # 3. 大图且文本含"表X.Y"标题但无表格数据行特征 → 疑似图片表格（弱信号兜底）
-                # 4. 大图但文本丰富且无表标题 → 封面/目录/前言，跳过
-                try:
-                    if _scan_ok:
-                        # fitz 预扫描可用：非水印大图判定（xref 级，含水印组过滤）
-                        has_big_img = bool(_page_big_xrefs.get(i, set()) - _wm_xrefs)
-                    else:
-                        # fitz 不可用 → pdfplumber 面积检测（无法识别水印，保持旧行为）
-                        page_area = (page.width or 0) * (page.height or 0)
-                        has_big_img = False
-                        for img in (getattr(page, "images", None) or []):
-                            img_w = float(img.get("width", 0) or 0)
-                            img_h = float(img.get("height", 0) or 0)
-                            src_w = float(img.get("srcsize", (0, 0))[0] or 0)
-                            src_h = float(img.get("srcsize", (0, 0))[1] or 0)
-                            if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
-                                has_big_img = True
-                                break
-                    if has_big_img:
-                        if len(page_text) < 100:
-                            image_pages.append(i)
-                        else:
-                            # 硬信号：find_tables 提取到 ≥2 行结构化表格 → 表格是文本型，无需 OCR
-                            _struct_table = False
-                            try:
-                                for _t in page.find_tables():
-                                    _ext = _t.extract() or []
-                                    if len(_ext) >= 2:
-                                        _struct_table = True
-                                        break
-                            except Exception:
-                                pass
-                            if not _struct_table:
-                                # 弱信号兜底：文本含表标题（表X.Y）且无表格数据行特征（|/制表符/多空格对齐）
-                                _has_table_title = bool(re.search(r"表\s*[A-Za-z]?\s*\.?\s*\d+", page_text))
-                                _table_data_lines = 0
-                                for _ln in page_text.split("\n"):
-                                    _s = _ln.strip()
-                                    if not _s:
-                                        continue
-                                    if "|" in _s or "\t" in _s:
-                                        _table_data_lines += 1
-                                    elif len(_s) < 80 and "  " in _ln:
-                                        _table_data_lines += 1
-                                if _has_table_title and _table_data_lines < 2:
-                                    image_pages.append(i)
-                except Exception:
-                    pass
-                if i % 10 == 0:
-                    logger.info(f"PDF 解析进度: {i}/{total_pages} 页")
-            if rotated:
-                logger.info(f"检测到旋转页 {len(rotated)} 页: {rotated[:10]}")
-            logger.info(f"含图片页: {image_pages[:20]}{'...' if len(image_pages) > 20 else ''}（共 {len(image_pages)} 页）")
-            return "\n".join(pages), total_pages, image_pages, pages
-    except ImportError:
-        errors.append("pdfplumber 未安装")
-    except Exception as e:
-        errors.append(f"pdfplumber: {e}")
-        logger.warning(f"pdfplumber 主路径解析失败，回退 fitz: {e}")
+
     try:
         import fitz
         doc = fitz.open(file_path)
@@ -1310,11 +1223,13 @@ def _extract_pdf_text(file_path: str) -> tuple:
             pages = []
             image_pages = []
             for i, page in enumerate(doc, 1):
-                pages.append(page.get_text() or "")
-                # fitz: 有非水印大图（>10% 面积）→ 图片页（与主路径判定一致；扫描结果已含水印过滤）
+                page_text = page.get_text() or ""
+                pages.append(page_text)
+                # 图片型表格页判定：有非水印大图且文本贫乏 → 纯表格图片页
                 try:
                     if _page_big_xrefs.get(i, set()) - _wm_xrefs:
-                        image_pages.append(i)
+                        if len(page_text) < 100:
+                            image_pages.append(i)
                 except Exception:
                     pass
                 if i % 10 == 0:
@@ -1324,103 +1239,9 @@ def _extract_pdf_text(file_path: str) -> tuple:
         finally:
             doc.close()
     except ImportError:
-        errors.append("PyMuPDF(fitz) 未安装")
+        raise RuntimeError("PDF 解析失败：主进程未安装 PyMuPDF(fitz)，请安装后重试")
     except Exception as e:
-        errors.append(f"fitz: {e}")
-    raise RuntimeError(f"PDF 解析失败（主进程缺少 pdfplumber/fitz）: {'; '.join(errors)}")
-
-
-def _extract_pdf_tables(file_path: str) -> tuple:
-    """用 pdfplumber 提取 PDF 中的结构化表格（借鉴 MinerU 版面分析思路）。
-
-    pdfplumber.find_tables() 基于线条规则+文本对齐检测表格区域，
-    extract() 返回 rows×columns 结构化数据——天然保留行列关系。
-
-    返回 (full_text, tables, page_texts, total_pages, image_pages):
-    - full_text: 全文纯文本（正文）
-    - tables: List[Dict] 每个含 page/headers/rows/at_bottom/ncols
-    - page_texts: List[str] 每页文本（供技能脚本匹配表名）
-    - total_pages: 总页数
-    - image_pages: List[int] 含嵌入图片的页号（供 OCR 判断用）
-    """
-    try:
-        import pdfplumber
-        # 水印预扫描：同一图片对象/同尺寸组出现在 ≥80% 页面 → 水印，不算图片页信号
-        _scan = _scan_pdf_images(file_path)
-        if _scan is None:
-            _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = {}, set(), {}
-            _scan_ok = False
-        else:
-            _page_big_xrefs, _wm_xrefs, _fitz_rot_texts = _scan
-            _scan_ok = True
-        with pdfplumber.open(file_path) as pdf:
-            total_pages = len(pdf.pages)
-            page_texts = []
-            all_tables = []
-            image_pages = []
-            for i, page in enumerate(pdf.pages, 1):
-                rotation = getattr(page, "rotation", 0) or 0
-                if rotation != 0:
-                    # pdfplumber 0.11 无 page.rotate()；旋转页文本用 fitz（阅读顺序正确）
-                    page_text = _fitz_rot_texts.get(i) or (page.extract_text() or "")
-                else:
-                    page_text = page.extract_text() or ""
-                page_texts.append(page_text)
-                # 图片页判定：有非水印大图（>10% 面积）→ 表格可能不在文本层，标记供 OCR 判断
-                try:
-                    if _scan_ok:
-                        has_big_img = bool(_page_big_xrefs.get(i, set()) - _wm_xrefs)
-                    else:
-                        page_area = (page.width or 0) * (page.height or 0)
-                        has_big_img = False
-                        for img in (getattr(page, "images", None) or []):
-                            img_w = float(img.get("width", 0) or 0)
-                            img_h = float(img.get("height", 0) or 0)
-                            src_w = float(img.get("srcsize", (0, 0))[0] or 0)
-                            src_h = float(img.get("srcsize", (0, 0))[1] or 0)
-                            if page_area > 0 and max(img_w, src_w) * max(img_h, src_h) > page_area * 0.1:
-                                has_big_img = True
-                                break
-                except Exception:
-                    has_big_img = False
-                page_height = page.height or 0
-                found = page.find_tables()
-                _has_real_table = False
-                for tbl_obj in found:
-                    raw = tbl_obj.extract()
-                    if not raw or len(raw) < 2:
-                        continue
-                    _has_real_table = True
-                    rows = []
-                    for row in raw:
-                        rows.append(["" if cell is None else str(cell).strip() for cell in row])
-                    headers = rows[0]
-                    data_rows = rows[1:]
-                    bbox = getattr(tbl_obj, "bbox", None)
-                    at_bottom = False
-                    if bbox and page_height:
-                        at_bottom = bbox[3] > page_height * 0.75
-                    all_tables.append({
-                        "page": i,
-                        "headers": headers,
-                        "rows": data_rows,
-                        "at_bottom": at_bottom,
-                        "ncols": len(headers),
-                    })
-                # 有非水印大图但该页没提取到结构化表格 → 表格可能是图片，标记供 OCR 判断
-                if has_big_img and not _has_real_table:
-                    image_pages.append(i)
-                if i % 10 == 0:
-                    logger.info(f"PDF 表格提取进度: {i}/{total_pages} 页, 累计 {len(all_tables)} 张表")
-            full_text = "\n".join(page_texts)
-            logger.info(f"PDF 表格提取完成: {total_pages} 页, {len(all_tables)} 张结构化表格")
-            return full_text, all_tables, page_texts, total_pages, image_pages
-    except ImportError:
-        logger.warning("pdfplumber 未安装，回退到纯文本提取")
-    except Exception as e:
-        logger.warning(f"pdfplumber 表格提取失败: {e}，回退到纯文本提取")
-    text, total_pages, image_pages, page_texts = _extract_pdf_text(file_path)
-    return text, [], page_texts, total_pages, image_pages
+        raise RuntimeError(f"PDF 解析失败（fitz）: {e}")
 
 
 def _render_pdf_pages(file_path: str, page_indices: list, dpi: int = 200) -> dict:
@@ -2657,14 +2478,15 @@ def _extract_table_source_snippet(source_text: str, table_name: str, headers: li
 
 
 async def _check_skill_rules_handler(args, db, user_id, context):
-    """检查提取结果是否符合技能 rules.md 定义的规则。
+    """检查数据是否符合技能专属规则——通过沙箱执行技能脚本的 check_rules 函数。
 
-    有 regex/legal_values 的规则 → 本地确定性检查
-    纯自然语言规则 → 调 llm_generate 让 LLM 判断
+    技能脚本 main.py 里定义 check_rules(headers, rows, source_text, table_name) -> list[dict]，
+    handler 通过 run_skill_script_by_content 在沙箱里执行该函数。
+    没有 check_rules 函数的技能 → 返回空 issues（向后兼容）。
     """
     import json as _json
-    import re as _re
-    from app.services.standards_parser import parse_skill_rules
+    from app.services.skill_parser import read_skill_script, resolve_skill_folder
+    from pathlib import Path as _Path
 
     headers = args.get("headers", [])
     rows = args.get("rows", [])
@@ -2673,187 +2495,70 @@ async def _check_skill_rules_handler(args, db, user_id, context):
     skill_path = args.get("skill_path", "")
 
     if not skill_path:
-        # 从 context 获取 skill_path
         skill_path = context.get("debug_skill_path") or context.get("debug_folder") or ""
 
     if not skill_path:
         return _json.dumps({"issues": [], "message": "无 skill_path，跳过技能规则检查"}, ensure_ascii=False)
 
-    from pathlib import Path as _Path
-    rules_path = _Path(skill_path) / "rules.md"
-    if not rules_path.exists():
-        return _json.dumps({"issues": [], "message": "无 rules.md，跳过技能规则检查"}, ensure_ascii=False)
+    # 解析技能文件夹路径
+    try:
+        skill_folder = resolve_skill_folder(skill_path)
+    except Exception:
+        skill_folder = _Path(skill_path)
+
+    # 读取技能脚本 main.py
+    script_content = read_skill_script(skill_folder, "main.py")
+    if not script_content:
+        return _json.dumps({"issues": [], "message": "无 main.py，跳过技能规则检查"}, ensure_ascii=False)
+
+    # 检查脚本是否有 check_rules 函数
+    if "def check_rules" not in script_content:
+        return _json.dumps({"issues": [], "message": "技能脚本无 check_rules 函数，跳过技能规则检查"}, ensure_ascii=False)
+
+    # 构建检查脚本：main.py 定义 check_rules，_check_entry 是入口供模板 __main__ 块调用
+    # 不用 import sys（沙箱 __import__ hook 拦截 sys）
+    # 不用 sys.argv 传参（沙箱通过 INJECTED_PARAMS / _get_params() 传参）
+    _check_script = script_content + """
+
+def _check_entry(**kwargs):
+    _issues = check_rules(
+        kwargs.get("headers", []),
+        kwargs.get("rows", []),
+        kwargs.get("source_text", ""),
+        kwargs.get("table_name", ""),
+    )
+    return {"issues": _issues}
+"""
 
     try:
-        skill_rules = parse_skill_rules(rules_path)
+        from app.services.skill_runner import run_skill_script_by_content
+        result = run_skill_script_by_content(
+            script_content=_check_script,
+            parameters={
+                "headers": headers,
+                "rows": rows,
+                "source_text": source_text,
+                "table_name": table_name,
+            },
+            input_data=None,
+            user_id=str(user_id) if user_id else None,
+            timeout=120,
+            entry_function="_check_entry",
+            skill_path=None,
+        )
+        _inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+        if not result.get("success") and not _inner.get("issues"):
+            _err = str(result.get("error") or _inner.get("error") or "")
+            logger.warning(f"[check_skill_rules] 沙箱执行失败: {_err[:500]}")
+            return _json.dumps({"issues": [], "message": f"沙箱执行失败: {_err[:200]}"}, ensure_ascii=False)
+
+        issues = _inner.get("issues", [])
+        logger.info(f"[check_skill_rules] 表={table_name}, issues={len(issues)}")
+        return _json.dumps({"issues": issues}, ensure_ascii=False, default=str)
     except Exception as e:
-        logger.warning(f"check_skill_rules: 解析 rules.md 失败: {e}")
-        return _json.dumps({"issues": [], "message": f"解析 rules.md 失败: {e}"}, ensure_ascii=False)
-
-    if not (skill_rules.get("std") or skill_rules.get("dq") or skill_rules.get("sec")):
-        return _json.dumps({"issues": [], "message": "rules.md 无规则"}, ensure_ascii=False)
-
-    all_rules = []
-    for cat in ("std", "dq", "sec"):
-        for r in skill_rules.get(cat, []):
-            all_rules.append(r)
-
-    if not all_rules:
-        return _json.dumps({"issues": [], "message": "rules.md 无规则"}, ensure_ascii=False)
-
-    issues = []
-    _subjective_rules = []
-
-    for rule in all_rules:
-        rid = rule.get("id") or rule.get("rule_id") or ""
-        name = rule.get("name") or rule.get("description") or ""
-        severity = rule.get("severity", "warning")
-        fields = rule.get("fields") or rule.get("scope_fields") or []
-
-        matched_cols = []
-        if fields:
-            for fi in fields:
-                for ci, h in enumerate(headers):
-                    if fi.lower() in str(h).lower():
-                        matched_cols.append(ci)
-                        break
-        else:
-            matched_cols = list(range(len(headers)))
-
-        regex = rule.get("regex")
-        if regex:
-            for ci in matched_cols:
-                for ri, row in enumerate(rows):
-                    if ci < len(row):
-                        val = str(row[ci]).strip()
-                        if val and not _re.match(regex, val):
-                            issues.append({
-                                "rule_id": rid,
-                                "severity": severity,
-                                "column": headers[ci] if ci < len(headers) else f"col_{ci}",
-                                "row": ri + 1,
-                                "description": f"列 '{headers[ci]}' 第 {ri+1} 行值 '{val[:40]}' 不符合规则 {rid} {name} 的正则 {regex}",
-                                "suggestion": f"按 {rid} 格式修正",
-                            })
-
-        legal = rule.get("legal_values")
-        if legal:
-            for ci in matched_cols:
-                for ri, row in enumerate(rows):
-                    if ci < len(row):
-                        val = str(row[ci]).strip()
-                        if val and val not in [str(x) for x in legal]:
-                            issues.append({
-                                "rule_id": rid,
-                                "severity": severity,
-                                "column": headers[ci] if ci < len(headers) else f"col_{ci}",
-                                "row": ri + 1,
-                                "description": f"列 '{headers[ci]}' 第 {ri+1} 行值 '{val[:40]}' 不在规则 {rid} {name} 的合法值列表中",
-                                "suggestion": f"按 {rid} 修正为合法值",
-                            })
-
-        if not regex and not legal:
-            _subjective_rules.append(rule)
-
-    # DQ-001 确定性行数对比：从 source_text 中定位该表的数据行数，与提取结果行数对比
-    # 仅当源片段含表格结构行（| 或制表符）时才对比——扫描件源文本是纯正文没有表格行，
-    # 数出来的行数是正文行不是表格行，对比必然误判
-    has_dq001 = any((r.get("id") or r.get("rule_id") or "") == "SKILL-DQ-001" for r in all_rules)
-    if has_dq001 and source_text and rows and table_name:
-        source_snippet = _extract_table_source_snippet(source_text, table_name, headers)
-        _snippet_pipe_rows = sum(1 for ln in (source_snippet or "").splitlines() if "|" in ln)
-        if source_snippet and _snippet_pipe_rows >= 3:
-            _src_rows = 0
-            for ln in source_snippet.splitlines():
-                s = ln.strip()
-                if s and ("|" in s or "\t" in s or _re.search(r"\s{2,}", s)):
-                    if _re.fullmatch(r"[-=: |]+", s):
-                        continue
-                    if s.startswith("|") and _re.fullmatch(r"[-=: |]+", s.strip("|")):
-                        continue
-                    _src_rows += 1
-            _src_rows = max(0, _src_rows - 1)
-            _extracted_rows = len(rows)
-            if _src_rows > 5 and _extracted_rows < _src_rows * 0.8:
-                issues.append({
-                    "rule_id": "SKILL-DQ-001",
-                    "severity": "error",
-                    "column": "",
-                    "row": 0,
-                    "description": f"提取结果 {_extracted_rows} 行，源文档约 {_src_rows} 行，疑似丢失 {_src_rows - _extracted_rows} 行数据",
-                    "suggestion": "检查 OCR/LLM 归并是否截断，或源文档表格是否跨页未完整提取",
-                })
-                logger.info(f"[check_skill_rules] DQ-001 行数对比: 源≈{_src_rows}, 提取={_extracted_rows}, 判定丢行")
-
-    # DQ-001 确定性列数检查：每行列数必须与表头一致
-    if has_dq001 and headers and rows:
-        _ncols = len(headers)
-        for _ri, _row in enumerate(rows):
-            _row_len = len(_row)
-            if _row_len != _ncols:
-                issues.append({
-                    "rule_id": "SKILL-DQ-001",
-                    "severity": "error",
-                    "column": "",
-                    "row": _ri + 1,
-                    "description": f"第 {_ri + 1} 行列数 {_row_len} 与表头列数 {_ncols} 不一致，疑似子列未拼接导致列错位",
-                    "suggestion": "检查该行是否有多余或缺失的子列，按分号拼接到正确列",
-                })
-
-    if _subjective_rules and rows:
-        rule_descs = []
-        for r in _subjective_rules:
-            rid = r.get("id") or r.get("rule_id") or ""
-            desc = r.get("logic") or r.get("detection_logic") or r.get("description") or r.get("name") or ""
-            rule_descs.append(f"- {rid}: {desc}")
-
-        md_lines = ["| " + " | ".join(str(h) for h in headers) + " |"]
-        md_lines.append("| " + " | ".join("---" for _ in headers) + " |")
-        for row in rows:
-            cells = [str(row[ci])[:200] if ci < len(row) else "" for ci in range(len(headers))]
-            md_lines.append("| " + " | ".join(cells) + " |")
-        table_md = "\n".join(md_lines)
-
-        source_snippet = _extract_table_source_snippet(source_text, table_name, headers)
-
-        rule_descs_text = "\n".join(rule_descs)
-        prompt = "请检查以下提取的表格数据是否符合技能规则。\n\n"
-        prompt += "检查原则（必须遵守）：\n"
-        prompt += "- 只做结构性检查：行列数一致、内容无截断、源文档中有的内容是否被提取到\n"
-        prompt += "- 禁止语义推测：不要判断某列的值'应该'是什么、某个内容'属于'哪张表或哪个部件——源文档里是什么就提取什么，与常识不符不算错误\n"
-        prompt += "- 多级表头合并列名（如'父表头 子表头'拼接）和子列值与父级拼接（如'设备名称子项'）是预期格式，不是错误\n"
-        prompt += "- 只有在源文档片段中能找到明确依据时才报问题；源文档片段中没有的内容不做判断\n\n"
-        prompt += "技能规则：\n" + rule_descs_text + "\n\n"
-        prompt += "表名: " + str(table_name) + "\n\n"
-        prompt += f"提取的表格数据（共{len(rows)}行）：\n" + table_md + "\n\n"
-        prompt += "源文档片段：\n" + source_snippet + "\n\n"
-        prompt += '请逐条检查上述规则，输出 JSON：\n```json\n{"issues": [\n  {"rule_id": "规则ID", "severity": "error/warning/pass", "column": "列名或空", "description": "问题描述", "suggestion": "修复建议"}\n]}\n```\n'
-        prompt += "severity 为 error 或 warning 表示有问题，pass 表示通过。无问题则 issues 为空数组。拿不准的一律 pass。"
-
-        try:
-            from app.services.llm import llm_manager, init_user_llm_context
-            if user_id:
-                await init_user_llm_context(user_id)
-            await llm_manager.initialize()
-            resp = await llm_manager.chat(prompt, model=llm_manager._flash, temperature=0.0, max_tokens=8000, enable_thinking=False)
-            content = resp or ""
-            _start = content.find("{")
-            if _start >= 0:
-                _end = content.rfind("}")
-                if _end > _start:
-                    _json_str = content[_start:_end + 1]
-                    try:
-                        import json as _json2
-                        result = _json2.loads(_json_str)
-                        for iss in result.get("issues", []):
-                            issues.append(iss)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"check_skill_rules LLM 判断失败: {e}")
-
-    logger.info(f"[check_skill_rules] 表={table_name}, issues={len(issues)}")
-    return _json.dumps({"issues": issues}, ensure_ascii=False)
+        import traceback as _tb
+        logger.warning(f"[check_skill_rules] 异常: {_tb.format_exc()[:500]}")
+        return _json.dumps({"issues": [], "message": f"检查异常: {str(e)[:200]}"}, ensure_ascii=False)
 
 
 # ==================== 检查工具（原 data_inspector_agent.py）====================
@@ -2863,17 +2568,18 @@ def _register_inspector_tools():
         "type": "function",
         "function": {
             "name": "check_skill_rules",
-            "description": "检查提取结果是否符合技能 rules.md 定义的规则。有 regex/legal_values 的规则做确定性检查，纯自然语言规则调 LLM 判断。在写入数据源前调用此工具自检，发现问题后修复再写入。skill_path 自动从调试上下文获取，无需传参。",
+            "description": "检查数据是否符合技能专属规则。通过沙箱执行技能脚本中的 check_rules 函数（确定性检查优先）。需要先 query_data 获取 headers 和 rows 再传入。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "headers": {"type": "array", "items": {"type": "string"}, "description": "表头列名列表"},
-                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "数据行，每行是列值数组"},
-                    "source_text": {"type": "string", "description": "源文档文本片段（供 LLM 对比判断）"},
+                    "datasource_id": {"type": "string", "description": "数据源ID"},
                     "table_name": {"type": "string", "description": "表名"},
+                    "headers": {"type": "array", "items": {"type": "string"}, "description": "表头列名列表（从 query_data 获取）"},
+                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "数据行，每行是列值数组（从 query_data 获取）"},
+                    "source_text": {"type": "string", "description": "源文档文本片段（可选）"},
                     "skill_path": {"type": "string", "description": "技能文件夹路径（自动从上下文获取，通常不需要手动传）"},
                 },
-                "required": ["headers", "rows"],
+                "required": ["datasource_id", "table_name", "headers", "rows"],
             },
         },
     }, _check_skill_rules_handler, cacheable=False)
@@ -2882,8 +2588,25 @@ def _register_inspector_tools():
         "type": "function",
         "function": {
             "name": "profile_data",
-            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据。无需传参，自动检查当前数据源和表",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "获取数据概览：行数、列数、各列类型、空值率、唯一值数、样本数据。支持多张表批量检查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "datasource_id": {"type": "string", "description": "数据源ID"},
+                                "table_name": {"type": "string", "description": "表名"},
+                            },
+                            "required": ["datasource_id", "table_name"],
+                        },
+                        "description": "要检查的表列表",
+                    },
+                },
+                "required": ["tables"],
+            },
         },
     }, _profile_data_handler, cacheable=False)
 
@@ -2891,16 +2614,29 @@ def _register_inspector_tools():
         "type": "function",
         "function": {
             "name": "check_data_standards",
-            "description": "检查数据是否符合命名规范、类型标准、编码规范。无需传参，自动检查当前数据源和表",
+            "description": "检查数据是否符合命名规范、类型标准、编码规范。支持多张表批量检查",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "datasource_id": {"type": "string", "description": "数据源ID"},
+                                "table_name": {"type": "string", "description": "表名"},
+                            },
+                            "required": ["datasource_id", "table_name"],
+                        },
+                        "description": "要检查的表列表",
+                    },
                     "standard_rules": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "检查规则列表，如 ['naming_convention', 'type_consistency', 'encoding_check']",
                     },
                 },
+                "required": ["tables"],
             },
         },
     }, _check_data_standards_handler, cacheable=False)
@@ -2909,16 +2645,29 @@ def _register_inspector_tools():
         "type": "function",
         "function": {
             "name": "check_data_quality",
-            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性。无需传参，自动检查当前数据源和表",
+            "description": "检查数据质量：完整性、唯一性、范围合理性、业务逻辑一致性。支持多张表批量检查",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "datasource_id": {"type": "string", "description": "数据源ID"},
+                                "table_name": {"type": "string", "description": "表名"},
+                            },
+                            "required": ["datasource_id", "table_name"],
+                        },
+                        "description": "要检查的表列表",
+                    },
                     "quality_dimensions": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "质量维度，如 ['completeness', 'uniqueness', 'validity', 'consistency']",
                     },
                 },
+                "required": ["tables"],
             },
         },
     }, _check_data_quality_handler, cacheable=False)
@@ -2927,49 +2676,97 @@ def _register_inspector_tools():
         "type": "function",
         "function": {
             "name": "check_data_security",
-            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性。无需传参，自动检查当前数据源和表",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "检查数据安全：PII识别、敏感数据暴露、脱敏完整性。支持多张表批量检查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "datasource_id": {"type": "string", "description": "数据源ID"},
+                                "table_name": {"type": "string", "description": "表名"},
+                            },
+                            "required": ["datasource_id", "table_name"],
+                        },
+                        "description": "要检查的表列表",
+                    },
+                },
+                "required": ["tables"],
+            },
         },
     }, _check_data_security_handler, cacheable=False)
 
 
 # ---- 检查工具 handler 实现 ----
-# 从 context 自动填充 datasource_id 和 table_name（原 DataInspector._execute_tool 的逻辑）
 
 async def _profile_data_handler(args, db, user_id, context):
-    from app.services.inspector_tools import DataInspectorTools
-    ds_id, tbl = _resolve_ds_table(context)
-    if not ds_id or not tbl:
-        return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
-    result = await DataInspectorTools.profile_data(db, ds_id, tbl)
-    return json.dumps(result, ensure_ascii=False, default=str)
+    from app.services.inspector_tools import inspector_tools
+    tables = args.get("tables") or []
+    if not tables:
+        ds_id, tbl = _resolve_ds_table(context)
+        if ds_id and tbl:
+            tables = [{"datasource_id": ds_id, "table_name": tbl}]
+    if not tables:
+        return json.dumps({"error": "缺少 tables 参数"}, ensure_ascii=False)
+    results = {}
+    for t in tables:
+        _ds, _tbl = t.get("datasource_id", ""), t.get("table_name", "")
+        if _ds and _tbl:
+            results[_tbl] = await inspector_tools.profile_data(_ds, _tbl, db)
+    return json.dumps(results, ensure_ascii=False, default=str)
 
 
 async def _check_data_standards_handler(args, db, user_id, context):
-    from app.services.inspector_tools import DataInspectorTools
-    ds_id, tbl = _resolve_ds_table(context)
-    if not ds_id or not tbl:
-        return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
-    result = await DataInspectorTools.check_data_standards(db, ds_id, tbl)
-    return json.dumps(result, ensure_ascii=False, default=str)
+    from app.services.inspector_tools import inspector_tools
+    tables = args.get("tables") or []
+    if not tables:
+        ds_id, tbl = _resolve_ds_table(context)
+        if ds_id and tbl:
+            tables = [{"datasource_id": ds_id, "table_name": tbl}]
+    if not tables:
+        return json.dumps({"error": "缺少 tables 参数"}, ensure_ascii=False)
+    results = {}
+    for t in tables:
+        _ds, _tbl = t.get("datasource_id", ""), t.get("table_name", "")
+        if _ds and _tbl:
+            results[_tbl] = await inspector_tools.check_data_standards(_ds, _tbl, db)
+    return json.dumps(results, ensure_ascii=False, default=str)
 
 
 async def _check_data_quality_handler(args, db, user_id, context):
-    from app.services.inspector_tools import DataInspectorTools
-    ds_id, tbl = _resolve_ds_table(context)
-    if not ds_id or not tbl:
-        return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
-    result = await DataInspectorTools.check_data_quality(db, ds_id, tbl)
-    return json.dumps(result, ensure_ascii=False, default=str)
+    from app.services.inspector_tools import inspector_tools
+    tables = args.get("tables") or []
+    if not tables:
+        ds_id, tbl = _resolve_ds_table(context)
+        if ds_id and tbl:
+            tables = [{"datasource_id": ds_id, "table_name": tbl}]
+    if not tables:
+        return json.dumps({"error": "缺少 tables 参数"}, ensure_ascii=False)
+    results = {}
+    for t in tables:
+        _ds, _tbl = t.get("datasource_id", ""), t.get("table_name", "")
+        if _ds and _tbl:
+            results[_tbl] = await inspector_tools.check_data_quality(_ds, _tbl, db)
+    return json.dumps(results, ensure_ascii=False, default=str)
 
 
 async def _check_data_security_handler(args, db, user_id, context):
-    from app.services.inspector_tools import DataInspectorTools
-    ds_id, tbl = _resolve_ds_table(context)
-    if not ds_id or not tbl:
-        return json.dumps({"error": "缺少数据源ID或表名（context 中未找到当前数据源信息）"}, ensure_ascii=False)
-    result = await DataInspectorTools.check_data_security(db, ds_id, tbl)
-    return json.dumps(result, ensure_ascii=False, default=str)
+    from app.services.inspector_tools import inspector_tools
+    tables = args.get("tables") or []
+    if not tables:
+        ds_id, tbl = _resolve_ds_table(context)
+        if ds_id and tbl:
+            tables = [{"datasource_id": ds_id, "table_name": tbl}]
+    if not tables:
+        return json.dumps({"error": "缺少 tables 参数"}, ensure_ascii=False)
+    results = {}
+    for t in tables:
+        _ds, _tbl = t.get("datasource_id", ""), t.get("table_name", "")
+        if _ds and _tbl:
+            results[_tbl] = await inspector_tools.check_data_security(_ds, _tbl, db)
+    return json.dumps(results, ensure_ascii=False, default=str)
 
 
 def _resolve_ds_table(context):

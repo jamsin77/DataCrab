@@ -46,17 +46,13 @@ def extract_text(file_path: str, file_type: str) -> str:
         return "\n\n".join(parts)
     if ft == "pdf":
         try:
-            import pdfplumber
-            with pdfplumber.open(file_path) as pdf:
-                return "\n\n".join((p.extract_text() or "") for p in pdf.pages)
-        except ImportError:
-            pass
-        try:
             import fitz
             doc = fitz.open(file_path)
             return "\n\n".join(page.get_text() for page in doc)
         except ImportError:
-            raise ValueError("PDF 解析需要安装 pdfplumber 或 PyMuPDF（fitz）")
+            raise ValueError("PDF 解析需要安装 PyMuPDF(fitz)")
+        except Exception as e:
+            raise ValueError(f"PDF 解析失败: {e}")
     if ft == "docx":
         try:
             import docx

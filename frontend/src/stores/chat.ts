@@ -9,7 +9,11 @@ function nowStr(): string {
 function pushExecMsg(msg: any, text: string) {
   if (!text) return
   if (!msg.executingMsgs) msg.executingMsgs = []
-  msg.executingMsgs.push(`${nowStr()} ${text}`)
+  const _ts = nowStr()
+  for (const _line of text.split('\n')) {
+    const _trimmed = _line.trim()
+    if (_trimmed) msg.executingMsgs.push(`${_ts} ${_trimmed}`)
+  }
   messages.value = [...messages.value]
 }
 

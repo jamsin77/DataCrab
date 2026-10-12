@@ -329,7 +329,7 @@ def main(**params):
 
 （可选）如果该技能是数据处理类（skill_type: processing）且需要额外检查规则，输出技能专属规则文件。规则编号必须用 `SKILL-STD-`/`SKILL-DQ-`/`SKILL-SEC-` 前缀（分别对应标准/质量/安全），与全局规则区分。禁止用其他前缀（如 SKILL-DRE）否则不会被识别。
 
-**重要：数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。** 脚本只负责数据处理（提取/清洗/转换/写入），检查由 DataInspector 通过 rules.md 执行。如果用户要求加检查规则，输出或修改 rules.md，不要改脚本。
+**重要：数据检查规则必须写到 rules.md（自然语言规则），同时在 scripts/main.py 中定义 check_rules 函数实现确定性检查逻辑。** 脚本负责数据处理 + 确定性检查。check_rules 函数签名：`def check_rules(headers, rows, source_text="", table_name="") -> list[dict]`，返回 issues 列表，每条含 rule_id/severity/column/row/description/suggestion。确定性检查优先（空值率、列数、截断、重复列名等），无法确定性的走 LLM 兜底。如果用户要求加检查规则，同时输出 rules.md 和 check_rules 函数。
 
 ===RULES_MD===
 ### SKILL-STD-001 文物编号格式
@@ -426,7 +426,14 @@ async def generate_skill(prompt: str, datasource_info: str = "", lessons: str = 
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
-5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹）
+5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹），并在 scripts/main.py 中定义 check_rules 函数
+
+**check_rules 函数要求**：
+- 签名：`def check_rules(headers: list, rows: list, source_text: str = "", table_name: str = "") -> list[dict]`
+- 返回 issues 列表，每条含：rule_id（对应 rules.md 规则编号）、severity、column、row、description、suggestion
+- 确定性检查优先：空值率检测、列数不一致、截断检测、重复列名等
+- 无法确定性的规则用 call_tool("llm_generate") 兜底
+- 有 rules.md 就必须有 check_rules 函数
 
 **skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
@@ -612,7 +619,14 @@ async def generate_skill_stream(prompt: str, datasource_info: str = "", lessons:
 2. scripts/main.py（核心处理脚本）
 3. 如果必要，scripts/ 下可以有更多脚本
 4. 如果有参考资料，输出 references/
-5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹）
+5. （可选）数据处理类技能如需额外检查规则，输出 rules.md（用 ===RULES_MD=== / ===RULES_MD_END=== 包裹），并在 scripts/main.py 中定义 check_rules 函数
+
+**check_rules 函数要求**：
+- 签名：`def check_rules(headers: list, rows: list, source_text: str = "", table_name: str = "") -> list[dict]`
+- 返回 issues 列表，每条含：rule_id（对应 rules.md 规则编号）、severity、column、row、description、suggestion
+- 确定性检查优先：空值率检测、列数不一致、截断检测、重复列名等
+- 无法确定性的规则用 call_tool("llm_generate") 兜底
+- 有 rules.md 就必须有 check_rules 函数
 
 **skill_type 判定**：该技能执行后是否修改了源数据？只查不改（查询/统计/分析/可视化/生成报告）用 `analysis`，要修改数据（清洗/转换/写入）用 `processing`。
 
@@ -792,7 +806,7 @@ async def modify_skill_stream(
 2. 脚本需要修改时必须用补丁格式（<<<OLD / >>>NEW），禁止输出 ===SCRIPT:main.py=== 完整脚本
 3. old_string 必须从现有脚本中逐字复制（包括缩进和空格），不能凭记忆重写
 4. 如果只修改文档说明，不输出脚本部分
-5. 数据检查规则必须写到 rules.md（自然语言规则），不要在脚本代码里写检查逻辑。如果用户要求加检查规则，输出 ===RULES_MD=== / ===RULES_MD_END=== 段落，不要改脚本。规则编号必须用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀（分别对应标准/质量/安全），禁止用其他前缀（如 SKILL-DRE）否则不会被识别
+5. 数据检查规则必须写到 rules.md（自然语言规则），同时在 scripts/main.py 中定义 check_rules 函数实现确定性检查。如果用户要求加/改检查规则，同时输出 ===RULES_MD=== / ===RULES_MD_END=== 段落和 check_rules 函数的补丁。规则编号必须用 SKILL-STD-/SKILL-DQ-/SKILL-SEC- 前缀（分别对应标准/质量/安全），禁止用其他前缀（如 SKILL-DRE）否则不会被识别
 
 ===RULES_MD===
 ### SKILL-STD-001 规则名称

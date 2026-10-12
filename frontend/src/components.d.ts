@@ -51,6 +51,7 @@ declare module 'vue' {
     ElTabs: typeof import('element-plus/es')['ElTabs']
     ElTag: typeof import('element-plus/es')['ElTag']
     ElText: typeof import('element-plus/es')['ElText']
+    ElTimeSelect: typeof import('element-plus/es')['ElTimeSelect']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     FileSystemBrowser: typeof import('./components/FileSystemBrowser.vue')['default']

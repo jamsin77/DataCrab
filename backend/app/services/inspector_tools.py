@@ -163,8 +163,6 @@ class DataInspectorTools:
                     "dtype": str(df[col].dtype),
                     "null_count": int(df[col].isna().sum()),
                     "null_rate": round(float(df[col].isna().mean()), 4),
-                    "unique_count": int(df[col].nunique()),
-                    "sample_values": non_null.head(5).tolist() if len(non_null) > 0 else [],
                 }
             return profile
         except Exception as e:
@@ -410,7 +408,7 @@ class DataInspectorTools:
             return {"dimension": "standards", "passed": False, "issues": [{"severity": "error", "description": str(e)}]}
 
     async def check_data_quality(
-        self, datasource_id: str, table_name: str, db: AsyncSession, quality_dimensions: list = None
+        self, datasource_id: str, table_name: str, db: AsyncSession, quality_dimensions: list = None, source_ds_type: str = ""
     ) -> dict:
         import pandas as pd
         try:
@@ -874,8 +872,6 @@ class DataInspectorTools:
                     "dtype": str(df[col].dtype),
                     "null_count": int(df[col].isna().sum()),
                     "null_rate": round(float(df[col].isna().mean()), 4),
-                    "unique_count": int(df[col].nunique()),
-                    "sample_values": non_null.head(5).tolist() if len(non_null) > 0 else [],
                 }
             return profile
         except Exception as e:
