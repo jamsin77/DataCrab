@@ -1,4 +1,8 @@
 # DataCrab — Agentic AI 驱动的自主演进式数据治理平台
+> **原作者**: Simon ([Gitee: DataCrab/DataCrab](https://gitee.com/DataCrab/DataCrab))  
+> **许可证**: 木兰宽松许可证 v2（MulanPSL-2.0）  
+> **本仓库**: 基于原项目同步的镜像（Gitee/GitHub），上游已原生内置前端静态托管（SPA fallback）。
+
 
 DataCrab 是一款 Agentic AI 驱动的自主演进式数据治理平台，提供 ChatGPT 风格的对话式交互体验。用户无需编写代码、无需手动配置规则，通过自然语言对话即可完成数据查询、清洗、转换、分析乃至数据架构迭代的全流程治理工作。
 
